@@ -1,0 +1,56 @@
+#!/bin/bash
+set -euo pipefail
+PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD="${POSLE_BUILD_DIR:-$PROJECT/.build}"
+APP="$PROJECT/dist/После.app"
+cd "$PROJECT"
+
+# Rust is required only on the developer's machine; users run the bundled binary.
+if [[ -n "${POSLE_CARGO_HOME:-}" ]]; then
+    export CARGO_HOME="$POSLE_CARGO_HOME"
+    CARGO="$CARGO_HOME/bin/cargo"
+    if [[ ! -x "$CARGO" ]]; then
+        echo "Не найден Cargo: $CARGO. Выполните scripts/setup-rust.sh с тем же POSLE_CARGO_HOME." >&2
+        exit 1
+    fi
+    export RUSTUP_HOME="${POSLE_RUSTUP_HOME:-${RUSTUP_HOME:-$PROJECT/.toolchain/rustup}}"
+elif command -v cargo >/dev/null 2>&1; then
+    CARGO="$(command -v cargo)"
+    if [[ -n "${POSLE_RUSTUP_HOME:-}" ]]; then
+        export RUSTUP_HOME="$POSLE_RUSTUP_HOME"
+    fi
+elif [[ -x "$PROJECT/.toolchain/cargo/bin/cargo" ]]; then
+    export CARGO_HOME="$PROJECT/.toolchain/cargo"
+    export RUSTUP_HOME="${POSLE_RUSTUP_HOME:-$PROJECT/.toolchain/rustup}"
+    CARGO="$CARGO_HOME/bin/cargo"
+else
+    echo "Не найден Cargo. Выполните scripts/setup-rust.sh или укажите POSLE_CARGO_HOME с установленным Cargo." >&2
+    exit 1
+fi
+export PATH="$(dirname "$CARGO"):$PATH"
+RUST_BUILD="${POSLE_RUST_TARGET_DIR:-$BUILD/rust}"
+if [[ "$(uname -m)" == "arm64" ]]; then
+    "$CARGO" build --manifest-path "$PROJECT/rust-core/Cargo.toml" \
+        --release --locked --target-dir "$RUST_BUILD"
+    RUST_RELEASE="$RUST_BUILD/release"
+else
+    "$CARGO" build --manifest-path "$PROJECT/rust-core/Cargo.toml" \
+        --release --locked --target aarch64-apple-darwin --target-dir "$RUST_BUILD"
+    RUST_RELEASE="$RUST_BUILD/aarch64-apple-darwin/release"
+fi
+swift build --scratch-path "$BUILD" -c release
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources/backend"
+cp "$BUILD/release/Posle" "$APP/Contents/MacOS/Posle"
+cp "$RUST_RELEASE/posle-engine" "$APP/Contents/MacOS/posle-engine"
+cp "$RUST_RELEASE/libposle_core.dylib" "$APP/Contents/Frameworks/libposle_core.dylib"
+cp "$PROJECT/packaging/Info.plist" "$APP/Contents/Info.plist"
+cp "$PROJECT/backend/engine.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$APP/Contents/Resources/backend/"
+cp "$PROJECT/THIRD_PARTY.md" "$APP/Contents/Resources/THIRD_PARTY.md"
+swift "$PROJECT/scripts/icon.swift" "$BUILD/AppIcon.iconset"
+iconutil -c icns "$BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
+codesign --force --sign - "$APP/Contents/Frameworks/libposle_core.dylib"
+codesign --force --sign - "$APP/Contents/MacOS/posle-engine"
+codesign --force --sign - --entitlements "$PROJECT/packaging/entitlements.plist" "$APP"
+codesign --verify --strict "$APP"
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$PROJECT/dist/Posle-Mac-AppleSilicon.zip"
+echo "Готово: $APP"

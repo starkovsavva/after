@@ -1,0 +1,501 @@
+import AppKit
+import AVFoundation
+import Combine
+import PosleCore
+import SwiftUI
+import UniformTypeIdentifiers
+
+@MainActor
+final class AppStore: ObservableObject {
+    @Published var meetings: [Meeting] = []
+    @Published var selection: String?
+    @Published var transcript: Transcript?
+    @Published var summary: Summary?
+    @Published var examples: [String: CardExample] = [:]
+    @Published var reviews: [String: ReviewState] = [:]
+    @Published var settings = AppSettings()
+    @Published var busy = false
+    @Published var canCancelJob = false
+    @Published var processingID: String?
+    @Published var progress = -1.0
+    @Published var progressText = ""
+    @Published var error: String?
+    @Published var notice: String?
+    @Published var showingSettings = false
+    @Published var showingRecord = false
+    @Published var runtimeReady = false
+    @Published var tab = "summary"
+    @Published var libraryFilter = ""
+    @Published var transcriptSearch = ""
+    @Published var isPlaying = false
+    @Published var playbackTime = 0.0
+    @Published var playbackDuration = 1.0
+    @Published var localStatus = ""
+    @Published var isRecording = false
+    @Published var stoppingRecording = false
+    var processAfterRecording = true
+    @Published var recordingDate: Date?
+
+    let root: URL
+    let runner = ProcessRunner()
+    let recorder = MeetingRecorder()
+    let localService = LocalModelService()
+    private var player: AVPlayer?
+    private var playerObserver: Any?
+    private var recordingID: String?
+    private var assertions: IOPMAssertionID = 0
+    private var recentReviewIDs: Set<String> = []
+    private var cancellationRequested = false
+    private var preview: Bool
+
+    var selected: Meeting? { meetings.first { $0.id == selection } }
+    var selectedDirectory: URL? { selection.map { meetingDirectory($0) } }
+    var filteredMeetings: [Meeting] {
+        meetings.filter { libraryFilter.isEmpty || $0.title.localizedCaseInsensitiveContains(libraryFilter) }
+    }
+    var dueCards: [Flashcard] {
+        (summary?.cards ?? []).filter { reviews[$0.id]?.isDue ?? true }
+    }
+    var backend: URL {
+        let bundled = Bundle.main.resourceURL!.appendingPathComponent("backend")
+        if FileManager.default.fileExists(atPath: bundled.appendingPathComponent("engine.py").path) { return bundled }
+        return URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("backend")
+    }
+    var python: URL { root.appendingPathComponent("runtime/venv/bin/python") }
+    var rustEngine: URL {
+        if let path = ProcessInfo.processInfo.environment["POSLE_RUST_ENGINE"] { return URL(fileURLWithPath: path) }
+        return Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/posle-engine")
+    }
+
+    init(preview: Bool = false) {
+        self.preview = preview
+        if let path = ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] { root = URL(fileURLWithPath: path) }
+        else {
+            root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent(preview ? "PoslePreview" : "Posle")
+        }
+        do {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent("meetings"), withIntermediateDirectories: true,
+                                                   attributes: [.posixPermissions: 0o700])
+            if let saved: AppSettings = read(root.appendingPathComponent("settings.json")) { settings = saved }
+            runtimeReady = FileManager.default.isExecutableFile(atPath: python.path)
+                && FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime/ready-v1").path)
+            reloadLibrary()
+            selection = meetings.first?.id
+            loadSelection()
+        } catch { self.error = error.localizedDescription }
+        recorder.failed = { [weak self] message in
+            Task { @MainActor in
+                guard let self else { return }
+                self.error = "Запись прервалась: \(message). Завершаю сохранение доступного аудио."
+                if self.isRecording { await self.stopRecording() }
+            }
+        }
+    }
+
+    func meetingDirectory(_ id: String) -> URL { root.appendingPathComponent("meetings/\(id)") }
+    func read<T: Decodable>(_ url: URL) -> T? {
+        guard let bridge = try? RustBridge.shared.get(), let data = try? bridge.read(root: root, url: url) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+    func write<T: Encodable>(_ value: T, _ url: URL) throws {
+        try RustBridge.shared.get().write(root: root, url: url, value: value)
+    }
+    func saveSettings() {
+        do { try write(settings, root.appendingPathComponent("settings.json")) }
+        catch { self.error = error.localizedDescription }
+    }
+    func reloadLibrary() {
+        struct Library: Decodable { var meetings: [Meeting] }
+        do {
+            let data = try RustBridge.shared.get().request(root: root, command: "list")
+            meetings = try JSONDecoder().decode(Library.self, from: data).meetings
+        } catch { self.error = error.localizedDescription; return }
+        // Interrupted jobs stay retryable. Never discard an existing source or transcript.
+        for i in meetings.indices where ["processing", "recording"].contains(meetings[i].status) && !busy && !isRecording {
+            meetings[i].status = FileManager.default.fileExists(atPath: meetingDirectory(meetings[i].id).appendingPathComponent("transcript.json").path)
+                ? "transcribed" : "imported"
+            meetings[i].error = "Предыдущая обработка прервалась. Можно продолжить."
+            try? write(meetings[i], meetingDirectory(meetings[i].id).appendingPathComponent("meta.json"))
+        }
+    }
+    func loadSelection() {
+        pause()
+        if let observer = playerObserver { player?.removeTimeObserver(observer) }; playerObserver = nil
+        player = nil; playbackTime = 0; recentReviewIDs = []
+        transcriptSearch = ""
+        guard let directory = selectedDirectory else { transcript = nil; summary = nil; return }
+        transcript = read(directory.appendingPathComponent("transcript.json"))
+        summary = read(directory.appendingPathComponent("summary.json"))
+        examples = read(directory.appendingPathComponent("examples.json")) ?? [:]
+        reviews = read(directory.appendingPathComponent("review-state.json")) ?? [:]
+        playbackDuration = max(transcript?.duration ?? selected?.duration ?? 1, 1)
+        let recording = directory.appendingPathComponent("recording.mp3")
+        let playback = FileManager.default.fileExists(atPath: recording.path) ? recording : directory.appendingPathComponent("playback.mp3")
+        if FileManager.default.fileExists(atPath: playback.path) {
+            player = AVPlayer(url: playback)
+            playbackDuration = max(transcript?.duration ?? selected?.duration ?? 1, 1)
+            playerObserver = player?.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.2, preferredTimescale: 600), queue: .main) { [weak self] time in
+                Task { @MainActor in
+                    self?.playbackTime = time.seconds.isFinite ? time.seconds : 0
+                    if let self, self.playbackTime >= self.playbackDuration - 0.2 { self.isPlaying = false }
+                }
+            }
+        }
+    }
+    func refreshResults(_ id: String) {
+        if selection == id {
+            let directory = meetingDirectory(id)
+            transcript = read(directory.appendingPathComponent("transcript.json"))
+            summary = read(directory.appendingPathComponent("summary.json"))
+            examples = read(directory.appendingPathComponent("examples.json")) ?? [:]
+            reviews = read(directory.appendingPathComponent("review-state.json")) ?? [:]
+        }
+    }
+    func updateMeeting(_ id: String, _ change: (inout Meeting) -> Void) {
+        guard let index = meetings.firstIndex(where: { $0.id == id }) else { return }
+        let url = meetingDirectory(id).appendingPathComponent("meta.json")
+        // Finalization can replace a temporary MOV with MP3 in the worker.
+        // Always patch its latest metadata, including after cancellation/error.
+        guard var current: Meeting = read(url) else {
+            error = "Не удалось прочитать данные встречи. Откройте её заново."
+            return
+        }
+        change(&current)
+        do { try write(current, url); meetings[index] = current }
+        catch { self.error = error.localizedDescription }
+    }
+    func renameSpeaker(_ key: String, name: String) {
+        guard let id = selection else { return }
+        updateMeeting(id) { $0.speakerNames[key] = name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+    func toggleTask(_ item: Insight) {
+        guard let id = selection else { return }
+        updateMeeting(id) {
+            if $0.completedTasks.contains(item.id) { $0.completedTasks.removeAll { $0 == item.id } }
+            else { $0.completedTasks.append(item.id) }
+        }
+    }
+
+    func chooseFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio, .movie, .mpeg4Audio, .mp3, .wav]
+        panel.allowsMultipleSelection = false
+        panel.message = "Добавьте запись встречи на русском или английском"
+        if panel.runModal() == .OK, let url = panel.url { importFile(url) }
+    }
+    func importFile(_ source: URL) {
+        guard !busy, !isRecording else { error = "Дождитесь текущей обработки или остановите запись."; return }
+        let ext = source.pathExtension.lowercased()
+        guard ["mp4", "mov", "m4a", "mp3", "wav", "aiff", "aif", "caf", "flac", "ogg", "webm", "mkv", "aac"].contains(ext) else {
+            error = "Добавьте аудио или видео: MP4, MOV, M4A, MP3, WAV, FLAC или WebM."; return
+        }
+        canCancelJob = false
+        busy = true; progress = -1; progressText = "Сохраняю запись…"; error = nil
+        let focus = settings.focus
+        let root = self.root
+        Task {
+            do {
+                let data = try await Task.detached(priority: .userInitiated) {
+                    let access = source.startAccessingSecurityScopedResource()
+                    defer { if access { source.stopAccessingSecurityScopedResource() } }
+                    return try RustBridge.shared.get().request(root: root, command: "import", arguments: ["source": source.path, "focus": focus])
+                }.value
+                let meeting = try JSONDecoder().decode(Meeting.self, from: data)
+                busy = false; reloadLibrary(); selection = meeting.id; tab = "transcript"; loadSelection()
+                if runtimeReady { await processMeeting(meeting.id) }
+                else { notice = "Запись сохранена. Установите модели один раз, чтобы начать распознавание."; showingSettings = true }
+            } catch { busy = false; self.error = error.localizedDescription }
+        }
+    }
+
+    func worker(_ command: String, id: String? = nil, extra: [String] = []) async throws {
+        guard !cancellationRequested else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
+        guard runtimeReady else { throw AppError.message("Сначала установите модели в настройках.") }
+        if ["check", "pull"].contains(command) || (settings.mode == "local" && ["summarize", "example"].contains(command)) {
+            try await localService.ensure(root: root, cancelled: { self.cancellationRequested })
+        }
+        guard !cancellationRequested else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
+        try write(settings, root.appendingPathComponent("settings.json"))
+        var arguments = [command, "--root", root.path, "--backend", backend.path]
+        if let id { arguments += ["--meeting", meetingDirectory(id).path] }
+        arguments += extra
+        // Secrets live only in Keychain and the short-lived child environment, never argv/files.
+        var environment = ["PYTHONUNBUFFERED": "1", "HF_HOME": root.appendingPathComponent("cache/huggingface").path,
+                           "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL]
+        if settings.mode == "cloud" && ["summarize", "example"].contains(command) { environment["POSLE_API_KEY"] = Keychain.read() }
+        try await runner.run(rustEngine, arguments: arguments, environment: environment) { [weak self] event in
+            Task { @MainActor in
+                if let message = event.message { self?.progressText = message }
+                if let fraction = event.fraction { self?.progress = fraction }
+                if let models = event.models { self?.localStatus = models.isEmpty ? "Ollama работает. Загрузите модель." : "Доступны: " + models.joined(separator: ", ") }
+            }
+        }
+    }
+    func beginJob(id: String?) {
+        cancellationRequested = false; runner.resetCancellation()
+        canCancelJob = true
+        busy = true; processingID = id; progress = -1; error = nil; notice = nil
+        IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                                   IOPMAssertionLevel(kIOPMAssertionLevelOn), "После обрабатывает встречу" as CFString, &assertions)
+    }
+    func endJob() {
+        cancellationRequested = false
+        canCancelJob = false
+        busy = false; processingID = nil; progress = -1
+        if assertions != 0 { IOPMAssertionRelease(assertions); assertions = 0 }
+    }
+    func cancelJob() {
+        guard canCancelJob else { return }
+        cancellationRequested = true; runner.cancel()
+    }
+    func processMeeting(_ id: String) async {
+        guard !busy, !isRecording else { return }
+        beginJob(id: id); defer { endJob() }
+        updateMeeting(id) { $0.status = "processing"; $0.error = nil }
+        do {
+            var arguments = ["--speakers", String(settings.speakerCount)]
+            if !settings.diarization { arguments.append("--no-diarization") }
+            try await worker("transcribe", id: id, extra: arguments)
+            if let fresh: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")),
+               let index = meetings.firstIndex(where: { $0.id == id }) { meetings[index] = fresh }
+            let result: Transcript? = read(meetingDirectory(id).appendingPathComponent("transcript.json"))
+            updateMeeting(id) { $0.status = "transcribed"; $0.duration = result?.duration ?? 0 }
+            refreshResults(id)
+            if settings.autoSummary && settings.mode == "local" {
+                do {
+                    try await worker("summarize", id: id)
+                    updateMeeting(id) { $0.status = "ready" }
+                    refreshResults(id)
+                    if selection == id { tab = "summary" }
+                } catch { self.error = "Транскрипция готова. Конспект: \(error.localizedDescription)" }
+            } else if settings.mode == "cloud" {
+                notice = "Транскрипция готова. Нажмите «Конспект в облаке», чтобы отправить текст в OpenAI."
+            }
+            if selection == id { loadSelection() }
+        } catch {
+            updateMeeting(id) { $0.status = "imported"; $0.error = error.localizedDescription }
+            self.error = error.localizedDescription; refreshResults(id)
+        }
+    }
+    func summarizeSelected() {
+        guard let id = selection, !busy, !isRecording else { return }
+        Task {
+            beginJob(id: id); defer { endJob() }
+            do {
+                try await worker("summarize", id: id)
+                updateMeeting(id) { $0.status = "ready"; $0.error = nil }
+                refreshResults(id); tab = "summary"
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+    @discardableResult
+    func saveOverview(_ text: String, meetingID: String, expectedOverview: String, expectedGeneratedAt: Double) -> Bool {
+        guard !busy, !isRecording else {
+            error = "Дождитесь окончания обработки или записи, чтобы сохранить правки."
+            return false
+        }
+        guard selection == meetingID else {
+            error = "Выбрана другая встреча. Откройте её конспект для редактирования."
+            return false
+        }
+        let overview = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !overview.isEmpty else { error = "Краткий конспект не должен быть пустым."; return false }
+        let url = meetingDirectory(meetingID).appendingPathComponent("summary.json")
+        guard var saved: Summary = read(url), saved.generatedAt == expectedGeneratedAt,
+              saved.overview == expectedOverview else {
+            error = "Конспект изменился. Откройте правку заново, чтобы сохранить актуальную версию."
+            return false
+        }
+        // Read the current complete summary, then change only its overview.
+        // Cards, evidence and review history retain their existing values.
+        saved.overview = overview
+        do {
+            try write(saved, url)
+            summary = saved
+            notice = "Краткий конспект сохранён."
+            error = nil
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+    func makeExample(_ card: Flashcard) {
+        guard let id = selection, !busy, !isRecording else { return }
+        Task {
+            beginJob(id: id); defer { endJob() }
+            do { try await worker("example", id: id, extra: ["--card", card.id]); refreshResults(id) }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+    func rate(_ card: Flashcard, _ value: Int) {
+        guard let id = selection, !busy, !isRecording else { return }
+        Task {
+            beginJob(id: id); defer { endJob() }
+            do {
+                try await worker("review", id: id, extra: ["--card", card.id, "--rating", String(value)])
+                recentReviewIDs.insert(card.id); refreshResults(id)
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+    func installRuntime() {
+        guard !busy, !isRecording else { return }
+        Task {
+            beginJob(id: nil); progressText = "Устанавливаю модели. Первый запуск потребует интернет…"
+            defer { endJob() }
+            do {
+                try await runner.run(rustEngine,
+                                     arguments: ["install-runtime", "--root", root.path, "--backend", backend.path]) { [weak self] event in
+                    Task { @MainActor in if let message = event.message { self?.progressText = message } }
+                }
+                runtimeReady = true; notice = "Модели установлены. Добавьте или выберите запись."
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+    func ollama(_ command: String) {
+        guard !busy, !isRecording else { return }
+        Task {
+            beginJob(id: nil); defer { endJob() }
+            do { try await worker(command); if command == "pull" { localStatus = "Модель \(settings.localModel) готова" } }
+            catch { localStatus = error.localizedDescription }
+        }
+    }
+    func prepareLocal() {
+        guard !busy, !isRecording, runtimeReady else { return }
+        Task {
+            beginJob(id: nil); defer { endJob() }
+            do {
+                try await worker("install-local")
+                try await localService.ensure(root: root)
+                try await worker("pull")
+                localStatus = "Локальный ИИ готов. Интернет больше не требуется."
+            } catch { self.error = error.localizedDescription; localStatus = error.localizedDescription }
+        }
+    }
+    func togglePlayback() {
+        guard let player else { error = "Аудиофайл не найден. Откройте папку данных встречи и проверьте MP3."; return }
+        if isPlaying { pause() }
+        else {
+            if playbackTime >= playbackDuration - 0.2 { seek(0) }
+            player.play(); isPlaying = true
+        }
+    }
+    func pause() { player?.pause(); isPlaying = false }
+    func seek(_ seconds: Double, play: Bool = false) {
+        let value = min(max(seconds, 0), playbackDuration)
+        player?.seek(to: CMTime(seconds: value, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        playbackTime = value
+        if play { player?.play(); isPlaying = true }
+    }
+    func cite(_ ids: [Int]) {
+        guard let segment = transcript?.segments.first(where: { ids.contains($0.id) }) else { return }
+        tab = "transcript"; seek(segment.start, play: true)
+    }
+    func export(_ cards: Bool) {
+        guard let meeting = selected else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(meeting.title).\(cards ? "tsv" : "md")"
+        panel.allowedContentTypes = cards ? [.tabSeparatedText] : [.plainText]
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let text = cards ? Exporter.anki(cards: summary?.cards ?? [], title: meeting.title)
+                    : Exporter.markdown(meeting: meeting, transcript: transcript, summary: summary)
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                notice = cards ? "Карточки экспортированы. В Anki выберите «Импортировать файл»." : "Конспект и транскрипция сохранены."
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+    func trashSelected() {
+        guard let directory = selectedDirectory, !busy, !isRecording else { return }
+        do {
+            try FileManager.default.trashItem(at: directory, resultingItemURL: nil)
+            reloadLibrary(); selection = meetings.first?.id; loadSelection()
+        } catch { self.error = error.localizedDescription }
+    }
+    func exportAudio() {
+        guard let meeting = selected, let directory = selectedDirectory else { return }
+        let recording = directory.appendingPathComponent("recording.mp3")
+        let source = FileManager.default.fileExists(atPath: recording.path) ? recording : directory.appendingPathComponent("playback.mp3")
+        guard FileManager.default.fileExists(atPath: source.path) else { error = "Сначала завершите обработку аудио."; return }
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.mp3]; panel.nameFieldStringValue = "\(meeting.title).mp3"
+        if panel.runModal() == .OK, let destination = panel.url {
+            do { try Data(contentsOf: source).write(to: destination, options: .atomic); notice = "Аудиозапись сохранена в MP3." }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+    func startRecording(systemAudio: Bool, video: Bool = false, title: String) async {
+        guard !busy, !isRecording else { return }
+        pause(); error = nil
+        cancellationRequested = false; runner.resetCancellation()
+        processAfterRecording = true
+        canCancelJob = false
+        var meeting = Meeting(title: title.isEmpty ? "Встреча \(Date().formatted(date: .abbreviated, time: .shortened))" : title,
+                              source: systemAudio || video ? "recording.mov" : "recording.m4a", status: "recording", focus: settings.focus)
+        meeting.recordingTracks = systemAudio; meeting.speakerNames["self"] = "Вы"
+        meeting.hasVideo = video
+        let directory = meetingDirectory(meeting.id)
+        busy = true; progressText = "Проверяю доступ к записи…"
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                   attributes: [.posixPermissions: 0o700])
+            try await recorder.start(url: directory.appendingPathComponent(meeting.source), systemAudio: systemAudio, video: video)
+            try write(meeting, directory.appendingPathComponent("meta.json"))
+            isRecording = true; recordingID = meeting.id; recordingDate = Date()
+            IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), "После записывает встречу" as CFString, &assertions)
+            busy = false; reloadLibrary(); selection = meeting.id; loadSelection(); showingRecord = false
+        } catch {
+            try? await recorder.stop()
+            busy = false; self.error = error.localizedDescription
+        }
+    }
+    func stopRecording() async {
+        guard let id = recordingID, isRecording, !stoppingRecording else { return }
+        stoppingRecording = true
+        defer { stoppingRecording = false }
+        canCancelJob = false
+        busy = true; progressText = "Сохраняю запись…"
+        do {
+            try await recorder.stop()
+            let duration = Date().timeIntervalSince(recordingDate ?? Date())
+            updateMeeting(id) { $0.status = "imported"; $0.duration = duration }
+            var finalized = false
+            if runtimeReady {
+                canCancelJob = true
+                do {
+                    try await worker("finalize", id: id)
+                    finalized = true
+                } catch {
+                    if !cancellationRequested {
+                        self.error = "Исходная запись сохранена. Преобразование в MP3: \(error.localizedDescription)"
+                    }
+                }
+                canCancelJob = false
+                // Finalization may have committed MP3 metadata just before a
+                // cancellation. Keep its actual source instead of a stale MOV.
+                if let fresh: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")),
+                   let index = meetings.firstIndex(where: { $0.id == id }) { meetings[index] = fresh }
+            }
+            let wasCancelled = cancellationRequested
+            let shouldProcess = runtimeReady && finalized && processAfterRecording && !wasCancelled
+            isRecording = false; recordingID = nil; recordingDate = nil; endJob(); stoppingRecording = false
+            if shouldProcess {
+                await processMeeting(id)
+            } else if wasCancelled {
+                notice = "Обработка отменена. Запись сохранена; распознать встречу можно позже."
+            } else if !runtimeReady {
+                notice = "Встреча записана. Установите модели в настройках."
+            } else if !finalized {
+                notice = "Исходная запись сохранена. Выберите «Распознать встречу», чтобы повторить обработку позже."
+            } else {
+                notice = "Встреча записана и сохранена в MP3."
+            }
+        } catch {
+            isRecording = false; recordingID = nil; recordingDate = nil; endJob(); self.error = error.localizedDescription
+        }
+    }
+}
+
+import IOKit.pwr_mgt

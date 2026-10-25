@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>ru</string>
+  <key>CFBundleDisplayName</key><string>После</string>
+  <key>CFBundleName</key><string>После</string>
+  <key>CFBundleExecutable</key><string>Posle</string>
+  <key>CFBundleIdentifier</key><string>app.posle.meetings</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.2.0</string>
+  <key>CFBundleVersion</key><string>2</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key><string>15.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>После записывает ваш голос для транскрипции встречи. Записи хранятся на этом Mac.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>После записывает звук звонка, чтобы разделить реплики собеседников и создать транскрипцию.</string>
+  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+  <key>CFBundleDocumentTypes</key><array><dict>
+    <key>CFBundleTypeName</key><string>Запись встречи</string>
+    <key>CFBundleTypeRole</key><string>Viewer</string>
+    <key>LSHandlerRank</key><string>Alternate</string>
+    <key>LSItemContentTypes</key><array><string>public.audio</string><string>public.movie</string></array>
+  </dict></array>
+</dict></plist>
