@@ -12,7 +12,7 @@ struct SearchView: View {
                 Image(systemName: "magnifyingglass").font(.system(size: 21)).foregroundStyle(Ink.accent)
                 TextField("Слово, фраза или тема встречи", text: $store.searchQuery)
                     .font(.system(size: 20)).textFieldStyle(.plain).focused($queryFocused)
-                    .accessibilityLabel("Поиск во всех встречах")
+                    .accessibilityLabel("Поиск по всей библиотеке")
                     .onSubmit { openSelected() }
                     .onKeyPress(.downArrow) { move(1); return .handled }
                     .onKeyPress(.upArrow) { move(-1); return .handled }
@@ -22,7 +22,7 @@ struct SearchView: View {
             }.padding(22)
             Picker("Область поиска", selection: $store.searchScope) {
                 Text("Всё").tag("all")
-                Text("Конспекты").tag("notes")
+                Text("Заметки").tag("notes")
                 Text("Транскрипт").tag("transcript")
                 Text("Карточки").tag("cards")
                 Text("Названия").tag("meetings")
@@ -116,9 +116,9 @@ struct SearchView: View {
         if let hit = store.searchHits.first(where: { $0.id == selectedID }) { store.openSearchHit(hit) }
     }
     private func label(_ kind: String) -> String {
-        ["title": "Название встречи", "overview": "Краткий конспект", "item": "Факт из конспекта", "transcript": "Исходная реплика", "card": "Карточка"][kind] ?? "Встреча"
+        ["title": "Название встречи", "overview": "Краткий конспект", "item": "Факт из конспекта", "transcript": "Исходная реплика", "card": "Карточка", "manual": "Моя заметка"][kind] ?? "Встреча"
     }
     private func icon(_ kind: String) -> String {
-        ["title": "rectangle.stack", "overview": "text.bubble", "item": "pin", "transcript": "quote.bubble", "card": "rectangle.on.rectangle.angled"][kind] ?? "doc.text"
+        ["title": "rectangle.stack", "overview": "text.bubble", "item": "pin", "transcript": "quote.bubble", "card": "rectangle.on.rectangle.angled", "manual": "square.and.pencil"][kind] ?? "doc.text"
     }
 }

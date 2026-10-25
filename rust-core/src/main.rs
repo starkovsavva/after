@@ -6,7 +6,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, ValueEnum)]
-enum Command { Prepare, Transcribe, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update }
+enum Command { Prepare, Transcribe, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview }
 
 #[derive(Parser)]
 #[command(version, about="После: ядро библиотеки и обработки встреч")]
@@ -17,6 +17,9 @@ struct Args {
     #[arg(long)] meeting: Option<PathBuf>,
     #[arg(long)] path: Option<PathBuf>,
     #[arg(long, default_value="")] card: String,
+    #[arg(long, default_value="")] note: String,
+    #[arg(long, default_value="auto")] separator: String,
+    #[arg(long)] title: Option<String>,
     #[arg(long, default_value_t=3)] rating: u8,
     #[arg(long, default_value_t=0)] speakers: u32,
     #[arg(long)] no_diarization: bool,
@@ -64,6 +67,20 @@ fn run(args: Args) -> Result<Value> {
         Command::Pull => { ai::pull(&args.root)?; Ok(json!({})) }
         Command::Search => search::search(&args.root, &args.query, &args.scope, args.limit),
         Command::List => Ok(json!({"meetings":storage::list_meetings(&args.root)?})),
+        Command::CardsImport => posle_core::cards::import(&args.root,args.path.as_deref().context("Выберите CSV/TSV файл")?,Some(&args.separator),args.title.as_deref()),
+        Command::CardsImportPreview => posle_core::cards::preview(args.path.as_deref().context("Выберите CSV/TSV файл")?,Some(&args.separator)),
+        Command::ExpandNotes => { ai::expand_note(&args.root, &args.note)?; Ok(json!({})) }
+        Command::NotesList => posle_core::request(&json!({"root":args.root,"command":"notes-list"})),
+        Command::NotesSearch => posle_core::request(&json!({"root":args.root,"command":"notes-search","query":args.query,"scope":args.scope})),
+        Command::NotesTasks => posle_core::request(&json!({"root":args.root,"command":"notes-tasks"})),
+        Command::NotesBrief => posle_core::request(&json!({"root":args.root,"command":"notes-brief","meetingID":args.note})),
+        Command::NoteSave | Command::NoteDelete | Command::ContextSave | Command::TemplateSave | Command::TemplateDelete | Command::NoteAttach | Command::AttachmentRemove | Command::AttachmentText | Command::AttachmentPath => {
+            let command=match args.command {
+                Command::NoteSave=>"note-save",Command::NoteDelete=>"note-delete",Command::ContextSave=>"context-save",Command::TemplateSave=>"template-save",Command::TemplateDelete=>"template-delete",Command::NoteAttach=>"note-attach",Command::AttachmentRemove=>"attachment-remove",Command::AttachmentText=>"attachment-text",_=>"attachment-path",
+            };
+            let mut input=String::new(); io::stdin().take(1_000_000).read_to_string(&mut input)?;
+            let mut request:Value=serde_json::from_str(&input)?; request["root"]=json!(args.root); request["command"]=json!(command); posle_core::request(&request)
+        }
         Command::Import | Command::Update => {
             let mut input = String::new(); io::stdin().take(1_000_000).read_to_string(&mut input)?;
             let mut request: Value = serde_json::from_str(&input)?;

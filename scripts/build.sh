@@ -52,6 +52,6 @@ install_name_tool -id @rpath/libposle_core.dylib "$APP/Contents/Frameworks/libpo
 codesign --force --sign - "$APP/Contents/Frameworks/libposle_core.dylib"
 codesign --force --sign - "$APP/Contents/MacOS/posle-engine"
 codesign --force --sign - --entitlements "$PROJECT/packaging/entitlements.plist" "$APP"
-codesign --verify --strict "$APP"
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$PROJECT/dist/Posle-Mac-AppleSilicon.zip"
+codesign --verify --deep --strict "$APP"
+bash "$PROJECT/scripts/package.sh"
 echo "Готово: $APP"

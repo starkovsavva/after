@@ -2,7 +2,7 @@
 set -euo pipefail
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/posle-check.XXXXXX")"
-swiftc -parse-as-library "$PROJECT/Sources/PosleCore/Models.swift" "$PROJECT/Tests/CoreChecks.swift" -o "$CHECK_DIR/core-checks"
+swiftc -parse-as-library "$PROJECT/Sources/PosleCore/"*.swift "$PROJECT/Tests/CoreChecks.swift" -o "$CHECK_DIR/core-checks"
 "$CHECK_DIR/core-checks"
 PYTHON="${POSLE_PYTHON:-$HOME/Library/Application Support/Posle/runtime/venv/bin/python}"
 "$PYTHON" -m unittest discover -s "$PROJECT/backend" -v

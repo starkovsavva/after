@@ -18,9 +18,13 @@ struct MainView: View {
                 if store.isRecording { recordingBar }
                 if let error = store.error { message(error, error: true) }
                 if let notice = store.notice { message(notice, error: false) }
-                if let meeting = store.selected { MeetingView(meeting: meeting) }
+                if store.librarySection == "inbox" { NotesInboxView(notes: store.notes) }
+                else if store.librarySection == "tasks" { NotesTasksView(notes: store.notes) }
+                else if store.librarySection == "contexts" { NotesContextsView(notes: store.notes) }
+                else if store.librarySection == "cards" { CardsLibraryView() }
+                else if let meeting = store.selected { MeetingView(meeting: meeting) }
                 else { welcome }
-                if store.transcript != nil { player }
+                if store.librarySection == "meetings", store.transcript != nil { player }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -28,7 +32,7 @@ struct MainView: View {
         .tint(Ink.accent)
         .onChange(of: store.selection) { _, _ in store.selectionDidChange() }
         .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
-            guard let provider = providers.first else { return false }
+            guard store.librarySection == "meetings", store.tab != "notes", let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 if let url { Task { @MainActor in store.importFile(url) } }
             }
@@ -64,22 +68,23 @@ struct MainView: View {
                 }
             }.padding(.top, 42).padding(.horizontal, 24).padding(.bottom, 30)
 
-            HStack {
-                Label("Все встречи", systemImage: "rectangle.stack").font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Text("\(store.meetings.count)").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
-            }.padding(12).background(Ink.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
-                .foregroundStyle(Ink.accent).padding(.horizontal, 14)
+            VStack(spacing: 3) {
+                libraryButton("meetings", "Все встречи", "rectangle.stack")
+                libraryButton("inbox", "Входящие", "tray")
+                libraryButton("tasks", "Мои задачи", "checklist")
+                libraryButton("contexts", "Проекты и люди", "person.2")
+                libraryButton("cards", "Карточки", "rectangle.on.rectangle.angled")
+            }.padding(.horizontal, 14)
 
             Button { store.openGlobalSearch() } label: {
                 HStack(spacing: 9) {
                     Image(systemName: "magnifyingglass")
-                    Text("Искать во всех встречах").lineLimit(2)
+                    Text("Поиск по всей библиотеке").lineLimit(2)
                     Spacer(minLength: 0)
                     Text("⌘K").font(.system(size: 11)).foregroundStyle(.secondary)
                 }.font(AppTypography.control).padding(11).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
             }.buttonStyle(.plain).padding(.horizontal, 16).padding(.top, 16)
-                .accessibilityLabel("Искать во всех встречах. Command K")
+                .accessibilityLabel("Поиск по всей библиотеке. Command K")
 
             HStack(spacing: 7) {
                 Image(systemName: "line.3.horizontal.decrease").foregroundStyle(.secondary)
@@ -91,7 +96,7 @@ struct MainView: View {
             ScrollView {
                 LazyVStack(spacing: 5) {
                     ForEach(store.filteredMeetings) { meeting in
-                        Button { store.selection = meeting.id } label: {
+                        Button { store.librarySection = "meetings"; store.selection = meeting.id; if meeting.libraryKind == "cards" { store.tab = "cards" } } label: {
                             VStack(alignment: .leading, spacing: 7) {
                                 HStack(alignment: .top, spacing: 8) {
                                     Image(systemName: meeting.status == "ready" ? "text.badge.checkmark" : "waveform")
@@ -136,10 +141,20 @@ struct MainView: View {
         }.background(Color.primary.opacity(0.018))
     }
 
+    private func libraryButton(_ id: String, _ title: String, _ icon: String) -> some View {
+        Button { store.librarySection = id; store.pause() } label: {
+            HStack { Label(title, systemImage: icon); Spacer(); if id == "meetings" { Text("\(store.meetings.count)").foregroundStyle(.secondary) } }
+                .font(.system(size: 13, weight: store.librarySection == id ? .semibold : .regular)).padding(10)
+                .background(store.librarySection == id ? Ink.accent.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                .foregroundStyle(store.librarySection == id ? Ink.accent : Color.primary)
+        }.buttonStyle(.plain).accessibilityAddTraits(store.librarySection == id ? .isSelected : [])
+    }
+
     private var topbar: some View {
         HStack(spacing: 12) {
             Label("Ваша библиотека", systemImage: "square.stack.3d.up").font(AppTypography.control).foregroundStyle(.secondary)
             Spacer()
+            Button { store.quickCaptureAction?() } label: { Label("Заметка", systemImage: "square.and.pencil") }.buttonStyle(.bordered)
             Button { store.chooseFile() } label: { Label("Добавить файл", systemImage: "plus") }
                 .disabled(store.busy || store.isRecording).buttonStyle(.bordered)
             Button { store.showingRecord = true } label: { Label("Записать встречу", systemImage: "record.circle") }
@@ -172,6 +187,7 @@ struct MainView: View {
             Text(store.stoppingRecording ? "Сохраняю запись…" : "Идёт запись").fontWeight(.semibold)
             if !store.stoppingRecording, let date = store.recordingDate { Text(date, style: .timer).monospacedDigit() }
             Spacer()
+            Button { store.bookmarkAction?() } label: { Label("Важно", systemImage: "bookmark") }.buttonStyle(.bordered).disabled(store.stoppingRecording)
             Button("Остановить и сохранить") { Task { await store.stopRecording() } }.buttonStyle(.borderedProminent).tint(Ink.recordFill)
                 .disabled(store.busy || store.stoppingRecording)
         }.font(AppTypography.control).padding(12).background(Color.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
@@ -266,7 +282,7 @@ struct MeetingView: View {
                     Spacer(minLength: 10)
                     Menu {
                         Button("Переименовать") { newTitle = meeting.title; rename = true }.disabled(store.busy || store.isRecording)
-                        Button("Распознать заново") { Task { await store.processMeeting(meeting.id) } }.disabled(store.busy || !store.runtimeReady || store.isRecording)
+                        Button("Распознать заново") { Task { await store.processMeeting(meeting.id) } }.disabled(store.busy || !store.runtimeReady || store.isRecording || meeting.libraryKind == "cards")
                     } label: { Image(systemName: "ellipsis").frame(width: 25, height: 25) }.menuStyle(.borderlessButton).frame(width: 32)
                         .accessibilityLabel("Действия со встречей")
                 }
@@ -279,12 +295,16 @@ struct MeetingView: View {
                 }.font(AppTypography.control).foregroundStyle(.secondary)
             }.padding(.horizontal, 32).padding(.top, 12).padding(.bottom, 18)
             HStack(spacing: 25) {
-                tab("summary", "Конспект", nil)
-                tab("transcript", "Транскрипт", store.transcript?.segments.count)
+                tab("notes", "Мои заметки", nil)
+                if meeting.libraryKind != "cards" {
+                    tab("summary", "Конспект", nil)
+                    tab("transcript", "Транскрипт", store.transcript?.segments.count)
+                }
                 tab("cards", "Карточки", store.summary?.cards.count)
                 Spacer()
             }.padding(.horizontal, 32).overlay(alignment: .bottom) { Rectangle().fill(Ink.line).frame(height: 1) }
-            if store.transcript == nil { unprocessed }
+            if store.tab == "notes" { NotesWorkspaceView(notes: store.notes, meeting: meeting) }
+            else if store.transcript == nil && store.tab != "cards" { unprocessed }
             else if store.tab == "transcript" { TranscriptView() }
             else if store.tab == "cards" { CardsView().id(meeting.id) }
             else { SummaryView() }

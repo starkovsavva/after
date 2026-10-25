@@ -13,6 +13,7 @@ public struct Meeting: Codable, Identifiable, Hashable {
     public var recordingTracks: Bool = false
     public var hasVideo: Bool = false
     public var error: String?
+    public var libraryKind: String? = nil
 
     public init(title: String, source: String, status: String = "imported", focus: String = "") {
         id = UUID().uuidString.lowercased()
@@ -130,6 +131,8 @@ public struct SearchHit: Decodable, Identifiable, Hashable {
     public var cardID: String?
     public var start: Double?
     public var sourceFingerprint: String
+    public var noteID: String? = nil
+    public var noteRevision: Int? = nil
 }
 
 public struct SearchResponse: Decodable {
@@ -160,6 +163,15 @@ public struct ReviewState: Codable {
 public struct AppSettings: Codable {
     public static let qualityLocalModel = "qwen3.5:9b-q4_K_M"
     public static let fastLocalModel = "qwen3.5:4b-q4_K_M"
+    public var startSection = "meetings"
+    public var recordSystemAudio = true
+    public var recordVideo = false
+    public var quickCaptureEnabled = true
+    public var bookmarkShortcutEnabled = true
+    public var quickCaptureShortcut = "controlOptionN"
+    public var notesAutoTimestamp = true
+    public var notesSaveToActiveMeeting = true
+    public var defaultTemplateID = ""
     public var mode = "local"
     public var localModel = AppSettings.qualityLocalModel
     public var localProvider = "managed"
@@ -181,6 +193,7 @@ public struct AppSettings: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case startSection, recordSystemAudio, recordVideo, quickCaptureEnabled, bookmarkShortcutEnabled, quickCaptureShortcut, notesAutoTimestamp, notesSaveToActiveMeeting, defaultTemplateID
         case mode, localModel, localProvider, localEndpoint, asrModelPath, asrModelFormat
         case cloudModel, language, diarization, speakerCount, autoSummary, focus
     }
@@ -189,6 +202,15 @@ public struct AppSettings: Codable {
     public init(from decoder: Decoder) throws {
         self.init()
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        startSection = try values.decodeIfPresent(String.self, forKey: .startSection) ?? startSection
+        recordSystemAudio = try values.decodeIfPresent(Bool.self, forKey: .recordSystemAudio) ?? recordSystemAudio
+        recordVideo = try values.decodeIfPresent(Bool.self, forKey: .recordVideo) ?? recordVideo
+        quickCaptureEnabled = try values.decodeIfPresent(Bool.self, forKey: .quickCaptureEnabled) ?? quickCaptureEnabled
+        bookmarkShortcutEnabled = try values.decodeIfPresent(Bool.self, forKey: .bookmarkShortcutEnabled) ?? bookmarkShortcutEnabled
+        quickCaptureShortcut = try values.decodeIfPresent(String.self, forKey: .quickCaptureShortcut) ?? quickCaptureShortcut
+        notesAutoTimestamp = try values.decodeIfPresent(Bool.self, forKey: .notesAutoTimestamp) ?? notesAutoTimestamp
+        notesSaveToActiveMeeting = try values.decodeIfPresent(Bool.self, forKey: .notesSaveToActiveMeeting) ?? notesSaveToActiveMeeting
+        defaultTemplateID = try values.decodeIfPresent(String.self, forKey: .defaultTemplateID) ?? defaultTemplateID
         mode = try values.decodeIfPresent(String.self, forKey: .mode) ?? mode
         localModel = try values.decodeIfPresent(String.self, forKey: .localModel) ?? localModel
         localProvider = try values.decodeIfPresent(String.self, forKey: .localProvider) ?? localProvider

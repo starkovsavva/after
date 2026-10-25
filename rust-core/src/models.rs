@@ -116,8 +116,8 @@ fn classify(path: &Path, source: &str) -> Model {
             && canonical.to_string_lossy().to_lowercase().contains("parakeet");
         model.name = format!("Parakeet ONNX · {}", model.name);
         model.reason = if model.compatible {
-            "Формат Meetily / onnx-asr. Веса используются без копирования; граф проверяется при запуске."
-        } else { "Набор Meetily ONNX неполный: проверьте encoder, decoder_joint, nemo128, vocab.txt и внешние .data-файлы." }.into();
+            "Формат ONNX Parakeet. Веса используются без копирования; граф проверяется при запуске."
+        } else { "Набор ONNX Parakeet неполный: проверьте encoder, decoder_joint, nemo128, vocab.txt и внешние .data-файлы." }.into();
     } else if !has_mlx && onnx("encoder") && onnx("decoder") && onnx("joiner") {
         model.format = "onnx".into();
         model.compatible = [("encoder", 100_000_000), ("decoder", 1_000_000), ("joiner", 100_000)].into_iter()
@@ -165,9 +165,9 @@ fn default_roots(root: &Path, home: &Path) -> Vec<(PathBuf, &'static str)> {
     result.extend([
         (home.join(".cache/huggingface/hub"), "Hugging Face"),
         (home.join("Library/Caches/huggingface/hub"), "Hugging Face"),
-        (home.join("Library/Application Support/Meetily/models"), "Meetily"),
-        (home.join("Library/Application Support/meetily/models"), "Meetily"),
-        (home.join("Library/Application Support/com.meetily.ai/models"), "Meetily"),
+        (home.join("Library/Application Support/Meetily/models"), "Локальная папка моделей"),
+        (home.join("Library/Application Support/meetily/models"), "Локальная папка моделей"),
+        (home.join("Library/Application Support/com.meetily.ai/models"), "Локальная папка моделей"),
         (home.join(".lmstudio/models"), "LM Studio"),
         (home.join(".cache/lm-studio/models"), "LM Studio"),
     ]);
@@ -232,7 +232,7 @@ pub fn discover_gguf(_root: &Path) -> Result<Value> {
         (home.join(".cache/lm-studio/models"), "LM Studio"),
     ];
     for app in ["Meetily", "meetily", "com.meetily.ai"] {
-        roots.push((home.join("Library/Application Support").join(app).join("models/summary"), "Meetily"));
+        roots.push((home.join("Library/Application Support").join(app).join("models/summary"), "Локальная папка моделей"));
     }
     Ok(scan_gguf(roots))
 }

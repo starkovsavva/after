@@ -14,7 +14,7 @@ use std::path::Path;
 use std::time::Duration;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
-const INDEX_VERSION: i64 = 2;
+const INDEX_VERSION: i64 = 3;
 const MAX_META: u64 = 1_048_576;
 const MAX_SUMMARY: u64 = 8 * 1_048_576;
 const MAX_TRANSCRIPT: u64 = 64 * 1_048_576;
@@ -113,6 +113,19 @@ impl Lexicon {
         Ok((expression.join(" AND "), terms.into_iter().collect()))
     }
 }
+/// Shared lexical matching for user notes. No network/model/index duplication.
+pub(crate) struct QueryMatcher { lexicon: Lexicon, terms: Vec<String> }
+impl QueryMatcher {
+    pub(crate) fn new(query: &str) -> Result<Self> {
+        let lexicon=Lexicon::new(); let (_,terms)=lexicon.query(query)?;
+        Ok(Self { lexicon,terms })
+    }
+    pub(crate) fn matches(&self,text:&str) -> bool {
+        if self.terms.is_empty() { return true; }
+        let tokens=self.lexicon.tokens(text);
+        self.terms.iter().all(|term| tokens.iter().any(|word|word.starts_with(term) || self.lexicon.stem(word).starts_with(term)))
+    }
+}
 #[derive(Debug)]
 struct Document {
     key: String, kind: &'static str, text: String, search_text: Option<String>, refs: Vec<u64>, start: Option<f64>,
@@ -176,7 +189,9 @@ fn documents(meta: &Value, transcript: Option<&Value>, summary: Option<&Value>) 
             for card in cards.iter().take(10_000) {
                 let id = text(card, "id");
                 if id.is_empty() || id.len() > 256 || !used_ids.insert(id.clone()) { continue; }
-                let Some(refs) = valid_refs(&card["segmentIDs"], &segments) else { continue };
+                let refs = if meta["libraryKind"]=="cards" && meta["source"]=="cards.tsv" && card["segmentIDs"].as_array().is_some_and(Vec::is_empty) {
+                    vec![] // A text-imported deck has no meeting source to cite.
+                } else { let Some(refs)=valid_refs(&card["segmentIDs"],&segments) else { continue }; refs };
                 let content = ["front", "back", "context"].iter().map(|key| text(card,key)).collect::<Vec<_>>().join("\n");
                 let Some(content) = bounded(content) else { continue };
                 let start = refs.iter().filter_map(|id| segments.get(id)).copied().min_by(f64::total_cmp);
@@ -290,6 +305,11 @@ fn excerpt(text: &str, terms: &[String], lexicon: &Lexicon) -> String {
     format!("{}{}{}", if start>0 {"… "} else {""}, chars[start..end].iter().collect::<String>(), if end<chars.len() {" …"} else {""})
 }
 
+pub(crate) fn query_excerpt(text:&str,query:&str) -> Result<String> {
+    let lexicon=Lexicon::new(); let (_,terms)=lexicon.query(query)?;
+    Ok(excerpt(text,&terms,&lexicon))
+}
+
 /// Search is blocking; callers should run this off their UI thread. The private
 /// file lock serializes index synchronization across FFI and worker processes.
 pub fn search(root: &Path, query: &str, scope: &str, limit: usize) -> Result<Value> {
@@ -311,16 +331,16 @@ pub fn search(root: &Path, query: &str, scope: &str, limit: usize) -> Result<Val
     }
     let mut connection = Connection::open(&database).context("Не удалось открыть локальный индекс поиска")?;
     initialize(&connection)?;
-    let warnings = sync(&mut connection,root,&lexicon)?;
+    let mut warnings = sync(&mut connection,root,&lexicon)?;
     let filter = match scope {
         "notes" => "d.kind IN ('overview','item')", "transcript" => "d.kind='transcript'",
         "cards" => "d.kind='card'", "meetings" => "d.kind='title'", _=>"1=1",
     };
     let count_sql = format!("SELECT COUNT(*) FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter}");
-    let total: i64 = connection.query_row(&count_sql, [&expression], |row|row.get(0))?;
+    let mut total: i64 = connection.query_row(&count_sql, [&expression], |row|row.get(0))?;
     let sql = format!("SELECT d.key,d.meeting_id,d.title,d.created_at,d.kind,d.text,d.refs,d.start,d.item_index,d.card_id,d.fingerprint,d.excerpt_text FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter} ORDER BY bm25(documents_fts,1.0,0.8) * CASE d.kind WHEN 'title' THEN 4.0 WHEN 'overview' THEN 2.8 WHEN 'item' THEN 2.4 WHEN 'card' THEN 1.2 ELSE 1.0 END ASC,d.created_at DESC,d.meeting_id ASC,d.key ASC LIMIT ?2");
     let limit = limit.clamp(1,100);
-    let hits = connection.prepare(&sql)?.query_map(params![expression,limit as i64],|row| {
+    let mut hits = connection.prepare(&sql)?.query_map(params![expression,limit as i64],|row| {
         let content: String = row.get(5)?;
         let refs: String = row.get(6)?;
         Ok(json!({"id":row.get::<_,String>(0)?,"meetingID":row.get::<_,String>(1)?,"meetingTitle":row.get::<_,String>(2)?,
@@ -328,6 +348,16 @@ pub fn search(root: &Path, query: &str, scope: &str, limit: usize) -> Result<Val
             "segmentIDs":serde_json::from_str::<Vec<u64>>(&refs).unwrap_or_default(),"start":row.get::<_,Option<f64>>(7)?,
             "itemIndex":row.get::<_,Option<i64>>(8)?,"cardID":row.get::<_,Option<String>>(9)?,"sourceFingerprint":row.get::<_,String>(10)?}))
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    if ["all","notes"].contains(&scope) {
+        let manual = match crate::notes::search_hits(root,query) {
+            Ok(hits)=>hits,
+            Err(_)=>{ warnings.push("Ручные заметки недоступны для поиска. Проверьте библиотеку заметок.".into()); vec![] }
+        };
+        total += manual.len() as i64;
+        // Keep BM25 order within meeting results; recent manual captures precede
+        // them, giving source notes a predictable place without inventing scores.
+        let mut combined=manual; combined.extend(hits); combined.truncate(limit); hits=combined;
+    }
     Ok(json!({"total":total,"truncated":total as usize>hits.len(),"hits":hits,"warnings":warnings}))
 }
 

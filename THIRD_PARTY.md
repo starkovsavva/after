@@ -6,7 +6,7 @@ Each component retains its original license and notices in the installed runtime
 - [Parakeet MLX](https://github.com/senstella/parakeet-mlx), Apache-2.0.
 - [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3): see the model card and license.
 - [MLX model conversion](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3): see the model card.
-- [onnx-asr](https://github.com/istupakov/onnx-asr), MIT. Optional adapter for existing Meetily / NeMo ONNX Parakeet weights.
+- [onnx-asr](https://github.com/istupakov/onnx-asr), MIT. Optional adapter for existing NeMo ONNX Parakeet weights.
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime), MIT. CPU inference for existing ONNX models.
 - [Sherpa ONNX](https://github.com/k2-fsa/sherpa-onnx), Apache-2.0. Segmentation and speaker embeddings: see the upstream release model notices.
 - [Ollama](https://github.com/ollama/ollama), MIT. Optional local runtime.

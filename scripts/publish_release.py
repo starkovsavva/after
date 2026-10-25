@@ -14,7 +14,8 @@ import zipfile
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent
-ASSETS = ("Posle-Mac-AppleSilicon.zip", "Posle-Source.zip", "SHA256SUMS")
+PACKAGED_ASSETS = ("Posle-Mac-AppleSilicon.pkg", "Posle-Mac-AppleSilicon.zip", "Posle-Source.zip")
+ASSETS = (*PACKAGED_ASSETS, "SHA256SUMS")
 
 
 def run(arguments, capture=False):
@@ -45,15 +46,15 @@ def main():
         if plistlib.load(stream)["CFBundleShortVersionString"] != version:
             raise RuntimeError("The app bundle is from another version; rebuild it")
     run(["codesign", "--verify", "--deep", "--strict", str(app)])
-    # Always package the verified bundle; a previous valid ZIP may be stale.
-    run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app),
-         str(PROJECT / "dist/Posle-Mac-AppleSilicon.zip")])
+    # Always regenerate both installer and ZIP from the verified bundle; old
+    # valid artifacts may be stale, including when --skip-build was requested.
+    run(["bash", "scripts/package.sh"])
     run(["git", "archive", "--format=zip", "--prefix=posle/", "--output=dist/Posle-Source.zip", revision])
-    for name in ASSETS[:2]:
+    for name in PACKAGED_ASSETS[1:]:
         with zipfile.ZipFile(PROJECT / "dist" / name) as archive:
             if archive.testzip() is not None:
                 raise RuntimeError("Damaged archive: " + name)
-    sums = "".join(hashlib.sha256((PROJECT / "dist" / name).read_bytes()).hexdigest() + "  " + name + "\n" for name in ASSETS[:2])
+    sums = "".join(hashlib.sha256((PROJECT / "dist" / name).read_bytes()).hexdigest() + "  " + name + "\n" for name in PACKAGED_ASSETS)
     (PROJECT / "dist/SHA256SUMS").write_text(sums)
     if args.check_only:
         print(json.dumps({"tag": tag, "revision": revision, "assets": ASSETS, "ready": True}))

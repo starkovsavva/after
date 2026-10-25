@@ -376,7 +376,7 @@ class ASRAdapter:
                 import onnx_asr
                 import onnxruntime
             except ImportError as exc:
-                raise RuntimeError("Для модели Meetily обновите среду кнопкой «Установить модели» в настройках. Веса Parakeet повторно скачиваться не будут.") from exc
+                raise RuntimeError("Для модели ONNX обновите среду кнопкой «Подготовить распознавание» в настройках. Веса Parakeet повторно скачиваться не будут.") from exc
             # Meetily omits onnx-asr's tiny config.json. Supply a private wrapper
             # with symlinks to original weights; do not edit or copy their GB data.
             wrapper_parent = root / "cache/model-config"

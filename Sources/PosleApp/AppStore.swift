@@ -8,6 +8,11 @@ import UniformTypeIdentifiers
 @MainActor
 final class AppStore: ObservableObject {
     @Published var meetings: [Meeting] = []
+    @Published var librarySection = "meetings"
+    let notes: NotesStore
+    var quickCaptureAction: (() -> Void)?
+    var bookmarkAction: (() -> Void)?
+    var captureMeetingID: String? { isRecording ? recordingID : nil }
     @Published var selection: String?
     @Published var transcript: Transcript?
     @Published var summary: Summary?
@@ -101,15 +106,19 @@ final class AppStore: ObservableObject {
 
     init(preview: Bool = false) {
         self.preview = preview
-        if let path = ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] { root = URL(fileURLWithPath: path) }
+        let dataRoot: URL
+        if let path = ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] { dataRoot = URL(fileURLWithPath: path) }
         else {
-            root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            dataRoot = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent(preview ? "PoslePreview" : "Posle")
         }
+        root = dataRoot
+        notes = NotesStore(root: dataRoot)
         do {
             try FileManager.default.createDirectory(at: root.appendingPathComponent("meetings"), withIntermediateDirectories: true,
                                                    attributes: [.posixPermissions: 0o700])
             if let saved: AppSettings = read(root.appendingPathComponent("settings.json")) { settings = saved }
+            librarySection = ["meetings", "inbox", "tasks", "cards"].contains(settings.startSection) ? settings.startSection : "meetings"
             runtimeReady = FileManager.default.isExecutableFile(atPath: python.path)
                 && FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime/ready-v2").path)
             reloadLibrary()
@@ -134,7 +143,7 @@ final class AppStore: ObservableObject {
         try RustBridge.shared.get().write(root: root, url: url, value: value)
     }
     func saveSettings() {
-        do { try write(settings, root.appendingPathComponent("settings.json")) }
+        do { try write(settings, root.appendingPathComponent("settings.json")); NotificationCenter.default.post(name: Notification.Name("PosleShortcutsChanged"), object: nil) }
         catch { self.error = error.localizedDescription }
     }
     func reloadLibrary() {
@@ -156,6 +165,7 @@ final class AppStore: ObservableObject {
     }
     func loadSelection() {
         loadedSelectionID = selection
+        if selected?.libraryKind == "cards" { tab = "cards" }
         navigationTarget = nil
         pause()
         if let observer = playerObserver { player?.removeTimeObserver(observer) }; playerObserver = nil
@@ -240,7 +250,7 @@ final class AppStore: ObservableObject {
                     return try RustBridge.shared.get().request(root: root, command: "import", arguments: ["source": source.path, "focus": focus])
                 }.value
                 let meeting = try JSONDecoder().decode(Meeting.self, from: data)
-                busy = false; reloadLibrary(); selection = meeting.id; tab = "transcript"; loadSelection()
+                busy = false; reloadLibrary(); librarySection = "meetings"; selection = meeting.id; tab = "transcript"; loadSelection(); applyDefaultNoteTemplate(to: meeting.id)
                 if runtimeReady { await processMeeting(meeting.id) }
                 else { notice = "Запись сохранена. Установите модели один раз, чтобы начать распознавание."; showingSettings = true }
             } catch { busy = false; self.error = error.localizedDescription }
@@ -257,7 +267,7 @@ final class AppStore: ObservableObject {
             throw AppError.message("Выберите установленную модель в настройках. Для Ollama и LM Studio скачивание выполняется в самом приложении.")
         }
         try write(settings, root.appendingPathComponent("settings.json"))
-        if ["check", "pull", "discover-local", "import-gguf"].contains(command) || (settings.mode == "local" && ["summarize", "example"].contains(command)) {
+        if ["check", "pull", "discover-local", "import-gguf"].contains(command) || (settings.mode == "local" && ["summarize", "example", "expand-notes"].contains(command)) {
             try await localService.ensure(root: root, settings: settings, cancelled: { self.cancellationRequested })
         }
         guard !cancellationRequested else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
@@ -267,7 +277,7 @@ final class AppStore: ObservableObject {
         // Secrets live only in Keychain and the short-lived child environment, never argv/files.
         var environment = ["PYTHONUNBUFFERED": "1", "HF_HOME": root.appendingPathComponent("cache/huggingface").path,
                            "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL]
-        if settings.mode == "cloud" && ["summarize", "example"].contains(command) { environment["POSLE_API_KEY"] = Keychain.read() }
+        if settings.mode == "cloud" && ["summarize", "example", "expand-notes"].contains(command) { environment["POSLE_API_KEY"] = Keychain.read() }
         let result = try await runner.run(rustEngine, arguments: arguments, environment: environment) { [weak self] event in
             Task { @MainActor in
                 if let message = event.message { self?.progressText = message }
@@ -480,7 +490,7 @@ final class AppStore: ObservableObject {
         panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [UTType(filenameExtension: "gguf") ?? .data]
         panel.prompt = "Подключить модель"
-        panel.message = "Выберите уже скачанный файл модели GGUF, например Qwen из Meetily."
+        panel.message = "Выберите уже скачанный файл модели в формате GGUF, например Qwen."
         if panel.runModal() == .OK, let url = panel.url { importGGUFModel(url) }
     }
     func importGGUFModel(_ url: URL) {
@@ -580,7 +590,63 @@ final class AppStore: ObservableObject {
         navigationTarget = NavigationTarget(meetingID: meetingID, kind: "transcript", segmentID: segmentID)
         seek(segment.start, play: play)
     }
+    func expandCapturedNote(_ note: CapturedNote) async {
+        guard !busy && !isRecording else { notes.error = "Дождитесь завершения текущей обработки или записи."; return }
+        guard let id = note.meetingID else { notes.error = "Прикрепите заметку к встрече с транскриптом."; return }
+        guard let _: Transcript = read(meetingDirectory(id).appendingPathComponent("transcript.json")) else {
+            notes.error = "Сначала распознайте запись этой встречи."; return
+        }
+        beginJob(id: id); progressText = "Дополняю ваши пометки по записи…"
+        defer { notes.reload(); endJob() }
+        do {
+            try await worker("expand-notes", extra: ["--note", note.id])
+            notes.notice = "Дополнение сохранено отдельно от вашей заметки"
+        } catch { notes.error = error.localizedDescription }
+    }
+    func openMeeting(_ id: String, tab: String = "summary", segmentID: Int? = nil, timestamp: Double? = nil) {
+        guard let meeting: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")) else {
+            error = "Встреча больше недоступна."; return
+        }
+        if let i = meetings.firstIndex(where: { $0.id == id }) { meetings[i] = meeting } else { meetings.insert(meeting, at: 0) }
+        librarySection = "meetings"; libraryFilter = ""; selection = id; loadSelection(); self.tab = tab
+        if let segmentID { openSegment(segmentID) }
+        else if let timestamp {
+            if let segment = transcript?.segments.last(where: { $0.start <= timestamp }) ?? transcript?.segments.first {
+                openSegment(segment.id)
+            }
+            seek(timestamp)
+        }
+    }
+    func applyDefaultNoteTemplate(to id: String) {
+        guard !settings.defaultTemplateID.isEmpty,
+              notes.context(for: id).revision == 0,
+              let template = notes.templates.first(where: { $0.id == settings.defaultTemplateID }) else { return }
+        guard notes.saveContext(MeetingContext(meetingID: id, templateID: template.id)) else { return }
+        if !template.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { _ = notes.capture(text: template.body, meetingID: id) }
+        if !template.focus.isEmpty { updateMeeting(id) { $0.focus = template.focus } }
+    }
+    func exportManualNotes() {
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.plainText]; panel.nameFieldStringValue = "Мои заметки — После.md"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        var text = "# Мои заметки\n\n"
+        for note in notes.notes.reversed() {
+            let title = note.meetingID.flatMap { id in meetings.first { $0.id == id }?.title } ?? "Входящие"
+            text += "## \(title)\n\n\(note.text)\n\n"
+            if let timestamp = note.timestamp { text += "Таймкод: \(Exporter.timestamp(timestamp))\n\n" }
+            if !note.sourceURL.isEmpty { text += "Источник: \(note.sourceURL)\n\n" }
+            for attachment in note.attachments {
+                text += "Вложение: \(attachment.name)\n\n"
+                if !attachment.extractedText.isEmpty { text += attachment.extractedText + "\n\n" }
+            }
+            if let expansion = note.expansion {
+                text += "### Дополнение ИИ\n\n" + expansion.statements.map { "- " + $0.text }.joined(separator: "\n") + "\n\n"
+            }
+        }
+        do { try text.write(to: url, atomically: true, encoding: .utf8) }
+        catch { self.error = error.localizedDescription }
+    }
     func openGlobalSearch() { showingSearch = true }
+
     func cancelSearch() {
         searchTask?.cancel(); searchTask = nil; searchGeneration = UUID(); searching = false; searchOpeningID = nil
     }
@@ -616,8 +682,13 @@ final class AppStore: ObservableObject {
             do {
                 let valid = try await Task.detached(priority: .userInitiated) {
                     struct Validation: Decodable { var valid: Bool }
-                    let data = try RustBridge.shared.get().request(root: root, command: "search-validate",
-                        arguments: ["meetingID": hit.meetingID, "sourceFingerprint": hit.sourceFingerprint])
+                    let data: Data
+                    if let noteID = hit.noteID, let revision = hit.noteRevision {
+                        data = try RustBridge.shared.get().request(root: root, command: "note-search-validate", arguments: ["noteID": noteID, "revision": revision])
+                    } else {
+                        data = try RustBridge.shared.get().request(root: root, command: "search-validate",
+                            arguments: ["meetingID": hit.meetingID, "sourceFingerprint": hit.sourceFingerprint])
+                    }
                     return try JSONDecoder().decode(Validation.self, from: data).valid
                 }.value
                 guard let self, self.showingSearch, self.searchGeneration == generation else { return }
@@ -635,6 +706,16 @@ final class AppStore: ObservableObject {
         }
     }
     private func navigateToSearchHit(_ hit: SearchHit) {
+        if let noteID = hit.noteID {
+            notes.reload()
+            guard let note = notes.workspace.notes.first(where: { $0.id == noteID && $0.revision == hit.noteRevision }) else {
+                updateSearch(immediate: true); searchError = "Заметка изменилась. Выберите актуальный результат."; return
+            }
+            if let meetingID = note.meetingID, let _: Meeting = read(meetingDirectory(meetingID).appendingPathComponent("meta.json")) { openMeeting(meetingID, tab: "notes") }
+            else { librarySection = "inbox"; pause() }
+            notes.selectedNoteID = note.id; notes.highlightedNoteID = note.id
+            showingSearch = false; cancelSearch(); return
+        }
         let directory = meetingDirectory(hit.meetingID)
         guard let freshMeeting: Meeting = read(directory.appendingPathComponent("meta.json")) else {
             updateSearch(immediate: true); searchError = "Встреча больше недоступна. Результаты обновляются."; return
@@ -664,7 +745,7 @@ final class AppStore: ObservableObject {
         if let index = meetings.firstIndex(where: { $0.id == freshMeeting.id }) { meetings[index] = freshMeeting }
         else { meetings.insert(freshMeeting, at: 0) }
         libraryFilter = ""
-        selection = hit.meetingID; loadSelection()
+        librarySection = "meetings"; selection = hit.meetingID; loadSelection()
         tab = hit.kind == "transcript" ? "transcript" : hit.kind == "card" ? "cards" : "summary"
         navigationTarget = NavigationTarget(meetingID: hit.meetingID, kind: hit.kind, segmentID: hit.segmentIDs.first,
                                             itemIndex: hit.itemIndex, cardID: hit.cardID)
@@ -725,7 +806,7 @@ final class AppStore: ObservableObject {
             isRecording = true; recordingID = meeting.id; recordingDate = Date()
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
                                        IOPMAssertionLevel(kIOPMAssertionLevelOn), "После записывает встречу" as CFString, &assertions)
-            busy = false; reloadLibrary(); selection = meeting.id; loadSelection(); showingRecord = false
+            busy = false; reloadLibrary(); librarySection = "meetings"; selection = meeting.id; tab = "notes"; loadSelection(); applyDefaultNoteTemplate(to: meeting.id); showingRecord = false
         } catch {
             try? await recorder.stop()
             busy = false; self.error = error.localizedDescription

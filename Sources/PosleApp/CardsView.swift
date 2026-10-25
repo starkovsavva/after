@@ -156,9 +156,9 @@ struct CardsView: View {
                         .accessibilityLabel("Ответ: \(card.back)")
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Text("Цитата из транскрипта").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text(card.segmentIDs.isEmpty ? "Контекст карточки" : "Цитата из транскрипта").font(.system(size: 11)).foregroundStyle(.secondary)
                             Spacer()
-                            EvidenceButton(ids: card.segmentIDs).accessibilityLabel("Открыть цитату в транскрипте")
+                            if !card.segmentIDs.isEmpty { EvidenceButton(ids: card.segmentIDs).accessibilityLabel("Открыть цитату в транскрипте") }
                         }
                         Text("«\(card.context)»").font(.system(size: 12)).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled)
                     }.padding(14).background(Ink.soft, in: RoundedRectangle(cornerRadius: 9))

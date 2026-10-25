@@ -10,7 +10,7 @@ struct PosleApp: App {
         WindowGroup("После") {
             MainView().environmentObject(store)
                 .frame(minWidth: 1040, minHeight: 700)
-                .onAppear { delegate.store = store }
+                .onAppear { delegate.connect(store) }
                 .onOpenURL { store.importFile($0) }
         }
         .defaultSize(width: 1260, height: 820)
@@ -21,7 +21,9 @@ struct PosleApp: App {
                 Button("Записать встречу…") { store.showingRecord = true }.keyboardShortcut("n")
             }
             CommandGroup(after: .newItem) {
-                Button("Искать во всех встречах…") { store.openGlobalSearch() }.keyboardShortcut("k")
+                Button("Быстрая заметка…") { store.quickCaptureAction?() }.keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("Отметить важный момент") { store.bookmarkAction?() }
+                Button("Поиск по библиотеке…") { store.openGlobalSearch() }.keyboardShortcut("k")
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Настройки…") { store.showingSettings = true }.keyboardShortcut(",")
@@ -33,11 +35,29 @@ struct PosleApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: AppStore?
-    func applicationWillTerminate(_ notification: Notification) { store?.localService.stop() }
+    private var capture: QuickCaptureController?
+    func connect(_ store: AppStore) {
+        self.store = store
+        let args = ProcessInfo.processInfo.arguments
+        guard !args.contains("--preview") && !args.contains("--snapshot") && !args.contains("--check-navigation") else { return }
+        if capture == nil {
+            let controller = QuickCaptureController(store: store); capture = controller; controller.start()
+            store.quickCaptureAction = { [weak controller] in controller?.show() }
+            store.bookmarkAction = { [weak controller] in controller?.markImportant() }
+        }
+    }
+    func applicationWillTerminate(_ notification: Notification) { capture?.stop(); store?.localService.stop() }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--check-notes") {
+            Task {
+                do { try await NotesNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native notes check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-navigation") {
             Task {
                 do { try await NativeNavigationChecks.run(); NSApp.terminate(nil) }
@@ -59,6 +79,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let tabIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "--preview-tab"),
                ProcessInfo.processInfo.arguments.count > tabIndex + 1 { previewStore.tab = ProcessInfo.processInfo.arguments[tabIndex + 1] }
             let screen = option("--preview-screen") ?? "meeting"
+            if ["inbox", "tasks", "contexts", "cards-library"].contains(screen) {
+                previewStore.librarySection = screen == "cards-library" ? "cards" : screen
+            }
+            if screen == "notes" { previewStore.librarySection = "meetings"; previewStore.tab = "notes" }
             if screen == "welcome" { previewStore.selection = nil; previewStore.meetings = []; previewStore.loadSelection() }
             if screen == "processing" {
                 previewStore.busy = true; previewStore.canCancelJob = true; previewStore.processingID = previewStore.selection
@@ -77,7 +101,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if screen == "error" { previewStore.error = "Модель не найдена. Загрузите её в настройках и повторите создание конспекта. Транскрипт сохранён." }
             let content: AnyView
             switch screen {
-            case "settings": content = AnyView(SettingsView().environmentObject(previewStore))
+            case "settings": content = AnyView(SettingsView(section: option("--settings-section") ?? "general").environmentObject(previewStore))
+            case "note-editor":
+                if let note = previewStore.notes.notes.first(where: { $0.meetingID == previewStore.selection }) { content = AnyView(NoteEditorView(notes: previewStore.notes, note: note).environmentObject(previewStore)) }
+                else { content = AnyView(NotesInboxView(notes: previewStore.notes).environmentObject(previewStore)) }
+            case "quick-note": content = AnyView(QuickCaptureView(notes: previewStore.notes, initialMeetingID: previewStore.selection, initialTimestamp: 65, close: {}).environmentObject(previewStore))
             case "record": content = AnyView(RecordView().environmentObject(previewStore))
             case "search":
                 previewStore.showingSearch = true; previewStore.searchQuery = option("--preview-query") ?? "доступ"
@@ -85,8 +113,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             default: content = AnyView(MainView().environmentObject(previewStore))
             }
             let dark = option("--appearance") == "dark"
-            let defaultWidth: Double = screen == "search" ? 760 : screen == "settings" ? 710 : screen == "record" ? 570 : 1260
-            let defaultHeight: Double = screen == "search" ? 650 : screen == "settings" ? 760 : screen == "record" ? 620 : 820
+            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : screen == "record" ? 570 : 1260
+            let defaultHeight: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 330 : screen == "search" ? 650 : screen == "settings" ? 690 : screen == "record" ? 620 : 820
             let width = option("--width").flatMap(Double.init) ?? defaultWidth
             let height = option("--height").flatMap(Double.init) ?? defaultHeight
             let view = NSHostingView(rootView: content

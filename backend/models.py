@@ -120,7 +120,7 @@ def inspect_model(directory: Path, source: str = "Выбранная папка"
                 raise ValueError("Не удалось подтвердить Parakeet TDT; выберите исходную папку parakeet")
             encoder, decoder = _choose(files, "encoder-model"), _choose(files, "decoder_joint-model")
             if encoder is None or decoder is None:
-                raise ValueError("Meetily ONNX: нужны encoder-model и decoder_joint-model")
+                raise ValueError("ONNX Parakeet: нужны encoder-model и decoder_joint-model")
             _weight(encoder, 100_000_000 if ".int8." in encoder.name else 1_000_000)
             _weight(decoder, 1_000_000)
             # NeMo FP32 export stores encoder tensors in a separate .data file.
@@ -175,7 +175,7 @@ def search_roots(root: Path, home: Path | None = None):
     candidates += [(home / ".cache/huggingface/hub", "Hugging Face"),
                    (home / "Library/Caches/huggingface/hub", "Hugging Face")]
     for name in ("Meetily", "meetily", "com.meetily.ai"):
-        candidates.append((home / "Library/Application Support" / name / "models", "Meetily"))
+        candidates.append((home / "Library/Application Support" / name / "models", "Локальная папка моделей"))
     candidates += [(home / ".lmstudio/models", "LM Studio"), (home / ".cache/lm-studio/models", "LM Studio")]
     seen = set()
     for directory, source in candidates:

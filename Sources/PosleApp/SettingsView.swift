@@ -42,42 +42,149 @@ struct SettingsView: View {
         model == AppSettings.qualityLocalModel || model == AppSettings.fastLocalModel
     }
 
+    @State private var section = "general"
+    @State private var showingTemplates = false
+    init(section: String = "general") { _section = State(initialValue: section) }
+    private let sections: [(String, String, String)] = [
+        ("general", "Общие", "gearshape"), ("record", "Запись", "record.circle"),
+        ("speech", "Распознавание речи", "waveform"), ("ai", "Конспект и модели", "sparkles"),
+        ("notes", "Заметки и шаблоны", "square.and.pencil"), ("keys", "Горячие клавиши", "keyboard"),
+        ("data", "Данные и экспорт", "externaldrive")
+    ]
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Настройки После").font(.system(size: 24, weight: .semibold, design: .rounded))
-                    Text("Распознавание, конспекты и ваши данные.").font(.system(size: 12)).foregroundStyle(.secondary)
-                }
+                Text("Настройки После").font(.system(size: 23, weight: .semibold, design: .rounded))
                 Spacer()
-                Button { store.saveSettings(); dismiss() } label: {
-                    Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
-                        .frame(width: 30, height: 30).background(Ink.soft, in: Circle())
-                }
-                    .buttonStyle(.plain).accessibilityLabel("Сохранить и закрыть настройки")
-                    .help("Сохранить и закрыть").keyboardShortcut(.cancelAction)
-            }.padding(26)
+                Button { store.saveSettings(); dismiss() } label: { Image(systemName: "xmark").padding(6) }
+                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Сохранить и закрыть настройки")
+            }.padding(22)
             Divider()
-            if store.busy {
-                HStack(spacing: 10) {
-                    ProgressView().controlSize(.small).accessibilityHidden(true)
-                    Text(store.progressText.isEmpty ? "Выполняется задача…" : store.progressText).font(.system(size: 12)).lineLimit(3)
-                    Spacer()
-                    if store.canCancelJob {
-                        Button("Отменить") { store.cancelJob() }.buttonStyle(.bordered)
-                            .accessibilityLabel("Отменить текущую обработку")
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(sections, id: \.0) { id, title, icon in
+                        Button { section = id } label: {
+                            Label(title, systemImage: icon).font(AppTypography.control)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 11).padding(.vertical, 11)
+                                .background(section == id ? Ink.accent.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                                .foregroundStyle(section == id ? Ink.accent : Color.primary)
+                        }.buttonStyle(.plain).accessibilityAddTraits(section == id ? .isSelected : [])
                     }
-                }.padding(16).accessibilityElement(children: .combine)
+                    Spacer()
+                    Text("После \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5")")
+                        .font(AppTypography.caption).foregroundStyle(.secondary).padding(10)
+                }.padding(12).frame(width: 215).background(Ink.soft)
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 22) {
+                        if store.busy {
+                            HStack { ProgressView().controlSize(.small); Text(store.progressText).font(AppTypography.control)
+                                Spacer(); if store.canCancelJob { Button("Отменить") { store.cancelJob() } }
+                            }
+                        }
+                        if let error = store.error {
+                            Label(error, systemImage: "exclamationmark.triangle").font(AppTypography.control)
+                                .foregroundStyle(Ink.warning).textSelection(.enabled)
+                        }
+                        settingsContent
+                    }.font(AppTypography.control).frame(maxWidth: .infinity, alignment: .leading).padding(26)
+                }.frame(maxWidth: .infinity)
             }
-            if let error = store.error {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.system(size: 12)).foregroundStyle(Ink.warning).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 26).padding(.vertical, 10)
-                    .accessibilityLabel("Ошибка: \(error)")
+            Divider()
+            HStack {
+                Text("Изменения сохраняются при закрытии.").font(AppTypography.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Готово") { store.saveSettings(); dismiss() }.buttonStyle(.borderedProminent)
+                    .tint(Ink.actionFill).keyboardShortcut(.defaultAction)
+            }.padding(16)
+        }.frame(width: 900, height: 690).tint(Ink.accent)
+            .sheet(isPresented: $showingTemplates) {
+                VStack(spacing: 16) {
+                    HStack { Spacer(); Button("Готово") { showingTemplates = false }.keyboardShortcut(.cancelAction) }
+                    ScrollView { NotesTemplatesView(notes: store.notes).environmentObject(store) }
+                }.padding(25).frame(width: 700, height: 600)
             }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 25) {
-                    settingsSection("Распознавание речи", "waveform") {
+            .onAppear {
+                if !store.settings.defaultTemplateID.isEmpty && !store.notes.templates.contains(where: { $0.id == store.settings.defaultTemplateID }) { store.settings.defaultTemplateID = "" }
+                apiKey = ProcessInfo.processInfo.arguments.contains("--preview") ? "" : Keychain.read()
+                editingCustomLocalModel = !isPresetModel(store.settings.localModel)
+                customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
+            }
+            .onChange(of: store.settings.localProvider) { _, _ in
+                editingCustomLocalModel = !isPresetModel(store.settings.localModel)
+                customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
+            }
+            .onChange(of: store.settings.localModel) { _, model in
+                editingCustomLocalModel = !isPresetModel(model)
+                if editingCustomLocalModel { customLocalModel = model }
+            }
+            .onDisappear { store.saveSettings() }
+    }
+    @ViewBuilder private var settingsContent: some View {
+        switch section {
+        case "speech": speechSettings.disabled(store.busy || store.isRecording)
+        case "ai": aiSettings.disabled(store.busy || store.isRecording)
+        case "record": recordSettings.disabled(store.isRecording)
+        case "notes": notesSettings
+        case "keys": shortcutSettings
+        case "data": dataSettings
+        default: generalSettings
+        }
+    }
+    private var generalSettings: some View {
+        settingsSection("Общие", "gearshape") {
+            Text("Встречи, короткие мысли и повторение карточек в одном месте.").foregroundStyle(.secondary)
+            Picker("При запуске открывать", selection: $store.settings.startSection) {
+                Text("Все встречи").tag("meetings"); Text("Входящие заметки").tag("inbox")
+                Text("Мои задачи").tag("tasks"); Text("Карточки").tag("cards")
+            }
+            Text("Быстрые заметки доступны без подготовки моделей. Распознавание речи и ИИ можно настроить отдельно.")
+                .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
+        }
+    }
+    private var recordSettings: some View {
+        settingsSection("Запись", "record.circle") {
+            Toggle("По умолчанию записывать звук Mac", isOn: $store.settings.recordSystemAudio)
+            Toggle("По умолчанию сохранять видео", isOn: $store.settings.recordVideo)
+            Text("Аудио сохраняется в MP3. Видео — MP4, H.264, до 720p, 30 кадров/с. Выбор можно изменить перед каждой встречей.")
+                .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
+            Text("Во время записи можно добавлять заметки и отмечать важные моменты. Для разделения голосов в звонке используйте наушники.")
+                .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
+        }
+    }
+    private var notesSettings: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            settingsSection("Заметки и шаблоны", "square.and.pencil") {
+                Toggle("Прикреплять быстрые заметки к текущей записи", isOn: $store.settings.notesSaveToActiveMeeting)
+                Toggle("Добавлять таймкод к пометкам", isOn: $store.settings.notesAutoTimestamp)
+                Picker("Шаблон новых заметок встречи", selection: $store.settings.defaultTemplateID) {
+                    Text("Чистая заметка").tag("")
+                    ForEach(store.notes.templates) { Text($0.name).tag($0.id) }
+                }
+                Button("Управлять шаблонами…") { showingTemplates = true }.buttonStyle(.bordered)
+                Text("Собственный текст хранится отдельно от дополнений ИИ. Изображения и распознанный на них текст остаются в папке данных на Mac.")
+                    .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
+            }
+            focusSettings
+        }
+    }
+    private var shortcutSettings: some View {
+        settingsSection("Горячие клавиши", "keyboard") {
+            Toggle("Открывать быструю заметку из любого приложения", isOn: $store.settings.quickCaptureEnabled)
+            Picker("Быстрая заметка", selection: $store.settings.quickCaptureShortcut) {
+                Text("⌃⌥N").tag("controlOptionN"); Text("⌃⇧Пробел").tag("controlShiftSpace")
+            }.disabled(!store.settings.quickCaptureEnabled)
+            Toggle("Отмечать важный момент по ⌃⌥B", isOn: $store.settings.bookmarkShortcutEnabled)
+            LabeledContent("Общий поиск", value: "⌘K")
+            LabeledContent("Добавить запись", value: "⌘O")
+            LabeledContent("Новая встреча", value: "⌘N")
+            if let message = store.notes.hotkeyNotice { Text(message).foregroundStyle(Ink.warning).font(AppTypography.caption) }
+            Text("Глобальные сочетания включаются после сохранения. Если сочетание занято другой программой, выберите другой вариант.")
+                .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
+        }
+    }
+    private var speechSettings: some View {
+        settingsSection("Распознавание речи", "waveform") {
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(store.runtimeReady ? "Распознавание готово" : "Подготовьте распознавание").fontWeight(.medium)
@@ -106,7 +213,9 @@ struct SettingsView: View {
                         Text("Если голоса путаются, укажите число участников и создайте транскрипт заново.")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
-                    settingsSection("Конспект и примеры", "sparkles") {
+    }
+    private var aiSettings: some View {
+        settingsSection("Конспект и примеры", "sparkles") {
                         Picker("Где работает ИИ", selection: $store.settings.mode) {
                             Label("На Mac", systemImage: "laptopcomputer").tag("local")
                             Label("Облако", systemImage: "cloud").tag("cloud")
@@ -156,7 +265,7 @@ struct SettingsView: View {
                                 }
                             }
                             if store.settings.localProvider == "managed" {
-                                ggufModelSettings
+                                DisclosureGroup("Подключить модель из файла") { ggufModelSettings }
                                 Text("Для Air с 16 ГБ модели запускаются по очереди. Цифры в списке показывают размер скачивания; память также нужна macOS и тексту встречи. Уже скачанная модель используется повторно.")
                                     .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
                             } else {
@@ -200,7 +309,9 @@ struct SettingsView: View {
                             Text("Русский").tag("ru"); Text("English").tag("en")
                         }.frame(maxWidth: 340)
                     }
-                    settingsSection("На что обращать внимание", "pin") {
+    }
+    private var focusSettings: some View {
+        settingsSection("На что обращать внимание", "pin") {
                         Text("Этот фокус будет использоваться для новых встреч. Его можно изменить отдельно в конспекте каждой встречи.")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                         TextEditor(text: $store.settings.focus).font(.system(size: 12)).frame(height: 80).padding(8)
@@ -210,35 +321,18 @@ struct SettingsView: View {
                             .accessibilityLabel("Фокус конспекта")
                             .accessibilityHint("Что выписывать из встречи: решения, задачи, детали и темы для карточек")
                     }
-                    settingsSection("Ваши данные", "lock") {
+    }
+    private var dataSettings: some View {
+        settingsSection("Ваши данные", "lock") {
                         Text("Записи, транскрипты, конспекты и история повторений хранятся в папке приложения.")
                             .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                        Text("Обновления устанавливаются поверх приложения в «Программах» через файл .pkg. Встречи, модели и ключи хранятся отдельно и сохраняются.")
+                            .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
+                        Button("Открыть страницу обновлений") { NSWorkspace.shared.open(URL(string: "https://github.com/starkovsavva/posle/releases")!) }.buttonStyle(.bordered)
+                        Button("Экспортировать мои заметки…") { store.exportManualNotes() }.buttonStyle(.bordered)
                         Button("Открыть папку данных") { NSWorkspace.shared.open(store.root) }.buttonStyle(.bordered)
                         Text("После \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3") · Apple Silicon · macOS 15+").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
-                }.font(.system(size: 12)).padding(26).disabled(store.busy || store.isRecording)
-            }
-            Divider()
-            HStack {
-                Text("Примеры ИИ отмечены отдельно от цитат транскрипта.").font(.system(size: 11)).foregroundStyle(.secondary)
-                Spacer()
-                Button("Сохранить и закрыть") { store.saveSettings(); dismiss() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.defaultAction)
-            }.padding(18)
-        }.frame(width: 710).frame(minHeight: 560, idealHeight: 680, maxHeight: 760).tint(Ink.accent)
-            .onAppear {
-                apiKey = ProcessInfo.processInfo.arguments.contains("--preview") ? "" : Keychain.read()
-                editingCustomLocalModel = !isPresetModel(store.settings.localModel)
-                customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
-            }
-            .onChange(of: store.settings.localProvider) { _, _ in
-                editingCustomLocalModel = !isPresetModel(store.settings.localModel)
-                customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
-            }
-            .onChange(of: store.settings.localModel) { _, model in
-                editingCustomLocalModel = !isPresetModel(model)
-                if editingCustomLocalModel { customLocalModel = model }
-            }
-            .onDisappear { store.saveSettings() }
     }
 
     @ViewBuilder
@@ -262,15 +356,15 @@ struct SettingsView: View {
 
     private var ggufModelSettings: some View {
         VStack(alignment: .leading, spacing: 11) {
-            Text("Модель из Meetily или файла GGUF").font(.system(size: 12, weight: .medium))
-            Text("Подключите уже скачанный Qwen или другую совместимую модель. Повторно скачивать её не нужно.")
+            Text("Подключить локальную модель из файла").font(.system(size: 12, weight: .medium))
+            Text("Подключите уже скачанную модель в формате GGUF. Повторно скачивать её не нужно.")
                 .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
             HStack {
-                Button("Найти GGUF на Mac") { store.discoverGGUFModels() }.buttonStyle(.bordered)
+                Button("Найти модели на Mac") { store.discoverGGUFModels() }.buttonStyle(.bordered)
                 Button("Выбрать файл…") { store.chooseGGUFFile() }.buttonStyle(.bordered).disabled(!store.runtimeReady)
             }
             if !store.runtimeReady {
-                Text("Сначала подготовьте распознавание выше: эта среда нужна для локального движка. Искать файлы можно уже сейчас.")
+                Text("Сначала подготовьте среду в разделе «Распознавание речи»: эта среда нужна для локального движка. Искать файлы можно уже сейчас.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if !store.ggufStatus.isEmpty {
@@ -417,11 +511,12 @@ struct RecordView: View {
                 Button("Отмена", role: .cancel) { dismiss() }.buttonStyle(.bordered).disabled(store.busy).keyboardShortcut(.cancelAction)
                 Spacer()
                 Button(store.runtimeReady ? "Начать запись" : "Установить модели") {
-                    if store.runtimeReady { Task { await store.startRecording(systemAudio: systemAudio, video: video, title: title) } }
+                    if store.runtimeReady { Task { store.settings.recordSystemAudio = systemAudio; store.settings.recordVideo = video; store.saveSettings(); await store.startRecording(systemAudio: systemAudio, video: video, title: title) } }
                     else { dismiss(); store.showingSettings = true }
                 }
                     .buttonStyle(.borderedProminent).tint(store.runtimeReady ? Ink.recordFill : Ink.actionFill).disabled(store.busy).keyboardShortcut(.defaultAction)
             }
         }.padding(32).frame(width: 570).tint(Ink.accent)
+            .onAppear { systemAudio = store.settings.recordSystemAudio; video = store.settings.recordVideo }
     }
 }
