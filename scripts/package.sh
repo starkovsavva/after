@@ -46,6 +46,10 @@ PYINFO
 VERSION="$(cat "$STAGING/version")"
 mkdir "$STAGING/root"
 ditto --noextattr --norsrc --noqtn "$APP" "$STAGING/root/После.app"
+# Launch Services can attach Finder metadata after a local preview run. Strip
+# attributes only from our disposable copy, so pkgbuild cannot synthesize an
+# AppleDouble file beside the app in /Applications.
+xattr -cr "$STAGING/root"
 codesign --verify --deep --strict "$STAGING/root/После.app"
 pkgbuild --root "$STAGING/root" --component-plist "$STAGING/components.plist" \
     --identifier app.posle.meetings.pkg --version "$VERSION" \
