@@ -63,6 +63,10 @@ struct SettingsView: View {
                     ProgressView().controlSize(.small).accessibilityHidden(true)
                     Text(store.progressText.isEmpty ? "Выполняется задача…" : store.progressText).font(.system(size: 12)).lineLimit(3)
                     Spacer()
+                    if store.canCancelJob {
+                        Button("Отменить") { store.cancelJob() }.buttonStyle(.bordered)
+                            .accessibilityLabel("Отменить текущую обработку")
+                    }
                 }.padding(16).accessibilityElement(children: .combine)
             }
             if let error = store.error {
@@ -77,17 +81,18 @@ struct SettingsView: View {
                         HStack(alignment: .top) {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(store.runtimeReady ? "Распознавание готово" : "Подготовьте распознавание").fontWeight(.medium)
-                                Text("Русский и английский определяются автоматически. Модели загружаются один раз; затем транскрипт можно создавать офлайн.")
+                                Text("Русский и английский определяются автоматически. Можно использовать совместимый Parakeet, уже скачанный в другом приложении.")
                                     .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
                             }
                             Spacer()
                             if store.runtimeReady {
-                                Button("Переустановить модели") { store.installRuntime() }.buttonStyle(.bordered)
+                                Button("Проверить и подготовить") { store.installRuntime() }.buttonStyle(.bordered)
                                     .help("Повторно подготовить распознавание речи и разделение собеседников")
                             } else {
-                                Button("Установить модели") { store.installRuntime() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                                Button("Подготовить распознавание") { store.installRuntime() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
                             }
                         }
+                        asrModelSettings
                         Toggle("Разделять собеседников", isOn: $store.settings.diarization).tint(Ink.actionFill)
                         HStack {
                             Text("Количество собеседников")
@@ -107,27 +112,60 @@ struct SettingsView: View {
                             Label("Облако", systemImage: "cloud").tag("cloud")
                         }.pickerStyle(.segmented).tint(Ink.actionFill)
                         if store.settings.mode == "local" {
-                            Text("Транскрипт и карточки обрабатываются на вашем Mac. Обе модели подходят для русского и английского.")
+                            Text("Выберите источник модели для конспекта и карточек.")
                                 .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
-                            Picker("Локальная модель", selection: localModelPreset) {
-                                Text("Качество · Qwen3.5 9B (6,6 ГБ)").tag("quality")
-                                Text("Быстрее · Qwen3.5 4B (3,3 ГБ)").tag("fast")
-                                Text("Своя модель").tag("custom")
-                            }
-                            if localModelPreset.wrappedValue == "custom" {
-                                LabeledContent("Имя своей модели") {
-                                    TextField("Имя модели в Ollama", text: $store.settings.localModel).textFieldStyle(.roundedBorder)
-                                        .accessibilityLabel("Имя своей локальной модели")
-                                        .help("Укажите имя из каталога Ollama или локальную модель, которую установили самостоятельно.")
+                            Picker("Источник моделей", selection: Binding(get: { store.settings.localProvider }, set: { store.changeLocalProvider($0) })) {
+                                Text("После").tag("managed")
+                                Text("Ollama").tag("ollama")
+                                Text("LM Studio").tag("lmstudio")
+                            }.pickerStyle(.segmented)
+                            if store.settings.localProvider == "managed" {
+                                Picker("Локальная модель", selection: localModelPreset) {
+                                    Text("Качество · Qwen3.5 9B (6,6 ГБ)").tag("quality")
+                                    Text("Быстрее · Qwen3.5 4B (3,3 ГБ)").tag("fast")
+                                    Text("Своя модель").tag("custom")
+                                }
+                                if localModelPreset.wrappedValue == "custom" {
+                                    LabeledContent("Имя своей модели") {
+                                        TextField("Имя модели", text: $store.settings.localModel).textFieldStyle(.roundedBorder)
+                                            .accessibilityLabel("Имя своей локальной модели")
+                                            .help("Укажите точное имя модели из каталога Ollama.")
+                                    }
+                                }
+                                Text("После хранит свою модель отдельно. Для уже установленной Ollama или LM Studio выберите соответствующий источник выше.")
+                                    .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                            } else {
+                                Text(store.settings.localProvider == "lmstudio"
+                                     ? "В LM Studio загрузите модель и включите локальный сервер в разделе Developer. Чтобы текст оставался на этом Mac, отключите LM Link."
+                                     : "Откройте Ollama, затем найдите установленные модели здесь.")
+                                    .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
+                                LabeledContent("Адрес сервера") {
+                                    TextField(store.settings.resolvedLocalEndpoint, text: Binding(get: { store.settings.localEndpoint }, set: { endpoint in
+                                        store.settings.localEndpoint = endpoint
+                                        store.installedLocalModels = []; store.localStatus = ""
+                                    }))
+                                        .textFieldStyle(.roundedBorder).accessibilityLabel("Адрес локального сервера")
+                                        .help("Только сервер на этом Mac. Обычный адрес Ollama — http://127.0.0.1:11434, LM Studio — http://127.0.0.1:1234.")
                                 }
                             }
+                            installedLocalModelPicker
                             HStack {
-                                Button("Подготовить локальный ИИ") { store.prepareLocal() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(!store.runtimeReady)
-                                Button("Проверить локальный ИИ") { store.ollama("check") }.buttonStyle(.bordered).disabled(!store.runtimeReady)
+                                Button("Найти установленные модели") { store.discoverLocalModels() }.buttonStyle(.bordered)
+                                if store.settings.localProvider == "managed" {
+                                    Button("Подготовить локальный ИИ") { store.prepareLocal() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(!store.runtimeReady)
+                                }
                             }
-                            Text("Для Air с 16 ГБ модели запускаются по очереди. Цифры в списке показывают размер скачивания; память также нужна macOS и тексту встречи. Выбранная модель загружается один раз, затем работает офлайн.")
-                                .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
-                            if !store.localStatus.isEmpty { Text(store.localStatus).font(.system(size: 12)).foregroundStyle(Ink.accent).textSelection(.enabled) }
+                            if store.settings.localProvider == "managed" {
+                                ggufModelSettings
+                                Text("Для Air с 16 ГБ модели запускаются по очереди. Цифры в списке показывают размер скачивания; память также нужна macOS и тексту встречи. Уже скачанная модель используется повторно.")
+                                    .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                            } else {
+                                Text("После обращается к выбранному локальному серверу. Модель повторно не скачивается; сервером управляет выбранное приложение.")
+                                    .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                            }
+                            if !store.localStatus.isEmpty {
+                                Text(store.localStatus).font(.system(size: 12)).foregroundStyle(Ink.accent).textSelection(.enabled)
+                            }
                             Toggle("Создавать конспект после транскрипта", isOn: $store.settings.autoSummary).tint(Ink.actionFill)
                         } else {
                             Text("Для конспекта OpenAI получает транскрипт, для примера — одну карточку с контекстом. Аудио остаётся на Mac. Каждый облачный запрос запускается отдельной кнопкой.")
@@ -176,7 +214,7 @@ struct SettingsView: View {
                         Text("Записи, транскрипты, конспекты и история повторений хранятся в папке приложения.")
                             .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
                         Button("Открыть папку данных") { NSWorkspace.shared.open(store.root) }.buttonStyle(.bordered)
-                        Text("После 0.2 · Apple Silicon · macOS 15+").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("После \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3") · Apple Silicon · macOS 15+").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                 }.font(.system(size: 12)).padding(26).disabled(store.busy || store.isRecording)
             }
@@ -192,7 +230,138 @@ struct SettingsView: View {
                 editingCustomLocalModel = !isPresetModel(store.settings.localModel)
                 customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
             }
+            .onChange(of: store.settings.localProvider) { _, _ in
+                editingCustomLocalModel = !isPresetModel(store.settings.localModel)
+                customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
+            }
+            .onChange(of: store.settings.localModel) { _, model in
+                editingCustomLocalModel = !isPresetModel(model)
+                if editingCustomLocalModel { customLocalModel = model }
+            }
             .onDisappear { store.saveSettings() }
+    }
+
+    @ViewBuilder
+    private var installedLocalModelPicker: some View {
+        let models = store.installedLocalModels.filter { $0.provider == store.settings.localProvider }
+        if !models.isEmpty {
+            Picker("Установленная модель", selection: Binding(get: { store.settings.localModel }, set: { id in
+                if let model = models.first(where: { $0.id == id }) { store.selectLocalModel(model) }
+            })) {
+                if !models.contains(where: { $0.id == store.settings.localModel }) {
+                    Text(store.settings.localModel.isEmpty ? "Выберите модель" : store.settings.localModel).tag(store.settings.localModel)
+                }
+                ForEach(models) { model in Text(model.name).tag(model.id) }
+            }.accessibilityLabel("Установленная модель для конспекта и карточек")
+        } else if store.settings.localProvider != "managed" && !store.settings.localModel.isEmpty {
+            LabeledContent("Выбрана модель") {
+                Text(store.settings.localModel).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+            }
+        }
+    }
+
+    private var ggufModelSettings: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text("Модель из Meetily или файла GGUF").font(.system(size: 12, weight: .medium))
+            Text("Подключите уже скачанный Qwen или другую совместимую модель. Повторно скачивать её не нужно.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+            HStack {
+                Button("Найти GGUF на Mac") { store.discoverGGUFModels() }.buttonStyle(.bordered)
+                Button("Выбрать файл…") { store.chooseGGUFFile() }.buttonStyle(.bordered).disabled(!store.runtimeReady)
+            }
+            if !store.runtimeReady {
+                Text("Сначала подготовьте распознавание выше: эта среда нужна для локального движка. Искать файлы можно уже сейчас.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if !store.ggufStatus.isEmpty {
+                Text(store.ggufStatus).font(.system(size: 12)).foregroundStyle(Ink.accent).textSelection(.enabled)
+            }
+            ForEach(Array(store.installedGGUFModels.prefix(4))) { model in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "shippingbox").foregroundStyle(Ink.accent).frame(width: 18)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.name).font(.system(size: 12, weight: .medium)).lineLimit(2)
+                        Text("\(model.source) · \(model.sizeLabel)").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(model.path).font(.system(size: 11)).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle).help(model.path)
+                    }
+                    Spacer(minLength: 4)
+                    Button("Подключить") { store.importGGUFModel(URL(fileURLWithPath: model.path)) }
+                        .buttonStyle(.bordered).disabled(!store.runtimeReady)
+                        .accessibilityLabel("Подключить \(model.name) из \(model.source)")
+                }.padding(11).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
+            }
+            if store.installedGGUFModels.count > 4 {
+                Text("Показаны первые 4 модели. Другую можно выбрать через «Выбрать файл…».")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            ForEach(Array(store.ggufNotes.prefix(2).enumerated()), id: \.offset) { _, note in
+                Text(note).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }.padding(.top, 5)
+    }
+
+    private var asrModelSettings: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack {
+                Text("Модель Parakeet").fontWeight(.medium)
+                Spacer()
+                if !store.settings.asrModelPath.isEmpty {
+                    Button("Выбирать автоматически") { store.useAutomaticASRModel() }.buttonStyle(.link)
+                }
+            }
+            if store.settings.asrModelPath.isEmpty {
+                Text("Автоматический выбор: После сначала ищет совместимую модель на Mac.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            } else {
+                Label(URL(fileURLWithPath: store.settings.asrModelPath).lastPathComponent, systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(Ink.green).font(.system(size: 12, weight: .medium))
+                Text(store.settings.asrModelPath).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle).help(store.settings.asrModelPath).textSelection(.enabled)
+            }
+            HStack {
+                Button("Найти на Mac") { store.discoverASRModels() }.buttonStyle(.bordered)
+                Button("Выбрать папку…") { store.chooseASRFolder() }.buttonStyle(.bordered)
+            }
+            if !store.asrStatus.isEmpty {
+                Text(store.asrStatus).font(.system(size: 12)).foregroundStyle(Ink.accent).textSelection(.enabled)
+            }
+            ForEach(Array(store.installedASRModels.prefix(6))) { model in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: model.compatible ? "waveform" : "exclamationmark.circle")
+                        .foregroundStyle(model.compatible ? Ink.accent : Ink.warning).frame(width: 18)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.name).font(.system(size: 12, weight: .medium))
+                        Text("\(model.source) · \(model.format.uppercased())").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(model.path).font(.system(size: 11)).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle).help(model.path)
+                        if !model.reason.isEmpty {
+                            Text(model.reason).font(.system(size: 11)).foregroundStyle(model.compatible ? Color.secondary : Ink.warning)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 4)
+                    if model.compatible {
+                        if model.path == store.settings.asrModelPath {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Ink.green)
+                                .accessibilityLabel("Выбранная модель")
+                        } else {
+                            Button("Использовать") { store.selectASRModel(model) }.buttonStyle(.bordered)
+                                .accessibilityLabel("Использовать \(model.name) из \(model.source)")
+                        }
+                    }
+                }.padding(11).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
+            }
+            if store.installedASRModels.count > 6 {
+                Text("Показаны первые 6 моделей. Для другой модели выберите её папку.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            ForEach(Array(store.asrNotes.prefix(3).enumerated()), id: \.offset) { _, note in
+                Text(note).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Обнаружение и выбор папки ничего не скачивают. Формат модели проверяется перед использованием.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+        }
     }
 
     private func settingsSection<Content: View>(_ title: String, _ icon: String, @ViewBuilder content: () -> Content) -> some View {

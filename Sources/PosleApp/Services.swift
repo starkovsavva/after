@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PosleCore
 import Security
 
 enum AppError: LocalizedError {
@@ -7,11 +8,70 @@ enum AppError: LocalizedError {
     var errorDescription: String? { if case let .message(text) = self { return text }; return nil }
 }
 
+struct InstalledLocalModel: Decodable, Identifiable, Hashable {
+    var id: String
+    var name: String
+    var provider: String
+    var endpoint: String
+}
+
+struct InstalledASRModel: Decodable, Identifiable, Hashable {
+    var id: String
+    var name: String
+    var path: String
+    var format: String
+    var source: String
+    var compatible: Bool
+    var reason: String
+}
+
+struct InstalledGGUFModel: Decodable, Identifiable, Hashable {
+    var id: String
+    var name: String
+    var path: String
+    var source: String
+    var sizeBytes: Int64
+    var sizeLabel: String { ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file) }
+}
+
 struct WorkerEvent: Decodable {
     var event: String
     var message: String?
     var fraction: Double?
     var models: [String]?
+    var model: String?
+    var ggufModels: [InstalledGGUFModel]?
+    var installedModels: [InstalledLocalModel]?
+    var asrModels: [InstalledASRModel]?
+    var notes: [String]?
+
+    init(event: String, message: String? = nil) {
+        self.event = event; self.message = message
+    }
+
+    private enum CodingKeys: String, CodingKey { case event, message, fraction, models, model, ggufModels, asrModels, notes }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        event = try values.decode(String.self, forKey: .event)
+        message = try values.decodeIfPresent(String.self, forKey: .message)
+        fraction = try values.decodeIfPresent(Double.self, forKey: .fraction)
+        models = try? values.decode([String].self, forKey: .models)
+        model = try values.decodeIfPresent(String.self, forKey: .model)
+        ggufModels = try values.decodeIfPresent([InstalledGGUFModel].self, forKey: .ggufModels)
+        installedModels = try? values.decode([InstalledLocalModel].self, forKey: .models)
+        asrModels = try values.decodeIfPresent([InstalledASRModel].self, forKey: .asrModels)
+        notes = try values.decodeIfPresent([String].self, forKey: .notes)
+    }
+}
+
+private final class WorkerEventResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: WorkerEvent?
+    func record(_ event: WorkerEvent) {
+        guard event.event == "done" else { return }
+        lock.lock(); result = event; lock.unlock()
+    }
+    var value: WorkerEvent? { lock.lock(); defer { lock.unlock() }; return result }
 }
 
 /// Drain both pipes concurrently. A subprocess never runs on the main thread.
@@ -27,10 +87,12 @@ final class ProcessRunner: @unchecked Sendable {
         if current?.isRunning == true { current?.terminate() }
     }
 
+    @discardableResult
     func run(_ executable: URL, arguments: [String], environment: [String: String] = [:],
-             event: @escaping @Sendable (WorkerEvent) -> Void) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+             event: @escaping @Sendable (WorkerEvent) -> Void) async throws -> WorkerEvent? {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WorkerEvent?, Error>) in
             DispatchQueue.global(qos: .userInitiated).async {
+                let completion = WorkerEventResult()
                 let process = Process()
                 let output = Pipe(), errors = Pipe()
                 process.executableURL = executable
@@ -61,6 +123,7 @@ final class ProcessRunner: @unchecked Sendable {
                 func deliver(_ data: Data) {
                     if let decoded = try? JSONDecoder().decode(WorkerEvent.self, from: data) {
                         if decoded.event == "error" { lastError = decoded.message }
+                        completion.record(decoded)
                         event(decoded)
                     } else if let line = String(data: data, encoding: .utf8), !line.isEmpty {
                         event(WorkerEvent(event: "progress", message: String(line.suffix(240))))
@@ -78,7 +141,7 @@ final class ProcessRunner: @unchecked Sendable {
                 if !pending.isEmpty { deliver(pending) }
                 process.waitUntilExit()
                 group.wait()
-                if process.terminationStatus == 0 { continuation.resume() }
+                if process.terminationStatus == 0 { continuation.resume(returning: completion.value) }
                 else {
                     let fallback = process.terminationReason == .uncaughtSignal
                         ? "Обработка остановлена. Исходная запись сохранена."
@@ -139,11 +202,48 @@ enum Keychain {
 final class LocalModelService {
     private var process: Process?
     private var port = 11436
-    var baseURL: String { "http://127.0.0.1:\(port)" }
-    func ensure(root: URL, cancelled: @MainActor () -> Bool = { false }) async throws {
+    private var externalURL: String?
+    var baseURL: String { externalURL ?? "http://127.0.0.1:\(port)" }
+    private let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        configuration.timeoutIntervalForRequest = 2
+        return URLSession(configuration: configuration)
+    }()
+
+    static func validatedEndpoint(_ value: String) throws -> String {
+        guard let url = URL(string: value), let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme == "http", let host = components.host?.lowercased(),
+              ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host),
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              components.port.map({ (1...65535).contains($0) }) ?? true,
+              ["", "/"].contains(components.path) else {
+            throw AppError.message("Укажите локальный адрес сервера без /v1, например http://127.0.0.1:1234. Номер порта должен быть от 1 до 65535.")
+        }
+        var clean = components
+        clean.path = ""
+        guard let endpoint = clean.string else { throw AppError.message("Проверьте адрес локального сервера.") }
+        return endpoint
+    }
+
+    func ensure(root: URL, settings: AppSettings, cancelled: @MainActor () -> Bool = { false }) async throws {
         guard !cancelled() else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
+        if settings.localProvider != "managed" {
+            guard ["ollama", "lmstudio"].contains(settings.localProvider) else {
+                throw AppError.message("Выберите После, Ollama или LM Studio в настройках.")
+            }
+            stop()
+            externalURL = try Self.validatedEndpoint(settings.resolvedLocalEndpoint)
+            // Rust checks connection, HTTP errors and the actual selected model.
+            // This service owns only the managed process; external servers are untouched.
+            guard !cancelled() else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
+            return
+        }
+        externalURL = nil
         if process?.isRunning == true, await healthy() { return }
-        // Do not trust or send transcripts to another process listening on a known port.
+        if process != nil { stop() }
+        // The managed service owns its port and model cache. External servers are selected explicitly.
         var available = false
         for candidate in 11436...11456 {
             guard !cancelled() else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
@@ -154,7 +254,7 @@ final class LocalModelService {
         let base = root.appendingPathComponent("runtime/ollama")
         let candidates = [base.appendingPathComponent("bin/ollama"), base.appendingPathComponent("ollama")]
         guard let binary = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else {
-            throw AppError.message("В настройках нажмите «Подготовить локальный ИИ» или переключитесь на облако.")
+            throw AppError.message("В настройках нажмите «Подготовить локальный ИИ» или выберите установленную Ollama / LM Studio.")
         }
         let p = Process(); p.executableURL = binary; p.arguments = ["serve"]
         p.standardInput = FileHandle.nullDevice; p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
@@ -173,10 +273,15 @@ final class LocalModelService {
         throw AppError.message("Локальный ИИ долго запускается. Повторите через несколько секунд.")
     }
     private func healthy() async -> Bool {
-        var request = URLRequest(url: URL(string: baseURL + "/api/tags")!)
+        let path = "/api/tags"
+        guard let url = URL(string: baseURL + path) else { return false }
+        var request = URLRequest(url: url)
         request.timeoutInterval = 1
-        guard let (_, response) = try? await URLSession.shared.data(for: request) else { return false }
+        guard let (_, response) = try? await session.data(for: request) else { return false }
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
-    func stop() { if process?.isRunning == true { process?.terminate() }; process = nil }
+    func stop() {
+        if process?.isRunning == true { process?.terminate() }
+        process = nil; externalURL = nil
+    }
 }

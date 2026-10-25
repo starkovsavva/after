@@ -1,12 +1,12 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use posle_core::{ai, storage, worker};
+use posle_core::{ai, models, storage, worker};
 use serde_json::{json, Value};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, ValueEnum)]
-enum Command { Prepare, Transcribe, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, Pull, List, Import, Update }
+enum Command { Prepare, Transcribe, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, List, Import, Update }
 
 #[derive(Parser)]
 #[command(version, about="После: ядро библиотеки и обработки встреч")]
@@ -15,6 +15,7 @@ struct Args {
     #[arg(long)] root: PathBuf,
     #[arg(long)] backend: Option<PathBuf>,
     #[arg(long)] meeting: Option<PathBuf>,
+    #[arg(long)] path: Option<PathBuf>,
     #[arg(long, default_value="")] card: String,
     #[arg(long, default_value_t=3)] rating: u8,
     #[arg(long, default_value_t=0)] speakers: u32,
@@ -52,7 +53,11 @@ fn run(args: Args) -> Result<Value> {
             let id = required()?.file_name().and_then(|s|s.to_str()).context("Нет ID")?;
             storage::review(&args.root, id, &args.card, args.rating)
         }
-        Command::Check => ai::check(),
+        Command::Check => ai::check(&args.root),
+        Command::DiscoverModels => models::discover(&args.root, args.path.as_deref()),
+        Command::DiscoverLocal => ai::discover_local_models(&args.root),
+        Command::DiscoverGguf => models::discover_gguf(&args.root),
+        Command::ImportGguf => ai::import_gguf(&args.root, args.path.as_deref().context("Выберите файл GGUF")?),
         Command::Pull => { ai::pull(&args.root)?; Ok(json!({})) }
         Command::List => Ok(json!({"meetings":storage::list_meetings(&args.root)?})),
         Command::Import | Command::Update => {

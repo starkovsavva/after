@@ -30,9 +30,9 @@ echo 'Устанавливаю Python и распознавание речи…'
 "$UV" pip install --python "$ROOT/runtime/venv/bin/python" -r "$HERE/requirements.txt"
 "$ROOT/runtime/venv/bin/python" -c 'import imageio_ffmpeg, pathlib, sys; alias = pathlib.Path(sys.executable).parent / "ffmpeg"; alias.exists() or alias.symlink_to(imageio_ffmpeg.get_ffmpeg_exe())'
 export PATH="$ROOT/runtime/venv/bin:$PATH"
-echo 'Загружаю Parakeet и модели собеседников. Это нужно только один раз…'
+echo 'Проверяю скачанные модели Parakeet и готовлю разделение собеседников…'
 export HF_HOME="$ROOT/cache/huggingface"
 export HF_HUB_DISABLE_TELEMETRY=1
 "$ROOT/runtime/venv/bin/python" "$HERE/engine.py" prepare --root "$ROOT"
-touch "$ROOT/runtime/ready-v1"
+touch "$ROOT/runtime/ready-v2"
 echo 'Готово. Можно добавить первую встречу.'

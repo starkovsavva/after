@@ -31,6 +31,15 @@ final class AppStore: ObservableObject {
     @Published var playbackTime = 0.0
     @Published var playbackDuration = 1.0
     @Published var localStatus = ""
+    @Published var installedLocalModels: [InstalledLocalModel] = []
+    @Published var installedASRModels: [InstalledASRModel] = []
+    @Published var installedGGUFModels: [InstalledGGUFModel] = []
+    @Published var ggufStatus = ""
+    @Published var ggufNotes: [String] = []
+    @Published var asrStatus = ""
+    @Published var asrNotes: [String] = []
+    private var modelsByProvider: [String: String] = [:]
+    private var endpointsByProvider: [String: String] = [:]
     @Published var isRecording = false
     @Published var stoppingRecording = false
     var processAfterRecording = true
@@ -80,7 +89,7 @@ final class AppStore: ObservableObject {
                                                    attributes: [.posixPermissions: 0o700])
             if let saved: AppSettings = read(root.appendingPathComponent("settings.json")) { settings = saved }
             runtimeReady = FileManager.default.isExecutableFile(atPath: python.path)
-                && FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime/ready-v1").path)
+                && FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime/ready-v2").path)
             reloadLibrary()
             selection = meetings.first?.id
             loadSelection()
@@ -210,14 +219,20 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func worker(_ command: String, id: String? = nil, extra: [String] = []) async throws {
+    @discardableResult
+    func worker(_ command: String, id: String? = nil, extra: [String] = []) async throws -> WorkerEvent? {
         guard !cancellationRequested else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
-        guard runtimeReady else { throw AppError.message("Сначала установите модели в настройках.") }
-        if ["check", "pull"].contains(command) || (settings.mode == "local" && ["summarize", "example"].contains(command)) {
-            try await localService.ensure(root: root, cancelled: { self.cancellationRequested })
+        if ["transcribe", "finalize", "install-local", "import-gguf"].contains(command) && !runtimeReady {
+            throw AppError.message("Сначала подготовьте распознавание в настройках.")
+        }
+        if command == "pull" && settings.localProvider != "managed" {
+            throw AppError.message("Выберите установленную модель в настройках. Для Ollama и LM Studio скачивание выполняется в самом приложении.")
+        }
+        try write(settings, root.appendingPathComponent("settings.json"))
+        if ["check", "pull", "discover-local", "import-gguf"].contains(command) || (settings.mode == "local" && ["summarize", "example"].contains(command)) {
+            try await localService.ensure(root: root, settings: settings, cancelled: { self.cancellationRequested })
         }
         guard !cancellationRequested else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
-        try write(settings, root.appendingPathComponent("settings.json"))
         var arguments = [command, "--root", root.path, "--backend", backend.path]
         if let id { arguments += ["--meeting", meetingDirectory(id).path] }
         arguments += extra
@@ -225,13 +240,23 @@ final class AppStore: ObservableObject {
         var environment = ["PYTHONUNBUFFERED": "1", "HF_HOME": root.appendingPathComponent("cache/huggingface").path,
                            "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL]
         if settings.mode == "cloud" && ["summarize", "example"].contains(command) { environment["POSLE_API_KEY"] = Keychain.read() }
-        try await runner.run(rustEngine, arguments: arguments, environment: environment) { [weak self] event in
+        let result = try await runner.run(rustEngine, arguments: arguments, environment: environment) { [weak self] event in
             Task { @MainActor in
                 if let message = event.message { self?.progressText = message }
                 if let fraction = event.fraction { self?.progress = fraction }
-                if let models = event.models { self?.localStatus = models.isEmpty ? "Ollama работает. Загрузите модель." : "Доступны: " + models.joined(separator: ", ") }
             }
         }
+        if let models = result?.installedModels { installedLocalModels = models }
+        if let models = result?.models {
+            installedLocalModels = models.map { InstalledLocalModel(id: $0, name: $0, provider: settings.localProvider, endpoint: localService.baseURL) }
+        }
+        if let models = result?.asrModels { installedASRModels = models }
+        if let models = result?.ggufModels { installedGGUFModels = models }
+        if let notes = result?.notes {
+            if command == "discover-models" { asrNotes = notes }
+            if command == "discover-gguf" { ggufNotes = notes }
+        }
+        return result
     }
     func beginJob(id: String?) {
         cancellationRequested = false; runner.resetCancellation()
@@ -343,14 +368,15 @@ final class AppStore: ObservableObject {
     func installRuntime() {
         guard !busy, !isRecording else { return }
         Task {
-            beginJob(id: nil); progressText = "Устанавливаю модели. Первый запуск потребует интернет…"
+            beginJob(id: nil); progressText = "Подготавливаю распознавание и проверяю скачанные модели…"
             defer { endJob() }
             do {
+                try write(settings, root.appendingPathComponent("settings.json"))
                 try await runner.run(rustEngine,
                                      arguments: ["install-runtime", "--root", root.path, "--backend", backend.path]) { [weak self] event in
                     Task { @MainActor in if let message = event.message { self?.progressText = message } }
                 }
-                runtimeReady = true; notice = "Модели установлены. Добавьте или выберите запись."
+                runtimeReady = true; notice = "Распознавание готово. Добавьте или выберите запись."
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -358,21 +384,137 @@ final class AppStore: ObservableObject {
         guard !busy, !isRecording else { return }
         Task {
             beginJob(id: nil); defer { endJob() }
-            do { try await worker(command); if command == "pull" { localStatus = "Модель \(settings.localModel) готова" } }
+            do {
+                let result = try await worker(command)
+                localStatus = command == "pull" ? "Модель \(settings.localModel) готова" : (result?.message ?? "Локальный сервер доступен.")
+            }
             catch { localStatus = error.localizedDescription }
         }
     }
     func prepareLocal() {
-        guard !busy, !isRecording, runtimeReady else { return }
+        guard !busy, !isRecording, runtimeReady, settings.localProvider == "managed" else { return }
         Task {
             beginJob(id: nil); defer { endJob() }
             do {
                 try await worker("install-local")
-                try await localService.ensure(root: root)
+                try await localService.ensure(root: root, settings: settings, cancelled: { self.cancellationRequested })
                 try await worker("pull")
                 localStatus = "Локальный ИИ готов. Интернет больше не требуется."
             } catch { self.error = error.localizedDescription; localStatus = error.localizedDescription }
         }
+    }
+    func changeLocalProvider(_ provider: String) {
+        guard !busy, !isRecording, provider != settings.localProvider else { return }
+        modelsByProvider[settings.localProvider] = settings.localModel
+        endpointsByProvider[settings.localProvider] = settings.localEndpoint
+        localService.stop()
+        settings.localProvider = provider
+        settings.localEndpoint = endpointsByProvider[provider] ?? ""
+        settings.localModel = modelsByProvider[provider] ?? (provider == "managed" ? AppSettings.qualityLocalModel : "")
+        installedLocalModels = []; localStatus = ""
+        saveSettings()
+    }
+    func discoverLocalModels() {
+        guard !busy, !isRecording else { return }
+        Task {
+            beginJob(id: nil); progressText = "Ищу установленные модели…"
+            installedLocalModels = []
+            defer { endJob() }
+            do {
+                let result = try await worker("discover-local")
+                localStatus = result?.message ?? (installedLocalModels.isEmpty ? "Установленные модели не найдены." : "Найдено моделей: \(installedLocalModels.count). Выберите модель из списка.")
+            } catch { localStatus = error.localizedDescription; self.error = error.localizedDescription }
+        }
+    }
+    func selectLocalModel(_ model: InstalledLocalModel) {
+        settings.localModel = model.id
+        if settings.localProvider != "managed" && !model.endpoint.isEmpty { settings.localEndpoint = model.endpoint }
+        saveSettings()
+    }
+    func discoverGGUFModels() {
+        guard !busy, !isRecording else { return }
+        Task {
+            beginJob(id: nil); progressText = "Ищу скачанные модели GGUF…"
+            installedGGUFModels = []; ggufNotes = []
+            defer { endJob() }
+            do {
+                let result = try await worker("discover-gguf")
+                ggufStatus = result?.message ?? (installedGGUFModels.isEmpty
+                    ? "Файлы GGUF не найдены. Можно выбрать скачанную модель вручную."
+                    : "Найдены скачанные модели. Подключите нужную ниже.")
+            } catch { ggufStatus = error.localizedDescription; self.error = error.localizedDescription }
+        }
+    }
+    func chooseGGUFFile() {
+        guard !busy, !isRecording else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "gguf") ?? .data]
+        panel.prompt = "Подключить модель"
+        panel.message = "Выберите уже скачанный файл модели GGUF, например Qwen из Meetily."
+        if panel.runModal() == .OK, let url = panel.url { importGGUFModel(url) }
+    }
+    func importGGUFModel(_ url: URL) {
+        guard !busy, !isRecording, settings.localProvider == "managed" else { return }
+        guard runtimeReady else {
+            error = "Сначала подготовьте распознавание в настройках: эта среда нужна для локального движка. Затем подключите файл модели."
+            return
+        }
+        Task {
+            beginJob(id: nil); progressText = "Подключаю скачанную модель…"
+            defer { endJob() }
+            do {
+                // Installs the owned inference engine, without pulling model weights.
+                try await worker("install-local")
+                let result = try await worker("import-gguf", extra: ["--path", url.path])
+                guard let model = result?.model, !model.isEmpty else {
+                    throw AppError.message("Локальный движок не подтвердил подключение модели. Исходный файл сохранён.")
+                }
+                settings.localModel = model
+                saveSettings()
+                localStatus = result?.message ?? "Скачанная модель подключена и выбрана."
+                ggufStatus = localStatus
+            } catch { ggufStatus = error.localizedDescription; self.error = error.localizedDescription }
+        }
+    }
+    func discoverASRModels(path: URL? = nil) {
+        guard !busy, !isRecording else { return }
+        Task {
+            beginJob(id: nil); progressText = "Ищу модели распознавания…"
+            installedASRModels = []; asrNotes = []
+            defer { endJob() }
+            do {
+                let result = try await worker("discover-models", extra: path.map { ["--path", $0.path] } ?? [])
+                if let path {
+                    if let model = installedASRModels.first(where: { $0.compatible && URL(fileURLWithPath: $0.path).standardizedFileURL == path.standardizedFileURL })
+                        ?? installedASRModels.first(where: { $0.compatible }) {
+                        selectASRModel(model)
+                        asrStatus = "Выбрана установленная модель \(model.name)."
+                    } else {
+                        asrStatus = installedASRModels.first?.reason ?? result?.message ?? "В этой папке не найдена совместимая модель Parakeet."
+                    }
+                } else {
+                    asrStatus = result?.message ?? (installedASRModels.isEmpty ? "Модели не найдены. Можно выбрать папку вручную." : "Найдены модели. Выберите совместимую ниже.")
+                }
+            } catch { asrStatus = error.localizedDescription; self.error = error.localizedDescription }
+        }
+    }
+    func chooseASRFolder() {
+        guard !busy, !isRecording else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+        panel.prompt = "Проверить модель"
+        panel.message = "Выберите папку с уже скачанной моделью Parakeet. После проверит её формат."
+        if panel.runModal() == .OK, let url = panel.url { discoverASRModels(path: url) }
+    }
+    func selectASRModel(_ model: InstalledASRModel) {
+        guard model.compatible else { return }
+        settings.asrModelPath = model.path; settings.asrModelFormat = model.format
+        saveSettings()
+    }
+    func useAutomaticASRModel() {
+        settings.asrModelPath = ""; settings.asrModelFormat = "auto"
+        saveSettings()
     }
     func togglePlayback() {
         guard let player else { error = "Аудиофайл не найден. Откройте папку данных встречи и проверьте MP3."; return }

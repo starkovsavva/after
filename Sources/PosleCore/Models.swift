@@ -99,6 +99,10 @@ public struct AppSettings: Codable {
     public static let fastLocalModel = "qwen3.5:4b-q4_K_M"
     public var mode = "local"
     public var localModel = AppSettings.qualityLocalModel
+    public var localProvider = "managed"
+    public var localEndpoint = ""
+    public var asrModelPath = ""
+    public var asrModelFormat = "auto"
     public var cloudModel = "gpt-4.1-mini"
     public var language = "ru"
     public var diarization = true
@@ -106,6 +110,35 @@ public struct AppSettings: Codable {
     public var autoSummary = true
     public var focus = "Решения, задачи, ответственные, сроки, точные цифры, требования и риски. Полезные английские фразы и важные понятия для запоминания."
     public init() {}
+
+    public var resolvedLocalEndpoint: String {
+        let endpoint = localEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !endpoint.isEmpty { return endpoint }
+        return localProvider == "lmstudio" ? "http://127.0.0.1:1234" : "http://127.0.0.1:11434"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case mode, localModel, localProvider, localEndpoint, asrModelPath, asrModelFormat
+        case cloudModel, language, diarization, speakerCount, autoSummary, focus
+    }
+
+    // Defaults are applied per field, so adding settings never resets an existing setup.
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try values.decodeIfPresent(String.self, forKey: .mode) ?? mode
+        localModel = try values.decodeIfPresent(String.self, forKey: .localModel) ?? localModel
+        localProvider = try values.decodeIfPresent(String.self, forKey: .localProvider) ?? localProvider
+        localEndpoint = try values.decodeIfPresent(String.self, forKey: .localEndpoint) ?? localEndpoint
+        asrModelPath = try values.decodeIfPresent(String.self, forKey: .asrModelPath) ?? asrModelPath
+        asrModelFormat = try values.decodeIfPresent(String.self, forKey: .asrModelFormat) ?? asrModelFormat
+        cloudModel = try values.decodeIfPresent(String.self, forKey: .cloudModel) ?? cloudModel
+        language = try values.decodeIfPresent(String.self, forKey: .language) ?? language
+        diarization = try values.decodeIfPresent(Bool.self, forKey: .diarization) ?? diarization
+        speakerCount = try values.decodeIfPresent(Int.self, forKey: .speakerCount) ?? speakerCount
+        autoSummary = try values.decodeIfPresent(Bool.self, forKey: .autoSummary) ?? autoSummary
+        focus = try values.decodeIfPresent(String.self, forKey: .focus) ?? focus
+    }
 }
 
 public enum Exporter {

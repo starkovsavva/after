@@ -44,6 +44,23 @@ struct CoreChecks {
         expect(old.isDue, "past review date")
         expect(!future.isDue, "future FSRS date")
         print("PASS: FSRS date compatibility")
-        print("5 Swift checks passed")
+        let legacySettings = Data(#"{"mode":"cloud","localModel":"qwen:old","cloudModel":"custom-cloud","language":"en","diarization":false,"speakerCount":3,"autoSummary":false,"focus":"Keep precise details"}"#.utf8)
+        var settings = try JSONDecoder().decode(AppSettings.self, from: legacySettings)
+        expect(settings.mode == "cloud" && settings.localModel == "qwen:old", "old provider and model retained")
+        expect(settings.cloudModel == "custom-cloud" && settings.language == "en", "old cloud and language retained")
+        expect(!settings.diarization && settings.speakerCount == 3 && !settings.autoSummary, "old processing options retained")
+        expect(settings.focus == "Keep precise details", "old focus retained")
+        expect(settings.localProvider == "managed" && settings.asrModelPath.isEmpty, "new settings default without reset")
+        settings.localProvider = "lmstudio"; settings.localModel = "local/qwen"
+        settings.asrModelPath = "/tmp/parakeet"; settings.asrModelFormat = "onnx"
+        let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        expect(restored.localProvider == "lmstudio" && restored.localModel == "local/qwen", "external model selection round trip")
+        expect(restored.resolvedLocalEndpoint == "http://127.0.0.1:1234", "LM Studio default endpoint")
+        expect(restored.asrModelPath == "/tmp/parakeet" && restored.asrModelFormat == "onnx", "ASR selection round trip")
+        expect(!restored.autoSummary && restored.focus == "Keep precise details", "unrelated settings preserved")
+        let minimal = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+        expect(minimal.localModel == AppSettings.qualityLocalModel && minimal.diarization, "minimal settings defaults")
+        print("PASS: settings migration and external model selection")
+        print("6 Swift checks passed")
     }
 }

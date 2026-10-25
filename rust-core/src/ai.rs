@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::Duration;
 
@@ -65,9 +66,9 @@ Do not number facts or cards and use those new numbers as evidence IDs."#;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, rename_all="camelCase")]
-pub struct Settings { pub mode: String, pub local_model: String, pub cloud_model: String, pub language: String, pub focus: String }
+pub struct Settings { pub mode: String, pub local_model: String, pub local_provider: String, pub local_endpoint: String, pub cloud_model: String, pub language: String, pub focus: String }
 impl Default for Settings {
-    fn default() -> Self { Self { mode:"local".into(), local_model:"qwen3.5:9b-q4_K_M".into(), cloud_model:"gpt-4.1-mini".into(), language:"ru".into(), focus:String::new() } }
+    fn default() -> Self { Self { mode:"local".into(), local_model:"qwen3.5:9b-q4_K_M".into(), local_provider:"managed".into(), local_endpoint:String::new(), cloud_model:"gpt-4.1-mini".into(), language:"ru".into(), focus:String::new() } }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -143,15 +144,91 @@ fn example_schema() -> Value {
     object(json!({"example":{"type":"string"},"translation":{"type":"string"},"explanation":{"type":"string"}}))
 }
 
-fn local_url() -> Result<Url> {
-    let raw=std::env::var("POSLE_OLLAMA_URL").unwrap_or_else(|_|"http://127.0.0.1:11436".into());
-    let url=Url::parse(&raw).context("Некорректный адрес локального ИИ")?;
-    if url.scheme()!="http" || url.host_str()!=Some("127.0.0.1") || !url.username().is_empty()
-        || url.password().is_some() || url.path()!="/" || url.query().is_some() || url.fragment().is_some() {
-        bail!("Локальный ИИ может работать только на этом Mac через loopback");
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalProvider { Managed, Ollama, LmStudio }
+impl LocalProvider {
+    fn id(self) -> &'static str { match self { Self::Managed=>"managed", Self::Ollama=>"ollama", Self::LmStudio=>"lmstudio" } }
+    fn title(self) -> &'static str { match self { Self::Managed=>"локальный ИИ «После»", Self::Ollama=>"Ollama", Self::LmStudio=>"LM Studio" } }
+    fn start_hint(self) -> &'static str { match self {
+        Self::Managed=>"Подготовьте локальный ИИ в настройках «После».",
+        Self::Ollama=>"Запустите Ollama и проверьте его локальный адрес в настройках «После».",
+        Self::LmStudio=>"В LM Studio откройте Developer и включите локальный сервер (Start Server). Затем обновите список моделей в «После».",
+    } }
+}
+#[derive(Debug)]
+struct LocalConfig { provider:LocalProvider, url:Url }
+
+// Resolve localhost ourselves, rather than trusting DNS or system proxy settings.
+// A local provider is deliberately not an arbitrary OpenAI-compatible endpoint.
+fn loopback_url(raw:&str) -> Result<Url> {
+    let mut url=Url::parse(raw).context("Некорректный адрес локального ИИ")?;
+    if url.scheme()!="http" || !url.username().is_empty() || url.password().is_some()
+        || url.path()!="/" || url.query().is_some() || url.fragment().is_some() {
+        bail!("Укажите только локальный HTTP-адрес с портом, например http://127.0.0.1:1234, без пути, ключа и параметров.");
+    }
+    match url.host_str() {
+        Some("localhost") => { url.set_host(Some("127.0.0.1")).map_err(|_|anyhow::anyhow!("Некорректный локальный адрес"))?; },
+        Some("127.0.0.1" | "[::1]") => {},
+        _=>bail!("Локальный ИИ может работать только на этом Mac: 127.0.0.1, localhost или [::1]."),
     }
     Ok(url)
 }
+fn local_config(settings:&Settings) -> Result<LocalConfig> {
+    let provider=match settings.local_provider.as_str() {
+        "managed"=>LocalProvider::Managed, "ollama"=>LocalProvider::Ollama, "lmstudio"=>LocalProvider::LmStudio,
+        _=>bail!("Выберите источник локальной модели: «После», Ollama или LM Studio."),
+    };
+    let raw=if provider==LocalProvider::Managed {
+        std::env::var("POSLE_OLLAMA_URL").unwrap_or_else(|_|"http://127.0.0.1:11436".into())
+    } else if settings.local_endpoint.trim().is_empty() {
+        match provider { LocalProvider::Ollama=>"http://127.0.0.1:11434", _=>"http://127.0.0.1:1234" }.into()
+    } else { settings.local_endpoint.trim().to_owned() };
+    Ok(LocalConfig{provider,url:loopback_url(&raw)?})
+}
+fn remote_model(value:&Value) -> bool {
+    ["remote_host","remote_model"].iter().any(|field| value.get(*field).is_some_and(|v|!v.is_null() && v!=""))
+}
+fn local_model_name(name:&str) -> bool {
+    !name.trim().is_empty() && !name.to_lowercase().contains("cloud")
+}
+fn local_response(config:&LocalConfig,response:std::result::Result<Response,reqwest::Error>) -> Result<Response> {
+    let response=response.map_err(|_|anyhow::anyhow!("Нет ответа от {}. {}",config.provider.title(),config.provider.start_hint()))?;
+    match response.status() {
+        StatusCode::UNAUTHORIZED|StatusCode::FORBIDDEN if config.provider==LocalProvider::LmStudio=>bail!("LM Studio требует авторизацию. Для этого подключения нужен локальный сервер без API Authentication; токены в адресе не поддерживаются."),
+        StatusCode::NOT_FOUND=>bail!("Модель или API {} не найдены. Проверьте адрес и имя модели; скачайте модель в выбранном приложении.",config.provider.title()),
+        status if !status.is_success()=>bail!("{} вернул ошибку HTTP {}. Проверьте модель и поддержку JSON Schema; транскрипция сохранена.",config.provider.title(),status.as_u16()),
+        _=>Ok(response),
+    }
+}
+fn local_get(config:&LocalConfig,path:&str,timeout:u64) -> Result<Value> {
+    local_response(config,client(true,timeout)?.get(config.url.join(path)?).send())?.json().context("Локальный сервер вернул некорректный список моделей")
+}
+fn local_post(config:&LocalConfig,path:&str,body:&Value,timeout:u64) -> Result<Value> {
+    local_response(config,client(true,timeout)?.post(config.url.join(path)?).json(body).send())?.json().context("Локальный сервер вернул некорректный ответ")
+}
+fn available_models(config:&LocalConfig) -> Result<Vec<String>> {
+    let (data,field,id)=if config.provider==LocalProvider::LmStudio {
+        (local_get(config,"v1/models",4)?,"data","id")
+    } else { (local_get(config,"api/tags",4)?,"models","name") };
+    let entries=data[field].as_array().context("Локальный сервер не вернул список моделей. Проверьте адрес API.")?;
+    let mut names:Vec<String>=entries.iter().filter(|entry|!remote_model(entry) && !["embedding","embeddings"].contains(&entry["type"].as_str().unwrap_or("")))
+        .filter_map(|entry|entry[id].as_str()).filter(|name|local_model_name(name)).map(str::to_owned).collect();
+    names.sort(); names.dedup(); Ok(names)
+}
+fn selected_model(config:&LocalConfig,settings:&Settings,models:&[String]) -> Result<()> {
+    if !local_model_name(&settings.local_model) { bail!("Выберите скачанную локальную модель; облачные модели отключены в локальном режиме."); }
+    let exists=models.iter().any(|model|model==&settings.local_model
+        || (config.provider!=LocalProvider::LmStudio && model==&format!("{}:latest",settings.local_model)));
+    if !exists {
+        bail!("Модель «{}» не найдена в {}. Выберите её из списка или скачайте в этом приложении; «После» не скачивает модели внешнего источника.",settings.local_model,config.provider.title());
+    }
+    if config.provider!=LocalProvider::LmStudio {
+        let info=local_post(config,"api/show",&json!({"model":settings.local_model}),4)?;
+        if remote_model(&info) { bail!("Удалённые модели Ollama отключены в локальном режиме. Выберите скачанную модель."); }
+    }
+    Ok(())
+}
+
 fn client(local:bool, timeout:u64) -> Result<Client> {
     let mut builder=Client::builder().redirect(Policy::none()).connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(timeout));
     if local { builder=builder.no_proxy(); }
@@ -189,19 +266,27 @@ fn generate(settings:&Settings,system:&str,prompt:&str,schema:&Value) -> Result<
         }
         text
     } else if settings.mode=="local" {
-        if settings.local_model.to_lowercase().contains("cloud") { bail!("Выберите скачанную локальную модель, например qwen3.5:4b-q4_K_M."); }
-        let url=local_url()?; let client=client(true,600)?;
-        let info=post(&client,url.join("api/show")?,&json!({"model":settings.local_model}),None)?;
-        if info.get("remote_host").is_some_and(|v|!v.is_null()&&v!="") || info.get("remote_model").is_some_and(|v|!v.is_null()&&v!="") {
-            bail!("Удалённые модели Ollama отключены в локальном режиме.");
-        }
+        let config=local_config(settings)?;
         if system.len()+prompt.len()+schema.to_string().len()>20000 { bail!("Запрос слишком велик для локального контекста. Сократите фокус встречи."); }
-        let body=json!({"model":settings.local_model,"messages":[{"role":"system","content":system},{"role":"user","content":prompt}],
-            "format":schema,"stream":false,"think":false,"keep_alive":0,
-            "options":{"temperature":LOCAL_TEMPERATURE,"num_ctx":LOCAL_CONTEXT_TOKENS,"num_predict":MAX_GENERATION_TOKENS}});
-        let result=post(&client,url.join("api/chat")?,&body,None)?;
-        if result["done_reason"]=="length" { bail!("Ответ не поместился. Выберите другую модель или сократите фокус."); }
-        result["message"]["content"].as_str().context("Нет ответа локальной модели")?.to_owned()
+        let models=available_models(&config)?;
+        selected_model(&config,settings,&models)?;
+        let messages=json!([{"role":"system","content":system},{"role":"user","content":prompt}]);
+        if config.provider==LocalProvider::LmStudio {
+            let body=json!({"model":settings.local_model,"messages":messages,
+                "response_format":{"type":"json_schema","json_schema":{"name":"meeting_notes","strict":true,"schema":schema}},
+                "temperature":LOCAL_TEMPERATURE,"max_tokens":MAX_GENERATION_TOKENS,"stream":false});
+            let result=local_post(&config,"v1/chat/completions",&body,600)?;
+            let choice=result["choices"].as_array().and_then(|choices|choices.first()).context("LM Studio не вернул ответ модели")?;
+            if choice["finish_reason"]!="stop" { bail!("LM Studio не закончил ответ. Проверьте поддержку JSON Schema, размер контекста и выбранную модель."); }
+            choice["message"]["content"].as_str().context("LM Studio не вернул текст JSON")?.to_owned()
+        } else {
+            let body=json!({"model":settings.local_model,"messages":messages,
+                "format":schema,"stream":false,"think":false,"keep_alive":0,
+                "options":{"temperature":LOCAL_TEMPERATURE,"num_ctx":LOCAL_CONTEXT_TOKENS,"num_predict":MAX_GENERATION_TOKENS}});
+            let result=local_post(&config,"api/chat",&body,600)?;
+            if result["done_reason"]=="length" { bail!("Ответ не поместился. Выберите другую модель или сократите фокус."); }
+            result["message"]["content"].as_str().context("Нет ответа локальной модели")?.to_owned()
+        }
     } else { bail!("Выберите локальный или облачный режим в настройках."); };
     serde_json::from_str(&answer).context("ИИ вернул ответ неподходящего формата. Транскрипция сохранена.")
 }
@@ -352,7 +437,7 @@ pub fn summarize(root:&Path,directory:&Path) -> Result<()> {
     let source_system=format!("{system}\n{SOURCE_OUTPUT_CONTRACT}");
     let schema=summary_schema(); let overhead=source_system.len()+schema.to_string().len()+context.to_string().len();
     let chunks=split_segments(&segments,19000usize.saturating_sub(overhead).max(2000))?;
-    let endpoint=if settings.mode=="local" {local_url()?.to_string()} else {"https://api.openai.com/v1/responses".to_owned()};
+    let endpoint=if settings.mode=="local" {local_config(&settings)?.url.to_string()} else {"https://api.openai.com/v1/responses".to_owned()};
     let fingerprint=summary_fingerprint(&settings,&source_system,&context,&schema,&chunks,&endpoint)?;
     let checkpoint=directory.join("summary-progress.json");
     let (mut parts,mut removed)=load_summary_progress(&checkpoint,&fingerprint,&chunks);
@@ -433,17 +518,211 @@ pub fn example(root:&Path,directory:&Path,id:&str) -> Result<()> {
     examples[id]=serde_json::to_value(result)?; atomic_json(&path,&examples)
 }
 
-pub fn check() -> Result<Value> {
-    let url=local_url()?.join("api/tags")?;
-    let data:Value=checked(client(true,4)?.get(url).send())?.json()?;
-    let models:Vec<_>=data["models"].as_array().into_iter().flatten().filter_map(|m|m["name"].as_str()).collect();
-    Ok(json!({"models":models}))
+const MIN_GGUF_BYTES:u64=1024*1024;
+const MODEL_COPY_BUFFER:usize=1024*1024;
+fn hash_model(file:&mut fs::File,message:&str,from:f64,to:f64) -> Result<(String,u64)> {
+    file.seek(SeekFrom::Start(0))?;
+    let expected=file.metadata()?.len();
+    let mut buffer=vec![0u8;MODEL_COPY_BUFFER]; let mut hash=Sha256::new(); let mut bytes=0u64; let mut previous=0;
+    progress(message,from);
+    loop {
+        let count=file.read(&mut buffer).context("Не удалось прочитать GGUF")?;
+        if count==0 {break;}
+        hash.update(&buffer[..count]); bytes+=count as u64;
+        if bytes>expected {bail!("GGUF изменился во время чтения. Дождитесь окончания загрузки и повторите.");}
+        let percent=if expected>0 {(bytes.saturating_mul(100)/expected).min(100)} else {100};
+        if percent>=previous+5 {progress(format!("{message} · {percent}%"),from+(to-from)*percent as f64/100.0); previous=percent;}
+    }
+    if bytes!=expected {bail!("GGUF изменился во время чтения. Дождитесь окончания его загрузки и повторите импорт.");}
+    file.seek(SeekFrom::Start(0))?;
+    Ok((format!("{:x}",hash.finalize()),bytes))
+}
+fn plain_model_file(path:&Path) -> Result<fs::File> {
+    let metadata=fs::symlink_metadata(path).context("GGUF-файл не найден")?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {bail!("Ожидался обычный файл GGUF, не символическая ссылка.");}
+    let file=fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path).context("Нет доступа к GGUF-файлу")?;
+    if !file.metadata()?.is_file() {bail!("Ожидался обычный файл GGUF.");} Ok(file)
+}
+fn model_directories(root:&Path) -> Result<std::path::PathBuf> {
+    // Check each component before descending: a replaced cache/blobs symlink
+    // must never redirect model installation into another app's directory.
+    let mut directory=root.to_path_buf();
+    for component in [None,Some("cache"),Some("ollama-models"),Some("blobs")] {
+        if let Some(component)=component {directory.push(component);}
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink()=>{},
+            Ok(_)=>bail!("Папка моделей «После» не должна быть файлом или символической ссылкой: {}",directory.display()),
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{
+                fs::DirBuilder::new().mode(0o700).create(&directory).context("Не удалось создать папку моделей «После»")?;
+            },
+            Err(error)=>return Err(error).context("Не удалось открыть папку моделей «После»"),
+        }
+    }
+    Ok(directory)
+}
+fn verify_blob(path:&Path,hash:&str,size:u64) -> Result<()> {
+    let mut file=plain_model_file(path)?;
+    if file.metadata()?.len()!=size {bail!("Существующий файл модели «После» повреждён: размер не совпадает. Исходный GGUF сохранён.");}
+    let (actual,_)=hash_model(&mut file,"Проверяю подключённый файл модели",0.45,0.75)?;
+    if actual!=hash {bail!("Существующий файл модели «После» повреждён: SHA-256 не совпадает. Исходный GGUF сохранён.");} Ok(())
+}
+#[cfg(target_os="macos")]
+fn clone_model(source:&Path,destination:&Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let (Ok(source),Ok(destination))=(std::ffi::CString::new(source.as_os_str().as_bytes()),std::ffi::CString::new(destination.as_os_str().as_bytes())) else {return false;};
+    unsafe {libc::clonefile(source.as_ptr(),destination.as_ptr(),0)==0}
+}
+#[cfg(not(target_os="macos"))]
+fn clone_model(_source:&Path,_destination:&Path) -> bool {false}
+
+fn lock_gguf_install(directory:&Path) -> Result<fs::File> {
+    let lock=fs::OpenOptions::new().read(true).write(true).create(true).mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW).open(directory.join(".posle-gguf.lock"))
+        .context("Не удалось открыть блокировку импорта GGUF")?;
+    if !lock.metadata()?.is_file() {bail!("Блокировка GGUF должна быть обычным файлом.");}
+    // The descriptor stays alive through verification/publication. Kernel
+    // releases flock even on SIGTERM, allowing the next import to clean a
+    // partial cross-filesystem copy without deleting a concurrent import.
+    if unsafe {libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock),libc::LOCK_EX)}!=0 {
+        return Err(std::io::Error::last_os_error()).context("Не удалось заблокировать импорт GGUF");
+    }
+    for entry in fs::read_dir(directory)? {
+        let entry=entry?;
+        let name=entry.file_name(); let Some(name)=name.to_str() else {continue;};
+        let own_temporary=name.strip_prefix(".posle-gguf-").and_then(|name|name.strip_suffix(".tmp"))
+            .is_some_and(|id|uuid::Uuid::parse_str(id).is_ok());
+        if own_temporary && entry.file_type()?.is_file() {
+            fs::remove_file(entry.path()).context("Не удалось убрать незавершённую копию GGUF")?;
+        }
+    }
+    Ok(lock)
+}
+fn install_gguf_blob(root:&Path,source:&Path,input:&mut fs::File,hash:&str,size:u64) -> Result<()> {
+    let directory=model_directories(root)?;
+    let _lock=lock_gguf_install(&directory)?;
+    let destination=directory.join(format!("sha256-{hash}"));
+    if fs::symlink_metadata(&destination).is_ok() {return verify_blob(&destination,hash,size);}
+    let temporary=directory.join(format!(".posle-gguf-{}.tmp",uuid::Uuid::new_v4()));
+    let result=(|| -> Result<()> {
+        // A hard link adds a directory entry only: never chmod or write through
+        // it, because that inode still belongs to the original app as well.
+        if fs::hard_link(source,&temporary).is_ok() {
+            progress("Подключаю GGUF без повторной загрузки и копирования",0.45);
+        } else if clone_model(source,&temporary) {
+            fs::set_permissions(&temporary,fs::Permissions::from_mode(0o600))?;
+            progress("Подключаю GGUF через APFS без полного копирования",0.45);
+        } else {
+            // Clonefile failure may leave a partial destination on some file
+            // systems. Only this unpredictable, privately owned temp is removed.
+            let _=fs::remove_file(&temporary);
+            let mut output=fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary)
+                .context("Не удалось создать копию GGUF. Проверьте свободное место.")?;
+            input.seek(SeekFrom::Start(0))?;
+            let mut buffer=vec![0u8;MODEL_COPY_BUFFER]; let mut bytes=0u64; let mut previous=0;
+            loop {
+                let count=input.read(&mut buffer).context("Не удалось прочитать GGUF при подключении")?;
+                if count==0 {break;}
+                bytes+=count as u64;
+                if bytes>size {bail!("GGUF изменился во время копирования. Дождитесь окончания загрузки и повторите.");}
+                output.write_all(&buffer[..count]).context("Не удалось сохранить GGUF. Проверьте свободное место.")?;
+                let percent=(bytes.saturating_mul(100)/size).min(100);
+                if percent>=previous+5 {progress(format!("Копирую GGUF в хранилище «После» · {percent}%"),0.4+0.3*percent as f64/100.0); previous=percent;}
+            }
+            output.sync_all()?;
+        }
+        verify_blob(&temporary,hash,size)?;
+        // link(2) publishes without replacing an existing path, including a
+        // symlink created by a concurrent import; rename would overwrite it.
+        match fs::hard_link(&temporary,&destination) {
+            Ok(())=>{},
+            Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>verify_blob(&destination,hash,size)?,
+            Err(error)=>return Err(error).context("Не удалось подключить GGUF в хранилище «После»"),
+        }
+        if let Ok(file)=fs::File::open(&directory) {let _=file.sync_all();}
+        Ok(())
+    })();
+    let _=fs::remove_file(&temporary);
+    result
+}
+
+/// Register an existing single-file GGUF with the owned Ollama runtime. No
+/// remote model reference, pull, download, source modification, or shell is used.
+pub fn import_gguf(root:&Path,source:&Path) -> Result<Value> {
+    let settings=settings(root)?;
+    import_gguf_with_config(root,source,&local_config(&settings)?)
+}
+fn import_gguf_with_config(root:&Path,source:&Path,config:&LocalConfig) -> Result<Value> {
+    if config.provider!=LocalProvider::Managed {
+        bail!("Импорт GGUF в «После» доступен для источника «После». Для Ollama или LM Studio импортируйте файл в самом приложении и обновите список моделей.");
+    }
+    if !source.is_absolute() {bail!("Выберите GGUF-файл по полному пути.");}
+    let source=source.canonicalize().context("Не удалось найти выбранный GGUF-файл")?;
+    let mut input=plain_model_file(&source)?; let before=input.metadata()?;
+    if before.len()<MIN_GGUF_BYTES {bail!("GGUF слишком мал или скачан не полностью: нужен файл размером не менее 1 МБ.");}
+    let mut magic=[0u8;4]; input.read_exact(&mut magic)?;
+    if &magic!=b"GGUF" {bail!("Выбранный файл не является GGUF. Для Qwen выберите готовый файл с расширением .gguf.");}
+    let (hash,size)=hash_model(&mut input,"Проверяю SHA-256 исходного GGUF",0.0,0.4)?;
+    let after=input.metadata()?;
+    if before.len()!=after.len() || before.mtime()!=after.mtime() || before.mtime_nsec()!=after.mtime_nsec() {
+        bail!("GGUF изменился во время чтения. Дождитесь окончания загрузки и повторите.");
+    }
+    // Verify the owned server before creating files; discovery never pulls.
+    let models=available_models(config)?;
+    install_gguf_blob(root,&source,&mut input,&hash,size)?;
+    let model=format!("posle-gguf-{}:latest",&hash[..12]);
+    let chosen=Settings{local_model:model.clone(),..Settings::default()};
+    if !models.contains(&model) {
+        progress("Регистрирую GGUF в локальном ИИ «После»…",0.8);
+        let response=client(true,600)?.post(config.url.join("api/create")?).json(&json!({
+            "model":model,"files":{"model.gguf":format!("sha256:{hash}")},"stream":false
+        })).send().map_err(|_|anyhow::anyhow!("Нет ответа от локального ИИ «После». Запустите его и повторите подключение GGUF."))?;
+        let status=response.status();
+        let mut bytes=Vec::new(); response.take(1024*1024).read_to_end(&mut bytes)?;
+        let payload:Value=serde_json::from_slice(&bytes).context("Ollama вернул некорректный ответ при подключении GGUF")?;
+        if !status.is_success() || payload["status"]!="success" || payload.get("error").is_some() {
+            let detail=excerpt(payload["error"].as_str().unwrap_or("неподдерживаемый формат или архитектура GGUF"),400);
+            bail!("Не удалось подключить GGUF: {detail}. Эта версия Ollama может не поддерживать модель; исходный файл сохранён.");
+        }
+    }
+    // /show also rejects remote aliases even if someone replaced the manifest.
+    selected_model(config,&chosen,&[model.clone()])?;
+    progress("GGUF подключён · повторная загрузка не нужна",1.0);
+    Ok(json!({"model":model,"models":[model],"message":"GGUF подключён из имеющегося файла без скачивания. Исходный файл сохранён."}))
+}
+
+pub fn discover_local_models(root:&Path) -> Result<Value> {
+    let settings=settings(root)?;
+    let config=local_config(&settings)?;
+    let names=available_models(&config)?;
+    let models:Vec<_>=names.iter().map(|name|json!({"id":name,"name":name,"provider":config.provider.id(),"endpoint":config.url.as_str()})).collect();
+    let mut message=if models.is_empty() { format!("В {} нет доступных локальных моделей. Скачайте модель в выбранном приложении и обновите список.",config.provider.title()) }
+        else {format!("Найдено моделей в {}: {}. Повторная загрузка не требуется.",config.provider.title(),models.len())};
+    if config.provider==LocalProvider::LmStudio { message.push_str(" Для обработки на этом Mac отключите LM Link в настройках LM Studio."); }
+    Ok(json!({"models":models,"message":message}))
+}
+pub fn check(root:&Path) -> Result<Value> {
+    let settings=settings(root)?; let config=local_config(&settings)?;
+    let models=available_models(&config)?;
+    // Managed startup checks server readiness before it may download a model.
+    // External sources must already have the explicitly selected model.
+    if config.provider!=LocalProvider::Managed { selected_model(&config,&settings,&models)?; }
+    Ok(json!({"models":models,"provider":config.provider.id(),"endpoint":config.url.as_str(),
+        "message":format!("{} доступен",config.provider.title())}))
 }
 pub fn pull(root:&Path) -> Result<()> {
     let settings=settings(root)?;
-    if settings.local_model.to_lowercase().contains("cloud") { bail!("Выберите локальную модель"); }
+    pull_model(&settings,local_config(&settings)?)
+}
+fn pull_model(settings:&Settings,config:LocalConfig) -> Result<()> {
+    if !local_model_name(&settings.local_model) { bail!("Выберите локальную модель"); }
+    let models=available_models(&config)?;
+    if config.provider!=LocalProvider::Managed || models.iter().any(|name|name==&settings.local_model || name==&format!("{}:latest",settings.local_model)) {
+        selected_model(&config,&settings,&models)?;
+        progress(format!("{} уже доступна в {} · повторная загрузка не нужна",settings.local_model,config.provider.title()),1.0);
+        return Ok(());
+    }
     progress(format!("Загружаю {}…",settings.local_model),-1.0);
-    let response=checked(client(true,3600)?.post(local_url()?.join("api/pull")?).json(&json!({"model":settings.local_model,"stream":true})).send())?;
+    let response=local_response(&config,client(true,3600)?.post(config.url.join("api/pull")?).json(&json!({"model":settings.local_model,"stream":true})).send())?;
     let mut success=false; let mut previous=String::new();
     for line in BufReader::new(response).lines() {
         let event:Value=serde_json::from_str(&line.context("Загрузка модели прервалась")?)?;
@@ -462,6 +741,309 @@ pub fn pull(root:&Path) -> Result<()> {
 mod tests {
     use super::*;
     fn segment(id:u64,text:&str)->Segment {Segment{id,start:0.0,end:1.0,speaker:"speaker_1".into(),text:text.into(),overlap:false}}
+
+    #[test]
+    fn old_settings_keep_managed_provider_and_external_defaults_are_explicit() {
+        let old:Settings=serde_json::from_value(json!({"localModel":"my-qwen","mode":"local"})).unwrap();
+        assert_eq!(old.local_provider,"managed"); assert!(old.local_endpoint.is_empty());
+        assert_eq!(old.local_model,"my-qwen");
+        let mut settings=Settings::default(); settings.local_provider="ollama".into();
+        assert_eq!(local_config(&settings).unwrap().url.as_str(),"http://127.0.0.1:11434/");
+        settings.local_provider="lmstudio".into();
+        assert_eq!(local_config(&settings).unwrap().url.as_str(),"http://127.0.0.1:1234/");
+        settings.local_provider="openai".into(); assert!(local_config(&settings).is_err());
+    }
+    #[test]
+    fn local_endpoint_requires_plain_loopback_without_credentials_or_paths() {
+        for raw in ["http://127.0.0.1:1234", "http://localhost:1234/", "http://[::1]:1234"] {
+            assert!(loopback_url(raw).is_ok(),"{raw}");
+        }
+        assert_eq!(loopback_url("http://localhost:1234").unwrap().host_str(),Some("127.0.0.1"));
+        for raw in ["https://127.0.0.1:1234", "http://example.com", "http://192.168.1.2:1234", "http://127.0.0.2:1234",
+            "http://localhost.attacker.test", "http://[::ffff:127.0.0.1]", "http://user@localhost:1234", "http://localhost:1234/v1",
+            "http://localhost:1234/?key=secret", "http://localhost:1234/#fragment", "file:///tmp/llm", "http://localhost:1234?", "http://localhost:1234#"] {
+            assert!(loopback_url(raw).is_err(),"must reject {raw}");
+        }
+    }
+
+    // Tiny HTTP fixtures exercise the real reqwest paths without downloading a
+    // model, invoking inference, or reading any user's app/model directories.
+    type CapturedRequest=(String,Value,String);
+    fn model_server(replies:Vec<(u16,Value)>) -> (String,std::thread::JoinHandle<Vec<CapturedRequest>>) {
+        use std::io::{Read,Write};
+        fn read_fixture_bytes(stream:&mut std::net::TcpStream,bytes:&mut Vec<u8>,deadline:std::time::Instant) {
+            let mut buffer=[0u8;4096];
+            loop {
+                assert!(std::time::Instant::now()<deadline,"local fixture request headers/body timed out");
+                match stream.read(&mut buffer) {
+                    Ok(0)=>panic!("local fixture client closed before sending the complete request"),
+                    Ok(count)=>{ bytes.extend_from_slice(&buffer[..count]); assert!(bytes.len()<=1024*1024,"oversized fixture request"); return; },
+                    Err(error) if [std::io::ErrorKind::WouldBlock,std::io::ErrorKind::TimedOut,std::io::ErrorKind::Interrupted].contains(&error.kind())=>continue,
+                    Err(error)=>panic!("local fixture read failed: {error}"),
+                }
+            }
+        }
+        let listener=std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST,0)).unwrap();
+        let endpoint=format!("http://{}",listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let handle=std::thread::spawn(move|| {
+            let mut requests=Vec::new();
+            for (status,response) in replies {
+                let deadline=std::time::Instant::now()+Duration::from_secs(8);
+                let mut stream=loop {
+                    match listener.accept() {
+                        Ok((stream,_))=>break stream,
+                        Err(error) if error.kind()==std::io::ErrorKind::WouldBlock=> {
+                            assert!(std::time::Instant::now()<deadline,"missing expected local API request");
+                            std::thread::sleep(Duration::from_millis(5));
+                        },
+                        Err(error)=>panic!("{error}"),
+                    }
+                };
+                // Darwin may inherit the listener's nonblocking flag. Explicitly
+                // make accepted sockets blocking before reading partial packets.
+                stream.set_nonblocking(false).unwrap();
+                stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+                stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                let read_deadline=std::time::Instant::now()+Duration::from_secs(5);
+                let mut bytes=Vec::new();
+                let (header_end,content_length)=loop {
+                    read_fixture_bytes(&mut stream,&mut bytes,read_deadline);
+                    if let Some(index)=bytes.windows(4).position(|window|window==b"\r\n\r\n") {
+                        let headers=String::from_utf8_lossy(&bytes[..index]);
+                        let content_length=headers.lines().find_map(|line| {
+                            let (name,value)=line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length").then(||value.trim().parse::<usize>().unwrap())
+                        }).unwrap_or(0);
+                        break(index+4,content_length);
+                    }
+                };
+                while bytes.len()<header_end+content_length {
+                    read_fixture_bytes(&mut stream,&mut bytes,read_deadline);
+                }
+                let headers=String::from_utf8_lossy(&bytes[..header_end]).into_owned();
+                let body=if content_length==0 {Value::Null} else {serde_json::from_slice(&bytes[header_end..header_end+content_length]).unwrap()};
+                requests.push((headers.lines().next().unwrap().to_owned(),body,headers));
+                let body=serde_json::to_vec(&response).unwrap();
+                let redirect=if status==302 {"Location: http://203.0.113.1:1234/forbidden\r\n"} else {""};
+                write!(stream,"HTTP/1.1 {} fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",status,body.len(),redirect).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+            requests
+        });
+        (endpoint,handle)
+    }
+    fn provider_settings(provider:&str,endpoint:&str) -> Settings {
+        Settings{local_provider:provider.into(),local_endpoint:endpoint.into(),local_model:"my-qwen".into(),..Settings::default()}
+    }
+    fn save_settings_fixture(directory:&Path,settings:&Settings) {
+        fs::write(directory.join("settings.json"),serde_json::to_vec(settings).unwrap()).unwrap();
+    }
+    #[test]
+    fn ollama_discovery_lists_existing_models_without_a_pull_or_generation() {
+        let (endpoint,server)=model_server(vec![(200,json!({"models":[
+            {"name":"my-qwen"},{"name":"my-qwen"},{"name":"gpt-oss:120b-cloud"},
+            {"name":"alias-remote","remote_host":"https://ollama.com"},{"name":"local-embedding","type":"embedding"}
+        ]}))]);
+        let root=tempfile::tempdir().unwrap(); save_settings_fixture(root.path(),&provider_settings("ollama",&endpoint));
+        let result=discover_local_models(root.path()).unwrap();
+        assert_eq!(result["models"].as_array().unwrap().len(),1);
+        assert_eq!(result["models"][0]["id"],"my-qwen"); assert_eq!(result["models"][0]["provider"],"ollama");
+        assert!(result["message"].as_str().unwrap().contains("Повторная загрузка не требуется"));
+        let requests=server.join().unwrap(); assert_eq!(requests[0].0,"GET /api/tags HTTP/1.1");
+    }
+    #[test]
+    fn external_ollama_pull_only_checks_existing_model_and_blocks_remote_aliases() {
+        let tags=json!({"models":[{"name":"my-qwen:latest"}]});
+        let (endpoint,server)=model_server(vec![(200,tags.clone()),(200,json!({"details":{"family":"qwen"}}))]);
+        let root=tempfile::tempdir().unwrap(); save_settings_fixture(root.path(),&provider_settings("ollama",&endpoint));
+        pull(root.path()).unwrap();
+        let requests=server.join().unwrap();
+        assert_eq!(requests.iter().map(|r|r.0.as_str()).collect::<Vec<_>>(),vec!["GET /api/tags HTTP/1.1","POST /api/show HTTP/1.1"]);
+        assert_eq!(requests[1].1,json!({"model":"my-qwen"}));
+        let (endpoint,server)=model_server(vec![(200,tags),(200,json!({"remote_model":"qwen","remote_host":"https://ollama.com"}))]);
+        save_settings_fixture(root.path(),&provider_settings("ollama",&endpoint));
+        assert!(check(root.path()).unwrap_err().to_string().contains("Удалённые модели")); server.join().unwrap();
+    }
+    #[test]
+    fn missing_external_selection_fails_without_downloading() {
+        for provider in ["ollama","lmstudio"] {
+            let list=if provider=="ollama" {json!({"models":[{"name":"other-model"}]})} else {json!({"data":[{"id":"other-model"}]})};
+            let (endpoint,server)=model_server(vec![(200,list)]);
+            let root=tempfile::tempdir().unwrap(); save_settings_fixture(root.path(),&provider_settings(provider,&endpoint));
+            let error=pull(root.path()).unwrap_err().to_string();
+            assert!(error.contains("не найдена")); assert!(error.contains("не скачивает"));
+            let requests=server.join().unwrap(); assert_eq!(requests.len(),1);
+        }
+    }
+    #[test]
+    fn lmstudio_reuses_selected_model_with_strict_schema_and_existing_validation() {
+        let answer=json!({"example":"Let's circle back tomorrow.","translation":"Вернёмся к этому завтра.","explanation":"Вернуться к обсуждению."});
+        let (endpoint,server)=model_server(vec![(200,json!({"data":[{"id":"my-qwen"}]})),
+            (200,json!({"choices":[{"finish_reason":"stop","message":{"content":answer.to_string()}}]}))]);
+        let settings=provider_settings("lmstudio",&endpoint); let schema=example_schema();
+        assert_eq!(generate(&settings,"system", "untrusted meeting",&schema).unwrap(),answer);
+        let requests=server.join().unwrap();
+        assert_eq!(requests[0].0,"GET /v1/models HTTP/1.1");
+        assert_eq!(requests[1].0,"POST /v1/chat/completions HTTP/1.1");
+        assert_eq!(requests[1].1["model"],"my-qwen");
+        assert_eq!(requests[1].1["response_format"]["type"],"json_schema");
+        assert_eq!(requests[1].1["response_format"]["json_schema"]["strict"],true);
+        assert_eq!(requests[1].1["response_format"]["json_schema"]["schema"],schema);
+        assert_eq!(requests[1].1["messages"][1]["content"],"untrusted meeting");
+        assert_eq!(requests[1].1["stream"],false);
+        assert!(requests.iter().all(|request|!request.2.to_lowercase().contains("authorization:")));
+    }
+    #[test]
+    fn lmstudio_does_not_accept_truncated_or_unstructured_output() {
+        for (reason,content) in [("length","{\"example\":\"unfinished"),("stop","```json\n{}\n```")] {
+            let (endpoint,server)=model_server(vec![(200,json!({"data":[{"id":"my-qwen"}]})),
+                (200,json!({"choices":[{"finish_reason":reason,"message":{"content":content}}]}))]);
+            assert!(generate(&provider_settings("lmstudio",&endpoint),"system","source",&example_schema()).is_err());
+            server.join().unwrap();
+        }
+    }
+    #[test]
+    fn managed_reuses_an_existing_model_without_contacting_a_download_endpoint() {
+        let (endpoint,server)=model_server(vec![(200,json!({"models":[{"name":"my-qwen:latest"}]})),
+            (200,json!({"details":{"family":"qwen"}}))]);
+        let settings=Settings{local_model:"my-qwen".into(),..Settings::default()};
+        pull_model(&settings,LocalConfig{provider:LocalProvider::Managed,url:loopback_url(&endpoint).unwrap()}).unwrap();
+        let requests=server.join().unwrap();
+        assert_eq!(requests.iter().map(|r|r.0.as_str()).collect::<Vec<_>>(),vec!["GET /api/tags HTTP/1.1","POST /api/show HTTP/1.1"]);
+    }
+    #[test]
+    fn loopback_requests_ignore_environment_proxies() {
+        struct RestoreEnv(Vec<(&'static str,Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) { for (key,value) in &self.0 {
+                if let Some(value)=value {std::env::set_var(key,value);} else {std::env::remove_var(key);}
+            } }
+        }
+        let keys=["HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy","NO_PROXY","no_proxy"];
+        let _restore=RestoreEnv(keys.iter().map(|key|(*key,std::env::var_os(key))).collect());
+        for key in keys {std::env::set_var(key,if key.eq_ignore_ascii_case("no_proxy") {""} else {"http://127.0.0.1:9"});}
+        let (endpoint,server)=model_server(vec![(200,json!({"data":[{"id":"my-qwen"}]}))]);
+        let config=local_config(&provider_settings("lmstudio",&endpoint)).unwrap();
+        assert_eq!(available_models(&config).unwrap(),vec!["my-qwen"]);
+        assert_eq!(server.join().unwrap().len(),1);
+    }
+
+    fn gguf_fixture(directory:&Path) -> std::path::PathBuf {
+        let source=directory.join("downloaded-Qwen.gguf");
+        let mut file=fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&source).unwrap();
+        file.write_all(b"GGUF").unwrap(); file.set_len(MIN_GGUF_BYTES).unwrap(); file.sync_all().unwrap();
+        source
+    }
+    fn managed_config(endpoint:&str) -> LocalConfig {
+        LocalConfig{provider:LocalProvider::Managed,url:loopback_url(endpoint).unwrap()}
+    }
+    #[test]
+    fn gguf_import_uses_existing_file_and_create_files_mapping_without_pull() {
+        let root=tempfile::tempdir().unwrap(); let original=tempfile::tempdir().unwrap(); let source=gguf_fixture(original.path());
+        fs::set_permissions(&source,fs::Permissions::from_mode(0o400)).unwrap();
+        let contents=fs::read(&source).unwrap(); let before=fs::metadata(&source).unwrap();
+        let hash=format!("{:x}",Sha256::digest(&contents)); let model=format!("posle-gguf-{}:latest",&hash[..12]);
+        let (endpoint,server)=model_server(vec![(200,json!({"models":[]})),(200,json!({"status":"success"})),(200,json!({"details":{"family":"qwen"}}))]);
+        let result=import_gguf_with_config(root.path(),&source,&managed_config(&endpoint)).unwrap();
+        assert_eq!(result["model"],model); assert_eq!(result["models"],json!([model]));
+        let requests=server.join().unwrap();
+        assert_eq!(requests.iter().map(|r|r.0.as_str()).collect::<Vec<_>>(),vec!["GET /api/tags HTTP/1.1","POST /api/create HTTP/1.1","POST /api/show HTTP/1.1"]);
+        assert_eq!(requests[1].1,json!({"model":model,"files":{"model.gguf":format!("sha256:{hash}")},"stream":false}));
+        assert!(requests[1].1.get("from").is_none());
+        assert!(requests.iter().all(|r|!r.0.contains("pull") && !r.2.to_lowercase().contains("authorization:")));
+        let blob=root.path().join("cache/ollama-models/blobs").join(format!("sha256-{hash}"));
+        assert_eq!(fs::read(&blob).unwrap(),contents); assert_eq!(fs::read(&source).unwrap(),contents);
+        let after=fs::metadata(&source).unwrap();
+        assert_eq!(before.permissions().mode(),after.permissions().mode()); assert_eq!(before.mtime(),after.mtime()); assert_eq!(before.mtime_nsec(),after.mtime_nsec());
+        assert!(!root.path().join("settings.json").exists(),"import must let the UI select the new model explicitly");
+        let before_blob=fs::metadata(&blob).unwrap();
+        let (endpoint,server)=model_server(vec![(200,json!({"models":[{"name":model}]})),(200,json!({"details":{"family":"qwen"}}))]);
+        assert_eq!(import_gguf_with_config(root.path(),&source,&managed_config(&endpoint)).unwrap()["model"],model);
+        let requests=server.join().unwrap(); assert_eq!(requests.len(),2); assert!(requests.iter().all(|r|!r.0.contains("create")));
+        assert_eq!(fs::metadata(&blob).unwrap().ino(),before_blob.ino(),"reimport must reuse the committed blob");
+        let names=fs::read_dir(blob.parent().unwrap()).unwrap().map(|entry|entry.unwrap().file_name()).collect::<Vec<_>>();
+        assert_eq!(names.iter().filter(|name|name.to_string_lossy().starts_with("sha256-")).count(),1,"reimport must not duplicate model blobs");
+        assert!(names.iter().all(|name|!name.to_string_lossy().ends_with(".tmp")),"imports must not leave temp copies");
+    }
+    #[test]
+    fn gguf_next_install_cleans_only_its_orphaned_uuid_temporary_files() {
+        let root=tempfile::tempdir().unwrap(); let directory=model_directories(root.path()).unwrap();
+        let stale=directory.join(format!(".posle-gguf-{}.tmp",uuid::Uuid::new_v4()));
+        let partial=fs::File::create(&stale).unwrap(); partial.set_len(2*MIN_GGUF_BYTES).unwrap(); drop(partial);
+        for name in ["sha256-existing-model",".posle-gguf-not-a-uuid.tmp","unrelated.tmp"] {fs::write(directory.join(name),b"preserve").unwrap();}
+        let source=root.path().join("source.gguf"); fs::write(&source,b"preserve original").unwrap();
+        let linked=directory.join(format!(".posle-gguf-{}.tmp",uuid::Uuid::new_v4()));
+        std::os::unix::fs::symlink(&source,&linked).unwrap();
+        let lock=lock_gguf_install(&directory).unwrap();
+        assert!(!stale.exists());
+        for name in ["sha256-existing-model",".posle-gguf-not-a-uuid.tmp","unrelated.tmp"] {assert_eq!(fs::read(directory.join(name)).unwrap(),b"preserve");}
+        assert!(fs::symlink_metadata(&linked).unwrap().file_type().is_symlink()); assert_eq!(fs::read(&source).unwrap(),b"preserve original");
+        assert_eq!(lock.metadata().unwrap().permissions().mode()&0o777,0o600);
+    }
+
+    #[test]
+    fn gguf_import_rejects_invalid_files_and_external_sources_before_network() {
+        let root=tempfile::tempdir().unwrap(); let original=tempfile::tempdir().unwrap();
+        let source=gguf_fixture(original.path());
+        save_settings_fixture(root.path(),&provider_settings("lmstudio","http://127.0.0.1:9"));
+        assert!(import_gguf(root.path(),&source).unwrap_err().to_string().contains("самом приложении"));
+        let config=managed_config("http://127.0.0.1:9");
+        assert!(import_gguf_with_config(root.path(),Path::new("relative.gguf"),&config).unwrap_err().to_string().contains("полному пути"));
+        assert!(import_gguf_with_config(root.path(),original.path(),&config).is_err());
+        let small=original.path().join("unfinished.gguf"); fs::write(&small,b"GGUF").unwrap();
+        assert!(import_gguf_with_config(root.path(),&small,&config).unwrap_err().to_string().contains("слишком мал"));
+        let wrong=original.path().join("weights.safetensors");
+        let file=fs::File::create(&wrong).unwrap(); file.set_len(MIN_GGUF_BYTES).unwrap();
+        assert!(import_gguf_with_config(root.path(),&wrong,&config).unwrap_err().to_string().contains("не является GGUF"));
+        assert!(!root.path().join("cache").exists());
+    }
+    #[test]
+    fn gguf_import_refuses_symlinked_storage_and_corrupt_existing_blobs() {
+        let root=tempfile::tempdir().unwrap(); let original=tempfile::tempdir().unwrap(); let outside=tempfile::tempdir().unwrap(); let source=gguf_fixture(original.path());
+        let contents=fs::read(&source).unwrap(); let hash=format!("{:x}",Sha256::digest(&contents));
+        std::os::unix::fs::symlink(outside.path(),root.path().join("cache")).unwrap();
+        let (endpoint,server)=model_server(vec![(200,json!({"models":[]}))]);
+        assert!(import_gguf_with_config(root.path(),&source,&managed_config(&endpoint)).unwrap_err().to_string().contains("символической ссылкой"));
+        server.join().unwrap(); assert_eq!(fs::read_dir(outside.path()).unwrap().count(),0);
+        fs::remove_file(root.path().join("cache")).unwrap();
+        let directory=model_directories(root.path()).unwrap(); let blob=directory.join(format!("sha256-{hash}"));
+        let wrong=fs::File::create(&blob).unwrap(); wrong.set_len(MIN_GGUF_BYTES).unwrap();
+        let (endpoint,server)=model_server(vec![(200,json!({"models":[]}))]);
+        assert!(import_gguf_with_config(root.path(),&source,&managed_config(&endpoint)).unwrap_err().to_string().contains("SHA-256"));
+        server.join().unwrap(); assert_eq!(fs::read(&source).unwrap(),contents);
+        assert_eq!(fs::read(&blob).unwrap(),vec![0u8;MIN_GGUF_BYTES as usize],"corrupt existing blobs must not be overwritten");
+        fs::remove_file(&blob).unwrap(); std::os::unix::fs::symlink(&source,&blob).unwrap();
+        let (endpoint,server)=model_server(vec![(200,json!({"models":[]}))]);
+        assert!(import_gguf_with_config(root.path(),&source,&managed_config(&endpoint)).unwrap_err().to_string().contains("символическая ссылка"));
+        server.join().unwrap(); assert!(fs::symlink_metadata(&blob).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&source).unwrap(),contents);
+    }
+    #[test]
+    fn gguf_create_failure_and_remote_alias_preserve_the_source() {
+        for remote in [false,true] {
+            let root=tempfile::tempdir().unwrap(); let original=tempfile::tempdir().unwrap(); let source=gguf_fixture(original.path()); let contents=fs::read(&source).unwrap();
+            let replies=if remote {vec![(200,json!({"models":[]})),(200,json!({"status":"success"})),
+                (200,json!({"remote_host":"https://ollama.com","remote_model":"qwen"}))]}
+                else {vec![(200,json!({"models":[]})),(400,json!({"error":"unsupported architecture qwen-future"}))]};
+            let (endpoint,server)=model_server(replies);
+            let error=import_gguf_with_config(root.path(),&source,&managed_config(&endpoint)).unwrap_err().to_string();
+            assert!(error.contains(if remote {"Удалённые модели"} else {"unsupported architecture"}));
+            server.join().unwrap(); assert_eq!(fs::read(&source).unwrap(),contents);
+            assert!(!root.path().join("settings.json").exists());
+        }
+    }
+
+    #[test]
+    fn local_api_redirects_and_lmstudio_auth_fail_with_no_fallback() {
+        for status in [302,401] {
+            let (endpoint,server)=model_server(vec![(status,json!({"error":"fixture"}))]);
+            let root=tempfile::tempdir().unwrap(); save_settings_fixture(root.path(),&provider_settings("lmstudio",&endpoint));
+            let error=discover_local_models(root.path()).unwrap_err().to_string();
+            if status==401 {assert!(error.contains("авторизацию"));} else {assert!(error.contains("302"));}
+            assert_eq!(server.join().unwrap().len(),1);
+        }
+    }
     #[test]
     fn unknown_fields_and_bad_kinds_are_rejected() {
         assert!(validate_draft(json!({"overview":"x","items":[],"cards":[],"extra":1})).is_err());
@@ -606,6 +1188,8 @@ mod tests {
         let mut variants = Vec::new();
         let mut changed = settings.clone(); changed.mode = "cloud".into(); variants.push(changed);
         let mut changed = settings.clone(); changed.local_model = "another-local-model".into(); variants.push(changed);
+        let mut changed = settings.clone(); changed.local_provider = "lmstudio".into(); variants.push(changed);
+        let mut changed = settings.clone(); changed.local_endpoint = "http://127.0.0.1:1235".into(); variants.push(changed);
         let mut changed = settings.clone(); changed.cloud_model = "another-cloud-model".into(); variants.push(changed);
         let mut changed = settings.clone(); changed.language = "en".into(); variants.push(changed);
         let mut changed = settings.clone(); changed.focus = "Different important details".into(); variants.push(changed);

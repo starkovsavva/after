@@ -12,6 +12,7 @@ import contextlib
 import gc
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -21,6 +22,9 @@ import urllib.request
 import wave
 from collections import defaultdict
 from pathlib import Path
+
+sys.dont_write_bytecode = True  # A signed app bundle must remain read-only.
+import models as local_models
 
 MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 SEGMENTATION_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
@@ -87,12 +91,30 @@ def speaker_models(root: Path):
     return segmentation, embedding
 
 
-def prepare(root: Path):
+def resolve_asr(root: Path, allow_download: bool = False):
+    selected = local_models.selected_asr(root)
+    if selected is not None:
+        return selected
+    if not allow_download:
+        raise RuntimeError("Совместимая модель Parakeet не найдена. Выберите папку модели или установите её в настройках.")
+    settings = load(root / "settings.json", {})
+    if settings.get("asrModelFormat") == "onnx":
+        raise RuntimeError("Локальная ONNX-модель не найдена. Выберите папку Parakeet ONNX или автоматический формат для установки MLX.")
     from huggingface_hub import snapshot_download
-    progress("Загружаю Parakeet. При первом запуске потребуется интернет…")
-    snapshot_download(MODEL, allow_patterns=["*.json", "*.safetensors"])
+    progress("Локальная модель не найдена. Загружаю Parakeet MLX…")
+    directory = snapshot_download(MODEL, cache_dir=str(root / "cache/huggingface/hub"),
+                                  allow_patterns=["*.json", "*.safetensors"])
+    selected = local_models.inspect_model(Path(directory), "После", "mlx")
+    if not selected["compatible"]:
+        raise RuntimeError("Не удалось подготовить Parakeet: " + selected["reason"])
+    return selected
+
+
+def prepare(root: Path):
+    selected = resolve_asr(root, allow_download=True)
+    progress(f"Использую скачанную модель Parakeet · {selected['format'].upper()}")
     speaker_models(root)
-    emit("done")
+    emit("done", asrModel=local_models.public_model(selected))
 
 
 def install_local(root: Path):
@@ -267,6 +289,161 @@ def group_tokens(tokens: list[dict], turns: list[dict], fixed_speaker: str | Non
     return result
 
 
+def chunk_windows(duration: float, length: float = 20, overlap: float = 2):
+    """Overlapping, bounded ONNX chunks with disjoint ownership of timestamps."""
+    spans = []
+    start = 0.0
+    while start < duration:
+        end = min(start + length, duration)
+        spans.append((start, end))
+        if end >= duration:
+            break
+        start += length - overlap
+    return [(start, end,
+             0.0 if index == 0 else (spans[index - 1][1] + start) / 2,
+             duration if index == len(spans) - 1 else (end + spans[index + 1][0]) / 2)
+            for index, (start, end) in enumerate(spans)]
+
+
+def timestamp_tokens(texts, timestamps, duration: float, durations=None):
+    """Keep runtime token starts; derive bounded, approximate token ends."""
+    if not texts:
+        return []
+    if timestamps is None or len(texts) != len(timestamps):
+        raise RuntimeError("ONNX-модель не вернула временные метки токенов")
+    starts = [float(value) for value in timestamps]
+    if any(not math.isfinite(value) or value < 0 or value > duration + 0.5 for value in starts):
+        raise RuntimeError("ONNX-модель вернула некорректные временные метки")
+    if starts != sorted(starts):
+        raise RuntimeError("ONNX-модель вернула несогласованные временные метки")
+    durations = list(durations) if durations is not None else []
+    exact_durations = len(durations) == len(texts) and all(math.isfinite(float(value)) and float(value) >= 0 for value in durations)
+    result = []
+    for index, (text, start) in enumerate(zip(texts, starts)):
+        start = min(start, duration)
+        next_start = next((value for value in starts[index + 1:] if value > start), start + 0.16)
+        end = (min(duration, start + float(durations[index])) if exact_durations
+               else min(duration, start + 0.8, max(start + 0.08, next_start)))
+        result.append({"text": str(text).replace("▁", " "), "start": start, "end": max(start, end)})
+    return result
+
+
+def owned_chunk_words(tokens, offset: float, left: float, right: float, final: bool):
+    """Ownership applies to whole words, so BPE pieces do not duplicate at joins."""
+    words = []
+    for token in tokens:
+        token = dict(token)
+        token["start"] += offset
+        token["end"] += offset
+        if not words or token["text"].startswith(" "):
+            words.append(token)
+        else:
+            words[-1]["text"] += token["text"]
+            words[-1]["end"] = max(words[-1]["end"], token["end"])
+    kept = []
+    for word in words:
+        center = (word["start"] + word["end"]) / 2
+        if center >= left and (center < right or final and center <= right):
+            # Every item is a complete word; retain an explicit word boundary for
+            # group_tokens, including the first word of a following chunk.
+            word["text"] = " " + word["text"].lstrip()
+            kept.append(word)
+    return kept
+
+
+class ASRAdapter:
+    """MLX, Sherpa transducer, or maintained onnx-asr for Meetily NeMo TDT."""
+    def __init__(self, selected: dict, root: Path):
+        self.selected = selected
+        self.model = None
+        self.wrapper = None
+        self.mx = None
+        files = selected["files"]
+        if selected["layout"] == "mlx":
+            import mlx.core as mx
+            from parakeet_mlx import from_pretrained
+            self.mx = mx
+            # An absolute local directory makes from_pretrained bypass HF lookup.
+            self.model = from_pretrained(selected["path"])
+        elif selected["layout"] == "sherpa-onnx":
+            import sherpa_onnx
+            self.model = sherpa_onnx.OfflineRecognizer.from_transducer(
+                encoder=files["encoder"], decoder=files["decoder"], joiner=files["joiner"],
+                tokens=files["tokens"], num_threads=4, sample_rate=16000, feature_dim=128,
+                model_type="nemo_transducer", provider="cpu", decoding_method="greedy_search")
+        else:
+            try:
+                import onnx_asr
+                import onnxruntime
+            except ImportError as exc:
+                raise RuntimeError("Для модели Meetily обновите среду кнопкой «Установить модели» в настройках. Веса Parakeet повторно скачиваться не будут.") from exc
+            # Meetily omits onnx-asr's tiny config.json. Supply a private wrapper
+            # with symlinks to original weights; do not edit or copy their GB data.
+            wrapper_parent = root / "cache/model-config"
+            wrapper_parent.mkdir(parents=True, exist_ok=True)
+            self.wrapper = tempfile.TemporaryDirectory(prefix="parakeet-", dir=wrapper_parent)
+            directory = Path(self.wrapper.name)
+            for key, name in (("encoder", "encoder-model.onnx"), ("decoder", "decoder_joint-model.onnx"), ("tokens", "vocab.txt")):
+                (directory / name).symlink_to(Path(files[key]).absolute())
+            for model_file in (Path(files["encoder"]), Path(files["decoder"])):
+                for suffix in (".data", "_data"):
+                    data = model_file.with_name(model_file.name + suffix)
+                    if data.is_file():
+                        (directory / data.name).symlink_to(data.absolute())
+            atomic(directory / "config.json", {"model_type": "nemo-conformer-tdt", "features_size": 128,
+                                               "subsampling_factor": 8, "max_tokens_per_step": 3})
+            options = onnxruntime.SessionOptions()
+            options.intra_op_num_threads = 4
+            options.inter_op_num_threads = 1
+            options.enable_cpu_mem_arena = False
+            # The model type has no remote repository and the existing local path
+            # forces Resolver.offline=True in onnx-asr. No network fallback.
+            self.model = onnx_asr.load_model("nemo-conformer-tdt", path=directory,
+                                            sess_options=options, providers=["CPUExecutionProvider"],
+                                            preprocessor_config={"use_numpy_preprocessors": True}).with_timestamps()
+
+    def transcribe(self, path: Path, callback):
+        if self.selected["layout"] == "mlx":
+            from parakeet_mlx.parakeet import DecodingConfig
+            from parakeet_mlx.alignment import SentenceConfig
+            result = self.model.transcribe(path, chunk_duration=120, overlap_duration=15, chunk_callback=callback,
+                                           decoding_config=DecodingConfig(sentence=SentenceConfig(max_duration=15, silence_gap=1.2)))
+            return [{"text": token.text, "start": float(token.start), "end": float(token.end)} for token in result.tokens]
+        import numpy as np
+        all_tokens = []
+        with wave.open(str(path)) as source:
+            rate = source.getframerate()
+            if rate != 16000 or source.getnchannels() != 1 or source.getsampwidth() != 2:
+                raise RuntimeError("ONNX ожидает PCM 16 бит, моно 16 кГц")
+            duration = source.getnframes() / rate
+            windows = chunk_windows(duration)
+            for index, (start, end, left, right) in enumerate(windows):
+                source.setpos(round(start * rate))
+                audio = np.frombuffer(source.readframes(round((end - start) * rate)), dtype=np.int16).astype(np.float32) / 32768.0
+                if self.selected["layout"] == "sherpa-onnx":
+                    stream = self.model.create_stream()
+                    stream.accept_waveform(rate, audio)
+                    self.model.decode_stream(stream)
+                    result = stream.result
+                else:
+                    result = self.model.recognize(audio, sample_rate=rate)
+                tokens = timestamp_tokens(result.tokens, result.timestamps, len(audio) / rate, getattr(result, "durations", None))
+                if result.text.strip() and not tokens:
+                    raise RuntimeError("ONNX распознала текст без токенов и временных меток")
+                all_tokens.extend(owned_chunk_words(tokens, start, left, right, index == len(windows) - 1))
+                callback(index + 1, len(windows))
+        return all_tokens
+
+    def close(self):
+        self.model = None
+        gc.collect()
+        if self.mx is not None:
+            self.mx.clear_cache()
+        if self.wrapper is not None:
+            self.wrapper.cleanup()
+            self.wrapper = None
+
+
 def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
     import imageio_ffmpeg
     binary_dir = root / "runtime" / "bin"
@@ -301,29 +478,26 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
             duration = max(duration, f.getnframes() / f.getframerate())
     if duration < 0.2:
         raise RuntimeError("Запись слишком короткая. Добавьте файл с речью.")
-    progress("Загружаю Parakeet для русского и английского…", 0.06)
+    selected = resolve_asr(root)
+    progress(f"Загружаю выбранный Parakeet · {selected['format'].upper()}…", 0.06)
     with contextlib.redirect_stdout(sys.stderr):
-        import mlx.core as mx
-        from parakeet_mlx import from_pretrained
-        from parakeet_mlx.parakeet import DecodingConfig
-        from parakeet_mlx.alignment import SentenceConfig
-        model = from_pretrained(MODEL)
+        adapter = ASRAdapter(selected, root)
     all_tokens = []
-    for index, path in enumerate(tracks):
-        def callback(done, total):
-            fraction = (index + min(done / max(total, 1), 1)) / len(tracks)
-            progress(f"Распознаю речь · {int(100 * fraction)}%", 0.08 + 0.50 * fraction)
-        progress("Распознаю речь…", 0.08 + 0.50 * index / len(tracks))
-        with contextlib.redirect_stdout(sys.stderr):
-            result = model.transcribe(path, chunk_duration=120, overlap_duration=15, chunk_callback=callback,
-                                      decoding_config=DecodingConfig(sentence=SentenceConfig(max_duration=15, silence_gap=1.2)))
-        tokens = [{"text": t.text, "start": float(t.start), "end": float(t.end)} for t in result.tokens]
-        all_tokens.append(tokens)
-        del result
-    del model
-    gc.collect()
-    mx.clear_cache()
     warnings = []
+    if "v2" in selected["path"].lower():
+        warnings.append("Выбран Parakeet v2: эта модель поддерживает только английский. Для русского выберите v3.")
+    if selected["format"] == "onnx":
+        warnings.append("ONNX возвращает начала токенов; время окончания слов приблизительное.")
+    try:
+        for index, path in enumerate(tracks):
+            def callback(done, total):
+                fraction = (index + min(done / max(total, 1), 1)) / len(tracks)
+                progress(f"Распознаю речь · {int(100 * fraction)}%", 0.08 + 0.50 * fraction)
+            progress("Распознаю речь…", 0.08 + 0.50 * index / len(tracks))
+            with contextlib.redirect_stdout(sys.stderr):
+                all_tokens.append(adapter.transcribe(path, callback))
+    finally:
+        adapter.close()
     turns = []
     if use_diarization:
         progress("Разделяю собеседников…", 0.60)
@@ -339,7 +513,8 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
         segment["id"] = index
     if not segments:
         warnings.append("Речь не обнаружена. Проверьте источник звука или выберите другой участок записи.")
-    transcript = {"duration": duration, "segments": segments, "warnings": warnings, "model": MODEL}
+    transcript = {"duration": duration, "segments": segments, "warnings": warnings, "model": selected["name"],
+                  "modelFormat": selected["format"], "modelPath": selected["path"]}
     atomic(directory / "transcript.json", transcript)
     # A re-transcription invalidates old evidence IDs; preserve existing review history.
     (directory / "summary.json").unlink(missing_ok=True)
@@ -347,7 +522,7 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
     emit("done", count=len(segments), duration=duration)
 
 
-WORKER_COMMANDS = ("prepare", "install-local", "finalize", "transcribe")
+WORKER_COMMANDS = ("prepare", "install-local", "finalize", "transcribe", "discover-models")
 
 
 def parse_arguments(argv=None):
@@ -383,6 +558,9 @@ def main():
         emit("done")
     elif args.command == "transcribe":
         transcribe(args.meeting, args.root, args.speakers, not args.no_diarization)
+    elif args.command == "discover-models":
+        found, notes = local_models.discover_asr(args.root)
+        emit("done", asrModels=[local_models.public_model(model) for model in found], notes=notes)
 
 
 if __name__ == "__main__":

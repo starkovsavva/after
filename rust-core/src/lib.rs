@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod models;
 pub mod storage;
 pub mod worker;
 
