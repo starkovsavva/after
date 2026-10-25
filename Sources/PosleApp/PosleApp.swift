@@ -26,7 +26,7 @@ struct PosleApp: App {
                 Button("Поиск по библиотеке…") { store.openGlobalSearch() }.keyboardShortcut("k")
             }
             CommandGroup(replacing: .appSettings) {
-                Button("Настройки…") { store.showingSettings = true }.keyboardShortcut(",")
+                Button("Настройки…") { store.openSettings() }.keyboardShortcut(",")
             }
         }
     }
@@ -88,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let screen = option("--preview-screen") ?? "meeting"
             if arguments.contains("--preview-busy") { previewStore.busy = true; previewStore.canCancelJob = true; previewStore.progressText = "Проверяю установленные модели…" }
             if arguments.contains("--preview-error") { previewStore.error = "Не удалось подключиться к модели. Проверьте локальный сервер в настройках." }
+            if arguments.contains("--preview-notes-error") { previewStore.notes.error = "Не удалось сохранить заметку. Ваш текст остался в редакторе." }
             if ["inbox", "tasks", "contexts", "cards-library"].contains(screen) {
                 previewStore.librarySection = screen == "cards-library" ? "cards" : screen
             }
@@ -117,14 +118,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "quick-note": content = AnyView(QuickCaptureView(notes: previewStore.notes, initialMeetingID: previewStore.selection, initialTimestamp: 65, close: {}).environmentObject(previewStore))
             case "record": content = AnyView(RecordView().environmentObject(previewStore))
             case "speakers": content = AnyView(SpeakerReviewView(meetingID: previewStore.selection ?? "").environmentObject(previewStore))
+            case "sources", "sources-missing":
+                let ids = (previewStore.transcript?.segments.map(\.id) ?? []) + (screen == "sources-missing" ? [999999] : [])
+                content = AnyView(VStack(alignment: .leading, spacing: 14) {
+                    Text("Источники").font(AppTypography.heading)
+                    ScrollView { SourceQuotes(ids: ids, snapshot: previewStore.transcript?.segments, meetingID: previewStore.selection) { _, _ in } }
+                }.padding(20).environmentObject(previewStore))
             case "search":
                 previewStore.showingSearch = true; previewStore.searchQuery = option("--preview-query") ?? "доступ"
                 content = AnyView(SearchView().environmentObject(previewStore))
             default: content = AnyView(MainView().environmentObject(previewStore))
             }
             let dark = option("--appearance") == "dark"
-            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : screen == "record" ? 570 : screen == "speakers" ? 620 : 1260
-            let defaultHeight: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 330 : screen == "search" ? 650 : screen == "settings" ? 690 : screen == "record" ? 620 : screen == "speakers" ? 440 : 820
+            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : screen == "record" ? 520 : screen == "speakers" ? 560 : screen.hasPrefix("sources") ? 470 : 1260
+            let defaultHeight: Double = screen == "note-editor" ? 650 : screen == "quick-note" ? 280 : screen == "search" ? 650 : screen == "settings" ? 690 : screen == "record" ? 460 : screen == "speakers" ? 430 : screen.hasPrefix("sources") ? 460 : 820
             let width = option("--width").flatMap(Double.init) ?? defaultWidth
             let height = option("--height").flatMap(Double.init) ?? defaultHeight
             let view = NSHostingView(rootView: content

@@ -27,6 +27,7 @@ final class AppStore: ObservableObject {
     @Published var error: String?
     @Published var notice: String?
     @Published var showingSettings = false
+    @Published var settingsSection = "general"
     @Published var showingRecord = false
     @Published var showingSearch = false
     @Published var searchQuery = ""
@@ -87,7 +88,7 @@ final class AppStore: ObservableObject {
     var selected: Meeting? { meetings.first { $0.id == selection } }
     var selectedDirectory: URL? { selection.map { meetingDirectory($0) } }
     var filteredMeetings: [Meeting] {
-        meetings.filter { libraryFilter.isEmpty || $0.title.localizedCaseInsensitiveContains(libraryFilter) }
+        meetings.filter { $0.libraryKind != "cards" && (libraryFilter.isEmpty || $0.title.localizedCaseInsensitiveContains(libraryFilter)) }
     }
     var dueCards: [Flashcard] {
         (summary?.cards ?? []).filter { reviews[$0.id]?.isDue ?? true }
@@ -143,6 +144,10 @@ final class AppStore: ObservableObject {
     }
     func write<T: Encodable>(_ value: T, _ url: URL) throws {
         try RustBridge.shared.get().write(root: root, url: url, value: value)
+    }
+    func openSettings(_ section: String = "general") {
+        settingsSection = section
+        showingSettings = true
     }
     func saveSettings() {
         do { try write(settings, root.appendingPathComponent("settings.json")); NotificationCenter.default.post(name: Notification.Name("PosleShortcutsChanged"), object: nil) }
@@ -724,7 +729,7 @@ final class AppStore: ObservableObject {
             guard let note = notes.workspace.notes.first(where: { $0.id == noteID && $0.revision == hit.noteRevision }) else {
                 updateSearch(immediate: true); searchError = "Заметка изменилась. Выберите актуальный результат."; return
             }
-            if let meetingID = note.meetingID, let _: Meeting = read(meetingDirectory(meetingID).appendingPathComponent("meta.json")) { openMeeting(meetingID, tab: "notes") }
+            if let meetingID = note.meetingID, let meeting: Meeting = read(meetingDirectory(meetingID).appendingPathComponent("meta.json")), meeting.libraryKind != "cards" { openMeeting(meetingID, tab: "notes") }
             else { librarySection = "inbox"; pause() }
             notes.selectedNoteID = note.id; notes.highlightedNoteID = note.id
             showingSearch = false; cancelSearch(); return

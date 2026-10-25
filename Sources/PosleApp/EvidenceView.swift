@@ -1,40 +1,67 @@
 import PosleCore
 import SwiftUI
 
-/// A source opens as readable text first; playback is always a separate, explicit action.
+/// Quotes open before playback. An explicit meeting keeps global card sources
+/// attached to their own recording, independent of the current app selection.
 struct EvidenceButton: View {
     @EnvironmentObject private var store: AppStore
     let ids: [Int]
+    var meetingID: String? = nil
     @State private var showing = false
     @State private var sourceSnapshot: [Segment] = []
     @State private var sourceMeetingID: String?
-    private var segments: [Segment] { ids.compactMap { id in store.transcript?.segments.first { $0.id == id } } }
+    @State private var sourceTitle = ""
+    private var uniqueIDs: [Int] { var seen = Set<Int>(); return ids.filter { seen.insert($0).inserted } }
+    private var visibleSegments: [Segment] {
+        guard meetingID == nil || meetingID == store.selection else { return [] }
+        return uniqueIDs.compactMap { id in store.transcript?.segments.first { $0.id == id } }
+    }
     var body: some View {
         Button {
-            sourceSnapshot = segments; sourceMeetingID = store.selection; showing = true
+            sourceMeetingID = meetingID ?? store.selection
+            if let id = sourceMeetingID {
+                let transcript: Transcript? = store.read(store.meetingDirectory(id).appendingPathComponent("transcript.json"))
+                let meeting: Meeting? = store.read(store.meetingDirectory(id).appendingPathComponent("meta.json"))
+                sourceSnapshot = uniqueIDs.compactMap { reference in transcript?.segments.first { $0.id == reference } }
+                sourceTitle = meeting?.title ?? ""
+            } else { sourceSnapshot = []; sourceTitle = "" }
+            showing = true
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "quote.bubble")
-                if let first = segments.first {
+                if let first = visibleSegments.first {
                     Text(Exporter.timestamp(first.start)).monospacedDigit()
-                    if ids.count > 1 { Text("+\(ids.count - 1)") }
-                } else { Text("Источник") }
+                    if uniqueIDs.count > 1 { Text("+\(uniqueIDs.count - 1)") }
+                } else { Text("Источники: \(uniqueIDs.count)") }
             }.font(AppTypography.controlStrong).foregroundStyle(Ink.accent)
                 .padding(.horizontal, 9).padding(.vertical, 7).background(Ink.accent.opacity(0.07), in: Capsule())
-        }.buttonStyle(.plain).help("Показать все исходные реплики")
-            .accessibilityLabel("Исходные реплики: \(ids.count)")
+        }.buttonStyle(.plain).help("Показать исходные реплики")
+            .accessibilityLabel("Исходные реплики: \(uniqueIDs.count)")
             .popover(isPresented: $showing, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Text("Исходные реплики").font(AppTypography.heading)
+                        Text("Источники").font(AppTypography.heading)
                         Spacer()
                         Button { showing = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Закрыть источники")
                     }
+                    if !sourceTitle.isEmpty { Text(sourceTitle).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2) }
                     ScrollView {
-                        SourceQuotes(ids: ids, snapshot: sourceSnapshot, meetingID: sourceMeetingID) { id, play in showing = false; store.openSegment(id, play: play) }
+                        SourceQuotes(ids: ids, snapshot: sourceSnapshot, meetingID: sourceMeetingID, open: openSource)
                     }.frame(maxHeight: 430)
-                }.padding(20).frame(width: 490).background(Ink.paper)
+                }.padding(20).frame(width: 470).background(Ink.paper)
             }
+    }
+    private func openSource(_ id: Int, _ play: Bool) {
+        guard let meeting = sourceMeetingID,
+              let expected = sourceSnapshot.first(where: { $0.id == id }) else { return }
+        let fresh: Transcript? = store.read(store.meetingDirectory(meeting).appendingPathComponent("transcript.json"))
+        guard fresh?.segments.first(where: { $0.id == id }) == expected else {
+            store.error = "Источник изменился. Откройте актуальный конспект."; showing = false; return
+        }
+        showing = false
+        store.openMeeting(meeting, tab: "transcript", segmentID: id)
+        guard store.selection == meeting, store.transcript?.segments.first(where: { $0.id == id }) == expected else { return }
+        store.openSegment(id, play: play)
     }
 }
 
@@ -45,34 +72,46 @@ struct SourceQuotes: View {
     var meetingID: String? = nil
     let open: (Int, Bool) -> Void
     private var uniqueIDs: [Int] { var seen = Set<Int>(); return ids.filter { seen.insert($0).inserted } }
+    private var sourceTranscript: Transcript? {
+        guard let id = meetingID ?? store.selection else { return nil }
+        if id == store.selection { return store.transcript }
+        return store.read(store.meetingDirectory(id).appendingPathComponent("transcript.json"))
+    }
+    private var sourceMeeting: Meeting? {
+        guard let id = meetingID ?? store.selection else { return nil }
+        if id == store.selection { return store.selected }
+        return store.read(store.meetingDirectory(id).appendingPathComponent("meta.json"))
+    }
     var body: some View {
+        let transcript = sourceTranscript
+        let meeting = sourceMeeting
+        let verified = uniqueIDs.compactMap { id -> Segment? in
+            guard meeting != nil, let segment = transcript?.segments.first(where: { $0.id == id }),
+                  snapshot == nil || snapshot?.first(where: { $0.id == id }) == segment else { return nil }
+            return segment
+        }
         VStack(alignment: .leading, spacing: 14) {
-            if uniqueIDs.isEmpty { unavailable }
-            ForEach(uniqueIDs, id: \.self) { id in
-                if let segment = store.transcript?.segments.first(where: { $0.id == id }),
-                   meetingID == nil || meetingID == store.selection,
-                   snapshot == nil || snapshot?.first(where: { $0.id == id }) == segment {
-                    VStack(alignment: .leading, spacing: 11) {
-                        HStack(spacing: 9) {
-                            Text(store.selected?.speakerName(segment.speaker) ?? segment.speaker)
-                                .font(AppTypography.controlStrong).lineLimit(1)
-                            Spacer()
-                            Button { open(id, true) } label: { Label(Exporter.timestamp(segment.start), systemImage: "play.circle") }
-                                .font(AppTypography.control).monospacedDigit().buttonStyle(.borderless)
-                                .help("Прослушать исходную реплику").accessibilityLabel("Прослушать с \(Exporter.timestamp(segment.start))")
-                        }
-                        Text(segment.text).font(AppTypography.body).lineSpacing(5).textSelection(.enabled)
-                        Button { open(id, false) } label: { Label("Открыть в транскрипте", systemImage: "arrow.up.forward") }
-                            .font(AppTypography.control).buttonStyle(.borderless)
-                    }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Ink.soft, in: RoundedRectangle(cornerRadius: 9))
-                } else { unavailable }
+            if verified.count < uniqueIDs.count || uniqueIDs.isEmpty {
+                Label(verified.isEmpty ? "Источник недоступен. Обновите конспект." : "Некоторые исходные реплики недоступны.", systemImage: "exclamationmark.circle")
+                    .font(AppTypography.control).foregroundStyle(Ink.warning).padding(10)
+            }
+            ForEach(verified) { segment in
+                VStack(alignment: .leading, spacing: 11) {
+                    HStack(spacing: 9) {
+                        Text(meeting?.speakerName(segment.speaker) ?? segment.speaker)
+                            .font(AppTypography.controlStrong).lineLimit(1)
+                        Spacer()
+                        Button { open(segment.id, true) } label: { Label(Exporter.timestamp(segment.start), systemImage: "play.circle") }
+                            .font(AppTypography.control).monospacedDigit().buttonStyle(.borderless).foregroundStyle(Ink.accent)
+                            .help("Прослушать реплику").accessibilityLabel("Прослушать с \(Exporter.timestamp(segment.start))")
+                    }
+                    Text(segment.text).font(AppTypography.body).lineSpacing(5).textSelection(.enabled)
+                    Button { open(segment.id, false) } label: { Label("Открыть транскрипт", systemImage: "arrow.up.forward") }
+                        .font(AppTypography.control).buttonStyle(.borderless).foregroundStyle(Ink.accent)
+                }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Ink.soft, in: RoundedRectangle(cornerRadius: 9))
             }
         }
-    }
-    private var unavailable: some View {
-        Label("Исходная реплика недоступна. Обновите конспект по текущей транскрипции.", systemImage: "exclamationmark.circle")
-            .font(AppTypography.control).foregroundStyle(Ink.warning).padding(10)
     }
 }
 
@@ -95,7 +134,7 @@ struct ClaimReferenceButton: View {
             .popover(isPresented: $showing, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Text("На чём основан конспект").font(AppTypography.heading)
+                        Text("Источники").font(AppTypography.heading)
                         Spacer()
                         Button { showing = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Закрыть факты")
                     }
@@ -118,7 +157,7 @@ struct ClaimReferenceButton: View {
                                     }
                                 }
                             } else {
-                                Label("Конспект изменился. Откройте факты актуальной версии.", systemImage: "exclamationmark.circle")
+                                Label("Конспект изменился. Откройте актуальную версию.", systemImage: "exclamationmark.circle")
                                     .font(AppTypography.control).foregroundStyle(Ink.warning)
                             }
                         }

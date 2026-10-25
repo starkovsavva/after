@@ -24,35 +24,46 @@ struct CardsLibraryView: View {
     @State private var generation = UUID()
     @State private var importURL: URL?
     @State private var showingImport = false
+    @State private var exampleCardID: String?
     private var matching: [LibraryCard] {
         entries.filter { (deck.isEmpty || $0.meeting.id == deck) && (query.isEmpty || ($0.card.front + " " + $0.card.back + " " + $0.card.context).localizedCaseInsensitiveContains(query)) }
     }
+    private var dueCount: Int { matching.filter { $0.review?.isDue ?? true }.count }
     private var visible: [LibraryCard] { mode == "study" ? matching.filter { $0.review?.isDue ?? true } : matching }
     private var current: LibraryCard? { visible.first { $0.id == picked } ?? visible.first }
     private var decks: [Meeting] { app.meetings.filter { meeting in entries.contains { $0.meeting.id == meeting.id } } }
     var body: some View {
+        // Keep due-driven content and its controls in the same clock update.
+        TimelineView(.periodic(from: .now, by: 30)) { _ in
         VStack(spacing: 0) {
-            HStack(alignment: .top) {
-                AppPageHeader(title: "Карточки", subtitle: "Повторяйте фразы и понятия прямо в После.")
-                Spacer()
-                Button("Импорт…") { chooseImport() }.buttonStyle(.bordered).disabled(app.busy)
-                Button("Экспорт…") { exportCards() }.buttonStyle(.bordered).disabled(matching.isEmpty)
-            }.padding(.horizontal, AppLayout.contentInset).padding(.top, AppLayout.contentInset).padding(.bottom, 24)
-            HStack(spacing: 12) {
-                Picker("Режим", selection: $mode) { Text("Повторение").tag("study"); Text("Все карточки").tag("all") }.pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 245)
-                Picker("Колода", selection: $deck) {
-                    Text("Все встречи и колоды").tag("")
-                    ForEach(decks) { Text($0.title).tag($0.id) }
-                }.labelsHidden().frame(maxWidth: 240)
-                TextField("Найти карточку", text: $query).textFieldStyle(.roundedBorder)
-            }.padding(.horizontal, AppLayout.contentInset).padding(.bottom, 16)
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 14) {
+                    Text("Карточки").font(AppTypography.pageTitle).accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    Button("Импорт…") { chooseImport() }.buttonStyle(.bordered).disabled(app.busy)
+                    Button("Экспорт…") { exportCards() }.buttonStyle(.bordered).disabled(matching.isEmpty)
+                        .help("Сохранить карточки как TSV, совместимый с Anki")
+                }
+                HStack(spacing: 12) {
+                    Picker("Режим", selection: $mode) { Text("Повторение").tag("study"); Text("Все карточки").tag("all") }
+                        .pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 225)
+                    Picker("Колода", selection: $deck) {
+                        Text("Все колоды").tag("")
+                        ForEach(decks) { Text($0.title).tag($0.id) }
+                    }.labelsHidden().frame(maxWidth: 210)
+                    TextField("Найти карточку", text: $query).textFieldStyle(.roundedBorder).frame(minWidth: 140)
+                }
+            }.padding(.vertical, 20).frame(maxWidth: AppLayout.readableWidth, alignment: .leading)
+                .padding(.horizontal, AppLayout.contentInset).frame(maxWidth: .infinity)
             Divider()
-            TimelineView(.periodic(from: .now, by: 30)) { _ in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 16) {
                         HStack {
-                            Text("К повторению: \(matching.filter { $0.review?.isDue ?? true }.count) · Всего: \(matching.count)").font(AppTypography.control).foregroundStyle(.secondary)
-                            Spacer(); if loading { ProgressView().controlSize(.small) }
+                            Text(mode == "study" ? "\(dueCount) к повторению" : "Всего: \(matching.count)")
+                                .font(AppTypography.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            ProgressView().controlSize(.small).opacity(loading ? 1 : 0).frame(width: 16, height: 16)
+                                .accessibilityHidden(!loading)
                         }
                         if let entry = current {
                             if mode == "all" {
@@ -60,35 +71,21 @@ struct CardsLibraryView: View {
                                     ForEach(visible) { Text($0.card.front).tag($0.id) }
                                 }.labelsHidden()
                             }
-                            study(entry)
-                        } else {
-                            VStack(spacing: 15) {
-                                Image(systemName: entries.isEmpty ? "rectangle.on.rectangle.angled" : "checkmark.seal").font(.system(size: 38, weight: .light)).foregroundStyle(Ink.accent)
-                                Text(entries.isEmpty ? "Здесь будут ваши карточки" : mode == "study" ? "Повторение завершено" : "Карточки не найдены")
-                                    .font(AppTypography.emptyTitle)
-                                Text(entries.isEmpty ? "Создайте конспект встречи или импортируйте TSV/CSV с вопросами и ответами." : mode == "study" ? "Следующий показ рассчитан по вашим ответам. Можно открыть все карточки." : "Попробуйте другой запрос или выберите другую колоду.")
-                                    .font(AppTypography.body).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 480)
-                                if entries.isEmpty { Button("Импортировать карточки") { chooseImport() }.buttonStyle(.borderedProminent).tint(Ink.actionFill) }
-                                else if mode == "study" { Button("Все карточки") { mode = "all" }.buttonStyle(.bordered) }
-                            }.frame(maxWidth: .infinity, minHeight: 330)
-                        }
+                            StudyCardContent(card: entry.card, flipped: flipped, example: entry.example,
+                                             makingExample: exampleCardID == entry.id,
+                                             sourceMeetingID: entry.meeting.id, meetingTitle: entry.meeting.title,
+                                             openMeeting: {
+                                                 if entry.meeting.libraryKind == "cards" { deck = entry.meeting.id; mode = "all" }
+                                                 else { app.openMeeting(entry.meeting.id, tab: "cards") }
+                                             }, originIsDeck: entry.meeting.libraryKind == "cards") {
+                                makeExample(entry)
+                            }
+                        } else { empty }
                     }.appContentLayout()
                 }
-            }
             if let entry = current {
-                VStack(spacing: 7) {
-                    HStack(spacing: 9) {
-                        rating(entry, value: 1, title: "Снова", color: .red)
-                        rating(entry, value: 2, title: "Трудно", color: .orange)
-                        rating(entry, value: 3, title: "Хорошо", color: Ink.green)
-                        rating(entry, value: 4, title: "Легко", color: Ink.accent)
-                    }.disabled(!flipped)
-                    Text(!flipped ? "Сначала покажите ответ, затем оцените его." : entry.review.map {
-                        "Повторений: \($0.count) · Следующий показ: \(formattedDue($0.due))"
-                    } ?? "Оцените, насколько легко удалось вспомнить ответ.")
-                        .font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
-                }.padding(.horizontal, AppLayout.contentInset).frame(height: 82).background(Ink.paper)
-                    .overlay(alignment: .top) { Rectangle().fill(Ink.line).frame(height: 1) }
+                StudyReviewBar(flipped: $flipped, enabled: !app.busy && !app.isRecording,
+                               review: entry.review) { value in rate(entry, value: value) }
             }
         }.task { await reload() }
             .onChange(of: app.busy) { _, busy in if !busy { Task { await reload() } } }
@@ -106,72 +103,22 @@ struct CardsLibraryView: View {
                     }.environmentObject(app)
                 }
             }
-    }
-    private func study(_ entry: LibraryCard) -> some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack {
-                Label(entry.card.kind == "phrase" ? "Фраза" : "Понятие", systemImage: "rectangle.on.rectangle.angled").foregroundStyle(Ink.accent)
-                Spacer()
-                Button(entry.meeting.title) { app.openMeeting(entry.meeting.id, tab: "cards") }.buttonStyle(.link).lineLimit(1)
-            }.font(AppTypography.control)
-            Text(entry.card.front).font(AppTypography.cardFront).textSelection(.enabled)
-            if flipped {
-                Divider()
-                Text(entry.card.back).font(AppTypography.cardAnswer).lineSpacing(7).textSelection(.enabled)
-                if !entry.card.context.isEmpty {
-                    VStack(alignment: .leading, spacing: 9) {
-                        HStack {
-                            Text(entry.card.segmentIDs.isEmpty ? "Контекст карточки" : "Контекст из встречи").font(AppTypography.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            if let segment = entry.card.segmentIDs.first {
-                                Button("Открыть источник") { app.openMeeting(entry.meeting.id, tab: "transcript", segmentID: segment) }.buttonStyle(.link)
-                            }
-                        }
-                        Text(entry.card.context).font(AppTypography.body).foregroundStyle(.secondary).textSelection(.enabled)
-                    }.padding(16).background(Ink.soft, in: RoundedRectangle(cornerRadius: 10))
-                }
-                Button(entry.example == nil ? "Придумать пример" : "Придумать другой пример") { makeExample(entry) }
-                    .buttonStyle(.bordered).disabled(app.busy || app.isRecording)
-                if let example = entry.example {
-                    VStack(alignment: .leading, spacing: 9) {
-                        Label("Пример от ИИ", systemImage: "sparkles").font(AppTypography.caption).foregroundStyle(Ink.accent)
-                        Text(example.example).font(AppTypography.bodyStrong).textSelection(.enabled)
-                        Text(example.translation).font(AppTypography.body).foregroundStyle(.secondary).textSelection(.enabled)
-                        Text(example.explanation).font(AppTypography.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(Ink.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-                }
-                if app.settings.mode == "cloud" {
-                    Text("Для примера OpenAI получит эту карточку с контекстом. Запрос оплачивается через API.").font(AppTypography.caption).foregroundStyle(.secondary)
-                }
-            } else {
-                Text("Вспомните перевод или объяснение своими словами.").font(AppTypography.body).foregroundStyle(.secondary)
-                Button("Показать ответ") { flipped = true }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.space, modifiers: [])
-            }
-        }.padding(28).frame(maxWidth: .infinity, minHeight: 260, alignment: .topLeading)
-            .background(Ink.paper, in: RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Ink.line))
-    }
-    private func rating(_ entry: LibraryCard, value: Int, title: String, color: Color) -> some View {
-        Button { rate(entry, value: value) } label: {
-            HStack(spacing: 7) {
-                Text(String(value)).font(AppTypography.control).monospacedDigit().foregroundStyle(.secondary)
-                Text(title).font(AppTypography.controlStrong).foregroundStyle(.primary)
-            }.frame(maxWidth: .infinity).padding(.vertical, 10)
-                .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(color.opacity(0.25)))
-        }.buttonStyle(.plain).disabled(!flipped || app.busy || app.isRecording)
-            .keyboardShortcut(KeyEquivalent(Character(String(value))), modifiers: [])
-            .accessibilityLabel("\(title): \(ratingDescription(value))")
-            .accessibilityHint("Запланировать следующее повторение. Клавиша \(value).")
-            .help("\(ratingDescription(value)) · \(value)")
-    }
-    private func ratingDescription(_ value: Int) -> String {
-        switch value {
-        case 1: return "Не удалось вспомнить ответ"
-        case 2: return "Вспомнил с трудом"
-        case 3: return "Вспомнил правильно"
-        default: return "Вспомнил без усилий"
         }
+    }
+    private var empty: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(loading ? "Загружаю карточки…" : entries.isEmpty ? "Карточек пока нет" : !query.isEmpty ? "Ничего не найдено" : mode == "study" ? "На сегодня всё" : "В этой колоде нет карточек")
+                .font(AppTypography.heading)
+            if !loading {
+                if entries.isEmpty {
+                    Button("Импортировать карточки") { chooseImport() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                } else if mode == "study" && query.isEmpty {
+                    Button("Все карточки") { mode = "all" }.buttonStyle(.bordered)
+                } else if !query.isEmpty {
+                    Button("Очистить поиск") { query = "" }.buttonStyle(.bordered)
+                }
+            }
+        }.frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading).padding(.vertical, 16)
     }
     private func reload() async {
         let token = UUID(); generation = token; loading = true
@@ -190,11 +137,6 @@ struct CardsLibraryView: View {
         }.value
         guard generation == token else { return }
         entries = loaded; loading = false
-    }
-    private func formattedDue(_ value: String) -> String {
-        let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return value }
-        return date.formatted(.dateTime.day().month(.abbreviated).hour().minute().locale(Locale(identifier: "ru_RU")))
     }
     private func chooseImport() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.tabSeparatedText, .commaSeparatedText, .plainText]; panel.canChooseDirectories = false
@@ -218,10 +160,11 @@ struct CardsLibraryView: View {
         }
     }
     private func makeExample(_ entry: LibraryCard) {
-        guard !app.busy && !app.isRecording else { return }
+        guard exampleCardID == nil, !app.busy && !app.isRecording else { return }
+        exampleCardID = entry.id
         app.beginJob(id: entry.meeting.id); app.progressText = "Придумываю пример…"
         Task {
-            defer { app.endJob() }
+            defer { exampleCardID = nil; app.endJob() }
             do { try await app.worker("example", id: entry.meeting.id, extra: ["--card", entry.card.id]); app.refreshResults(entry.meeting.id) }
             catch { app.error = error.localizedDescription }
         }

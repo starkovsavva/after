@@ -3,226 +3,92 @@ import SwiftUI
 
 struct CardsView: View {
     @EnvironmentObject private var store: AppStore
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var mode = "study"
     @State private var flipped = false
     @State private var picked: String?
     @State private var exampleCardID: String?
+    @State private var ratingPending = false
     private var cards: [Flashcard] { store.summary?.cards ?? [] }
     private var current: Flashcard? {
         if mode == "all", let picked { return cards.first { $0.id == picked } }
         return mode == "study" ? store.dueCards.first : cards.first
     }
-
     var body: some View {
+        // A due date can pass without any published store change. Re-evaluate
+        // the count, current card, empty state and review controls together.
+        TimelineView(.periodic(from: .now, by: 30)) { _ in
         VStack(spacing: 0) {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Карточки").font(AppTypography.sectionTitle)
-                            .accessibilityAddTraits(.isHeader)
-                        TimelineView(.periodic(from: .now, by: 30)) { _ in
-                            Text("К повторению: \(store.dueCards.count) · Всего во встрече: \(cards.count)")
-                                .font(AppTypography.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    Button { store.export(true) } label: { Label("Экспорт в Anki", systemImage: "square.and.arrow.up") }
-                        .buttonStyle(.bordered).disabled(cards.isEmpty)
-                        .accessibilityLabel("Экспортировать карточки в Anki")
-                        .help("Сохранить файл карточек для импорта в Anki")
-                }
+            HStack(spacing: 14) {
                 Picker("Режим карточек", selection: $mode) {
-                    Text("Повторение").tag("study")
-                    Text("Все карточки").tag("all")
-                }.pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 250)
-                    .accessibilityLabel("Режим карточек")
-                    .onChange(of: mode) { _, _ in
-                        flipped = false
-                        if let target = store.navigationTarget, target.meetingID == store.selection, target.kind == "card", mode == "all" { picked = target.cardID }
-                        else { picked = nil }
-                    }
-
-                if cards.isEmpty {
-                    if store.busy {
-                        VStack(spacing: 12) {
-                            ProgressView().controlSize(.regular).accessibilityHidden(true)
-                            Text("Встреча обрабатывается").font(.system(size: 17, weight: .medium))
-                            Text(store.progressText.isEmpty ? "После конспекта здесь появятся карточки из встречи." : store.progressText)
-                                .font(AppTypography.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        }.frame(maxWidth: .infinity, minHeight: 220).accessibilityElement(children: .combine)
-                    } else {
-                        VStack(spacing: 15) {
-                            Image(systemName: "rectangle.on.rectangle.angled").font(.system(size: 36, weight: .light))
-                                .foregroundStyle(Ink.accent).accessibilityHidden(true)
-                            Text(store.summary == nil ? "Сначала создайте конспект" : "В конспекте пока нет карточек")
-                                .font(AppTypography.emptyTitle).multilineTextAlignment(.center)
-                            Text(store.summary == nil
-                                 ? "ИИ выберет из транскрипта полезные фразы и понятия. Каждая карточка будет связана с исходной цитатой."
-                                 : "Для карточек нужны полезные фразы или важные понятия с цитатами. Уточните фокус встречи и создайте конспект заново.")
-                                .font(AppTypography.control).foregroundStyle(.secondary).lineSpacing(4)
-                                .multilineTextAlignment(.center).frame(maxWidth: 460)
-                            Button("Открыть конспект") { store.tab = "summary" }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
-                        }.padding(26).frame(maxWidth: .infinity, minHeight: 230)
-                            .background(Ink.soft, in: RoundedRectangle(cornerRadius: 16))
-                    }
-                } else {
-                    HStack(alignment: .top, spacing: 18) {
-                        if mode == "all" {
-                            VStack(alignment: .leading, spacing: 5) {
-                                ForEach(cards) { card in
-                                    Button { picked = card.id; flipped = false } label: {
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            Text(card.front).font(AppTypography.captionStrong).lineLimit(3)
-                                            Text(card.kind == "phrase" ? "Английская фраза" : "Понятие").font(AppTypography.caption).foregroundStyle(.secondary)
-                                        }.padding(11).frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(current?.id == card.id ? Ink.accent.opacity(0.08) : Ink.soft,
-                                                        in: RoundedRectangle(cornerRadius: 8))
-                                    }.buttonStyle(.plain)
-                                        .accessibilityLabel("\(card.kind == "phrase" ? "Английская фраза" : "Понятие"): \(card.front)")
-                                        .accessibilityAddTraits(current?.id == card.id ? .isSelected : [])
-                                        .accessibilityHint("Открыть карточку")
-                                }
-                            }.frame(width: 210)
-                        }
-                        TimelineView(.periodic(from: .now, by: 30)) { _ in
-                            if let card = current { study(card) }
-                            else {
-                                VStack(spacing: 15) {
-                                    Image(systemName: "checkmark.seal").font(.system(size: 36, weight: .light)).foregroundStyle(Ink.green).accessibilityHidden(true)
-                                    Text("Сейчас нет карточек к повторению").font(AppTypography.emptyTitle).multilineTextAlignment(.center)
-                                    Text("Следующее повторение запланировано по вашим ответам. Вернитесь позже или откройте все карточки.")
-                                        .font(AppTypography.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).lineSpacing(4)
-                                    Button("Открыть все карточки") { mode = "all" }.buttonStyle(.bordered)
-                                }.padding(28).frame(maxWidth: .infinity, minHeight: 260)
-                                    .background(Ink.soft, in: RoundedRectangle(cornerRadius: 16))
-                            }
-                        }.frame(maxWidth: .infinity)
-                    }
-                }
-                if !cards.isEmpty {
-                    Label("После ответа оцените, насколько легко удалось его вспомнить.", systemImage: "calendar.badge.clock")
-                        .font(AppTypography.caption).foregroundStyle(.secondary)
-                        .help("Следующее повторение рассчитывается по алгоритму FSRS")
-                }
-            }.appContentLayout()
-        }
-        if let card = current {
-            VStack(spacing: 7) {
-                HStack(spacing: 9) {
-                    rating(card, 1, "Снова", .red)
-                    rating(card, 2, "Трудно", .orange)
-                    rating(card, 3, "Хорошо", Ink.green)
-                    rating(card, 4, "Легко", Ink.accent)
-                }.disabled(!flipped)
-                Text(!flipped ? "Сначала покажите ответ, затем оцените его." : store.reviews[card.id].map { "Повторений: \($0.count) · Следующий показ: \(dueDate($0.due))" } ?? "Оцените, насколько легко удалось вспомнить ответ.")
+                    Text("Повторение").tag("study"); Text("Все карточки").tag("all")
+                }.pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 225)
+                Text(mode == "study" ? "\(store.dueCards.count) к повторению" : "Всего: \(cards.count)")
                     .font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
-            }.padding(.horizontal, AppLayout.contentInset).frame(height: 82).background(Ink.paper)
-                .overlay(alignment: .top) { Rectangle().fill(Ink.line).frame(height: 1) }
-        }
-        }.onChange(of: current?.id) { _, _ in flipped = false }
-            .onChange(of: store.busy) { _, busy in if !busy { exampleCardID = nil } }
+                Spacer(minLength: 8)
+                Button("Экспорт…") { store.export(true) }.buttonStyle(.bordered).disabled(cards.isEmpty)
+                    .help("Сохранить карточки как TSV, совместимый с Anki")
+            }.padding(.horizontal, AppLayout.contentInset).frame(height: 54)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if mode == "all", !cards.isEmpty {
+                        Picker("Карточка", selection: Binding(get: { current?.id ?? "" }, set: { picked = $0; flipped = false })) {
+                            ForEach(cards) { Text($0.front).tag($0.id) }
+                        }.labelsHidden()
+                    }
+                    if let card = current {
+                        StudyCardContent(card: card, flipped: flipped, example: store.examples[card.id],
+                                         makingExample: exampleCardID == card.id,
+                                         sourceMeetingID: store.selection) {
+                            guard exampleCardID == nil, !store.busy, !store.isRecording else { return }
+                            exampleCardID = card.id; store.progressText = "Придумываю пример…"; store.makeExample(card)
+                        }
+                    } else { empty }
+                }.appContentLayout()
+            }
+            if let card = current {
+                StudyReviewBar(flipped: $flipped, enabled: !store.busy && !store.isRecording && !ratingPending,
+                               review: store.reviews[card.id]) { value in
+                    guard flipped, !ratingPending, !store.busy, !store.isRecording,
+                          store.selection != nil, current?.id == card.id else { return }
+                    // Set synchronously: AppStore starts its async task on the
+                    // next turn, so a second key press must already be blocked.
+                    ratingPending = true; store.progressText = "Сохраняю повторение…"; store.rate(card, value)
+                }
+            }
+        }.onChange(of: mode) { _, _ in
+            flipped = previewAnswer
+            if let target = store.navigationTarget, target.meetingID == store.selection, target.kind == "card", mode == "all" { picked = target.cardID }
+            else { picked = nil }
+        }.onChange(of: current?.id) { _, _ in flipped = previewAnswer; ratingPending = false }
+            .onChange(of: store.busy) { _, busy in if !busy { exampleCardID = nil; ratingPending = false } }
             .onChange(of: store.navigationTarget?.id) { _, _ in navigateToCard() }
             .onAppear {
                 navigateToCard()
                 if ProcessInfo.processInfo.arguments.contains("--preview-all") { mode = "all" }
                 if ProcessInfo.processInfo.arguments.contains("--preview"), ProcessInfo.processInfo.arguments.contains("--preview-answer") { flipped = true }
             }
+        }
     }
-
+    @ViewBuilder private var empty: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if store.busy && store.processingID == store.selection {
+                Text("Карточки готовятся").font(AppTypography.heading)
+            } else if cards.isEmpty {
+                Text(store.summary == nil ? "Сначала создайте конспект" : "Карточек пока нет").font(AppTypography.heading)
+                Button("Открыть конспект") { store.tab = "summary" }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+            } else {
+                Text("На сегодня всё").font(AppTypography.heading)
+                Button("Все карточки") { mode = "all" }.buttonStyle(.bordered)
+            }
+        }.frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading).padding(.vertical, 16)
+    }
+    private var previewAnswer: Bool {
+        ProcessInfo.processInfo.arguments.contains("--preview") && ProcessInfo.processInfo.arguments.contains("--preview-answer")
+    }
     private func navigateToCard() {
         guard let target = store.navigationTarget, target.meetingID == store.selection, target.kind == "card",
               let id = target.cardID, cards.contains(where: { $0.id == id }) else { return }
         mode = "all"; picked = id; flipped = false
-    }
-    private func study(_ card: Flashcard) -> some View {
-        let makingExample = store.busy && exampleCardID == card.id
-        return VStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    Label(card.kind == "phrase" ? "Английская фраза" : "Важное понятие", systemImage: card.kind == "phrase" ? "quote.bubble" : "lightbulb")
-                    Spacer()
-                    Text(flipped ? "Ответ" : "Вспомните ответ")
-                }.font(AppTypography.captionStrong).foregroundStyle(Ink.accent)
-                Text(card.front).font(AppTypography.cardFront).tracking(-0.3)
-                    .lineSpacing(4).textSelection(.enabled).padding(.vertical, 6)
-                    .accessibilityLabel("Карточка: \(card.front)")
-                if flipped {
-                    Rectangle().fill(Ink.line).frame(height: 1)
-                    Text(card.back).font(AppTypography.cardAnswer).lineSpacing(7).textSelection(.enabled)
-                        .accessibilityLabel("Ответ: \(card.back)")
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text(card.segmentIDs.isEmpty ? "Контекст карточки" : "Цитата из транскрипта").font(AppTypography.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            if !card.segmentIDs.isEmpty { EvidenceButton(ids: card.segmentIDs).accessibilityLabel("Открыть цитату в транскрипте") }
-                        }
-                        Text("«\(card.context)»").font(AppTypography.body).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled)
-                    }.padding(14).background(Ink.soft, in: RoundedRectangle(cornerRadius: 9))
-                    Button { exampleCardID = card.id; store.makeExample(card) } label: {
-                        HStack(spacing: 7) {
-                            if makingExample { ProgressView().controlSize(.mini).accessibilityHidden(true) }
-                            Label(makingExample ? "Создаю пример…" : (store.examples[card.id] == nil ? "Придумать пример" : "Придумать другой пример"),
-                                  systemImage: "sparkles")
-                        }
-                    }.buttonStyle(.bordered).disabled(store.busy || store.isRecording)
-                        .accessibilityHint("Создать новый пример с этой карточкой. Исходная цитата сохранится.")
-                    if let example = store.examples[card.id] {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Label("Пример от ИИ", systemImage: "sparkles").font(AppTypography.captionStrong).foregroundStyle(Ink.accent)
-                            Text(example.example).font(AppTypography.bodyStrong).lineSpacing(4).textSelection(.enabled)
-                            Text(example.translation).font(AppTypography.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                                .accessibilityLabel("Перевод примера: \(example.translation)")
-                            Text(example.explanation).font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4).textSelection(.enabled)
-                        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Ink.accent.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
-                    }
-                    if store.settings.mode == "cloud" {
-                        Text("OpenAI получит эту карточку и её контекст. Создание примера оплачивается через API.")
-                            .font(AppTypography.caption).foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text(card.kind == "phrase" ? "Как бы вы перевели и использовали эту фразу?" : "Сформулируйте ответ своими словами.")
-                        .font(AppTypography.caption).foregroundStyle(.secondary)
-                    Button("Показать ответ") { flipped = true }
-                        .buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.space, modifiers: [])
-                        .help("Показать ответ · Пробел")
-                        .accessibilityHint("Открыть ответ и исходную цитату. Можно нажать пробел.")
-                        .padding(.top, 8)
-                    Text("Пробел — показать ответ").font(AppTypography.caption).foregroundStyle(.secondary)
-                }
-            }.frame(maxWidth: 720, alignment: .leading)
-                .padding(22).frame(maxWidth: .infinity, minHeight: 250, alignment: .topLeading)
-                .background(Ink.paper, in: RoundedRectangle(cornerRadius: 17))
-                .overlay(RoundedRectangle(cornerRadius: 17).strokeBorder(Ink.accent.opacity(0.13)))
-                .accessibilityElement(children: .contain)
-        }
-    }
-    private func rating(_ card: Flashcard, _ value: Int, _ label: String, _ color: Color) -> some View {
-        Button { store.rate(card, value) } label: {
-            HStack(spacing: 7) {
-                Text("\(value)").font(AppTypography.control).monospacedDigit().foregroundStyle(.secondary)
-                Text(label).font(AppTypography.controlStrong).foregroundStyle(.primary)
-            }.frame(maxWidth: .infinity).padding(.vertical, 10)
-                .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(color.opacity(0.25)))
-        }.buttonStyle(.plain).disabled(!flipped || store.busy || store.isRecording).keyboardShortcut(KeyEquivalent(Character(String(value))), modifiers: [])
-            .accessibilityLabel("\(label): \(ratingDescription(value))")
-            .accessibilityHint("Запланировать следующее повторение. Клавиша \(value).")
-            .help("\(ratingDescription(value)) · \(value)")
-    }
-    private func ratingDescription(_ value: Int) -> String {
-        switch value {
-        case 1: return "Не удалось вспомнить ответ"
-        case 2: return "Вспомнил с трудом"
-        case 3: return "Вспомнил правильно"
-        default: return "Вспомнил без усилий"
-        }
-    }
-    private func dueDate(_ string: String) -> String {
-        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = formatter.date(from: string) ?? ISO8601DateFormatter().date(from: string) else { return "позже" }
-        return date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Locale(identifier: "ru_RU")))
     }
 }

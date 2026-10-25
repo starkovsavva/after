@@ -1,3 +1,4 @@
+import Foundation
 import PosleCore
 import SwiftUI
 
@@ -10,15 +11,19 @@ struct SearchView: View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Image(systemName: "magnifyingglass").font(.system(size: 21)).foregroundStyle(Ink.accent)
-                TextField("Слово, фраза или тема встречи", text: $store.searchQuery)
+                TextField("Слово или фраза", text: $store.searchQuery)
                     .font(.system(size: 20)).textFieldStyle(.plain).focused($queryFocused)
                     .accessibilityLabel("Поиск по всей библиотеке")
                     .onSubmit { openSelected() }
                     .onKeyPress(.downArrow) { move(1); return .handled }
                     .onKeyPress(.upArrow) { move(-1); return .handled }
                 if store.searching || store.searchOpeningID != nil { ProgressView().controlSize(.small) }
-                Button { store.showingSearch = false } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Закрыть поиск")
+                if !store.searchQuery.isEmpty {
+                    Button { store.searchQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                        .buttonStyle(.plain).accessibilityLabel("Очистить поиск")
+                }
+                Button("Закрыть") { store.showingSearch = false }
+                    .buttonStyle(.borderless).keyboardShortcut(.cancelAction)
             }.padding(22)
             Picker("Область поиска", selection: $store.searchScope) {
                 Text("Всё").tag("all")
@@ -26,7 +31,7 @@ struct SearchView: View {
                 Text("Транскрипт").tag("transcript")
                 Text("Карточки").tag("cards")
                 Text("Названия").tag("meetings")
-            }.pickerStyle(.segmented).tint(Ink.actionFill).padding(.horizontal, 22).padding(.bottom, 16)
+            }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Область поиска").tint(Ink.actionFill).padding(.horizontal, 22).padding(.bottom, 16)
             Rectangle().fill(Ink.line).frame(height: 1)
             if let message = store.searchError {
                 HStack(alignment: .top, spacing: 10) {
@@ -38,7 +43,6 @@ struct SearchView: View {
             content.frame(maxWidth: .infinity, maxHeight: .infinity)
             Rectangle().fill(Ink.line).frame(height: 1)
             HStack {
-                Label("Поиск на Mac", systemImage: "lock").foregroundStyle(.secondary)
                 Spacer()
                 Text("↑ ↓ выбрать · Return открыть · Esc закрыть").foregroundStyle(.secondary)
             }.font(AppTypography.caption).padding(.horizontal, 22).padding(.vertical, 13)
@@ -52,11 +56,11 @@ struct SearchView: View {
 
     @ViewBuilder private var content: some View {
         if store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            placeholder("Найдите важное в любой встрече", "Ищите по словам из конспектов, задач, транскриптов и карточек. Например: доступы, бюджет или follow up.", icon: "text.magnifyingglass")
+            placeholder("Поиск по библиотеке", "Например: бюджет, доступы или follow up.", icon: "text.magnifyingglass")
         } else if store.searching && store.searchHits.isEmpty {
             VStack(spacing: 12) { ProgressView(); Text("Ищу во всех встречах…").font(AppTypography.control).foregroundStyle(.secondary) }
         } else if store.searchHits.isEmpty && store.searchError == nil {
-            placeholder("Ничего не найдено", "Попробуйте другое слово или более короткий запрос. Поиск ищет слова в тексте; он не придумывает ответы.", icon: "magnifyingglass")
+            placeholder("Ничего не найдено", "Попробуйте другое слово или сократите запрос.", icon: "magnifyingglass")
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -87,7 +91,9 @@ struct SearchView: View {
                     Text(Date(timeIntervalSince1970: hit.createdAt).formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "ru_RU"))))
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }
-                Text(hit.snippet).font(AppTypography.control).lineSpacing(3).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                if hit.kind != "title" {
+                    Text(highlighted(hit.snippet)).font(AppTypography.control).lineSpacing(3).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                }
                 HStack(spacing: 8) {
                     Text(label(hit.kind))
                     if let start = hit.start { Text("·"); Text(Exporter.timestamp(start)).monospacedDigit() }
@@ -99,6 +105,23 @@ struct SearchView: View {
             .background(selectedID == hit.id ? Ink.accent.opacity(0.09) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selectedID == hit.id ? Ink.accent.opacity(0.25) : Color.clear))
             .contentShape(Rectangle())
+    }
+    private func highlighted(_ snippet: String) -> AttributedString {
+        var value = AttributedString(snippet)
+        let terms = Set(store.searchQuery.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        for term in terms where !term.isEmpty {
+            var remaining = snippet.startIndex..<snippet.endIndex
+            while let match = snippet.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: remaining) {
+                if let lower = AttributedString.Index(match.lowerBound, within: value),
+                   let upper = AttributedString.Index(match.upperBound, within: value) {
+                    value[lower..<upper].font = AppTypography.controlStrong
+                    value[lower..<upper].foregroundColor = Ink.accent
+                }
+                guard match.upperBound < snippet.endIndex else { break }
+                remaining = match.upperBound..<snippet.endIndex
+            }
+        }
+        return value
     }
     private func placeholder(_ title: String, _ subtitle: String, icon: String) -> some View {
         VStack(spacing: 16) {

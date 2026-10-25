@@ -17,6 +17,7 @@ extension View {
 #if DEBUG
 import AppKit
 import Foundation
+import PosleCore
 
 private struct AppLayoutCheckScope: EnvironmentKey {
     static let defaultValue = ""
@@ -100,7 +101,7 @@ enum UIConsistencyChecks {
         try expectNear(baseline["status"]!.height, AppLayout.statusHeight, "Status uses the shared fixed height")
         try expectNear(baseline["workspace"]!.minY, baseline["toolbar"]!.maxY, "Workspace follows toolbar without a gap")
         try expectNear(baseline["status"]!.minY, baseline["workspace"]!.maxY, "Status follows workspace without a gap")
-        print("PASS: native fixed toolbar/status and continuous workspace at 1040 × 700")
+        print("PASS: compact native toolbar, playback footer and continuous workspace at 1040 × 700")
 
         func check(_ label: String, extra: [String] = []) async throws {
             let measured = try await measure(host, window)
@@ -151,7 +152,18 @@ enum UIConsistencyChecks {
 
         for section in ["inbox", "tasks", "contexts", "cards", "meetings"] {
             store.librarySection = section
-            try await check("switching library section to " + section)
+            let sectionBaseline = try await measure(host, window)
+            try expectNear(sectionBaseline["toolbar"]!.height, AppLayout.toolbarHeight, "Toolbar height in " + section)
+            if section != "meetings" {
+                guard sectionBaseline["status"] == nil else { throw AppError.message("Idle footer wastes content space in " + section) }
+                try expectNear(sectionBaseline["workspace"]!.maxY, baseline["status"]!.maxY, "Workspace reclaims footer space in " + section)
+            }
+            store.busy = true; store.canCancelJob = true; store.progressText = "Проверка состояния интерфейса"
+            try expectUnchanged(sectionBaseline, try await measure(host, window), "starting work in " + section)
+            store.busy = false; store.canCancelJob = false; store.progressText = ""
+            store.notice = "Изменения сохранены"
+            try expectUnchanged(sectionBaseline, try await measure(host, window), "notice in " + section)
+            store.notice = nil
         }
         store.tab = "notes"
         let notesBaseline = try await measure(host, window)
@@ -166,7 +178,70 @@ enum UIConsistencyChecks {
         try expectUnchanged(notesBaseline, withError, "showing note error", extra: ["notes.composer"])
         store.notes.error = nil
         print("PASS: library sections and note success/error preserve chrome and anchored composer geometry")
-        print("6 native UI consistency checks passed")
+        try await checkReviewBar()
+        try await checkTimedQueues()
+        print("8 native UI consistency checks passed")
+    }
+
+    private static func checkReviewBar() async throws {
+        let state = ReviewBarCheckState()
+        let view = NSHostingView(rootView: ReviewBarCheckView(state: state)
+            .environment(\.appLayoutCheckScope, scope).frame(width: 760, height: 110))
+        view.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 110),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.contentView = view; window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        _ = try await measure(view, window)
+        guard let front = frames["cards.review"] else { throw AppError.message("Missing shared card review footer") }
+        try expectNear(front.height, 56, "Shared review footer height")
+        for flipped in [true, false, true] {
+            state.flipped = flipped
+            _ = try await measure(view, window)
+            guard let current = frames["cards.review"] else { throw AppError.message("Shared review footer disappeared") }
+            for (before, after) in [(front.minX, current.minX), (front.minY, current.minY), (front.width, current.width), (front.height, current.height)] {
+                try expectNear(before, after, "Showing a card answer must not move its controls")
+            }
+        }
+        state.enabled = false
+        _ = try await measure(view, window)
+        guard state.ratings.isEmpty else { throw AppError.message("Changing review state must not grade a card") }
+        print("PASS: shared card answer/grade controls keep the same 56 pt footer without auto-grading")
+    }
+
+    /// Advance real wall-clock time without publishing any app state: a due
+    /// counter, card and its controls must all wake from an empty queue together.
+    private static func checkTimedQueues() async throws {
+        for section in ["meetings", "cards"] {
+            let store = AppStore(preview: true)
+            let due = ISO8601DateFormatter().string(from: Date().addingTimeInterval(5))
+            let data = try JSONSerialization.data(withJSONObject: ["due": due, "count": 1, "lastRating": 3])
+            let review = try JSONDecoder().decode(ReviewState.self, from: data)
+            for meeting in store.meetings {
+                let summary: Summary? = store.read(store.meetingDirectory(meeting.id).appendingPathComponent("summary.json"))
+                let reviews = Dictionary(uniqueKeysWithValues: (summary?.cards ?? []).map { ($0.id, review) })
+                try store.write(reviews, store.meetingDirectory(meeting.id).appendingPathComponent("review-state.json"))
+            }
+            store.selection = store.meetings.first?.id; store.loadSelection()
+            store.tab = "cards"; store.librarySection = section
+            scope = UUID().uuidString; frames = [:]; owners = [:]
+            let host = NSHostingView(rootView: MainView().environmentObject(store)
+                .environment(\.appLayoutCheckScope, scope).frame(width: 1040, height: 700))
+            host.sizingOptions = []
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 700),
+                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.contentView = host; window.makeKeyAndOrderFront(nil)
+            defer { window.orderOut(nil) }
+            _ = try await measure(host, window)
+            guard frames["cards.review"] == nil else { throw AppError.message("Future cards must start outside the review queue in " + section) }
+            // The production queue ticks every 30 seconds. No reload, selection
+            // change or other ObservableObject notification is allowed here.
+            try await Task.sleep(for: .seconds(31))
+            _ = try await measure(host, window)
+            guard let footer = frames["cards.review"] else { throw AppError.message("A newly due card did not reveal its review controls in " + section) }
+            try expectNear(footer.height, 56, "Newly due card review footer in " + section)
+            print("PASS: " + section + " review queue wakes from empty when a card becomes due without a state change")
+        }
     }
 
     private static func measure(_ view: NSView, _ window: NSWindow) async throws -> [String: CGRect] {
@@ -175,7 +250,7 @@ enum UIConsistencyChecks {
             view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             try await Task.sleep(for: .milliseconds(20))
         }
-        for identifier in ["toolbar", "workspace", "status"] {
+        for identifier in ["toolbar", "workspace"] {
             guard let frame = frames[identifier], frame.width > 0, frame.height > 0,
                   frame.origin.x.isFinite, frame.origin.y.isFinite else {
                 throw AppError.message("Missing/invalid native layout anchor: " + identifier)
@@ -185,8 +260,8 @@ enum UIConsistencyChecks {
     }
     private static func expectUnchanged(_ before: [String: CGRect], _ after: [String: CGRect], _ label: String,
                                         extra: [String] = []) throws {
-        let optional = ["sidebar", "toolbar.note", "toolbar.file", "toolbar.record"] + extra
-        for identifier in ["toolbar", "workspace", "status"] + optional where before[identifier] != nil {
+        let optional = ["status", "sidebar", "toolbar.note", "toolbar.file", "toolbar.record", "meeting.tab.notes", "meeting.tab.summary", "meeting.tab.transcript", "meeting.tab.cards"] + extra
+        for identifier in ["toolbar", "workspace"] + optional where before[identifier] != nil {
             guard let first = before[identifier], let second = after[identifier] else {
                 throw AppError.message("Native layout anchor disappeared while " + label + ": " + identifier)
             }
@@ -204,6 +279,22 @@ enum UIConsistencyChecks {
     private static func isDisposableRoot(_ path: String) -> Bool {
         let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
         return ["/private/tmp", "/tmp"].contains(url.deletingLastPathComponent().path) && url.lastPathComponent.hasPrefix("posle-ui-check-")
+    }
+}
+@MainActor
+private final class ReviewBarCheckState: ObservableObject {
+    @Published var flipped = false
+    @Published var enabled = true
+    @Published var query = ""
+    var ratings: [Int] = []
+}
+private struct ReviewBarCheckView: View {
+    @ObservedObject var state: ReviewBarCheckState
+    var body: some View {
+        VStack(spacing: 0) {
+            TextField("Найти карточку", text: $state.query).textFieldStyle(.roundedBorder).padding(8)
+            StudyReviewBar(flipped: $state.flipped, enabled: state.enabled, review: nil) { state.ratings.append($0) }
+        }
     }
 }
 #endif

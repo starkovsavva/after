@@ -7,10 +7,11 @@ struct MainView: View {
     @EnvironmentObject private var store: AppStore
     @State private var dropping = false
     @State private var confirmDelete = false
+    @State private var filteringMeetings = false
 
     var body: some View {
         HStack(spacing: 0) {
-            sidebar.frame(width: 248)
+            sidebar.frame(width: 224)
             Rectangle().fill(Ink.line).frame(width: 1)
             VStack(spacing: 0) {
                 topbar
@@ -28,7 +29,7 @@ struct MainView: View {
                         if let notice = store.notice { message(notice, error: false) }
                     }.frame(maxWidth: 520).padding(16)
                 }
-                workspaceStatus
+                if store.librarySection == "meetings", store.transcript != nil { player.appLayoutAnchor("status") }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -51,7 +52,7 @@ struct MainView: View {
                     .padding(10).allowsHitTesting(false)
             }
         }
-        .sheet(isPresented: $store.showingSettings) { SettingsView().environmentObject(store) }
+        .sheet(isPresented: $store.showingSettings) { SettingsView(section: store.settingsSection).environmentObject(store) }
         .sheet(isPresented: $store.showingRecord) { RecordView().environmentObject(store) }
         .sheet(isPresented: $store.showingSearch) { SearchView().environmentObject(store) }
         .alert("Переместить встречу в Корзину?", isPresented: $confirmDelete) {
@@ -64,14 +65,13 @@ struct MainView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 11) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 12).fill(Ink.accent).frame(width: 39, height: 39)
+                    RoundedRectangle(cornerRadius: 9).fill(Ink.actionFill).frame(width: 32, height: 32)
                     Image(systemName: "waveform").font(.system(size: 20, weight: .medium)).foregroundStyle(.white)
                 }
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("после").font(.system(size: 26, weight: .bold, design: .rounded))
-                    Text("Место для важного").font(AppTypography.control).foregroundStyle(.secondary)
+                    Text("после").font(.system(size: 23, weight: .bold, design: .rounded))
                 }
-            }.padding(.top, 42).padding(.horizontal, 24).padding(.bottom, 30)
+            }.padding(.top, 30).padding(.horizontal, 20).padding(.bottom, 24)
 
             VStack(spacing: 3) {
                 libraryButton("meetings", "Все встречи", "rectangle.stack")
@@ -91,34 +91,47 @@ struct MainView: View {
             }.buttonStyle(.plain).padding(.horizontal, 16).padding(.top, 16)
                 .accessibilityLabel("Поиск по всей библиотеке. Command K")
 
-            HStack(spacing: 7) {
-                Image(systemName: "line.3.horizontal.decrease").foregroundStyle(.secondary)
-                TextField("Фильтр по названию", text: $store.libraryFilter).textFieldStyle(.plain)
-                    .accessibilityLabel("Фильтр списка встреч по названию")
-            }.font(AppTypography.control).padding(10).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
-                .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 12)
-
+            HStack {
+                Text("Встречи").font(AppTypography.captionStrong).foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    filteringMeetings.toggle()
+                    if !filteringMeetings { store.libraryFilter = "" }
+                } label: { Image(systemName: "line.3.horizontal.decrease").frame(width: 24, height: 24) }
+                    .buttonStyle(.plain).foregroundStyle(filteringMeetings ? Ink.accent : Color.secondary)
+                    .accessibilityLabel("Фильтр встреч").help("Фильтр по названию")
+            }.padding(.horizontal, 22).padding(.top, 18).padding(.bottom, 6)
+            if filteringMeetings || !store.libraryFilter.isEmpty {
+                HStack(spacing: 7) {
+                    TextField("Название встречи", text: $store.libraryFilter).textFieldStyle(.plain)
+                    if !store.libraryFilter.isEmpty {
+                        Button { store.libraryFilter = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Очистить фильтр")
+                    }
+                }.font(AppTypography.control).padding(9).background(Ink.field, in: RoundedRectangle(cornerRadius: 6))
+                    .padding(.horizontal, 16).padding(.bottom, 6)
+            }
             ScrollView {
                 LazyVStack(spacing: 5) {
                     ForEach(store.filteredMeetings) { meeting in
                         Button { store.librarySection = "meetings"; store.selection = meeting.id; if meeting.libraryKind == "cards" { store.tab = "cards" } } label: {
                             VStack(alignment: .leading, spacing: 7) {
                                 HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: meeting.status == "ready" ? "text.badge.checkmark" : "waveform")
-                                        .foregroundStyle(store.selection == meeting.id ? Ink.accent : .secondary)
-                                    Text(meeting.title).font(AppTypography.controlStrong).lineLimit(2)
+                                    Image(systemName: ["ready", "transcribed"].contains(meeting.status) ? "text.alignleft" : "waveform")
+                                        .foregroundStyle(store.librarySection == "meetings" && store.selection == meeting.id ? Ink.accent : .secondary)
+                                    Text(meeting.title).font(AppTypography.control).lineLimit(2)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 HStack {
                                     Text(Date(timeIntervalSince1970: meeting.createdAt).formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "ru_RU"))))
                                     Spacer()
                                     Text(meeting.status == "recording" ? "Запись" : (meeting.duration > 0 ? Exporter.timestamp(meeting.duration) : "Добавлена"))
-                                }.font(AppTypography.control).foregroundStyle(.secondary)
-                            }.padding(12).background(store.selection == meeting.id ? Color.primary.opacity(0.055) : .clear,
+                                }.font(AppTypography.caption).foregroundStyle(.secondary)
+                            }.padding(10).background(store.librarySection == "meetings" && store.selection == meeting.id ? Color.primary.opacity(0.055) : .clear,
                                                       in: RoundedRectangle(cornerRadius: 9))
                         }.buttonStyle(.plain)
-                            .accessibilityValue(store.selection == meeting.id ? "Выбрана" : "")
-                            .accessibilityAddTraits(store.selection == meeting.id ? .isSelected : [])
+                            .accessibilityValue(store.librarySection == "meetings" && store.selection == meeting.id ? "Выбрана" : "")
+                            .accessibilityAddTraits(store.librarySection == "meetings" && store.selection == meeting.id ? .isSelected : [])
                     }
                     if store.filteredMeetings.isEmpty && !store.libraryFilter.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
@@ -133,22 +146,20 @@ struct MainView: View {
             if ProcessInfo.processInfo.arguments.contains("--preview") {
                 Text("Демонстрационные данные").font(AppTypography.caption).foregroundStyle(Ink.warning).padding(.horizontal, 22).padding(.bottom, 10)
             }
-            Button { store.showingSettings = true } label: {
+            Button { store.openSettings() } label: {
                 HStack {
                     Image(systemName: "slider.horizontal.3")
                     Text("Настройки")
                     Spacer()
-                    Circle().fill(store.runtimeReady ? Ink.green : .orange).frame(width: 6, height: 6)
                 }.font(AppTypography.control).padding(13)
             }.buttonStyle(.plain).padding(.horizontal, 12)
-            Label("Аудио хранится на Mac", systemImage: "lock").font(AppTypography.control).foregroundStyle(.secondary)
-                .padding(.horizontal, 24).padding(.bottom, 20)
+            Color.clear.frame(height: 12)
         }.background(Color.primary.opacity(0.018))
     }
 
     private func libraryButton(_ id: String, _ title: String, _ icon: String) -> some View {
         Button { store.librarySection = id; store.pause() } label: {
-            HStack { Label(title, systemImage: icon); Spacer(); if id == "meetings" { Text("\(store.meetings.count)").foregroundStyle(.secondary) } }
+            HStack { Label(title, systemImage: icon); Spacer(); if id == "meetings" { Text("\(store.meetings.filter { $0.libraryKind != "cards" }.count)").foregroundStyle(.secondary) } }
                 .font(AppTypography.control).padding(10)
                 .background(store.librarySection == id ? Ink.accent.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 8))
                 .foregroundStyle(store.librarySection == id ? Ink.accent : Color.primary)
@@ -156,61 +167,44 @@ struct MainView: View {
     }
 
     private var topbar: some View {
-        HStack(spacing: 12) {
-            Label("Ваша библиотека", systemImage: "square.stack.3d.up").font(AppTypography.control).foregroundStyle(.secondary)
-            Spacer()
-            Button { store.quickCaptureAction?() } label: { Label("Заметка", systemImage: "square.and.pencil") }.buttonStyle(.bordered).appLayoutAnchor("toolbar.note")
-            Button { store.chooseFile() } label: { Label("Добавить файл", systemImage: "plus") }
-                .disabled(store.busy || store.isRecording).buttonStyle(.bordered).appLayoutAnchor("toolbar.file")
-            Button { store.showingRecord = true } label: { Label("Записать встречу", systemImage: "record.circle") }
-                .disabled(store.busy || store.isRecording).buttonStyle(.borderedProminent).tint(Ink.actionFill).appLayoutAnchor("toolbar.record")
+        HStack(spacing: 10) {
+            HStack(spacing: 8) {
+                if store.isRecording {
+                    if store.stoppingRecording { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "record.circle.fill").foregroundStyle(Ink.recordFill) }
+                    Text(store.stoppingRecording ? "Сохраняю запись…" : "Запись").lineLimit(1)
+                    if !store.stoppingRecording, let date = store.recordingDate { Text(date, style: .timer).monospacedDigit() }
+                    Button { store.bookmarkAction?() } label: { Image(systemName: "bookmark").frame(width: 24, height: 24) }
+                        .buttonStyle(.plain).disabled(store.stoppingRecording).accessibilityLabel("Отметить важный момент").help("Отметить момент · ⌃⌥B")
+                } else if store.busy {
+                    ProgressView().controlSize(.small)
+                    Text(store.progressText).lineLimit(1).truncationMode(.middle).help(store.progressText)
+                    if store.canCancelJob {
+                        Button { store.cancelJob() } label: { Image(systemName: "xmark.circle").frame(width: 24, height: 24) }
+                            .buttonStyle(.plain).accessibilityLabel("Отменить обработку")
+                    }
+                }
+            }.font(AppTypography.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            Button { store.quickCaptureAction?() } label: { Label("Заметка", systemImage: "square.and.pencil") }
+                .buttonStyle(.bordered).appLayoutAnchor("toolbar.note").help("Быстрая заметка · ⇧⌘N")
+            Button { store.chooseFile() } label: { Label("Импорт", systemImage: "arrow.down.doc") }
+                .disabled(store.busy || store.isRecording).buttonStyle(.bordered).appLayoutAnchor("toolbar.file").help("Импорт аудио или видео · ⌘O")
+            Button {
+                if store.isRecording { Task { await store.stopRecording() } }
+                else { store.showingRecord = true }
+            } label: {
+                Label(store.stoppingRecording ? "Сохраняю…" : store.isRecording ? "Остановить" : "Записать",
+                      systemImage: store.isRecording ? "stop.circle" : "record.circle")
+                    .frame(width: 100)
+            }.disabled(store.stoppingRecording || store.busy && !store.isRecording)
+                .buttonStyle(.bordered).foregroundStyle(store.isRecording ? Ink.recordFill : Color.primary)
+                .appLayoutAnchor("toolbar.record").help(store.isRecording ? "Остановить и сохранить запись" : "Записать встречу · ⌘N")
         }.font(AppTypography.control).controlSize(.regular).padding(.horizontal, AppLayout.contentInset)
             .frame(height: AppLayout.toolbarHeight).appLayoutAnchor("toolbar")
-            .overlay(alignment: .bottom) { Rectangle().fill(Ink.line).frame(height: 1) }
-    }
-
-    /// A permanent status/player slot keeps the workspace stationary when a job
-    /// starts, finishes, changes progress mode or saves a recording.
-    private var workspaceStatus: some View {
-        Group {
-            if store.isRecording { recordingBar }
-            else if store.busy { processingBar }
-            else if store.librarySection == "meetings", store.transcript != nil { player }
-            else {
-                HStack {
-                    Label("Библиотека на этом Mac", systemImage: "externaldrive").foregroundStyle(.secondary)
-                    Spacer()
-                    Text("⌘K — поиск").foregroundStyle(.secondary)
-                }.padding(.horizontal, AppLayout.contentInset)
-            }
-        }.font(AppTypography.control).frame(height: AppLayout.statusHeight).appLayoutAnchor("status")
-            .background(Ink.paper)
-            .overlay(alignment: .top) { Rectangle().fill(Ink.line).frame(height: 1) }
-    }
-    private var processingBar: some View {
-        HStack(spacing: 12) {
-            ProgressView().controlSize(.small).frame(width: 20)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(store.progressText).font(AppTypography.controlStrong).lineLimit(1).help(store.progressText)
-                Text(store.processingID.flatMap { id in store.meetings.first { $0.id == id }?.title } ?? "После готовит данные")
-                    .font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
-            }.frame(maxWidth: .infinity, alignment: .leading)
-            if store.canCancelJob { Button("Отменить") { store.cancelJob() }.buttonStyle(.bordered) }
-        }.padding(.horizontal, AppLayout.contentInset).frame(maxHeight: .infinity)
             .overlay(alignment: .bottom) {
-                if store.progress >= 0 { ProgressView(value: store.progress).progressViewStyle(.linear).frame(height: 2) }
+                Rectangle().fill(Ink.line).frame(height: 1)
+                if store.busy && store.progress >= 0 { ProgressView(value: store.progress).progressViewStyle(.linear).frame(height: 2) }
             }
-    }
-    private var recordingBar: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "record.circle.fill").foregroundStyle(Ink.recordFill)
-            Text(store.stoppingRecording ? "Сохраняю запись…" : "Идёт запись").font(AppTypography.controlStrong)
-            if !store.stoppingRecording, let date = store.recordingDate { Text(date, style: .timer).monospacedDigit() }
-            Spacer()
-            Button { store.bookmarkAction?() } label: { Label("Важно", systemImage: "bookmark") }.buttonStyle(.bordered).disabled(store.stoppingRecording)
-            Button("Остановить и сохранить") { Task { await store.stopRecording() } }.buttonStyle(.borderedProminent).tint(Ink.recordFill)
-                .disabled(store.busy || store.stoppingRecording)
-        }.padding(.horizontal, AppLayout.contentInset)
     }
     private func message(_ text: String, error: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
@@ -224,45 +218,20 @@ struct MainView: View {
     }
 
     private var welcome: some View {
-        ScrollView {
-        VStack(alignment: .leading, spacing: 24) {
-            Spacer()
-            HStack(spacing: 5) {
-                ForEach(0..<19) { i in
-                    Capsule().fill(Ink.accent.opacity(i % 4 == 0 ? 0.28 : 0.8))
-                        .frame(width: 5, height: CGFloat([18, 32, 48, 27, 60, 80, 40, 64, 96, 58, 38, 72, 48, 24, 42, 60, 28, 18, 10][i]))
-                }
-            }.frame(height: 100).accessibilityHidden(true)
-            Text("Разговор закончился.\nВажное осталось.")
-                .font(.system(size: 43, weight: .semibold, design: .rounded)).tracking(-1.3).lineSpacing(2)
-            Text("Записывайте встречи на русском и английском.\nВозвращайтесь к решениям, деталям и полезным фразам.")
-                .font(AppTypography.body).lineSpacing(6).foregroundStyle(.secondary)
-            HStack(spacing: 12) {
-                Button { store.chooseFile() } label: { Label("Добавить первую запись", systemImage: "arrow.up.doc") }
-                    .buttonStyle(.borderedProminent).tint(Ink.actionFill).controlSize(.large).disabled(store.busy)
-                Button("Настроить приложение") { store.showingSettings = true }.buttonStyle(.bordered).controlSize(.large)
-            }.padding(.top, 6)
-            Text("Или перетащите сюда аудио или видео").font(AppTypography.control).foregroundStyle(.secondary)
-            Spacer()
-            HStack(alignment: .top, spacing: 40) {
-                welcomeFeature("text.alignleft", "Каждая реплика", "Текст, собеседники и таймкоды")
-                welcomeFeature("checkmark.bubble", "Суть и детали", "Решения, задачи, цифры и сроки")
-                welcomeFeature("rectangle.on.rectangle.angled", "В долгую память", "Карточки и новые примеры")
-            }.padding(.bottom, 45)
-        }.padding(.horizontal, 60).padding(.vertical, 28).frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-    private func welcomeFeature(_ icon: String, _ title: String, _ subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: icon).font(.system(size: 20)).foregroundStyle(Ink.accent).padding(.bottom, 4)
-            Text(title).font(AppTypography.controlStrong)
-            Text(subtitle).font(AppTypography.control).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
+        VStack(spacing: 16) {
+            Image(systemName: "waveform").font(.system(size: 34, weight: .light)).foregroundStyle(Ink.accent).accessibilityHidden(true)
+            Text("Пока нет встреч").font(AppTypography.pageTitle)
+            Text("Перетащите сюда аудио или видео").font(AppTypography.body).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button("Импортировать запись") { store.chooseFile() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(store.busy)
+                Button("Записать встречу") { store.showingRecord = true }.buttonStyle(.bordered).disabled(store.busy)
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(AppLayout.contentInset)
     }
     private var player: some View {
         HStack(spacing: 14) {
             Button { store.togglePlayback() } label: {
-                Image(systemName: store.isPlaying ? "pause.fill" : "play.fill").frame(width: 30, height: 30)
+                Image(systemName: store.isPlaying ? "pause.fill" : "play.fill").frame(width: 22, height: 22)
             }.buttonStyle(.bordered).accessibilityLabel(store.isPlaying ? "Приостановить" : "Воспроизвести")
             Text(Exporter.timestamp(store.playbackTime)).monospacedDigit().frame(width: 52)
             Slider(value: Binding(get: { store.playbackTime }, set: { store.seek($0) }), in: 0...max(1, store.playbackDuration))
@@ -283,7 +252,8 @@ struct MainView: View {
             } label: { Image(systemName: "square.and.arrow.up").frame(width: 25) }.menuStyle(.borderlessButton).frame(width: 35)
                 .accessibilityLabel("Экспорт встречи")
         }.font(AppTypography.control).padding(.horizontal, AppLayout.contentInset)
-            .frame(height: AppLayout.statusHeight).background(Color.primary.opacity(0.025))
+            .frame(height: AppLayout.statusHeight).background(Ink.paper)
+            .overlay(alignment: .top) { Rectangle().fill(Ink.line).frame(height: 1) }
     }
 }
 
@@ -295,7 +265,7 @@ struct MeetingView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 13) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
                     Text(meeting.title).font(AppTypography.pageTitle)
                         .lineLimit(1).help(meeting.title).textSelection(.enabled)
@@ -309,12 +279,10 @@ struct MeetingView: View {
                 HStack(spacing: 16) {
                     Label(Date(timeIntervalSince1970: meeting.createdAt).formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Locale(identifier: "ru_RU"))), systemImage: "calendar")
                     if meeting.duration > 0 { Label(Exporter.timestamp(meeting.duration), systemImage: "clock") }
-                    if let summary = store.summary {
-                        Label(summary.provider == "cloud" ? "Конспект в облаке" : "Конспект на Mac", systemImage: summary.provider == "cloud" ? "cloud" : "laptopcomputer")
-                    }
+
                 }.font(AppTypography.control).foregroundStyle(.secondary)
-            }.padding(.horizontal, AppLayout.contentInset).padding(.top, 24).padding(.bottom, 18)
-            HStack(spacing: 25) {
+            }.padding(.horizontal, AppLayout.contentInset).padding(.top, 18).padding(.bottom, 12)
+            HStack(spacing: 18) {
                 tab("notes", "Мои заметки", nil)
                 if meeting.libraryKind != "cards" {
                     tab("summary", "Конспект", nil)
@@ -322,7 +290,7 @@ struct MeetingView: View {
                 }
                 tab("cards", "Карточки", store.summary?.cards.count)
                 Spacer()
-            }.padding(.horizontal, 32).appLayoutAnchor("meeting.tabs").overlay(alignment: .bottom) { Rectangle().fill(Ink.line).frame(height: 1) }
+            }.padding(.horizontal, AppLayout.contentInset).appLayoutAnchor("meeting.tabs").overlay(alignment: .bottom) { Rectangle().fill(Ink.line).frame(height: 1) }
             if store.tab == "notes" { NotesWorkspaceView(notes: store.notes, meeting: meeting) }
             else if store.transcript == nil && store.tab != "cards" { unprocessed }
             else if store.tab == "transcript" { TranscriptView() }
@@ -339,14 +307,16 @@ struct MeetingView: View {
         Button { store.tab = key } label: {
             HStack(spacing: 7) {
                 Text(label)
-                if let count, count > 0 { Text("\(count)").font(AppTypography.control).padding(.horizontal, 5).padding(.vertical, 2)
-                    .background(Ink.soft, in: Capsule()) }
+                if key == "transcript" || key == "cards" {
+                    Text(count.map(String.init) ?? "").font(AppTypography.caption).monospacedDigit().lineLimit(1)
+                        .frame(width: 30).opacity((count ?? 0) > 0 ? 1 : 0)
+                }
             }.font(AppTypography.controlStrong)
                 .foregroundStyle(store.tab == key ? Ink.accent : .secondary)
-                .frame(height: 42, alignment: .top).overlay(alignment: .bottom) {
+                .frame(minWidth: key == "transcript" ? 122 : 96, minHeight: 36, maxHeight: 36, alignment: .topLeading).overlay(alignment: .bottom) {
                     if store.tab == key { Rectangle().fill(Ink.accent).frame(height: 2) }
                 }
-        }.buttonStyle(.plain)
+        }.buttonStyle(.plain).appLayoutAnchor("meeting.tab." + key)
             .accessibilityLabel(label)
             .accessibilityValue(store.tab == key ? "Выбрана" : "")
             .accessibilityAddTraits(store.tab == key ? .isSelected : [])
@@ -355,13 +325,11 @@ struct MeetingView: View {
     private var unprocessed: some View {
         VStack(spacing: 16) {
             Image(systemName: store.stoppingRecording ? "square.and.arrow.down" : store.isRecording ? "waveform" : "waveform.badge.magnifyingglass").font(.system(size: 42)).foregroundStyle(Ink.accent)
-            Text(store.stoppingRecording ? "Сохраняем встречу" : store.isRecording ? "Идёт запись встречи" : "Запись готова к распознаванию").font(.title3.weight(.semibold))
-            Text(store.stoppingRecording ? "Подождите: создаю MP3 и сохраняю звуковые дорожки." : store.isRecording ? "Когда встреча закончится, нажмите «Остановить и сохранить»." : "Речь останется на исходном языке. Собеседники получат отдельные метки.")
-                .font(AppTypography.control).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Text(store.stoppingRecording ? "Сохраняю запись" : store.isRecording ? "Идёт запись" : "Запись сохранена").font(.title3.weight(.semibold))
             if !store.isRecording {
                 Button(store.runtimeReady ? "Распознать встречу" : "Установить модели") {
                     if store.runtimeReady { Task { await store.processMeeting(meeting.id) } }
-                    else { store.showingSettings = true }
+                    else { store.openSettings("speech") }
                 }.buttonStyle(.borderedProminent).tint(Ink.actionFill).controlSize(.large).disabled(store.busy)
             }
             if let error = meeting.error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning) }
@@ -376,6 +344,7 @@ struct SummaryView: View {
     @State private var originalOverview = ""
     @State private var originalGeneratedAt = 0.0
     @FocusState private var overviewFocused: Bool
+    @State private var showingFocus = false
 
     private var overviewEditing: Bool { overviewMeetingID != nil && overviewMeetingID == store.selection }
     private var overviewLocked: Bool { store.busy || store.isRecording }
@@ -383,38 +352,48 @@ struct SummaryView: View {
     var body: some View {
         ScrollViewReader { proxy in
         ScrollView {
-            VStack(alignment: .leading, spacing: 26) {
+            VStack(alignment: .leading, spacing: 18) {
                 HStack(spacing: 12) {
-                    Picker("Где создавать конспект", selection: $store.settings.mode) {
-                        Label("На Mac", systemImage: "laptopcomputer").tag("local")
-                        Label("Облако", systemImage: "cloud").tag("cloud")
-                    }.pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 235).disabled(store.busy || store.isRecording)
+                    Menu {
+                        Picker("Где создавать конспект", selection: $store.settings.mode) {
+                            Text("На Mac").tag("local"); Text("Облако").tag("cloud")
+                        }
+                    } label: { Label(store.settings.mode == "cloud" ? "Облако" : "На Mac", systemImage: store.settings.mode == "cloud" ? "cloud" : "laptopcomputer") }
+                        .menuStyle(.borderlessButton).frame(width: 110).disabled(overviewLocked)
                         .onChange(of: store.settings.mode) { _, _ in store.saveSettings() }
+                    Button { showingFocus = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 24, height: 24) }
+                        .buttonStyle(.plain).foregroundStyle(.secondary).disabled(overviewLocked).accessibilityLabel("Фокус конспекта")
+                        .help("Что важно выписать из встречи")
+                        .popover(isPresented: $showingFocus) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Фокус конспекта").font(AppTypography.heading)
+                                TextEditor(text: Binding(get: { store.selected?.focus ?? "" }, set: { value in
+                                    if let id = store.selection { store.updateMeeting(id) { $0.focus = value } }
+                                })).font(AppTypography.body).frame(height: 110).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 6))
+                                HStack { Spacer(); Button("Готово") { showingFocus = false } }
+                            }.padding(20).frame(width: 420)
+                        }
+                    Image(systemName: "info.circle").foregroundStyle(.secondary)
+                        .help("Создано ИИ. Проверяйте цифры и договорённости по исходным репликам.")
+                        .accessibilityLabel("Создано ИИ. Проверяйте цифры и договорённости по исходным репликам.")
                     Spacer()
                     Button { store.summarizeSelected() } label: {
-                        Label(store.settings.mode == "cloud" ? "Конспект в облаке" : (store.summary == nil ? "Создать конспект" : "Обновить конспект"), systemImage: "sparkles").frame(minWidth: 180)
-                    }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(store.busy || store.isRecording)
+                        Label(store.summary == nil ? "Создать конспект" : "Обновить", systemImage: "sparkles").frame(minWidth: 120)
+                    }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(overviewLocked)
                 }
-                Label(store.settings.mode == "cloud"
-                      ? "По этой кнопке текст встречи отправится в OpenAI. Аудио останется на Mac. API оплачивается отдельно."
-                      : "Конспект создаётся на этом Mac. Проверяйте детали по ссылкам на исходные реплики.",
-                      systemImage: store.settings.mode == "cloud" ? "cloud" : "laptopcomputer")
-                    .font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
-                DisclosureGroup("Что важно выписать из этой встречи") {
-                    TextEditor(text: Binding(get: { store.selected?.focus ?? "" }, set: { value in
-                        if let id = store.selection { store.updateMeeting(id) { $0.focus = value } }
-                    })).font(AppTypography.control).frame(height: 70).padding(8).disabled(store.busy || store.isRecording)
-                        .background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
-                }.font(AppTypography.control).foregroundStyle(.secondary)
+                if store.settings.mode == "cloud" {
+                    Text("В OpenAI отправится текст встречи. Запрос оплачивается через API.")
+                        .font(AppTypography.caption).foregroundStyle(.secondary)
+                }
 
                 if let summary = store.summary {
                     VStack(alignment: .leading, spacing: 13) {
                         HStack {
-                            Label("Главное из разговора", systemImage: "text.bubble").font(AppTypography.heading)
+                            Text("Кратко").font(AppTypography.heading)
                             Spacer()
                             if !overviewEditing {
-                                Button("Исправить") { beginOverviewEdit(summary) }
-                                    .buttonStyle(.bordered).controlSize(.small).disabled(overviewLocked)
+                                Button("Изменить") { beginOverviewEdit(summary) }
+                                    .buttonStyle(.borderless).disabled(overviewLocked)
                             }
                         }
                         if overviewEditing {
@@ -449,13 +428,13 @@ struct SummaryView: View {
                                 VStack(alignment: .leading, spacing: 12) {
                                     ForEach(Array(summary.overviewClaims.enumerated()), id: \.offset) { index, claim in
                                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                            Text(claim.text).font(AppTypography.body).lineSpacing(7).textSelection(.enabled)
+                                            Text(claim.text).font(AppTypography.body).lineSpacing(5).textSelection(.enabled)
                                             ClaimReferenceButton(claim: claim, number: index + 1, summary: summary)
                                         }
                                     }
                                 }.frame(maxWidth: 700, alignment: .leading)
                             } else {
-                                Text(summary.overview).font(AppTypography.body).lineSpacing(7).textSelection(.enabled)
+                                Text(summary.overview).font(AppTypography.body).lineSpacing(5).textSelection(.enabled)
                                     .frame(maxWidth: 700, alignment: .leading)
                                 if !summary.items.isEmpty {
                                     DisclosureGroup("Факты этой встречи") {
@@ -473,35 +452,20 @@ struct SummaryView: View {
                                 }
                             }
                         }
-                    }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Ink.accent.opacity(overviewTargeted ? 0.11 : 0.055), in: RoundedRectangle(cornerRadius: 12))
+                    }.padding(.bottom, 16).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(overviewTargeted ? Ink.accent.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(alignment: .bottom) { Rectangle().fill(Ink.line).frame(height: 1) }
                         .id("summary-overview")
                     ForEach(["decision", "action", "detail", "question"], id: \.self) { kind in
                         let items = summary.items.filter { $0.kind == kind }
                         if !items.isEmpty { section(kind, items) }
                     }
-                    if !summary.cards.isEmpty {
-                        Button { store.tab = "cards" } label: {
-                            HStack(spacing: 14) {
-                                Image(systemName: "rectangle.on.rectangle.angled").font(.system(size: 23)).foregroundStyle(Ink.accent)
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text("Заберите полезное в память").font(AppTypography.controlStrong)
-                                    Text("\(summary.cards.count) карточек с фразами и понятиями из этой встречи").font(AppTypography.control).foregroundStyle(.secondary)
-                                }
-                                Spacer(); Image(systemName: "arrow.right").foregroundStyle(Ink.accent)
-                            }.padding(18).background(Ink.soft, in: RoundedRectangle(cornerRadius: 10))
-                        }.buttonStyle(.plain)
-                    }
-                    Text("Создано ИИ. Цифры, имена и обязательства проверяйте по исходным репликам.")
-                        .font(AppTypography.control).foregroundStyle(.secondary)
                     ForEach(summary.warnings, id: \.self) { Text($0).font(AppTypography.caption).foregroundStyle(Ink.warning) }
                 } else {
                     VStack(alignment: .leading, spacing: 15) {
                         Image(systemName: "text.badge.star").font(.system(size: 35)).foregroundStyle(Ink.accent)
-                        Text("От разговора — к понятному плану").font(AppTypography.modalTitle)
-                        Text("Создайте конспект, чтобы собрать решения, задачи, сроки и важные детали. Полезные фразы и понятия появятся в карточках.")
-                            .font(AppTypography.body).foregroundStyle(.secondary).lineSpacing(6)
-                        Button("Настроить ИИ для конспекта") { store.showingSettings = true }.buttonStyle(.bordered)
+                        Text("Конспект не создан").font(AppTypography.emptyTitle)
+                        Button("Настройки ИИ") { store.openSettings("ai") }.buttonStyle(.bordered)
                     }.padding(.vertical, 45).frame(maxWidth: 540, alignment: .leading)
                 }
             }.appContentLayout()
@@ -537,7 +501,7 @@ struct SummaryView: View {
         originalGeneratedAt = 0
     }
     private func section(_ kind: String, _ items: [Insight]) -> some View {
-        let title = ["decision": "Решения", "action": "Следующие шаги", "detail": "Детали, которые важно сохранить", "question": "Открытые вопросы"][kind]!
+        let title = ["decision": "Решения", "action": "Задачи", "detail": "Детали", "question": "Вопросы"][kind]!
         let icon = ["decision": "checkmark.seal", "action": "checklist", "detail": "pin", "question": "questionmark.bubble"][kind]!
         return VStack(alignment: .leading, spacing: 15) {
             Label(title, systemImage: icon).font(AppTypography.heading)
@@ -592,7 +556,7 @@ struct TranscriptView: View {
                 }.buttonStyle(.bordered).disabled(store.busy || store.isRecording)
                     .help("Указать точное число участников и пересчитать голоса без повторного распознавания")
             }.font(AppTypography.control)
-                .padding(.horizontal, 32).padding(.top, 22).padding(.bottom, 10)
+                .padding(.horizontal, AppLayout.contentInset).padding(.top, 16).padding(.bottom, 8)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
