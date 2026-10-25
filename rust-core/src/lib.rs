@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod models;
 pub mod storage;
+pub mod search;
 pub mod worker;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -34,6 +35,8 @@ pub fn request(value: &Value) -> Result<Value> {
     if !root.is_absolute() { bail!("Папка данных должна иметь абсолютный путь"); }
     match value["command"].as_str().context("Нет команды ядра")? {
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),
+        "search-validate" => search::validate(&root, value["meetingID"].as_str().context("Нет ID встречи")?, value["sourceFingerprint"].as_str().unwrap_or("")),
+        "search" => search::search(&root, value["query"].as_str().unwrap_or(""), value["scope"].as_str().unwrap_or("all"), value["limit"].as_u64().unwrap_or(60).min(100) as usize),
         "read" => {
             let path = data_path(&root, value["path"].as_str().context("Нет пути")?)?;
             if !path.exists() { return Ok(Value::Null); }

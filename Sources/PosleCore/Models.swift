@@ -66,6 +66,12 @@ public struct Flashcard: Codable, Identifiable, Hashable {
     public var segmentIDs: [Int]
 }
 
+public struct OverviewClaim: Codable, Hashable {
+    public var text: String
+    public var itemIndices: [Int]
+    public init(text: String, itemIndices: [Int]) { self.text = text; self.itemIndices = itemIndices }
+}
+
 public struct Summary: Codable {
     public var overview: String
     public var items: [Insight]
@@ -73,6 +79,63 @@ public struct Summary: Codable {
     public var provider: String
     public var model: String
     public var generatedAt: Double
+    public var warnings: [String]
+    public var overviewClaims: [OverviewClaim] = []
+
+    public init(overview: String, items: [Insight], cards: [Flashcard], provider: String, model: String,
+                generatedAt: Double, warnings: [String], overviewClaims: [OverviewClaim] = []) {
+        self.overview = overview; self.items = items; self.cards = cards; self.provider = provider
+        self.model = model; self.generatedAt = generatedAt; self.warnings = warnings; self.overviewClaims = overviewClaims
+    }
+    private enum CodingKeys: String, CodingKey {
+        case overview, items, cards, provider, model, generatedAt, warnings, overviewClaims
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        overview = try values.decode(String.self, forKey: .overview)
+        items = try values.decode([Insight].self, forKey: .items)
+        cards = try values.decode([Flashcard].self, forKey: .cards)
+        provider = try values.decode(String.self, forKey: .provider)
+        model = try values.decode(String.self, forKey: .model)
+        generatedAt = try values.decode(Double.self, forKey: .generatedAt)
+        warnings = try values.decode([String].self, forKey: .warnings)
+        overviewClaims = try values.decodeIfPresent([OverviewClaim].self, forKey: .overviewClaims) ?? []
+    }
+
+    /// Never attach citations to edited or inconsistent prose, or to missing facts/segments.
+    public func hasVerifiedOverviewClaims(transcript: Transcript?) -> Bool {
+        guard !overviewClaims.isEmpty, let transcript else { return false }
+        func normalized(_ text: String) -> String { text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        guard normalized(overviewClaims.map(\.text).joined(separator: " ")) == normalized(overview) else { return false }
+        let ids = Set(transcript.segments.map(\.id))
+        return overviewClaims.allSatisfy { claim in
+            !claim.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !claim.itemIndices.isEmpty &&
+            claim.itemIndices.allSatisfy { index in
+                items.indices.contains(index) && !items[index].segmentIDs.isEmpty && items[index].segmentIDs.allSatisfy(ids.contains)
+            }
+        }
+    }
+}
+
+public struct SearchHit: Decodable, Identifiable, Hashable {
+    public var id: String
+    public var meetingID: String
+    public var meetingTitle: String
+    public var createdAt: Double
+    public var kind: String
+    public var text: String
+    public var snippet: String
+    public var segmentIDs: [Int]
+    public var itemIndex: Int?
+    public var cardID: String?
+    public var start: Double?
+    public var sourceFingerprint: String
+}
+
+public struct SearchResponse: Decodable {
+    public var hits: [SearchHit]
+    public var total: Int
+    public var truncated: Bool
     public var warnings: [String]
 }
 

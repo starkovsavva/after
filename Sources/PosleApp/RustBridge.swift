@@ -52,9 +52,19 @@ final class RustBridge: @unchecked Sendable {
         _ = try request(root: root, command: "write", arguments: ["path": relative(root: root, url: url), "value": object])
     }
     private func relative(root: URL, url: URL) throws -> String {
-        let prefix = root.standardizedFileURL.path + "/"
-        let path = url.standardizedFileURL.path
-        guard path.hasPrefix(prefix) else { throw AppError.message("Файл находится вне библиотеки встреч") }
-        return String(path.dropFirst(prefix.count))
+        // Foundation shortens an existing /private/tmp root to /tmp while a new
+        // child retains /private/tmp. Compare equivalent root spellings only.
+        // Preserve the child's lexical path so Rust can reject symlinks itself;
+        // resolving it here could redirect a write to another meeting.
+        var rootPaths = [root.path, root.standardizedFileURL.path, root.resolvingSymlinksInPath().path]
+        if let canonical = root.path.withCString({ realpath($0, nil) }) {
+            rootPaths.append(String(cString: canonical)); free(canonical)
+        }
+        let path = url.path
+        for rootPath in rootPaths {
+            let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+            if path.hasPrefix(prefix) { return String(path.dropFirst(prefix.count)) }
+        }
+        throw AppError.message("Файл находится вне библиотеки встреч")
     }
 }

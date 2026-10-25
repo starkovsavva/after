@@ -1,12 +1,12 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use posle_core::{ai, models, storage, worker};
+use posle_core::{ai, models, search, storage, worker};
 use serde_json::{json, Value};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, ValueEnum)]
-enum Command { Prepare, Transcribe, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, List, Import, Update }
+enum Command { Prepare, Transcribe, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update }
 
 #[derive(Parser)]
 #[command(version, about="После: ядро библиотеки и обработки встреч")]
@@ -20,6 +20,9 @@ struct Args {
     #[arg(long, default_value_t=3)] rating: u8,
     #[arg(long, default_value_t=0)] speakers: u32,
     #[arg(long)] no_diarization: bool,
+    #[arg(long, default_value="")] query: String,
+    #[arg(long, default_value="all")] scope: String,
+    #[arg(long, default_value_t=60)] limit: usize,
 }
 
 fn backend_path(override_path: Option<&Path>) -> Result<PathBuf> {
@@ -59,6 +62,7 @@ fn run(args: Args) -> Result<Value> {
         Command::DiscoverGguf => models::discover_gguf(&args.root),
         Command::ImportGguf => ai::import_gguf(&args.root, args.path.as_deref().context("Выберите файл GGUF")?),
         Command::Pull => { ai::pull(&args.root)?; Ok(json!({})) }
+        Command::Search => search::search(&args.root, &args.query, &args.scope, args.limit),
         Command::List => Ok(json!({"meetings":storage::list_meetings(&args.root)?})),
         Command::Import | Command::Update => {
             let mut input = String::new(); io::stdin().take(1_000_000).read_to_string(&mut input)?;

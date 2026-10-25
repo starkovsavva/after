@@ -26,6 +26,9 @@ and transitive dependencies are recorded in `rust-core/Cargo.lock`.
 - [reqwest 0.12](https://github.com/seanmonstar/reqwest), MIT OR Apache-2.0; blocking, JSON and native TLS support.
 - [serde](https://github.com/serde-rs/serde), MIT OR Apache-2.0.
 - [sha2](https://github.com/RustCrypto/hashes), MIT OR Apache-2.0.
+- [rusqlite](https://github.com/rusqlite/rusqlite), MIT; bundled SQLite (public domain) with FTS5 for the private, rebuildable search index.
+- [rust-stemmers](https://github.com/CurrySoftware/rust-stemmers), MIT / BSD-3-Clause; Russian and English word forms for search.
+- [unicode-normalization](https://github.com/unicode-rs/unicode-normalization), (MIT OR Apache-2.0) AND Unicode-3.0.
 - [serde_json](https://github.com/serde-rs/json), MIT OR Apache-2.0.
 - [uuid](https://github.com/uuid-rs/uuid), MIT OR Apache-2.0.
 

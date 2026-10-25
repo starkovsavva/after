@@ -26,7 +26,7 @@ struct MainView: View {
         }
         .background(Ink.paper)
         .tint(Ink.accent)
-        .onChange(of: store.selection) { _, _ in store.loadSelection() }
+        .onChange(of: store.selection) { _, _ in store.selectionDidChange() }
         .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -44,6 +44,7 @@ struct MainView: View {
         }
         .sheet(isPresented: $store.showingSettings) { SettingsView().environmentObject(store) }
         .sheet(isPresented: $store.showingRecord) { RecordView().environmentObject(store) }
+        .sheet(isPresented: $store.showingSearch) { SearchView().environmentObject(store) }
         .alert("Переместить встречу в Корзину?", isPresented: $confirmDelete) {
             Button("Отмена", role: .cancel) {}
             Button("В Корзину", role: .destructive) { store.trashSelected() }
@@ -70,12 +71,22 @@ struct MainView: View {
             }.padding(12).background(Ink.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 9))
                 .foregroundStyle(Ink.accent).padding(.horizontal, 14)
 
+            Button { store.openGlobalSearch() } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "magnifyingglass")
+                    Text("Искать во всех встречах").lineLimit(2)
+                    Spacer(minLength: 0)
+                    Text("⌘K").font(.system(size: 11)).foregroundStyle(.secondary)
+                }.font(AppTypography.control).padding(11).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
+            }.buttonStyle(.plain).padding(.horizontal, 16).padding(.top, 16)
+                .accessibilityLabel("Искать во всех встречах. Command K")
+
             HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Найти встречу", text: $store.libraryFilter).textFieldStyle(.plain)
-                    .accessibilityLabel("Поиск встреч")
+                Image(systemName: "line.3.horizontal.decrease").foregroundStyle(.secondary)
+                TextField("Фильтр по названию", text: $store.libraryFilter).textFieldStyle(.plain)
+                    .accessibilityLabel("Фильтр списка встреч по названию")
             }.font(AppTypography.control).padding(10).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
-                .padding(.horizontal, 16).padding(.top, 20).padding(.bottom, 12)
+                .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 12)
 
             ScrollView {
                 LazyVStack(spacing: 5) {
@@ -330,6 +341,7 @@ struct SummaryView: View {
     private var overviewLocked: Bool { store.busy || store.isRecording }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
                 HStack(spacing: 12) {
@@ -392,11 +404,37 @@ struct SummaryView: View {
                                               || overviewDraft == originalOverview)
                             }
                         } else {
-                            Text(summary.overview).font(AppTypography.body).lineSpacing(7).textSelection(.enabled)
-                                .frame(maxWidth: 700, alignment: .leading)
+                            if summary.hasVerifiedOverviewClaims(transcript: store.transcript) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ForEach(Array(summary.overviewClaims.enumerated()), id: \.offset) { index, claim in
+                                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                            Text(claim.text).font(AppTypography.body).lineSpacing(7).textSelection(.enabled)
+                                            ClaimReferenceButton(claim: claim, number: index + 1, summary: summary)
+                                        }
+                                    }
+                                }.frame(maxWidth: 700, alignment: .leading)
+                            } else {
+                                Text(summary.overview).font(AppTypography.body).lineSpacing(7).textSelection(.enabled)
+                                    .frame(maxWidth: 700, alignment: .leading)
+                                if !summary.items.isEmpty {
+                                    DisclosureGroup("Факты этой встречи") {
+                                        VStack(alignment: .leading, spacing: 14) {
+                                            Text("Проверяйте конспект по фактам и исходным репликам ниже. Новый конспект добавит ссылки к отдельным утверждениям.")
+                                                .font(AppTypography.caption).foregroundStyle(.secondary)
+                                            ForEach(summary.items) { item in
+                                                HStack(alignment: .top, spacing: 12) {
+                                                    Text(item.text).font(AppTypography.control).lineSpacing(4).frame(maxWidth: .infinity, alignment: .leading)
+                                                    EvidenceButton(ids: item.segmentIDs)
+                                                }
+                                            }
+                                        }.padding(.top, 12)
+                                    }.font(AppTypography.control).padding(.top, 4)
+                                }
+                            }
                         }
                     }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Ink.accent.opacity(0.055), in: RoundedRectangle(cornerRadius: 12))
+                        .background(Ink.accent.opacity(overviewTargeted ? 0.11 : 0.055), in: RoundedRectangle(cornerRadius: 12))
+                        .id("summary-overview")
                     ForEach(["decision", "action", "detail", "question"], id: \.self) { kind in
                         let items = summary.items.filter { $0.kind == kind }
                         if !items.isEmpty { section(kind, items) }
@@ -427,9 +465,21 @@ struct SummaryView: View {
                 }
             }.padding(32)
         }
+        .onAppear { scrollToTarget(proxy) }
+        .onChange(of: store.navigationTarget?.id) { _, _ in scrollToTarget(proxy) }
         .onChange(of: store.selection) { _, _ in cancelOverviewEdit() }
         .onChange(of: store.summary?.generatedAt) { _, _ in cancelOverviewEdit() }
         .onDisappear { cancelOverviewEdit() }
+        }
+    }
+    private var overviewTargeted: Bool {
+        guard let target = store.navigationTarget, target.meetingID == store.selection else { return false }
+        return ["overview", "title"].contains(target.kind)
+    }
+    private func scrollToTarget(_ proxy: ScrollViewProxy) {
+        guard let target = store.navigationTarget, target.meetingID == store.selection else { return }
+        let id = target.kind == "item" ? "summary-item-\(target.itemIndex ?? -1)" : "summary-overview"
+        DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) } }
     }
     private func beginOverviewEdit(_ summary: Summary) {
         guard let id = store.selection, !overviewLocked else { return }
@@ -451,6 +501,8 @@ struct SummaryView: View {
         return VStack(alignment: .leading, spacing: 15) {
             Label(title, systemImage: icon).font(.system(size: 16, weight: .semibold, design: .rounded))
             ForEach(items) { item in
+                let index = store.summary?.items.firstIndex(where: { $0.id == item.id }) ?? -1
+                let targeted = store.navigationTarget?.meetingID == store.selection && store.navigationTarget?.kind == "item" && store.navigationTarget?.itemIndex == index
                 HStack(alignment: .top, spacing: 12) {
                     if kind == "action" {
                         Button { store.toggleTask(item) } label: {
@@ -470,23 +522,11 @@ struct SummaryView: View {
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                     EvidenceButton(ids: item.segmentIDs)
-                }.padding(.vertical, 6)
+                }.padding(.vertical, 9).padding(.horizontal, targeted ? 10 : 0)
+                    .background(targeted ? Ink.accent.opacity(0.09) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+                    .id("summary-item-\(index)")
             }
         }.padding(.bottom, 4)
-    }
-}
-
-struct EvidenceButton: View {
-    @EnvironmentObject private var store: AppStore
-    let ids: [Int]
-    var body: some View {
-        Button { store.cite(ids) } label: {
-            if let segment = store.transcript?.segments.first(where: { ids.contains($0.id) }) {
-                Label(Exporter.timestamp(segment.start), systemImage: "play.circle")
-                    .font(.system(size: 13, weight: .medium)).monospacedDigit().foregroundStyle(Ink.accent)
-                    .padding(.horizontal, 8).padding(.vertical, 7).background(Ink.accent.opacity(0.07), in: Capsule())
-            }
-        }.buttonStyle(.plain).help("Прослушать исходную реплику")
     }
 }
 
@@ -535,7 +575,9 @@ struct TranscriptView: View {
                         }
                         if segments.isEmpty { Text("Ничего не найдено").foregroundStyle(.secondary).padding(30) }
                     }.padding(.horizontal, 18).padding(.vertical, 10)
-                }.onChange(of: store.playbackTime) { old, new in
+                }.onAppear { scrollToTarget(proxy) }
+                .onChange(of: store.navigationTarget?.id) { _, _ in scrollToTarget(proxy) }
+                .onChange(of: store.playbackTime) { old, new in
                     if abs(new - old) > 1.5, let target = store.transcript?.segments.first(where: { new >= $0.start && new < $0.end }) {
                         withAnimation { proxy.scrollTo(target.id, anchor: .center) }
                     }
@@ -547,7 +589,14 @@ struct TranscriptView: View {
             Button("Отмена", role: .cancel) { speaker = nil }
         } message: { Text("Имя изменится во всех репликах этого собеседника. Метки голосов определены автоматически и могут ошибаться.") }
     }
-    private func active(_ s: Segment) -> Bool { store.playbackTime >= s.start && store.playbackTime < s.end }
+    private func scrollToTarget(_ proxy: ScrollViewProxy) {
+        guard let target = store.navigationTarget, target.meetingID == store.selection, target.kind == "transcript", let id = target.segmentID else { return }
+        DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) } }
+    }
+    private func active(_ s: Segment) -> Bool {
+        (store.navigationTarget?.meetingID == store.selection && store.navigationTarget?.kind == "transcript" && store.navigationTarget?.segmentID == s.id) ||
+        (store.playbackTime >= s.start && store.playbackTime < s.end)
+    }
     private func speakerColor(_ key: String) -> Color {
         if key == "self" { return Ink.green }
         if key == "unknown" { return .gray }

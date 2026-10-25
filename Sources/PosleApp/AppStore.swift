@@ -23,6 +23,28 @@ final class AppStore: ObservableObject {
     @Published var notice: String?
     @Published var showingSettings = false
     @Published var showingRecord = false
+    @Published var showingSearch = false
+    @Published var searchQuery = ""
+    @Published var searchScope = "all"
+    @Published var searchHits: [SearchHit] = []
+    @Published var searchTotal = 0
+    @Published var searchTruncated = false
+    @Published var searching = false
+    @Published var searchOpeningID: String?
+    @Published var searchError: String?
+    @Published var searchWarnings: [String] = []
+    @Published var navigationTarget: NavigationTarget?
+    struct NavigationTarget: Identifiable {
+        let id = UUID()
+        let meetingID: String
+        let kind: String
+        var segmentID: Int?
+        var itemIndex: Int?
+        var cardID: String?
+    }
+    private var loadedSelectionID: String?
+    private var searchTask: Task<Void, Never>?
+    private var searchGeneration = UUID()
     @Published var runtimeReady = false
     @Published var tab = "summary"
     @Published var libraryFilter = ""
@@ -129,7 +151,12 @@ final class AppStore: ObservableObject {
             try? write(meetings[i], meetingDirectory(meetings[i].id).appendingPathComponent("meta.json"))
         }
     }
+    func selectionDidChange() {
+        if loadedSelectionID != selection { loadSelection() }
+    }
     func loadSelection() {
+        loadedSelectionID = selection
+        navigationTarget = nil
         pause()
         if let observer = playerObserver { player?.removeTimeObserver(observer) }; playerObserver = nil
         player = nil; playbackTime = 0; recentReviewIDs = []
@@ -155,6 +182,7 @@ final class AppStore: ObservableObject {
     }
     func refreshResults(_ id: String) {
         if selection == id {
+            navigationTarget = nil
             let directory = meetingDirectory(id)
             transcript = read(directory.appendingPathComponent("transcript.json"))
             summary = read(directory.appendingPathComponent("summary.json"))
@@ -336,6 +364,7 @@ final class AppStore: ObservableObject {
         // Read the current complete summary, then change only its overview.
         // Cards, evidence and review history retain their existing values.
         saved.overview = overview
+        saved.overviewClaims = []
         do {
             try write(saved, url)
             summary = saved
@@ -529,11 +558,120 @@ final class AppStore: ObservableObject {
         let value = min(max(seconds, 0), playbackDuration)
         player?.seek(to: CMTime(seconds: value, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         playbackTime = value
-        if play { player?.play(); isPlaying = true }
+        if play {
+            guard let player else { error = "Аудиофайл не найден. Исходный текст доступен в транскрипте."; return }
+            player.play(); isPlaying = true
+        }
     }
+    /// Navigate to a precise source without starting playback unexpectedly.
     func cite(_ ids: [Int]) {
-        guard let segment = transcript?.segments.first(where: { ids.contains($0.id) }) else { return }
-        tab = "transcript"; seek(segment.start, play: true)
+        guard let id = ids.first(where: { value in transcript?.segments.contains(where: { $0.id == value }) == true }) else {
+            error = "Исходная реплика недоступна. Обновите конспект по текущей транскрипции."
+            return
+        }
+        openSegment(id)
+    }
+    func openSegment(_ segmentID: Int, play: Bool = false) {
+        guard let meetingID = selection, let segment = transcript?.segments.first(where: { $0.id == segmentID }) else {
+            error = "Исходная реплика больше недоступна. Откройте актуальный конспект."
+            return
+        }
+        transcriptSearch = ""; tab = "transcript"
+        navigationTarget = NavigationTarget(meetingID: meetingID, kind: "transcript", segmentID: segmentID)
+        seek(segment.start, play: play)
+    }
+    func openGlobalSearch() { showingSearch = true }
+    func cancelSearch() {
+        searchTask?.cancel(); searchTask = nil; searchGeneration = UUID(); searching = false; searchOpeningID = nil
+    }
+    func updateSearch(immediate: Bool = false) {
+        cancelSearch()
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchError = nil; searchWarnings = []; searchHits = []; searchTotal = 0; searchTruncated = false
+        guard !query.isEmpty else { return }
+        let generation = searchGeneration, root = self.root, scope = searchScope
+        searching = true
+        searchTask = Task { [weak self] in
+            do {
+                if !immediate { try await Task.sleep(for: .milliseconds(220)) }
+                try Task.checkCancellation()
+                let response = try await Task.detached(priority: .userInitiated) {
+                    let data = try RustBridge.shared.get().request(root: root, command: "search", arguments: ["query": query, "scope": scope, "limit": 60])
+                    return try JSONDecoder().decode(SearchResponse.self, from: data)
+                }.value
+                guard let self, !Task.isCancelled, self.searchGeneration == generation, self.showingSearch else { return }
+                self.searchHits = response.hits; self.searchTotal = response.total; self.searchTruncated = response.truncated
+                self.searchWarnings = response.warnings; self.searching = false
+            } catch is CancellationError {} catch {
+                guard let self, self.searchGeneration == generation, self.showingSearch else { return }
+                self.searchError = error.localizedDescription; self.searching = false
+            }
+        }
+    }
+    func openSearchHit(_ hit: SearchHit) {
+        guard searchOpeningID == nil else { return }
+        let generation = searchGeneration, root = self.root
+        searchOpeningID = hit.id; searchError = nil
+        Task { [weak self] in
+            do {
+                let valid = try await Task.detached(priority: .userInitiated) {
+                    struct Validation: Decodable { var valid: Bool }
+                    let data = try RustBridge.shared.get().request(root: root, command: "search-validate",
+                        arguments: ["meetingID": hit.meetingID, "sourceFingerprint": hit.sourceFingerprint])
+                    return try JSONDecoder().decode(Validation.self, from: data).valid
+                }.value
+                guard let self, self.showingSearch, self.searchGeneration == generation else { return }
+                self.searchOpeningID = nil
+                guard valid else {
+                    self.updateSearch(immediate: true)
+                    self.searchError = "Данные встречи изменились. Выберите актуальный фрагмент в обновлённых результатах."
+                    return
+                }
+                self.navigateToSearchHit(hit)
+            } catch {
+                guard let self, self.showingSearch, self.searchGeneration == generation else { return }
+                self.searchOpeningID = nil; self.searchError = error.localizedDescription
+            }
+        }
+    }
+    private func navigateToSearchHit(_ hit: SearchHit) {
+        let directory = meetingDirectory(hit.meetingID)
+        guard let freshMeeting: Meeting = read(directory.appendingPathComponent("meta.json")) else {
+            updateSearch(immediate: true); searchError = "Встреча больше недоступна. Результаты обновляются."; return
+        }
+        let freshTranscript: Transcript? = read(directory.appendingPathComponent("transcript.json"))
+        let freshSummary: Summary? = read(directory.appendingPathComponent("summary.json"))
+        let valid: Bool
+        switch hit.kind {
+        case "title": valid = freshMeeting.title == hit.text
+        case "overview": valid = freshSummary?.overview == hit.text
+        case "item":
+            if let index = hit.itemIndex, let item = freshSummary?.items, item.indices.contains(index) {
+                valid = item[index].text == hit.text && item[index].segmentIDs == hit.segmentIDs
+            } else { valid = false }
+        case "transcript":
+            valid = hit.segmentIDs.count == 1 && freshTranscript?.segments.contains(where: { $0.id == hit.segmentIDs.first && $0.text == hit.text }) == true
+        case "card":
+            valid = freshSummary?.cards.contains(where: { $0.id == hit.cardID && Self.cardSearchText($0) == hit.text && $0.segmentIDs == hit.segmentIDs }) == true
+        default: valid = false
+        }
+        let validSegments = Set(freshTranscript?.segments.map(\.id) ?? [])
+        guard valid, hit.segmentIDs.allSatisfy(validSegments.contains) else {
+            updateSearch(immediate: true)
+            searchError = "Данные встречи изменились. Выберите актуальный фрагмент в обновлённых результатах."
+            return
+        }
+        if let index = meetings.firstIndex(where: { $0.id == freshMeeting.id }) { meetings[index] = freshMeeting }
+        else { meetings.insert(freshMeeting, at: 0) }
+        libraryFilter = ""
+        selection = hit.meetingID; loadSelection()
+        tab = hit.kind == "transcript" ? "transcript" : hit.kind == "card" ? "cards" : "summary"
+        navigationTarget = NavigationTarget(meetingID: hit.meetingID, kind: hit.kind, segmentID: hit.segmentIDs.first,
+                                            itemIndex: hit.itemIndex, cardID: hit.cardID)
+        transcriptSearch = ""; showingSearch = false; cancelSearch()
+    }
+    private static func cardSearchText(_ card: Flashcard) -> String {
+        [card.front, card.back, card.context].joined(separator: "\n")
     }
     func export(_ cards: Bool) {
         guard let meeting = selected else { return }

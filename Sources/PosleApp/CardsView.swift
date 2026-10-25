@@ -38,7 +38,11 @@ struct CardsView: View {
                     Text("Все карточки").tag("all")
                 }.pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 250)
                     .accessibilityLabel("Режим карточек")
-                    .onChange(of: mode) { _, _ in flipped = false; picked = nil }
+                    .onChange(of: mode) { _, _ in
+                        flipped = false
+                        if let target = store.navigationTarget, target.meetingID == store.selection, target.kind == "card", mode == "all" { picked = target.cardID }
+                        else { picked = nil }
+                    }
 
                 if cards.isEmpty {
                     if store.busy {
@@ -121,12 +125,19 @@ struct CardsView: View {
         }
         }.onChange(of: current?.id) { _, _ in flipped = false }
             .onChange(of: store.busy) { _, busy in if !busy { exampleCardID = nil } }
+            .onChange(of: store.navigationTarget?.id) { _, _ in navigateToCard() }
             .onAppear {
+                navigateToCard()
                 if ProcessInfo.processInfo.arguments.contains("--preview-all") { mode = "all" }
                 if ProcessInfo.processInfo.arguments.contains("--preview"), ProcessInfo.processInfo.arguments.contains("--preview-answer") { flipped = true }
             }
     }
 
+    private func navigateToCard() {
+        guard let target = store.navigationTarget, target.meetingID == store.selection, target.kind == "card",
+              let id = target.cardID, cards.contains(where: { $0.id == id }) else { return }
+        mode = "all"; picked = id; flipped = false
+    }
     private func study(_ card: Flashcard) -> some View {
         let makingExample = store.busy && exampleCardID == card.id
         return VStack(spacing: 16) {

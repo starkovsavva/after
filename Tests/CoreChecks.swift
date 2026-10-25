@@ -61,6 +61,25 @@ struct CoreChecks {
         let minimal = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
         expect(minimal.localModel == AppSettings.qualityLocalModel && minimal.diarization, "minimal settings defaults")
         print("PASS: settings migration and external model selection")
-        print("6 Swift checks passed")
+        var linked = summary
+        linked.overviewClaims = [OverviewClaim(text: "Обсудили поставку.", itemIndices: [0])]
+        expect(linked.hasVerifiedOverviewClaims(transcript: transcript), "linked overview resolves a real fact and source")
+        let currentSummary = try JSONDecoder().decode(Summary.self, from: JSONEncoder().encode(linked))
+        expect(currentSummary.overviewClaims == linked.overviewClaims, "claim links persist")
+        var legacyObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(linked)) as! [String: Any]
+        legacyObject.removeValue(forKey: "overviewClaims")
+        let legacySummary = try JSONDecoder().decode(Summary.self, from: JSONSerialization.data(withJSONObject: legacyObject))
+        expect(legacySummary.overviewClaims.isEmpty && legacySummary.items == linked.items, "old summaries preserve facts with no fabricated claim links")
+        linked.overview = "Ручная правка."
+        expect(!linked.hasVerifiedOverviewClaims(transcript: transcript), "edited prose cannot borrow old claim links")
+        linked.overview = summary.overview; linked.overviewClaims[0].itemIndices = [17]
+        expect(!linked.hasVerifiedOverviewClaims(transcript: transcript), "out of range fact links rejected")
+        linked.overviewClaims[0].itemIndices = [0]; linked.items[0].segmentIDs = [99]
+        expect(!linked.hasVerifiedOverviewClaims(transcript: transcript), "missing source link rejected")
+        linked.items[0].segmentIDs = []
+        expect(!linked.hasVerifiedOverviewClaims(transcript: transcript), "uncited fact cannot support claim")
+        expect(!summary.hasVerifiedOverviewClaims(transcript: nil), "no transcript does not fabricate evidence")
+        print("PASS: legacy summaries, linked claims and stale source safety")
+        print("7 Swift checks passed")
     }
 }

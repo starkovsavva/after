@@ -20,6 +20,9 @@ struct PosleApp: App {
                 Button("Добавить запись…") { store.chooseFile() }.keyboardShortcut("o")
                 Button("Записать встречу…") { store.showingRecord = true }.keyboardShortcut("n")
             }
+            CommandGroup(after: .newItem) {
+                Button("Искать во всех встречах…") { store.openGlobalSearch() }.keyboardShortcut("k")
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Настройки…") { store.showingSettings = true }.keyboardShortcut(",")
             }
@@ -34,6 +37,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--check-navigation") {
+            Task {
+                do { try await NativeNavigationChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native navigation check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        #endif
         // Own-view rendering for UI verification; never captures the user's screen.
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--snapshot"),
            ProcessInfo.processInfo.arguments.count > index + 1 {
@@ -67,11 +79,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch screen {
             case "settings": content = AnyView(SettingsView().environmentObject(previewStore))
             case "record": content = AnyView(RecordView().environmentObject(previewStore))
+            case "search":
+                previewStore.showingSearch = true; previewStore.searchQuery = option("--preview-query") ?? "доступ"
+                content = AnyView(SearchView().environmentObject(previewStore))
             default: content = AnyView(MainView().environmentObject(previewStore))
             }
             let dark = option("--appearance") == "dark"
-            let defaultWidth: Double = screen == "settings" ? 710 : screen == "record" ? 570 : 1260
-            let defaultHeight: Double = screen == "settings" ? 760 : screen == "record" ? 620 : 820
+            let defaultWidth: Double = screen == "search" ? 760 : screen == "settings" ? 710 : screen == "record" ? 570 : 1260
+            let defaultHeight: Double = screen == "search" ? 650 : screen == "settings" ? 760 : screen == "record" ? 620 : 820
             let width = option("--width").flatMap(Double.init) ?? defaultWidth
             let height = option("--height").flatMap(Double.init) ?? defaultHeight
             let view = NSHostingView(rootView: content
