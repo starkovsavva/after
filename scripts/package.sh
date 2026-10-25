@@ -46,9 +46,9 @@ PYINFO
 VERSION="$(cat "$STAGING/version")"
 mkdir "$STAGING/root"
 ditto --noextattr --norsrc --noqtn "$APP" "$STAGING/root/После.app"
-# Launch Services can attach Finder metadata after a local preview run. Strip
-# attributes only from our disposable copy, so pkgbuild cannot synthesize an
-# AppleDouble file beside the app in /Applications.
+# Strip removable metadata only from our disposable copy. macOS may retain
+# protected provenance, which pkgbuild serializes as AppleDouble metadata. The
+# verifier below checks these companions and the fully extracted logical payload.
 xattr -cr "$STAGING/root"
 codesign --verify --deep --strict "$STAGING/root/После.app"
 pkgbuild --root "$STAGING/root" --component-plist "$STAGING/components.plist" \
@@ -59,7 +59,12 @@ pkgbuild --root "$STAGING/root" --component-plist "$STAGING/components.plist" \
 # script accidentally makes its way into this personal app package.
 pkgutil --expand "$STAGING/Posle-Mac-AppleSilicon.pkg" "$STAGING/expanded"
 pkgutil --payload-files "$STAGING/Posle-Mac-AppleSilicon.pkg" > "$STAGING/payload-files"
+pkgutil --expand-full "$STAGING/Posle-Mac-AppleSilicon.pkg" "$STAGING/expanded-full"
 python3 - "$STAGING" "$VERSION" <<'PYVERIFY'
+import hashlib
+import os
+import struct
+import subprocess
 import sys
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -81,16 +86,68 @@ for policy in ("upgrade-bundle", "strict-identifier", "bundle-version"):
     entries = package.findall(policy + "/bundle")
     if len(entries) != 1 or entries[0].get("id") != "app.posle.meetings":
         raise SystemExit("Missing installer upgrade policy: " + policy)
+metadata_companions = 0
 for line in (staging / "payload-files").read_text().splitlines():
     name = unicodedata.normalize("NFC", line)
     path = PurePosixPath(name)
     parts = tuple(part for part in path.parts if part != ".")
     if name in (".", "./"):
         continue
-    if name.startswith("/") or ".." in parts or not parts or parts[0] != "После.app":
+    if name.startswith("/") or ".." in parts or not parts:
         raise SystemExit("Installer payload escapes the application: " + name)
-print("Verified: /Applications/После.app; nonrelocatable; no install scripts or user data")
+    if parts[-1].startswith("._"):
+        # pkgutil lists serialized xattrs as AppleDouble entries, including a
+        # root ._После.app companion. They are merged into the real app during
+        # extraction/installation, not installed as neighboring user files.
+        companion = (*parts[:-1], parts[-1][2:])
+        if (not companion[-1] or companion[0] != "После.app"
+                or any(part.startswith("._") for part in companion)
+                or not staging.joinpath("root", *companion).exists()):
+            raise SystemExit("Unexpected metadata companion: " + name)
+        raw = subprocess.check_output(["tar", "-xOf", str(staging / "expanded/Payload"), "--", line])
+        if len(raw) < 26:
+            raise SystemExit("Truncated AppleDouble metadata: " + name)
+        magic, format_version, _, count = struct.unpack(">II16sH", raw[:26])
+        if magic != 0x00051607 or format_version != 0x00020000 or not 1 <= count <= 16 or len(raw) < 26 + 12 * count:
+            raise SystemExit("Invalid AppleDouble metadata: " + name)
+        entries = [struct.unpack(">III", raw[26 + 12*i:38 + 12*i]) for i in range(count)]
+        if (len({entry[0] for entry in entries}) != count
+                or not any(entry[0] == 9 for entry in entries)
+                or any(kind not in (2, 9) or offset < 26 + 12*count or offset + size > len(raw)
+                       or (kind == 2 and size != 0) for kind, offset, size in entries)):
+            raise SystemExit("Unexpected AppleDouble entry or resource data: " + name)
+        metadata_companions += 1
+        continue
+    if parts[0] != "После.app":
+        raise SystemExit("Installer payload escapes the application: " + name)
+
+# Verify the same extraction path macOS provides for flat installer packages.
+# All metadata companions must disappear into xattrs; the sole installed path
+# is the app, with identical normal files and no scripts or user-data folders.
+logical = staging / "expanded-full/Payload"
+if {child.name for child in logical.iterdir()} != {"После.app"}:
+    raise SystemExit("Extracted installer contains a path outside the app")
+def contents(root):
+    result = {}
+    for item in root.rglob("*"):
+        relative = unicodedata.normalize("NFC", str(item.relative_to(root)))
+        if any(part.startswith("._") for part in Path(relative).parts):
+            raise SystemExit("A metadata companion became an installed file: " + relative)
+        if item.is_symlink():
+            value = ("link", os.readlink(item))
+        elif item.is_file():
+            value = ("file", hashlib.sha256(item.read_bytes()).hexdigest(), item.stat().st_mode & 0o777)
+        elif item.is_dir():
+            value = ("directory",)
+        else:
+            raise SystemExit("Unexpected installer file type: " + relative)
+        result[relative] = value
+    return result
+if contents(staging / "root") != contents(logical):
+    raise SystemExit("Installer extraction differs from the verified app")
+print(f"Verified: /Applications/После.app; {metadata_companions} validated metadata companions; no extra installed files or scripts")
 PYVERIFY
+codesign --verify --deep --strict "$STAGING/expanded-full/Payload/После.app"
 # Produce both files from exactly the verified bundle, even after --skip-build.
 # Rename only completed artifacts so a failed packaging command preserves them.
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$STAGING/Posle-Mac-AppleSilicon.zip"
