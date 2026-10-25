@@ -34,16 +34,26 @@ private struct AppLayoutFramePreference: PreferenceKey {
         value.merge(nextValue(), uniquingKeysWith: { _, newest in newest })
     }
 }
+private struct AppLayoutEnabledPreference: PreferenceKey {
+    static var defaultValue: [String: Bool] = [:]
+    static func reduce(value: inout [String: Bool], nextValue: () -> [String: Bool]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, newest in newest })
+    }
+}
 private struct AppLayoutGeometryProbe: View {
     let identifier: String
     @State private var instance = UUID()
     @Environment(\.appLayoutCheckScope) private var scope
+    @Environment(\.isEnabled) private var isEnabled
     var body: some View {
         GeometryReader { geometry in
             Color.clear.preference(key: AppLayoutFramePreference.self,
                                    value: [identifier: geometry.frame(in: .global)])
+                .preference(key: AppLayoutEnabledPreference.self, value: [identifier: isEnabled])
         }.onPreferenceChange(AppLayoutFramePreference.self) { frames in
             UIConsistencyChecks.record(frames, scope: scope, instance: instance)
+        }.onPreferenceChange(AppLayoutEnabledPreference.self) { values in
+            UIConsistencyChecks.recordEnabled(values, scope: scope)
         }.onDisappear { UIConsistencyChecks.remove(identifier, scope: scope, instance: instance) }
             .allowsHitTesting(false).accessibilityHidden(true)
     }
@@ -56,6 +66,7 @@ private struct AppLayoutGeometryProbe: View {
 enum UIConsistencyChecks {
     private static var scope = ""
     private static var frames: [String: CGRect] = [:]
+    private static var enabledStates: [String: Bool] = [:]
     private static var owners: [String: UUID] = [:]
     private static let tolerance: CGFloat = 0.75
 
@@ -64,9 +75,14 @@ enum UIConsistencyChecks {
         for (identifier, frame) in values { frames[identifier] = frame; owners[identifier] = instance }
     }
 
+    fileprivate static func recordEnabled(_ values: [String: Bool], scope candidate: String) {
+        guard !scope.isEmpty, candidate == scope else { return }
+        enabledStates.merge(values, uniquingKeysWith: { _, newest in newest })
+    }
+
     fileprivate static func remove(_ identifier: String, scope candidate: String, instance: UUID) {
         guard !scope.isEmpty, candidate == scope, owners[identifier] == instance else { return }
-        frames.removeValue(forKey: identifier); owners.removeValue(forKey: identifier)
+        frames.removeValue(forKey: identifier); enabledStates.removeValue(forKey: identifier); owners.removeValue(forKey: identifier)
     }
 
     static func run() async throws {
@@ -75,6 +91,13 @@ enum UIConsistencyChecks {
               isDisposableRoot(path) else {
             throw AppError.message("UI consistency checks require --preview and an explicit /private/tmp/posle-ui-check-* fixture")
         }
+        if arguments.contains("--check-cloud-audio-setup") {
+            scope = UUID().uuidString; frames = [:]; enabledStates = [:]; owners = [:]
+            defer { scope = ""; frames = [:]; enabledStates = [:]; owners = [:] }
+            try await checkCloudAudioSetup()
+            print("1 native cloud audio setup check passed")
+            return
+        }
         let store = AppStore(preview: true)
         guard let meeting = store.meetings.first(where: { $0.id.hasPrefix("demo-") }) else {
             throw AppError.message("Generate the disposable demo fixture with scripts/preview.py before checking UI consistency")
@@ -82,7 +105,7 @@ enum UIConsistencyChecks {
         store.selection = meeting.id; store.loadSelection(); store.tab = "summary"; store.librarySection = "meetings"
         store.error = nil; store.notice = nil; store.notes.error = nil; store.notes.notice = nil
         let originalMeetings = store.meetings
-        scope = UUID().uuidString; frames = [:]; owners = [:]
+        scope = UUID().uuidString; frames = [:]; enabledStates = [:]; owners = [:]
         let host = NSHostingView(rootView: MainView().environmentObject(store)
             .environment(\.appLayoutCheckScope, scope)
             .frame(width: 1040, height: 700))
@@ -94,7 +117,7 @@ enum UIConsistencyChecks {
         defer {
             store.busy = false; store.isRecording = false; store.stoppingRecording = false
             store.error = nil; store.notice = nil; store.notes.error = nil; store.notes.notice = nil
-            scope = ""; frames = [:]; owners = [:]; window.orderOut(nil)
+            scope = ""; frames = [:]; enabledStates = [:]; owners = [:]; window.orderOut(nil)
         }
         let baseline = try await measure(host, window)
         try expectNear(baseline["toolbar"]!.height, AppLayout.toolbarHeight, "Toolbar uses the shared fixed height")
@@ -178,9 +201,50 @@ enum UIConsistencyChecks {
         try expectUnchanged(notesBaseline, withError, "showing note error", extra: ["notes.composer"])
         store.notes.error = nil
         print("PASS: library sections and note success/error preserve chrome and anchored composer geometry")
+        try await checkCloudAudioSetup()
         try await checkReviewBar()
         try await checkTimedQueues()
-        print("8 native UI consistency checks passed")
+        print("9 native UI consistency checks passed")
+    }
+
+    /// Rendering and the control's actual isEnabled environment only. Never activate the button: the
+    /// fixture must prove onboarding is reachable without downloading anything.
+    private static func checkCloudAudioSetup() async throws {
+        let store = AppStore(preview: true)
+        store.settings.speechMode = "cloud"
+        store.settings.speechCloudProvider = "openai"
+        let host = NSHostingView(rootView: SettingsView(section: "speech").environmentObject(store)
+            .environment(\.appLayoutCheckScope, scope).environment(\.locale, Locale(identifier: "ru_RU"))
+            .environment(\.colorScheme, .light)
+            .frame(width: 900, height: 690).background(Ink.paper))
+        host.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 690),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.contentView = host; window.appearance = NSAppearance(named: .aqua); window.makeKeyAndOrderFront(nil)
+        defer { store.busy = false; store.isRecording = false; window.orderOut(nil) }
+        for format in ["json", "diarized_json", "verbose_json"] {
+            for ready in [false, true] {
+                for diarization in [false, true] {
+                    store.settings.speechResponseFormat = format
+                    store.settings.diarization = diarization
+                    store.runtimeReady = ready
+                    _ = try await measure(host, window, requireWorkspaceAnchors: false)
+                    guard enabledStates["speech.cloud.prepare-audio"] == true,
+                          let rect = frames["speech.cloud.prepare-audio"], rect.width > 80, rect.height > 16 else {
+                        throw AppError.message("Cloud audio setup is unreachable: format=\(format), ready=\(ready), diarization=\(diarization)")
+                    }
+                }
+            }
+        }
+        store.settings.speechResponseFormat = "json"; store.runtimeReady = false
+        for recording in [false, true] {
+            store.busy = !recording; store.isRecording = recording
+            _ = try await measure(host, window, requireWorkspaceAnchors: false)
+            guard enabledStates["speech.cloud.prepare-audio"] == false else {
+                throw AppError.message("Cloud audio setup must wait while a job or recording is active")
+            }
+        }
+        print("PASS: cloud audio preparation remains visible and enabled for every response format and readiness/diarization state; active work disables setup")
     }
 
     private static func checkReviewBar() async throws {
@@ -224,7 +288,7 @@ enum UIConsistencyChecks {
             }
             store.selection = store.meetings.first?.id; store.loadSelection()
             store.tab = "cards"; store.librarySection = section
-            scope = UUID().uuidString; frames = [:]; owners = [:]
+            scope = UUID().uuidString; frames = [:]; enabledStates = [:]; owners = [:]
             let host = NSHostingView(rootView: MainView().environmentObject(store)
                 .environment(\.appLayoutCheckScope, scope).frame(width: 1040, height: 700))
             host.sizingOptions = []
@@ -244,13 +308,13 @@ enum UIConsistencyChecks {
         }
     }
 
-    private static func measure(_ view: NSView, _ window: NSWindow) async throws -> [String: CGRect] {
+    private static func measure(_ view: NSView, _ window: NSWindow, requireWorkspaceAnchors: Bool = true) async throws -> [String: CGRect] {
         // Yield to SwiftUI's transaction/layout/geometry-preference passes.
         for _ in 0..<10 {
             view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             try await Task.sleep(for: .milliseconds(20))
         }
-        for identifier in ["toolbar", "workspace"] {
+        for identifier in requireWorkspaceAnchors ? ["toolbar", "workspace"] : [] {
             guard let frame = frames[identifier], frame.width > 0, frame.height > 0,
                   frame.origin.x.isFinite, frame.origin.y.isFinite else {
                 throw AppError.message("Missing/invalid native layout anchor: " + identifier)

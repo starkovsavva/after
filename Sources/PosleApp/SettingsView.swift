@@ -5,10 +5,6 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @State private var apiKey = ""
-    @State private var savedApiKey = ""
-    @State private var keyMessage = ""
-    @State private var keyMessageIsError = false
     @State private var editingCustomLocalModel = false
     @State private var customLocalModel = ""
 
@@ -111,8 +107,6 @@ struct SettingsView: View {
             }
             .onAppear {
                 if !store.settings.defaultTemplateID.isEmpty && !store.notes.templates.contains(where: { $0.id == store.settings.defaultTemplateID }) { store.settings.defaultTemplateID = "" }
-                apiKey = ""
-                savedApiKey = apiKey
                 editingCustomLocalModel = !isPresetModel(store.settings.localModel)
                 customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
             }
@@ -138,9 +132,6 @@ struct SettingsView: View {
         case "data": dataSettings
         default: generalSettings
         }
-    }
-    private var keyIsDirty: Bool {
-        apiKey.trimmingCharacters(in: .whitespacesAndNewlines) != savedApiKey
     }
     private var generalSettings: some View {
         settingsSection("Общие", "gearshape") {
@@ -184,30 +175,6 @@ struct SettingsView: View {
             LabeledContent("Добавить запись", value: "⌘O")
             LabeledContent("Новая заметка или запись", value: "⌘N")
             if let message = store.notes.hotkeyNotice { Text(message).foregroundStyle(Ink.warning).font(AppTypography.caption) }
-        }
-    }
-    private var speechSettings: some View {
-        settingsSection("Распознавание речи", "waveform") {
-            HStack {
-                Label(store.runtimeReady ? "Готово к работе" : "Нужна подготовка", systemImage: store.runtimeReady ? "checkmark.circle" : "arrow.down.circle")
-                    .foregroundStyle(store.runtimeReady ? Ink.green : .secondary)
-                Spacer()
-                Button(store.runtimeReady ? "Проверить" : "Подготовить") { store.installRuntime() }
-                    .buttonStyle(.borderedProminent).tint(Ink.actionFill)
-                    .help("Подготовить распознавание русского и английского и разделение собеседников")
-            }
-            asrModelSettings
-            Divider()
-            Toggle("Разделять собеседников", isOn: $store.settings.diarization)
-            HStack {
-                Text("Участников по умолчанию")
-                Spacer()
-                Picker("Участников по умолчанию", selection: $store.settings.speakerCount) {
-                    Text("Автоматически").tag(0)
-                    ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
-                }.labelsHidden().frame(width: 170)
-                    .help("Включая вас. Для готового транскрипта число можно уточнить кнопкой «Собеседники».")
-            }.disabled(!store.settings.diarization)
         }
     }
     private var aiSettings: some View {
@@ -360,69 +327,6 @@ struct SettingsView: View {
                 Text(note).font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }.padding(.top, 5)
-    }
-
-    private var asrModelSettings: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack {
-                Text("Parakeet").fontWeight(.medium)
-                Spacer()
-                if !store.settings.asrModelPath.isEmpty {
-                    Button("Выбирать автоматически") { store.useAutomaticASRModel() }.buttonStyle(.link)
-                }
-            }
-            if store.settings.asrModelPath.isEmpty {
-                Text("Модель выбирается автоматически · русский и английский")
-                    .font(AppTypography.caption).foregroundStyle(.secondary)
-            } else {
-                Label(URL(fileURLWithPath: store.settings.asrModelPath).lastPathComponent, systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(Ink.green).font(AppTypography.captionStrong)
-                Text(store.settings.asrModelPath).font(AppTypography.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle).help(store.settings.asrModelPath).textSelection(.enabled)
-            }
-            DisclosureGroup("Использовать скачанную модель") {
-            HStack {
-                Button("Найти на Mac") { store.discoverASRModels() }.buttonStyle(.bordered)
-                Button("Выбрать папку…") { store.chooseASRFolder() }.buttonStyle(.bordered)
-            }
-            if !store.asrStatus.isEmpty {
-                Text(store.asrStatus).font(AppTypography.caption).foregroundStyle(Ink.accent).textSelection(.enabled)
-            }
-            ForEach(Array(store.installedASRModels.prefix(6))) { model in
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: model.compatible ? "waveform" : "exclamationmark.circle")
-                        .foregroundStyle(model.compatible ? Ink.accent : Ink.warning).frame(width: 18)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(model.name).font(AppTypography.captionStrong)
-                        Text("\(model.source) · \(model.format.uppercased())").font(AppTypography.caption).foregroundStyle(.secondary)
-                        Text(model.path).font(AppTypography.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle).help(model.path)
-                        if !model.reason.isEmpty {
-                            Text(model.reason).font(AppTypography.caption).foregroundStyle(model.compatible ? Color.secondary : Ink.warning)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    Spacer(minLength: 4)
-                    if model.compatible {
-                        if model.path == store.settings.asrModelPath {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Ink.green)
-                                .accessibilityLabel("Выбранная модель")
-                        } else {
-                            Button("Использовать") { store.selectASRModel(model) }.buttonStyle(.bordered)
-                                .accessibilityLabel("Использовать \(model.name) из \(model.source)")
-                        }
-                    }
-                }.padding(11).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
-            }
-            if store.installedASRModels.count > 6 {
-                Text("Показаны первые 6 моделей. Для другой модели выберите её папку.")
-                    .font(AppTypography.caption).foregroundStyle(.secondary)
-            }
-            ForEach(Array(store.asrNotes.prefix(3).enumerated()), id: \.offset) { _, note in
-                Text(note).font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            }
-        }
     }
 
     private func settingsSection<Content: View>(_ title: String, _ icon: String, @ViewBuilder content: () -> Content) -> some View {

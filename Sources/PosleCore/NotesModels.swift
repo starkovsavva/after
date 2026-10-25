@@ -133,4 +133,3 @@ public struct LibraryTask: Codable, Identifiable, Hashable {
     public var timestamp: Double?
 }
 public struct LibraryTasksResponse: Decodable { public var tasks: [LibraryTask] }
-public struct NotesBriefResponse: Decodable { public var meetingIDs: [String] }

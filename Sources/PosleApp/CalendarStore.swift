@@ -253,12 +253,6 @@ final class CalendarStore: ObservableObject {
         lastRefreshed = Date()
     }
 
-    func selectCalendar(_ id: String) {
-        guard calendars.contains(where: { $0.id == id && $0.writable }) || id.isEmpty else { return }
-        selectedCalendarID = id
-        do { try persist() } catch { self.error = error.localizedDescription }
-    }
-
     func toggleVisible(_ id: String) {
         var ids = visibleCalendarIDs ?? Set(calendars.map(\.id))
         if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }

@@ -212,7 +212,6 @@ struct NoteEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var session: NoteEditingSession
     @State private var dropping = false
-    @State private var showDelete = false
     @State private var dismissConfirmation = false
     @State private var showingSource = false
     @StateObject private var richCommands = RichNoteCommands()

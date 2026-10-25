@@ -35,7 +35,6 @@ struct SpeechSettingsView: View {
             if store.settings.speechMode == "cloud", store.settings.diarization, store.settings.speechResponseFormat == "verbose_json" {
                 Text("Для ответа с таймкодами без меток голосов используется локальное разделение. Его компоненты нужно установить на Mac.")
                     .font(AppTypography.caption).foregroundStyle(.secondary)
-                Button("Подготовить компоненты на Mac") { store.installRuntime() }.buttonStyle(.bordered)
             }
         }.onAppear(perform: loadKey)
             .onChange(of: store.settings.speechKeyAccount) { _, _ in loadKey() }
@@ -59,7 +58,7 @@ struct SpeechSettingsView: View {
                 Button(store.selectedASRVerified ? "Проверить" : "Скачать / проверить") { store.installRuntime() }
                     .buttonStyle(.borderedProminent).tint(Ink.actionFill)
             }
-            Text("Размер указан для весов модели. Компоненты распознавания устанавливаются отдельно; расход памяти зависит от длины записи.")
+            Text("Размер загрузки. Компоненты обработки устанавливаются отдельно.")
                 .font(AppTypography.caption).foregroundStyle(.secondary)
             if !store.settings.asrModelPath.isEmpty {
                 Label(URL(fileURLWithPath: store.settings.asrModelPath).lastPathComponent, systemImage: "folder")
@@ -94,6 +93,21 @@ struct SpeechSettingsView: View {
     }
     private var cloudSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 12) {
+                    Label(store.runtimeReady ? "Компоненты аудио готовы" : "Требуется подготовка аудио",
+                          systemImage: store.runtimeReady ? "checkmark.circle" : "arrow.down.circle")
+                        .font(AppTypography.captionStrong).foregroundStyle(store.runtimeReady ? Ink.green : Color.secondary)
+                    Spacer(minLength: 4)
+                    Button(store.runtimeReady ? "Проверить компоненты" : "Подготовить компоненты на Mac") { store.installRuntime() }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("speech.cloud.prepare-audio")
+                        .appLayoutAnchor("speech.cloud.prepare-audio")
+                        .disabled(store.busy || store.isRecording)
+                }
+                Text("Нужны для подготовки аудио перед отправкой сервису.")
+                    .font(AppTypography.caption).foregroundStyle(.secondary)
+            }.padding(10).background(Ink.soft, in: RoundedRectangle(cornerRadius: AppLayout.controlRadius))
             Picker("Сервис", selection: Binding(get: { store.settings.speechCloudProvider }, set: { provider in
                 store.settings.speechCloudProvider = provider
                 if provider == "openai" { store.settings.speechCloudModel = "gpt-transcribe"; store.settings.speechResponseFormat = "json" }

@@ -352,7 +352,6 @@ final class AppStore: ObservableObject {
             }
         }
     }
-    func prepareSelectedSpeechModel() { saveSettings(); installRuntime() }
     func beginJob(id: String?) {
         cancellationRequested = false; runner.resetCancellation(); embeddedSpeech.resetCancellation()
         canCancelJob = true
@@ -709,13 +708,6 @@ final class AppStore: ObservableObject {
         }
     }
     /// Navigate to a precise source without starting playback unexpectedly.
-    func cite(_ ids: [Int]) {
-        guard let id = ids.first(where: { value in transcript?.segments.contains(where: { $0.id == value }) == true }) else {
-            error = "Исходная реплика недоступна. Обновите конспект по текущей транскрипции."
-            return
-        }
-        openSegment(id)
-    }
     func openSegment(_ segmentID: Int, play: Bool = false) {
         guard let meetingID = selection, let segment = transcript?.segments.first(where: { $0.id == segmentID }) else {
             error = "Исходная реплика больше недоступна. Откройте актуальный конспект."

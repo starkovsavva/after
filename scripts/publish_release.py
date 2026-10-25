@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and publish a private GitHub release that always includes the Mac app.
+"""Build and publish a GitHub release that always includes the Mac app.
 
 Developer helper; no scheduler, daemon, CI runner, or model installation.
 """
@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--notes-file", type=Path, required=True)
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--check-only", action="store_true", help="Verify local release files; do not contact GitHub or publish")
+    parser.add_argument("--expected-visibility", choices=("public", "private"), default="public", help="Refuse publication if repository visibility differs")
     parser.add_argument("--stable", action="store_true", help="Mark the release as stable instead of a prerelease")
     args = parser.parse_args()
     if not args.notes_file.is_file():
@@ -80,8 +81,9 @@ def main():
             page += 1
 
     repo = api("repos/" + args.repo)
-    if not repo["private"]:
-        raise RuntimeError("This personal project's release helper expects a private repository")
+    visibility = "private" if repo["private"] else "public"
+    if visibility != args.expected_visibility:
+        raise RuntimeError("Repository visibility changed; expected " + args.expected_visibility + ", got " + visibility)
     remote_revision = api("repos/" + args.repo + "/commits/main")["sha"]
     if remote_revision != revision:
         raise RuntimeError("Push the release commit to main before publishing")
