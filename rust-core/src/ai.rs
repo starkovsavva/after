@@ -604,11 +604,11 @@ fn install_gguf_blob(root:&Path,source:&Path,input:&mut fs::File,hash:&str,size:
     if fs::symlink_metadata(&destination).is_ok() {return verify_blob(&destination,hash,size);}
     let temporary=directory.join(format!(".posle-gguf-{}.tmp",uuid::Uuid::new_v4()));
     let result=(|| -> Result<()> {
-        // A hard link adds a directory entry only: never chmod or write through
-        // it, because that inode still belongs to the original app as well.
-        if fs::hard_link(source,&temporary).is_ok() {
-            progress("Подключаю GGUF без повторной загрузки и копирования",0.45);
-        } else if clone_model(source,&temporary) {
+        // Ollama may update a blob's timestamps/permissions during /api/create.
+        // A hard link would modify the foreign source inode too. APFS clonefile
+        // shares data blocks while keeping metadata independent; cross-volume
+        // imports fall back to a private streamed copy, never a source hard link.
+        if clone_model(source,&temporary) {
             fs::set_permissions(&temporary,fs::Permissions::from_mode(0o600))?;
             progress("Подключаю GGUF через APFS без полного копирования",0.45);
         } else {
@@ -770,6 +770,9 @@ mod tests {
     // model, invoking inference, or reading any user's app/model directories.
     type CapturedRequest=(String,Value,String);
     fn model_server(replies:Vec<(u16,Value)>) -> (String,std::thread::JoinHandle<Vec<CapturedRequest>>) {
+        model_server_with_hook(replies,None)
+    }
+    fn model_server_with_hook(replies:Vec<(u16,Value)>,hook:Option<Box<dyn Fn(&CapturedRequest)+Send>>) -> (String,std::thread::JoinHandle<Vec<CapturedRequest>>) {
         use std::io::{Read,Write};
         fn read_fixture_bytes(stream:&mut std::net::TcpStream,bytes:&mut Vec<u8>,deadline:std::time::Instant) {
             let mut buffer=[0u8;4096];
@@ -824,6 +827,7 @@ mod tests {
                 let headers=String::from_utf8_lossy(&bytes[..header_end]).into_owned();
                 let body=if content_length==0 {Value::Null} else {serde_json::from_slice(&bytes[header_end..header_end+content_length]).unwrap()};
                 requests.push((headers.lines().next().unwrap().to_owned(),body,headers));
+                if let Some(hook)=&hook {hook(requests.last().unwrap());}
                 let body=serde_json::to_vec(&response).unwrap();
                 let redirect=if status==302 {"Location: http://203.0.113.1:1234/forbidden\r\n"} else {""};
                 write!(stream,"HTTP/1.1 {} fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",status,body.len(),redirect).unwrap();
@@ -944,7 +948,15 @@ mod tests {
         fs::set_permissions(&source,fs::Permissions::from_mode(0o400)).unwrap();
         let contents=fs::read(&source).unwrap(); let before=fs::metadata(&source).unwrap();
         let hash=format!("{:x}",Sha256::digest(&contents)); let model=format!("posle-gguf-{}:latest",&hash[..12]);
-        let (endpoint,server)=model_server(vec![(200,json!({"models":[]})),(200,json!({"status":"success"})),(200,json!({"details":{"family":"qwen"}}))]);
+        let backend_blob=root.path().join("cache/ollama-models/blobs").join(format!("sha256-{hash}"));
+        let (endpoint,server)=model_server_with_hook(vec![(200,json!({"models":[]})),(200,json!({"status":"success"})),(200,json!({"details":{"family":"qwen"}}))],Some(Box::new(move|request| {
+            if request.0=="POST /api/create HTTP/1.1" {
+                // Actual Ollama may chmod/touch the registered blob. Such
+                // metadata changes must never reach another app's source file.
+                fs::set_permissions(&backend_blob,fs::Permissions::from_mode(0o644)).unwrap();
+                fs::OpenOptions::new().read(true).open(&backend_blob).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH+Duration::from_secs(100)).unwrap();
+            }
+        })));
         let result=import_gguf_with_config(root.path(),&source,&managed_config(&endpoint)).unwrap();
         assert_eq!(result["model"],model); assert_eq!(result["models"],json!([model]));
         let requests=server.join().unwrap();
@@ -965,6 +977,10 @@ mod tests {
         let names=fs::read_dir(blob.parent().unwrap()).unwrap().map(|entry|entry.unwrap().file_name()).collect::<Vec<_>>();
         assert_eq!(names.iter().filter(|name|name.to_string_lossy().starts_with("sha256-")).count(),1,"reimport must not duplicate model blobs");
         assert!(names.iter().all(|name|!name.to_string_lossy().ends_with(".tmp")),"imports must not leave temp copies");
+        // Real Ollama updates blob metadata during registration. The owned
+        // clone/copy must have an independent inode from the foreign source.
+        assert_ne!(fs::metadata(&blob).unwrap().ino(),fs::metadata(&source).unwrap().ino());
+
     }
     #[test]
     fn gguf_next_install_cleans_only_its_orphaned_uuid_temporary_files() {
