@@ -1,3 +1,5 @@
+mod python_host;
+
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use posle_core::{ai, models, search, storage, worker};
@@ -6,7 +8,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, ValueEnum)]
-enum Command { Prepare, Transcribe, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview }
+enum Command { Prepare, Transcribe, Diarize, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview }
 
 #[derive(Parser)]
 #[command(version, about="После: ядро библиотеки и обработки встреч")]
@@ -31,8 +33,9 @@ struct Args {
 fn backend_path(override_path: Option<&Path>) -> Result<PathBuf> {
     if let Some(path) = override_path { return Ok(path.to_owned()); }
     let executable = std::env::current_exe()?;
-    let bundled = executable.parent().and_then(Path::parent).context("Нет папки приложения")?.join("Resources/backend");
-    if bundled.join("engine.py").exists() { return Ok(bundled); }
+    if let Some(contents) = worker::application_contents(&executable) {
+        return Ok(contents.join("Resources/backend"));
+    }
     Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"))
 }
 
@@ -47,8 +50,8 @@ fn run(args: Args) -> Result<Value> {
     } else { None };
     let required = || directory.as_deref().context("Выберите встречу");
     match args.command {
-        Command::Prepare | Command::Transcribe | Command::Finalize | Command::InstallLocal => {
-            let command = match args.command { Command::Prepare=>"prepare", Command::Transcribe=>"transcribe", Command::Finalize=>"finalize", _=>"install-local" };
+        Command::Prepare | Command::Transcribe | Command::Diarize | Command::Finalize | Command::InstallLocal => {
+            let command = match args.command { Command::Prepare=>"prepare", Command::Transcribe=>"transcribe", Command::Diarize=>"diarize", Command::Finalize=>"finalize", _=>"install-local" };
             worker::run_worker(&args.root, &backend, command, directory.as_deref(), args.speakers, !args.no_diarization)?;
             Ok(json!({}))
         }
@@ -92,7 +95,19 @@ fn run(args: Args) -> Result<Value> {
 }
 
 fn main() {
-    // Rust owns domain logic; the Python child is limited to MLX/ONNX/media.
+    // The helper remains the real executable while the selected CPython
+    // runtime performs MLX/ONNX/media work inside this native process.
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(python_host::INTERNAL_MODE)) {
+        let code = match python_host::run(std::env::args_os().skip(2).collect()) {
+            Ok(code) => code,
+            Err(error) => {
+                println!("{}", json!({"event":"error", "message":error.to_string()}));
+                1
+            }
+        };
+        std::process::exit(code);
+    }
+    // Rust owns domain logic; the embedded worker is limited to MLX/ONNX/media.
     let result = run(Args::parse());
     match result {
         Ok(value) => {

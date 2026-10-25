@@ -3,6 +3,7 @@ import io
 import importlib.util
 import json
 import struct
+import sys
 import types
 import tempfile
 import unittest
@@ -71,9 +72,9 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".posle-*")), [])
 
     def test_cli_allows_only_audio_and_model_install_commands(self):
-        for command in ("prepare", "install-local", "finalize", "transcribe", "discover-models"):
+        for command in ("prepare", "install-local", "finalize", "transcribe", "diarize", "discover-models"):
             arguments = [command, "--root", str(self.root)]
-            if command in ("finalize", "transcribe"):
+            if command in ("finalize", "transcribe", "diarize"):
                 arguments += ["--meeting", str(self.root / "meeting")]
             self.assertEqual(engine.parse_arguments(arguments).command, command)
         for command in ("summarize", "example", "review", "check", "pull"):
@@ -85,9 +86,11 @@ class EngineTests(unittest.TestCase):
         cases = [
             ["transcribe", "--root", str(self.root)],
             ["finalize", "--root", str(self.root)],
+            ["diarize", "--root", str(self.root)],
             ["prepare", "--root", "relative"],
             ["transcribe", "--root", str(self.root), "--meeting", "relative"],
             ["transcribe", "--root", str(self.root), "--meeting", str(self.root), "--speakers", "-1"],
+            ["diarize", "--root", str(self.root), "--meeting", str(self.root), "--speakers", "101"],
         ]
         for arguments in cases:
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
@@ -112,6 +115,210 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(source.read_bytes(), b"original capture")
         self.assertEqual(engine.load(self.root / "meta.json"), metadata)
         self.assertTrue((self.root / "recording.mp3").exists())
+
+
+class DiarizationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temp.name)
+        self.output = patch.object(engine, "PROTOCOL", io.StringIO())
+        self.output.start()
+
+    def tearDown(self):
+        self.output.stop()
+        self.temp.cleanup()
+
+    def fixture(self, count=39, has_self=False):
+        segments = [{"id": 100 + i, "start": i * 2 + 0.125, "end": i * 2 + 1.875,
+                     "speaker": f"speaker_{i + 1}", "text": f"Original words {i}", "overlap": False,
+                     "futureField": {"kept": True}} for i in range(count)]
+        if has_self:
+            segments.append({"id": 700, "start": 0.0, "end": 1.0, "speaker": "self", "text": "My own words", "overlap": False})
+        original = {"duration": count * 2, "segments": segments, "warnings": ["Existing warning"], "futureTranscriptField": "kept"}
+        meta = {"source": "recording.mp3", "recordingTracks": has_self,
+                "speakerNames": {**{f"speaker_{i + 1}": f"Old name {i}" for i in range(count)}, "self": "Вы"},
+                "title": "Keep this meeting title", "futureMetadataField": 72}
+        engine.atomic(self.directory / "transcript.json", original)
+        engine.atomic(self.directory / "meta.json", meta)
+        (self.directory / "audio.wav").write_bytes(b"No neural/audio processing in this fixture")
+        (self.directory / "summary.json").write_bytes(b'{"sources":[100,101,102]}')
+        return original, meta
+
+    def turns(self, count, remote_count=4):
+        return [{"start": i * 2, "end": i * 2 + 1.99, "speaker": f"speaker_{i % remote_count + 1}"} for i in range(count)]
+
+    def test_sparse_native_ids_are_compact_and_global_across_recurring_voices(self):
+        raw = [types.SimpleNamespace(start=i, end=i + 0.8, speaker=voice) for i, voice in enumerate([0, 1, 3, 38, 0, 38])]
+        normalized = engine.normalized_speaker_turns(raw, 0)
+        self.assertEqual([turn["speaker"] for turn in normalized], ["speaker_1", "speaker_2", "speaker_3", "speaker_4", "speaker_1", "speaker_4"])
+
+    def test_known_count_uses_audible_voices_not_vanishing_embedding_clusters(self):
+        def raw(voices):
+            return [types.SimpleNamespace(start=i, end=i + 0.8, speaker=voice) for i, voice in enumerate(voices)]
+        responses = {0: raw(range(39)), 4: raw([0, 1, 3, 0, 1, 3]), 5: raw([0, 1, 3, 4, 0, 4])}
+        calls = []
+        def process(count):
+            calls.append(count)
+            return responses[count]
+        result = engine.counted_speaker_turns(process, 4)
+        self.assertEqual(calls, [0, 4, 5])
+        self.assertEqual(len({turn["speaker"] for turn in result}), 4)
+
+    def test_known_count_keeps_already_correct_auto_output_without_merging_real_people(self):
+        raw = [types.SimpleNamespace(start=i, end=i + 0.8, speaker=voice) for i, voice in enumerate([0, 1, 3, 5, 0, 3])]
+        calls = []
+        def process(count):
+            calls.append(count)
+            return raw
+        result = engine.counted_speaker_turns(process, 4)
+        self.assertEqual(calls, [0])
+        self.assertEqual([turn["speaker"] for turn in result], ["speaker_1", "speaker_2", "speaker_3", "speaker_4", "speaker_1", "speaker_3"])
+
+    def test_impossible_known_count_never_requests_native_clusters_beyond_observed_rows(self):
+        raw = [types.SimpleNamespace(start=0, end=2, speaker=0)]
+        calls = []
+        def process(count):
+            calls.append(count)
+            return raw
+        result = engine.counted_speaker_turns(process, 100)
+        self.assertEqual(calls, [0])
+        self.assertEqual(len({turn["speaker"] for turn in result}), 1)
+        self.assertEqual(engine.counted_speaker_turns(lambda _: [], 100), [])
+
+    def test_count_refinement_has_bounded_cost_and_does_not_fabricate_people(self):
+        calls = []
+        def process(count):
+            calls.append(count)
+            voices = list(range(39)) if count == 0 else [0, 1, 2]
+            return [types.SimpleNamespace(start=i, end=i + 0.8, speaker=voice) for i, voice in enumerate(voices)]
+        result = engine.counted_speaker_turns(process, 4)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(len({turn["speaker"] for turn in result}), 3)
+        _, warnings = engine.speaker_diagnostics([dict(turn) for turn in result], result, 4)
+        self.assertIn("различимо голосов: 3", warnings[0])
+
+    def test_exact_four_replaces_39_labels_without_changing_evidence(self):
+        original, meta = self.fixture()
+        summary_bytes = (self.directory / "summary.json").read_bytes()
+        with patch.object(engine, "diarize", return_value=self.turns(39)) as inference, \
+                patch.object(engine, "ASRAdapter", side_effect=AssertionError("must not run ASR")), \
+                patch.object(engine, "audio_wave", side_effect=AssertionError("must reuse existing audio")):
+            engine.rediarize(self.directory, self.directory, 4)
+        inference.assert_called_once_with(self.directory / "audio.wav", self.directory, 4)
+        revised = engine.load(self.directory / "transcript.json")
+        self.assertEqual(len(set(segment["speaker"] for segment in revised["segments"])), 4)
+        self.assertEqual(revised["diarization"]["requestedCount"], 4)
+        for old, new in zip(original["segments"], revised["segments"]):
+            self.assertEqual({key: value for key, value in old.items() if key not in ("speaker", "overlap")},
+                             {key: value for key, value in new.items() if key not in ("speaker", "overlap")})
+        self.assertEqual((self.directory / "summary.json").read_bytes(), summary_bytes)
+        saved_meta = engine.load(self.directory / "meta.json")
+        self.assertEqual(saved_meta, dict(meta, speakerNames={"self": "Вы"}))
+        backups = list((self.directory / "diarization-history").glob("*.json"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(engine.load(backups[0]), {"transcript": original, "speakerNames": meta["speakerNames"]})
+        self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
+        self.assertEqual(backups[0].parent.stat().st_mode & 0o777, 0o700)
+
+    def test_four_total_includes_separate_microphone_as_one_person(self):
+        original, _ = self.fixture(count=6, has_self=True)
+        with patch.object(engine, "diarize", return_value=self.turns(6, remote_count=3)) as inference:
+            engine.rediarize(self.directory, self.directory, 4)
+        inference.assert_called_once_with(self.directory / "audio.wav", self.directory, 3)
+        revised = engine.load(self.directory / "transcript.json")
+        self.assertEqual({segment["speaker"] for segment in revised["segments"]}, {"self", "speaker_1", "speaker_2", "speaker_3"})
+        self.assertEqual(revised["segments"][-1], original["segments"][-1])
+
+    def test_single_total_with_separate_mic_does_not_invent_second_person(self):
+        self.fixture(count=3, has_self=True)
+        with patch.object(engine, "diarize", return_value=self.turns(3, remote_count=1)):
+            engine.rediarize(self.directory, self.directory, 1)
+        revised = engine.load(self.directory / "transcript.json")
+        self.assertEqual({segment["speaker"] for segment in revised["segments"]}, {"self"})
+
+    def test_auto_diagnostics_warn_about_fragmentation_without_hidden_speaker_cap(self):
+        segments = [{"speaker": f"speaker_{i + 1}"} for i in range(39)]
+        turns = self.turns(39, remote_count=39)
+        diagnostics, warnings = engine.speaker_diagnostics(segments, turns, 0)
+        self.assertEqual(diagnostics["detectedCount"], 39)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("39", warnings[0])
+        self.assertIn("«Собеседники»", warnings[0])
+        diagnostics, warnings = engine.speaker_diagnostics(segments[:4], turns[:4], 4)
+        self.assertEqual(diagnostics["detectedCount"], 4)
+        self.assertEqual(warnings, [])
+
+    def test_short_native_single_chunk_cannot_exceed_requested_speaker_count(self):
+        turns = [types.SimpleNamespace(start=i, end=i + 0.8, speaker=i) for i in range(3)]
+        normalized = engine.normalized_speaker_turns(turns, 1)
+        self.assertEqual({turn["speaker"] for turn in normalized}, {"speaker_1"})
+        with self.assertRaisesRegex(RuntimeError, "число участников"):
+            engine.normalized_speaker_turns(turns, 2)
+        for value in (float("nan"), float("inf")):
+            with self.assertRaisesRegex(RuntimeError, "временные метки"):
+                engine.normalized_speaker_turns([types.SimpleNamespace(start=value, end=2, speaker=0)], 0)
+
+    def test_failed_or_interrupted_inference_preserves_old_transcript_and_names(self):
+        original, meta = self.fixture()
+        for error in (RuntimeError("Model failure"), KeyboardInterrupt()):
+            with patch.object(engine, "diarize", side_effect=error), self.assertRaises(type(error)):
+                engine.rediarize(self.directory, self.directory, 4)
+            self.assertEqual(engine.load(self.directory / "transcript.json"), original)
+            self.assertEqual(engine.load(self.directory / "meta.json"), meta)
+            self.assertFalse((self.directory / "diarization-history").exists())
+
+    def test_missing_detected_speech_does_not_erase_existing_speaker_assignment(self):
+        original, meta = self.fixture()
+        with patch.object(engine, "diarize", return_value=[]), self.assertRaisesRegex(RuntimeError, "не обнаружила голоса"):
+            engine.rediarize(self.directory, self.directory, 4)
+        self.assertEqual(engine.load(self.directory / "transcript.json"), original)
+        self.assertEqual(engine.load(self.directory / "meta.json"), meta)
+
+    def test_failed_transcript_commit_rolls_back_speaker_names(self):
+        original, meta = self.fixture()
+        actual_atomic = engine.atomic
+        def fail_transcript(path, data):
+            if path.name == "transcript.json":
+                raise OSError("disk full")
+            actual_atomic(path, data)
+        with patch.object(engine, "diarize", return_value=self.turns(39)), \
+                patch.object(engine, "atomic", side_effect=fail_transcript), self.assertRaisesRegex(OSError, "disk full"):
+            engine.rediarize(self.directory, self.directory, 4)
+        self.assertEqual(engine.load(self.directory / "transcript.json"), original)
+        self.assertEqual(engine.load(self.directory / "meta.json"), meta)
+        self.assertEqual(len(list((self.directory / "diarization-history").glob("*.json"))), 1)
+
+    def test_changed_transcript_during_inference_cannot_be_overwritten(self):
+        original, meta = self.fixture()
+        replacement = dict(original, concurrentEdit="keep this")
+        def inference(*_):
+            engine.atomic(self.directory / "transcript.json", replacement)
+            return self.turns(39)
+        with patch.object(engine, "diarize", side_effect=inference), self.assertRaisesRegex(RuntimeError, "изменилась"):
+            engine.rediarize(self.directory, self.directory, 4)
+        self.assertEqual(engine.load(self.directory / "transcript.json"), replacement)
+        self.assertEqual(engine.load(self.directory / "meta.json"), meta)
+        self.assertFalse((self.directory / "diarization-history").exists())
+
+    def test_runtime_upgrade_only_removes_exact_owned_aliases(self):
+        (self.directory / "После ИИ").write_bytes(b"owned helper")
+        (self.directory / "ollama").symlink_to("После ИИ")
+        outside = self.directory / "other-executable"
+        outside.write_bytes(b"user binary")
+        (self.directory / "llama-server").symlink_to(outside)
+        engine.remove_owned_runtime_aliases(self.directory)
+        self.assertFalse((self.directory / "ollama").is_symlink())
+        self.assertTrue((self.directory / "После ИИ").is_file())
+        self.assertTrue((self.directory / "llama-server").is_symlink())
+        self.assertEqual(outside.read_bytes(), b"user binary")
+
+    @unittest.skipUnless(importlib.util.find_spec("sherpa_onnx"), "optional Sherpa runtime API integration")
+    def test_installed_sherpa_clustering_accepts_exact_total_and_existing_threshold(self):
+        import sherpa_onnx
+        config = sherpa_onnx.FastClusteringConfig(num_clusters=engine.remote_speaker_count(4, True), threshold=engine.DIARIZATION_THRESHOLD)
+        self.assertTrue(config.validate())
+        self.assertEqual(config.num_clusters, 3)
+        self.assertAlmostEqual(config.threshold, 0.65, places=5)
 
 
 class LocalModelTests(unittest.TestCase):

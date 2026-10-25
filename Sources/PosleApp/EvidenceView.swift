@@ -19,7 +19,7 @@ struct EvidenceButton: View {
                     Text(Exporter.timestamp(first.start)).monospacedDigit()
                     if ids.count > 1 { Text("+\(ids.count - 1)") }
                 } else { Text("Источник") }
-            }.font(.system(size: 13, weight: .medium)).foregroundStyle(Ink.accent)
+            }.font(AppTypography.controlStrong).foregroundStyle(Ink.accent)
                 .padding(.horizontal, 9).padding(.vertical, 7).background(Ink.accent.opacity(0.07), in: Capsule())
         }.buttonStyle(.plain).help("Показать все исходные реплики")
             .accessibilityLabel("Исходные реплики: \(ids.count)")
@@ -55,7 +55,7 @@ struct SourceQuotes: View {
                     VStack(alignment: .leading, spacing: 11) {
                         HStack(spacing: 9) {
                             Text(store.selected?.speakerName(segment.speaker) ?? segment.speaker)
-                                .font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                                .font(AppTypography.controlStrong).lineLimit(1)
                             Spacer()
                             Button { open(id, true) } label: { Label(Exporter.timestamp(segment.start), systemImage: "play.circle") }
                                 .font(AppTypography.control).monospacedDigit().buttonStyle(.borderless)
@@ -89,7 +89,7 @@ struct ClaimReferenceButton: View {
             sourceMeetingID = store.selection
             sourceSnapshot = store.transcript?.segments ?? []
             showing = true
-        }.font(.system(size: 13, weight: .semibold)).buttonStyle(.borderless)
+        }.font(AppTypography.controlStrong).buttonStyle(.borderless)
             .help("Факты и исходные реплики для этого утверждения")
             .accessibilityLabel("Показать факты для утверждения \(number)")
             .popover(isPresented: $showing, arrowEdge: .bottom) {
@@ -108,7 +108,7 @@ struct ClaimReferenceButton: View {
                                     if summary.items.indices.contains(index) {
                                         let item = summary.items[index]
                                         VStack(alignment: .leading, spacing: 11) {
-                                            Text(item.text).font(.system(size: 14, weight: .semibold)).lineSpacing(4).textSelection(.enabled)
+                                            Text(item.text).font(AppTypography.bodyStrong).lineSpacing(4).textSelection(.enabled)
                                             if !item.owner.isEmpty || !item.due.isEmpty {
                                                 Text([item.owner, item.due].filter { !$0.isEmpty }.joined(separator: " · "))
                                                     .font(AppTypography.control).foregroundStyle(.secondary)

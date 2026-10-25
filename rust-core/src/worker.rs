@@ -55,8 +55,11 @@ pub fn run_worker(
     diarization: bool,
 ) -> Result<()> {
     let spec = worker_spec(root, backend, command, meeting, speakers, diarization)?;
-    if !spec.executable.is_file() {
+    if !root.join("runtime/venv/bin/python").is_file() {
         bail!("Сначала установите модели в настройках.");
+    }
+    if !spec.executable.is_file() {
+        bail!("В приложении отсутствует движок распознавания. Повторите установку приложения.");
     }
     if !backend.join("engine.py").is_file() {
         bail!("В приложении отсутствует модуль распознавания. Повторите установку приложения.");
@@ -90,10 +93,10 @@ fn worker_spec(
     diarization: bool,
 ) -> Result<WorkerSpec> {
     validate_paths(root, backend)?;
-    if !matches!(command, "prepare" | "transcribe" | "finalize" | "install-local") {
+    if !matches!(command, "prepare" | "transcribe" | "diarize" | "finalize" | "install-local") {
         bail!("Неизвестная команда модуля распознавания.");
     }
-    let needs_meeting = matches!(command, "transcribe" | "finalize");
+    let needs_meeting = matches!(command, "transcribe" | "diarize" | "finalize");
     if needs_meeting && meeting.is_none() {
         bail!("Не выбрана встреча для обработки.");
     }
@@ -101,6 +104,8 @@ fn worker_spec(
         bail!("Папка встречи должна иметь абсолютный путь.");
     }
     let mut arguments = vec![
+        OsString::from("--posle-python-host"),
+        root.join("runtime/venv/bin/python").into_os_string(),
         backend.join("engine.py").into_os_string(),
         OsString::from(command),
         OsString::from("--root"),
@@ -110,7 +115,7 @@ fn worker_spec(
         arguments.push(OsString::from("--meeting"));
         arguments.push(meeting.unwrap().as_os_str().to_owned());
     }
-    if command == "transcribe" {
+    if matches!(command, "transcribe" | "diarize") {
         arguments.push(OsString::from("--speakers"));
         arguments.push(OsString::from(speakers.to_string()));
         if !diarization {
@@ -118,17 +123,44 @@ fn worker_spec(
         }
     }
     Ok(WorkerSpec {
-        executable: root.join("runtime/venv/bin/python"),
+        executable: native_host_path(&std::env::current_exe()
+            .map_err(|_| anyhow!("Не удалось найти движок приложения."))?),
         arguments,
         forwards_plain_progress: false,
     })
+}
+
+/// Resolve the outer application from either its compatibility CLI executable
+/// or one of its nested helper applications. Helper resources belong to the
+/// enclosing product, rather than the helper's own Contents directory.
+pub fn application_contents(executable: &Path) -> Option<&Path> {
+    let contents = executable.parent()
+        .filter(|path| path.file_name().is_some_and(|name| name == "MacOS"))?
+        .parent().filter(|path| path.file_name().is_some_and(|name| name == "Contents"))?;
+    let package = contents.parent().filter(|path| path.extension().is_some_and(|name| name == "app"))?;
+    if let Some(outer) = package.parent()
+        .filter(|path| path.file_name().is_some_and(|name| name == "Helpers"))
+        .and_then(Path::parent)
+        .filter(|path| path.file_name().is_some_and(|name| name == "Contents"))
+        .filter(|path| path.parent().is_some_and(|parent| parent.extension().is_some_and(|name| name == "app"))) {
+        return Some(outer);
+    }
+    Some(contents)
+}
+
+/// Production uses a separately branded native helper inside the app. The
+/// ordinary engine binary supports the same private entry point for developers.
+fn native_host_path(engine: &Path) -> PathBuf {
+    application_contents(engine)
+        .map(|contents| contents.join("Helpers/После Распознавание.app/Contents/MacOS/После Речь"))
+        .unwrap_or_else(|| engine.to_owned())
 }
 
 fn setup_spec(root: &Path, backend: &Path) -> Result<WorkerSpec> {
     validate_paths(root, backend)?;
     Ok(WorkerSpec {
         executable: PathBuf::from("/bin/bash"),
-        arguments: vec![backend.join("setup.sh").into_os_string(), root.as_os_str().to_owned()],
+        arguments: vec![backend.join("setup.sh").into_os_string(), root.as_os_str().to_owned(), native_host_path(&std::env::current_exe()?).into_os_string()],
         forwards_plain_progress: true,
     })
 }
@@ -255,6 +287,11 @@ fn run(root: &Path, spec: WorkerSpec) -> Result<()> {
     }
     // Explicit even when the parent environment did not contain it at scan time.
     command.env_remove("POSLE_API_KEY");
+    // Python's executable override is honoured on macOS even with -E. Clear
+    // it here as well as in the native helper; setup must not inherit it either.
+    for name in ["__PYVENV_LAUNCHER__", "PYTHONEXECUTABLE", "PYTHONHOME", "PYTHONPATH"] {
+        command.env_remove(name);
+    }
     let child = command.spawn().map_err(|_| anyhow!("Не удалось запустить модуль распознавания. Проверьте установку моделей."))?;
     let group = libc::pid_t::try_from(child.id()).map_err(|_| anyhow!("Не удалось подготовить процесс распознавания."))?;
     let mut child = ChildGroup { child, group };
@@ -401,12 +438,25 @@ mod tests {
         let backend = Path::new("/Applications/После.app/Contents/Resources/backend");
         let meeting = Path::new("/tmp/После данные/meetings/$(touch impossible); моя встреча");
         let spec = worker_spec(root, backend, "transcribe", Some(meeting), 3, false).unwrap();
-        assert_eq!(spec.executable, root.join("runtime/venv/bin/python"));
+        assert_eq!(spec.executable, std::env::current_exe().unwrap());
         assert_eq!(strings(&spec), vec![
+            "--posle-python-host", "/tmp/После данные/runtime/venv/bin/python",
             "/Applications/После.app/Contents/Resources/backend/engine.py", "transcribe", "--root",
             "/tmp/После данные", "--meeting", "/tmp/После данные/meetings/$(touch impossible); моя встреча",
             "--speakers", "3", "--no-diarization",
         ]);
+    }
+
+    #[test]
+    fn production_selects_branded_helper_and_development_keeps_native_engine() {
+        let bundled = Path::new("/Applications/После.app/Contents/MacOS/posle-engine");
+        assert_eq!(native_host_path(bundled), Path::new("/Applications/После.app/Contents/Helpers/После Распознавание.app/Contents/MacOS/После Речь"));
+        let processing = Path::new("/Applications/После.app/Contents/Helpers/После Обработка.app/Contents/MacOS/После Обработка");
+        assert_eq!(native_host_path(processing), native_host_path(bundled));
+        assert_eq!(application_contents(processing), Some(Path::new("/Applications/После.app/Contents")));
+        let development = Path::new("/tmp/build/debug/posle-engine");
+        assert_eq!(native_host_path(development), development);
+        assert!(application_contents(development).is_none());
     }
 
     #[test]
@@ -434,7 +484,8 @@ mod tests {
     fn setup_uses_bash_file_arguments_and_no_command_string() {
         let spec = setup_spec(Path::new("/tmp/a b; literal"), Path::new("/tmp/моё приложение")).unwrap();
         assert_eq!(spec.executable, Path::new("/bin/bash"));
-        assert_eq!(strings(&spec), vec!["/tmp/моё приложение/setup.sh", "/tmp/a b; literal"]);
+        let expected_host = native_host_path(&std::env::current_exe().unwrap());
+        assert_eq!(strings(&spec), vec!["/tmp/моё приложение/setup.sh", "/tmp/a b; literal", expected_host.to_str().unwrap()]);
         assert!(spec.forwards_plain_progress);
     }
 

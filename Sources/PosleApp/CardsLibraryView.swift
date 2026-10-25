@@ -33,22 +33,19 @@ struct CardsLibraryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("Карточки").font(.system(size: 28, weight: .semibold, design: .rounded))
-                    Text("Повторяйте фразы и понятия прямо в После.").font(AppTypography.body).foregroundStyle(.secondary)
-                }
+                AppPageHeader(title: "Карточки", subtitle: "Повторяйте фразы и понятия прямо в После.")
                 Spacer()
                 Button("Импорт…") { chooseImport() }.buttonStyle(.bordered).disabled(app.busy)
                 Button("Экспорт…") { exportCards() }.buttonStyle(.bordered).disabled(matching.isEmpty)
-            }.padding(.horizontal, 30).padding(.top, 24).padding(.bottom, 18)
+            }.padding(.horizontal, AppLayout.contentInset).padding(.top, AppLayout.contentInset).padding(.bottom, 24)
             HStack(spacing: 12) {
-                Picker("Режим", selection: $mode) { Text("Повторение").tag("study"); Text("Все карточки").tag("all") }.pickerStyle(.segmented).labelsHidden().frame(width: 245)
+                Picker("Режим", selection: $mode) { Text("Повторение").tag("study"); Text("Все карточки").tag("all") }.pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 245)
                 Picker("Колода", selection: $deck) {
                     Text("Все встречи и колоды").tag("")
                     ForEach(decks) { Text($0.title).tag($0.id) }
                 }.labelsHidden().frame(maxWidth: 240)
                 TextField("Найти карточку", text: $query).textFieldStyle(.roundedBorder)
-            }.padding(.horizontal, 30).padding(.bottom, 16)
+            }.padding(.horizontal, AppLayout.contentInset).padding(.bottom, 16)
             Divider()
             TimelineView(.periodic(from: .now, by: 30)) { _ in
                 ScrollView {
@@ -68,22 +65,39 @@ struct CardsLibraryView: View {
                             VStack(spacing: 15) {
                                 Image(systemName: entries.isEmpty ? "rectangle.on.rectangle.angled" : "checkmark.seal").font(.system(size: 38, weight: .light)).foregroundStyle(Ink.accent)
                                 Text(entries.isEmpty ? "Здесь будут ваши карточки" : mode == "study" ? "Повторение завершено" : "Карточки не найдены")
-                                    .font(.system(size: 22, weight: .medium, design: .rounded))
+                                    .font(AppTypography.emptyTitle)
                                 Text(entries.isEmpty ? "Создайте конспект встречи или импортируйте TSV/CSV с вопросами и ответами." : mode == "study" ? "Следующий показ рассчитан по вашим ответам. Можно открыть все карточки." : "Попробуйте другой запрос или выберите другую колоду.")
                                     .font(AppTypography.body).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 480)
                                 if entries.isEmpty { Button("Импортировать карточки") { chooseImport() }.buttonStyle(.borderedProminent).tint(Ink.actionFill) }
                                 else if mode == "study" { Button("Все карточки") { mode = "all" }.buttonStyle(.bordered) }
                             }.frame(maxWidth: .infinity, minHeight: 330)
                         }
-                    }.frame(maxWidth: 850).padding(30).frame(maxWidth: .infinity)
+                    }.appContentLayout()
                 }
+            }
+            if let entry = current {
+                VStack(spacing: 7) {
+                    HStack(spacing: 9) {
+                        rating(entry, value: 1, title: "Снова", color: .red)
+                        rating(entry, value: 2, title: "Трудно", color: .orange)
+                        rating(entry, value: 3, title: "Хорошо", color: Ink.green)
+                        rating(entry, value: 4, title: "Легко", color: Ink.accent)
+                    }.disabled(!flipped)
+                    Text(!flipped ? "Сначала покажите ответ, затем оцените его." : entry.review.map {
+                        "Повторений: \($0.count) · Следующий показ: \(formattedDue($0.due))"
+                    } ?? "Оцените, насколько легко удалось вспомнить ответ.")
+                        .font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
+                }.padding(.horizontal, AppLayout.contentInset).frame(height: 82).background(Ink.paper)
+                    .overlay(alignment: .top) { Rectangle().fill(Ink.line).frame(height: 1) }
             }
         }.task { await reload() }
             .onChange(of: app.busy) { _, busy in if !busy { Task { await reload() } } }
             .onChange(of: mode) { _, _ in flipped = false; picked = nil }
             .onChange(of: deck) { _, _ in flipped = false; picked = nil }
             .onChange(of: query) { _, _ in flipped = false; picked = nil }
-            .onChange(of: current?.id) { _, _ in flipped = false }
+            .onChange(of: current?.id) { _, _ in
+                flipped = ProcessInfo.processInfo.arguments.contains("--preview") && ProcessInfo.processInfo.arguments.contains("--preview-answer")
+            }
             .sheet(isPresented: $showingImport) {
                 if let url = importURL {
                     CardImportView(url: url) { meeting in
@@ -100,10 +114,10 @@ struct CardsLibraryView: View {
                 Spacer()
                 Button(entry.meeting.title) { app.openMeeting(entry.meeting.id, tab: "cards") }.buttonStyle(.link).lineLimit(1)
             }.font(AppTypography.control)
-            Text(entry.card.front).font(.system(size: 27, weight: .medium, design: .rounded)).textSelection(.enabled)
+            Text(entry.card.front).font(AppTypography.cardFront).textSelection(.enabled)
             if flipped {
                 Divider()
-                Text(entry.card.back).font(.system(size: 17)).lineSpacing(7).textSelection(.enabled)
+                Text(entry.card.back).font(AppTypography.cardAnswer).lineSpacing(7).textSelection(.enabled)
                 if !entry.card.context.isEmpty {
                     VStack(alignment: .leading, spacing: 9) {
                         HStack {
@@ -121,7 +135,7 @@ struct CardsLibraryView: View {
                 if let example = entry.example {
                     VStack(alignment: .leading, spacing: 9) {
                         Label("Пример от ИИ", systemImage: "sparkles").font(AppTypography.caption).foregroundStyle(Ink.accent)
-                        Text(example.example).font(.system(size: 16, weight: .medium)).textSelection(.enabled)
+                        Text(example.example).font(AppTypography.bodyStrong).textSelection(.enabled)
                         Text(example.translation).font(AppTypography.body).foregroundStyle(.secondary).textSelection(.enabled)
                         Text(example.explanation).font(AppTypography.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(Ink.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
@@ -129,18 +143,9 @@ struct CardsLibraryView: View {
                 if app.settings.mode == "cloud" {
                     Text("Для примера OpenAI получит эту карточку с контекстом. Запрос оплачивается через API.").font(AppTypography.caption).foregroundStyle(.secondary)
                 }
-                HStack(spacing: 10) {
-                    rating(entry, value: 1, title: "Снова", color: .red)
-                    rating(entry, value: 2, title: "Трудно", color: .orange)
-                    rating(entry, value: 3, title: "Хорошо", color: Ink.green)
-                    rating(entry, value: 4, title: "Легко", color: Ink.accent)
-                }.padding(.top, 8)
-                if let review = entry.review {
-                    Text("Повторений: \(review.count) · Следующий показ: \(formattedDue(review.due))").font(AppTypography.caption).foregroundStyle(.secondary)
-                }
             } else {
                 Text("Вспомните перевод или объяснение своими словами.").font(AppTypography.body).foregroundStyle(.secondary)
-                Button("Показать ответ") { flipped = true }.buttonStyle(.borderedProminent).tint(Ink.actionFill).controlSize(.large).keyboardShortcut(.space, modifiers: [])
+                Button("Показать ответ") { flipped = true }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.space, modifiers: [])
             }
         }.padding(28).frame(maxWidth: .infinity, minHeight: 260, alignment: .topLeading)
             .background(Ink.paper, in: RoundedRectangle(cornerRadius: 16))
@@ -148,9 +153,25 @@ struct CardsLibraryView: View {
     }
     private func rating(_ entry: LibraryCard, value: Int, title: String, color: Color) -> some View {
         Button { rate(entry, value: value) } label: {
-            HStack { Text(String(value)).foregroundStyle(.secondary); Text(title) }.font(AppTypography.control)
-                .frame(maxWidth: .infinity).padding(.vertical, 12).background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-        }.buttonStyle(.plain).disabled(app.busy || app.isRecording).keyboardShortcut(KeyEquivalent(Character(String(value))), modifiers: [])
+            HStack(spacing: 7) {
+                Text(String(value)).font(AppTypography.control).monospacedDigit().foregroundStyle(.secondary)
+                Text(title).font(AppTypography.controlStrong).foregroundStyle(.primary)
+            }.frame(maxWidth: .infinity).padding(.vertical, 10)
+                .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(color.opacity(0.25)))
+        }.buttonStyle(.plain).disabled(!flipped || app.busy || app.isRecording)
+            .keyboardShortcut(KeyEquivalent(Character(String(value))), modifiers: [])
+            .accessibilityLabel("\(title): \(ratingDescription(value))")
+            .accessibilityHint("Запланировать следующее повторение. Клавиша \(value).")
+            .help("\(ratingDescription(value)) · \(value)")
+    }
+    private func ratingDescription(_ value: Int) -> String {
+        switch value {
+        case 1: return "Не удалось вспомнить ответ"
+        case 2: return "Вспомнил с трудом"
+        case 3: return "Вспомнил правильно"
+        default: return "Вспомнил без усилий"
+        }
     }
     private func reload() async {
         let token = UUID(); generation = token; loading = true
@@ -188,7 +209,7 @@ struct CardsLibraryView: View {
         }
     }
     private func rate(_ entry: LibraryCard, value: Int) {
-        guard !app.busy && !app.isRecording else { return }
+        guard flipped, current?.id == entry.id, !app.busy && !app.isRecording else { return }
         app.beginJob(id: entry.meeting.id); app.progressText = "Сохраняю повторение…"
         Task {
             defer { app.endJob() }
@@ -222,7 +243,7 @@ private struct CardImportView: View {
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Импорт карточек").font(.system(size: 25, weight: .semibold, design: .rounded))
+            Text("Импорт карточек").font(AppTypography.modalTitle)
             Text(url.lastPathComponent).font(AppTypography.control).foregroundStyle(.secondary)
             TextField("Название колоды", text: $title).textFieldStyle(.roundedBorder)
             Picker("Разделитель", selection: $separator) { Text("Автоматически").tag("auto"); Text("Табуляция").tag("tab"); Text("Запятая").tag("comma"); Text("Точка с запятой").tag("semicolon") }

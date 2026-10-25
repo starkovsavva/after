@@ -26,7 +26,7 @@ struct SearchView: View {
                 Text("Транскрипт").tag("transcript")
                 Text("Карточки").tag("cards")
                 Text("Названия").tag("meetings")
-            }.pickerStyle(.segmented).padding(.horizontal, 22).padding(.bottom, 16)
+            }.pickerStyle(.segmented).tint(Ink.actionFill).padding(.horizontal, 22).padding(.bottom, 16)
             Rectangle().fill(Ink.line).frame(height: 1)
             if let message = store.searchError {
                 HStack(alignment: .top, spacing: 10) {
@@ -42,7 +42,7 @@ struct SearchView: View {
                 Spacer()
                 Text("↑ ↓ выбрать · Return открыть · Esc закрыть").foregroundStyle(.secondary)
             }.font(AppTypography.caption).padding(.horizontal, 22).padding(.vertical, 13)
-        }.frame(width: 760, height: 650).background(Ink.paper).tint(Ink.accent)
+        }.frame(width: 760, height: 650).background(Ink.paper).tint(Ink.accent).appControlDefaults()
             .onAppear { queryFocused = true; store.updateSearch(immediate: true) }
             .onChange(of: store.searchQuery) { _, _ in store.updateSearch() }
             .onChange(of: store.searchScope) { _, _ in store.updateSearch() }
@@ -82,7 +82,7 @@ struct SearchView: View {
             Image(systemName: icon(hit.kind)).font(.system(size: 16)).foregroundStyle(Ink.accent).frame(width: 24).padding(.top, 2)
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(hit.meetingTitle).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(hit.meetingTitle).font(AppTypography.controlStrong).lineLimit(1)
                     Spacer()
                     Text(Date(timeIntervalSince1970: hit.createdAt).formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "ru_RU"))))
                         .font(AppTypography.caption).foregroundStyle(.secondary)
@@ -103,7 +103,7 @@ struct SearchView: View {
     private func placeholder(_ title: String, _ subtitle: String, icon: String) -> some View {
         VStack(spacing: 16) {
             Image(systemName: icon).font(.system(size: 34, weight: .light)).foregroundStyle(Ink.accent)
-            Text(title).font(.system(size: 21, weight: .medium, design: .rounded))
+            Text(title).font(AppTypography.emptyTitle)
             Text(subtitle).font(AppTypography.control).lineSpacing(5).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 470)
         }.padding(35).frame(maxWidth: .infinity, maxHeight: .infinity)
     }

@@ -20,11 +20,11 @@ struct CardsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Карточки").font(.system(size: 20, weight: .medium, design: .rounded)).tracking(-0.3)
+                        Text("Карточки").font(AppTypography.sectionTitle)
                             .accessibilityAddTraits(.isHeader)
                         TimelineView(.periodic(from: .now, by: 30)) { _ in
                             Text("К повторению: \(store.dueCards.count) · Всего во встрече: \(cards.count)")
-                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                                .font(AppTypography.caption).foregroundStyle(.secondary)
                         }
                     }
                     Spacer()
@@ -50,18 +50,18 @@ struct CardsView: View {
                             ProgressView().controlSize(.regular).accessibilityHidden(true)
                             Text("Встреча обрабатывается").font(.system(size: 17, weight: .medium))
                             Text(store.progressText.isEmpty ? "После конспекта здесь появятся карточки из встречи." : store.progressText)
-                                .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                                .font(AppTypography.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }.frame(maxWidth: .infinity, minHeight: 220).accessibilityElement(children: .combine)
                     } else {
                         VStack(spacing: 15) {
                             Image(systemName: "rectangle.on.rectangle.angled").font(.system(size: 36, weight: .light))
                                 .foregroundStyle(Ink.accent).accessibilityHidden(true)
                             Text(store.summary == nil ? "Сначала создайте конспект" : "В конспекте пока нет карточек")
-                                .font(.system(size: 20, weight: .medium, design: .rounded)).multilineTextAlignment(.center)
+                                .font(AppTypography.emptyTitle).multilineTextAlignment(.center)
                             Text(store.summary == nil
                                  ? "ИИ выберет из транскрипта полезные фразы и понятия. Каждая карточка будет связана с исходной цитатой."
                                  : "Для карточек нужны полезные фразы или важные понятия с цитатами. Уточните фокус встречи и создайте конспект заново.")
-                                .font(.system(size: 13)).foregroundStyle(.secondary).lineSpacing(4)
+                                .font(AppTypography.control).foregroundStyle(.secondary).lineSpacing(4)
                                 .multilineTextAlignment(.center).frame(maxWidth: 460)
                             Button("Открыть конспект") { store.tab = "summary" }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
                         }.padding(26).frame(maxWidth: .infinity, minHeight: 230)
@@ -74,8 +74,8 @@ struct CardsView: View {
                                 ForEach(cards) { card in
                                     Button { picked = card.id; flipped = false } label: {
                                         VStack(alignment: .leading, spacing: 6) {
-                                            Text(card.front).font(.system(size: 12, weight: .medium)).lineLimit(3)
-                                            Text(card.kind == "phrase" ? "Английская фраза" : "Понятие").font(.system(size: 11)).foregroundStyle(.secondary)
+                                            Text(card.front).font(AppTypography.captionStrong).lineLimit(3)
+                                            Text(card.kind == "phrase" ? "Английская фраза" : "Понятие").font(AppTypography.caption).foregroundStyle(.secondary)
                                         }.padding(11).frame(maxWidth: .infinity, alignment: .leading)
                                             .background(current?.id == card.id ? Ink.accent.opacity(0.08) : Ink.soft,
                                                         in: RoundedRectangle(cornerRadius: 8))
@@ -91,9 +91,9 @@ struct CardsView: View {
                             else {
                                 VStack(spacing: 15) {
                                     Image(systemName: "checkmark.seal").font(.system(size: 36, weight: .light)).foregroundStyle(Ink.green).accessibilityHidden(true)
-                                    Text("Сейчас нет карточек к повторению").font(.system(size: 20, weight: .medium, design: .rounded)).multilineTextAlignment(.center)
+                                    Text("Сейчас нет карточек к повторению").font(AppTypography.emptyTitle).multilineTextAlignment(.center)
                                     Text("Следующее повторение запланировано по вашим ответам. Вернитесь позже или откройте все карточки.")
-                                        .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center).lineSpacing(4)
+                                        .font(AppTypography.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).lineSpacing(4)
                                     Button("Открыть все карточки") { mode = "all" }.buttonStyle(.bordered)
                                 }.padding(28).frame(maxWidth: .infinity, minHeight: 260)
                                     .background(Ink.soft, in: RoundedRectangle(cornerRadius: 16))
@@ -103,24 +103,22 @@ struct CardsView: View {
                 }
                 if !cards.isEmpty {
                     Label("После ответа оцените, насколько легко удалось его вспомнить.", systemImage: "calendar.badge.clock")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(AppTypography.caption).foregroundStyle(.secondary)
                         .help("Следующее повторение рассчитывается по алгоритму FSRS")
                 }
-            }.padding(20)
+            }.appContentLayout()
         }
-        if flipped, let card = current {
+        if let card = current {
             VStack(spacing: 7) {
                 HStack(spacing: 9) {
                     rating(card, 1, "Снова", .red)
                     rating(card, 2, "Трудно", .orange)
                     rating(card, 3, "Хорошо", Ink.green)
                     rating(card, 4, "Легко", Ink.accent)
-                }
-                if let state = store.reviews[card.id] {
-                    Text("Повторений: \(state.count) · Следующий показ: \(dueDate(state.due))")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-            }.padding(.horizontal, 32).padding(.vertical, 12).background(Ink.paper)
+                }.disabled(!flipped)
+                Text(!flipped ? "Сначала покажите ответ, затем оцените его." : store.reviews[card.id].map { "Повторений: \($0.count) · Следующий показ: \(dueDate($0.due))" } ?? "Оцените, насколько легко удалось вспомнить ответ.")
+                    .font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
+            }.padding(.horizontal, AppLayout.contentInset).frame(height: 82).background(Ink.paper)
                 .overlay(alignment: .top) { Rectangle().fill(Ink.line).frame(height: 1) }
         }
         }.onChange(of: current?.id) { _, _ in flipped = false }
@@ -146,21 +144,21 @@ struct CardsView: View {
                     Label(card.kind == "phrase" ? "Английская фраза" : "Важное понятие", systemImage: card.kind == "phrase" ? "quote.bubble" : "lightbulb")
                     Spacer()
                     Text(flipped ? "Ответ" : "Вспомните ответ")
-                }.font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.accent)
-                Text(card.front).font(.system(size: 24, weight: .medium, design: .rounded)).tracking(-0.3)
+                }.font(AppTypography.captionStrong).foregroundStyle(Ink.accent)
+                Text(card.front).font(AppTypography.cardFront).tracking(-0.3)
                     .lineSpacing(4).textSelection(.enabled).padding(.vertical, 6)
                     .accessibilityLabel("Карточка: \(card.front)")
                 if flipped {
                     Rectangle().fill(Ink.line).frame(height: 1)
-                    Text(card.back).font(.system(size: 15)).lineSpacing(7).textSelection(.enabled)
+                    Text(card.back).font(AppTypography.cardAnswer).lineSpacing(7).textSelection(.enabled)
                         .accessibilityLabel("Ответ: \(card.back)")
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Text(card.segmentIDs.isEmpty ? "Контекст карточки" : "Цитата из транскрипта").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text(card.segmentIDs.isEmpty ? "Контекст карточки" : "Цитата из транскрипта").font(AppTypography.caption).foregroundStyle(.secondary)
                             Spacer()
                             if !card.segmentIDs.isEmpty { EvidenceButton(ids: card.segmentIDs).accessibilityLabel("Открыть цитату в транскрипте") }
                         }
-                        Text("«\(card.context)»").font(.system(size: 12)).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text("«\(card.context)»").font(AppTypography.body).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled)
                     }.padding(14).background(Ink.soft, in: RoundedRectangle(cornerRadius: 9))
                     Button { exampleCardID = card.id; store.makeExample(card) } label: {
                         HStack(spacing: 7) {
@@ -172,27 +170,27 @@ struct CardsView: View {
                         .accessibilityHint("Создать новый пример с этой карточкой. Исходная цитата сохранится.")
                     if let example = store.examples[card.id] {
                         VStack(alignment: .leading, spacing: 10) {
-                            Label("Пример от ИИ", systemImage: "sparkles").font(.system(size: 11, weight: .medium)).foregroundStyle(Ink.accent)
-                            Text(example.example).font(.system(size: 14, weight: .medium)).lineSpacing(4).textSelection(.enabled)
-                            Text(example.translation).font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled)
+                            Label("Пример от ИИ", systemImage: "sparkles").font(AppTypography.captionStrong).foregroundStyle(Ink.accent)
+                            Text(example.example).font(AppTypography.bodyStrong).lineSpacing(4).textSelection(.enabled)
+                            Text(example.translation).font(AppTypography.caption).foregroundStyle(.secondary).textSelection(.enabled)
                                 .accessibilityLabel("Перевод примера: \(example.translation)")
-                            Text(example.explanation).font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4).textSelection(.enabled)
+                            Text(example.explanation).font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4).textSelection(.enabled)
                         }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                             .background(Ink.accent.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
                     }
                     if store.settings.mode == "cloud" {
                         Text("OpenAI получит эту карточку и её контекст. Создание примера оплачивается через API.")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .font(AppTypography.caption).foregroundStyle(.secondary)
                     }
                 } else {
                     Text(card.kind == "phrase" ? "Как бы вы перевели и использовали эту фразу?" : "Сформулируйте ответ своими словами.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                    Button("Показать ответ") { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) { flipped = true } }
-                        .buttonStyle(.borderedProminent).tint(Ink.actionFill).controlSize(.large).keyboardShortcut(.space, modifiers: [])
+                        .font(AppTypography.caption).foregroundStyle(.secondary)
+                    Button("Показать ответ") { flipped = true }
+                        .buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.space, modifiers: [])
                         .help("Показать ответ · Пробел")
                         .accessibilityHint("Открыть ответ и исходную цитату. Можно нажать пробел.")
                         .padding(.top, 8)
-                    Text("Пробел — показать ответ").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("Пробел — показать ответ").font(AppTypography.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth: 720, alignment: .leading)
                 .padding(22).frame(maxWidth: .infinity, minHeight: 250, alignment: .topLeading)
@@ -204,12 +202,12 @@ struct CardsView: View {
     private func rating(_ card: Flashcard, _ value: Int, _ label: String, _ color: Color) -> some View {
         Button { store.rate(card, value) } label: {
             HStack(spacing: 7) {
-                Text("\(value)").font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
-                Text(label).font(.system(size: 12, weight: .medium)).foregroundStyle(.primary)
+                Text("\(value)").font(AppTypography.control).monospacedDigit().foregroundStyle(.secondary)
+                Text(label).font(AppTypography.controlStrong).foregroundStyle(.primary)
             }.frame(maxWidth: .infinity).padding(.vertical, 10)
                 .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(color.opacity(0.25)))
-        }.buttonStyle(.plain).disabled(store.busy || store.isRecording).keyboardShortcut(KeyEquivalent(Character(String(value))), modifiers: [])
+        }.buttonStyle(.plain).disabled(!flipped || store.busy || store.isRecording).keyboardShortcut(KeyEquivalent(Character(String(value))), modifiers: [])
             .accessibilityLabel("\(label): \(ratingDescription(value))")
             .accessibilityHint("Запланировать следующее повторение. Клавиша \(value).")
             .help("\(ratingDescription(value)) · \(value)")

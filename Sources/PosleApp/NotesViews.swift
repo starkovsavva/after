@@ -23,11 +23,7 @@ struct NotesWorkspaceView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Мои заметки").font(.system(size: 25, weight: .semibold, design: .rounded))
-                            Text("Мысли во время разговора и детали, к которым хочется вернуться.")
-                                .font(AppTypography.control).foregroundStyle(.secondary)
-                        }
+                        AppPageHeader(title: "Мои заметки", subtitle: "Мысли во время разговора и детали, к которым хочется вернуться.", compact: true)
                         Spacer()
                         Button { showingContext = true } label: { Label("Контекст и шаблон", systemImage: "rectangle.3.group") }
                             .buttonStyle(.bordered)
@@ -40,6 +36,7 @@ struct NotesWorkspaceView: View {
                             text.wrappedValue = ""; notes.highlightedNoteID = saved.id
                         }
                     }
+                    .appLayoutAnchor("notes.composer")
                     NotesMessage(notes: notes)
                     if notes.notes(for: meeting.id).isEmpty {
                         NotesEmpty(title: "Здесь будут ваши пометки", text: "Отметьте важный момент во время записи сочетанием ⌃⌥B. Добавить мысль из любого приложения — ⌃⌥N.", icon: "pencil.and.outline")
@@ -50,13 +47,13 @@ struct NotesWorkspaceView: View {
                             .padding(3)
                             .background(notes.highlightedNoteID == note.id ? Ink.accent.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 11))
                     }
-                }.frame(maxWidth: 860).padding(30).frame(maxWidth: .infinity)
+                }.appContentLayout()
             }
             .onAppear { if let id = notes.highlightedNoteID { proxy.scrollTo(id, anchor: .center) } }
             .onChange(of: notes.highlightedNoteID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
         }
         .onAppear { notes.reload() }
-        .sheet(item: $editing) { note in NoteEditorView(notes: notes, note: note).environmentObject(app) }
+        .sheet(item: $editing) { note in NoteEditorView(notes: notes, note: note).environmentObject(app).appControlDefaults() }
         .sheet(isPresented: $showingContext) { MeetingContextEditor(notes: notes, meeting: meeting).environmentObject(app) }
     }
     @ViewBuilder private var contextLine: some View {
@@ -87,10 +84,7 @@ struct NotesInboxView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Входящие").font(.system(size: 28, weight: .semibold, design: .rounded))
-                        Text("Поймайте мысль сейчас. Привязать к встрече можно позже.").font(AppTypography.body).foregroundStyle(.secondary)
-                    }
+                    AppPageHeader(title: "Входящие", subtitle: "Поймайте мысль сейчас. Привязать к встрече можно позже.")
                     Spacer()
                     Text("⌃⌥N").font(AppTypography.control).foregroundStyle(.secondary).padding(8).background(Ink.soft, in: RoundedRectangle(cornerRadius: 6))
                 }
@@ -98,13 +92,13 @@ struct NotesInboxView: View {
                     if notes.capture(text: text.wrappedValue, kind: kind.wrappedValue) != nil { text.wrappedValue = "" }
                 }
                 NotesMessage(notes: notes)
-                HStack { Text("Неразобранные · \(inbox.count)").font(.system(size: 14, weight: .semibold)); Spacer(); TextField("Найти во входящих", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 250) }
+                HStack { Text("Неразобранные · \(inbox.count)").font(AppTypography.bodyStrong); Spacer(); TextField("Найти во входящих", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 250) }
                 if inbox.isEmpty { NotesEmpty(title: query.isEmpty ? "Все мысли на своих местах" : "Ничего не найдено", text: query.isEmpty ? "Добавьте заметку здесь или вызовите маленькое окно из строки меню." : "Попробуйте другое слово.", icon: "tray") }
                 ForEach(inbox) { note in NoteRow(note: note, notes: notes, meetingTitle: nil, meetingUnavailable: note.meetingID != nil) { editing = note }.id(note.id).padding(3).background(notes.highlightedNoteID == note.id ? Ink.accent.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 11)) }
-            }.frame(maxWidth: 860).padding(34).frame(maxWidth: .infinity)
+            }.appContentLayout()
         }.onAppear { notes.reload(); if notes.highlightedNoteID != nil { query = "" }; Task { await Task.yield(); if let id = notes.highlightedNoteID { proxy.scrollTo(id, anchor: .center) } } }
             .onChange(of: notes.highlightedNoteID) { _, id in query = ""; Task { await Task.yield(); if let id { proxy.scrollTo(id, anchor: .center) } } }
-            .sheet(item: $editing) { note in NoteEditorView(notes: notes, note: note).environmentObject(app) }
+            .sheet(item: $editing) { note in NoteEditorView(notes: notes, note: note).environmentObject(app).appControlDefaults() }
         }
     }
 }
@@ -150,7 +144,7 @@ private struct NoteRow: View {
                         Image(systemName: note.completed ? "checkmark.circle.fill" : "circle").foregroundStyle(note.completed ? Ink.green : .secondary)
                     }.buttonStyle(.plain).accessibilityLabel(note.completed ? "Вернуть задачу в работу" : "Завершить задачу")
                 } else { Image(systemName: noteKindIcon(note.kind)).foregroundStyle(note.kind == "important" ? Ink.accent : .secondary) }
-                Text(noteKindTitle(note.kind)).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                Text(noteKindTitle(note.kind)).font(AppTypography.captionStrong).foregroundStyle(.secondary)
                 if let timestamp = note.timestamp, note.meetingID != nil, !meetingUnavailable {
                     Button(Exporter.timestamp(timestamp)) { open() }.font(AppTypography.control).monospacedDigit().buttonStyle(.borderless).help("Открыть момент без воспроизведения")
                 }
@@ -198,7 +192,7 @@ struct NoteEditorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Своя заметка").font(AppTypography.heading)
+                Text("Своя заметка").font(AppTypography.modalTitle)
                 Spacer()
                 Button("Закрыть") { if dirty { dismissConfirmation = true } else { dismiss() } }.keyboardShortcut(.cancelAction)
                 Button("Сохранить") { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command])
@@ -221,7 +215,7 @@ struct NoteEditorView: View {
                         Spacer()
                         if let time = session.draft.timestamp { Text(Exporter.timestamp(time)).font(AppTypography.control).monospacedDigit().foregroundStyle(Ink.accent) }
                     }
-                    TextEditor(text: $session.draft.text).font(.system(size: 15)).scrollContentBackground(.hidden).frame(minHeight: 150)
+                    TextEditor(text: $session.draft.text).font(AppTypography.body).scrollContentBackground(.hidden).frame(minHeight: 150)
                         .padding(10).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel("Текст заметки")
                     Picker("Встреча", selection: Binding(get: { session.draft.meetingID ?? "" }, set: { value in
                         if session.draft.meetingID != (value.isEmpty ? nil : value) { session.draft.timestamp = nil }; session.draft.meetingID = value.isEmpty ? nil : value
@@ -236,7 +230,7 @@ struct NoteEditorView: View {
                     }
                     Divider()
                     HStack {
-                        Text("Материалы").font(.system(size: 14, weight: .semibold)); Spacer()
+                        Text("Материалы").font(AppTypography.bodyStrong); Spacer()
                         if notes.attachmentBusy { ProgressView().controlSize(.small) }
                         Button { persistBeforeAttachment { notes.paste(into: $0) } } label: { Label("Вставить", systemImage: "doc.on.clipboard") }
                         Button { persistBeforeAttachment { notes.chooseAttachments(for: $0) } } label: { Image(systemName: "paperclip") }.accessibilityLabel("Добавить файлы")
@@ -258,7 +252,7 @@ struct NoteEditorView: View {
                     Divider()
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("Дополнить по записи").font(.system(size: 15, weight: .semibold))
+                            Text("Дополнить по записи").font(AppTypography.heading)
                             Text("Ваш текст останется как есть. ИИ добавит отдельный результат с исходными репликами.")
                                 .font(AppTypography.control).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
@@ -315,7 +309,7 @@ struct NotesTemplatesView: View {
             Text("Структура помогает подготовиться к разговору. Поле «Что выписать» направляет конспект.").font(AppTypography.control).foregroundStyle(.secondary)
             ForEach(notes.templates) { template in
                 HStack {
-                    VStack(alignment: .leading, spacing: 4) { Text(template.name).font(.system(size: 14, weight: .medium)); Text(template.focus).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2) }
+                    VStack(alignment: .leading, spacing: 4) { Text(template.name).font(AppTypography.bodyStrong); Text(template.focus).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2) }
                     Spacer(); Button("Изменить") { editing = template }
                 }.padding(12).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
             }
@@ -330,7 +324,7 @@ private struct TemplateEditor: View {
     @State var template: NoteTemplate
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("Шаблон заметки").font(AppTypography.heading); Spacer(); Button("Отмена") { dismiss() }; Button("Сохранить") { if notes.saveTemplate(template) { dismiss() } }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(template.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            HStack { Text("Шаблон заметки").font(AppTypography.modalTitle); Spacer(); Button("Отмена") { dismiss() }; Button("Сохранить") { if notes.saveTemplate(template) { dismiss() } }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(template.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             TextField("Название", text: $template.name).textFieldStyle(.roundedBorder)
             Text("Структура заметки").font(AppTypography.control).foregroundStyle(.secondary)
             TextEditor(text: $template.body).font(AppTypography.body).frame(height: 180).padding(8).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
@@ -356,7 +350,7 @@ private struct MeetingContextEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Контекст встречи").font(AppTypography.heading)
+            Text("Контекст встречи").font(AppTypography.modalTitle)
             Text("Свяжите разговоры по проекту или человеку, чтобы быстро вспомнить договорённости.").font(AppTypography.control).foregroundStyle(.secondary)
             TextField("Проект, например Новый поставщик", text: $context.project).textFieldStyle(.roundedBorder)
             TextField("С кем, например Анна · закупки", text: $context.person).textFieldStyle(.roundedBorder)
@@ -382,13 +376,22 @@ private struct MeetingContextEditor: View {
 
 private struct NotesMessage: View {
     @ObservedObject var notes: NotesStore
+    @State private var details = false
+    private var text: String { notes.error ?? notes.notice ?? "Заметки сохраняются на этом Mac" }
     var body: some View {
-        if let error = notes.error {
-            HStack(alignment: .top) { Label(error, systemImage: "exclamationmark.circle").font(AppTypography.control).foregroundStyle(Ink.warning); Spacer(); Button { notes.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Закрыть ошибку") }
-                .padding(12).background(Ink.warning.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
-        } else if let notice = notes.notice {
-            HStack { Label(notice, systemImage: "checkmark.circle").font(AppTypography.control).foregroundStyle(Ink.green); Spacer(); Button { notes.notice = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Закрыть уведомление") }
-        }
+        HStack(spacing: 8) {
+            Image(systemName: notes.error != nil ? "exclamationmark.circle" : notes.notice != nil ? "checkmark.circle" : "lock")
+            Text(text).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            if notes.error != nil {
+                Button("Подробнее") { details = true }.buttonStyle(.borderless)
+                    .popover(isPresented: $details) { Text(text).font(AppTypography.body).textSelection(.enabled).padding(20).frame(width: 420) }
+            }
+            if notes.error != nil || notes.notice != nil {
+                Button { notes.error = nil; notes.notice = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).accessibilityLabel("Закрыть сообщение")
+            }
+        }.font(AppTypography.caption).foregroundStyle(notes.error != nil ? Ink.warning : notes.notice != nil ? Ink.green : Color.secondary)
+            .frame(height: 32).help(text)
     }
 }
 private struct NotesEmpty: View {
@@ -396,7 +399,7 @@ private struct NotesEmpty: View {
     let text: String
     let icon: String
     var body: some View {
-        VStack(spacing: 12) { Image(systemName: icon).font(.system(size: 29)).foregroundStyle(Ink.accent); Text(title).font(AppTypography.heading); Text(text).font(AppTypography.body).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 440).lineSpacing(4) }
+        VStack(spacing: 12) { Image(systemName: icon).font(.system(size: 29)).foregroundStyle(Ink.accent); Text(title).font(AppTypography.emptyTitle); Text(text).font(AppTypography.body).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 440).lineSpacing(4) }
             .padding(.vertical, 42).frame(maxWidth: .infinity)
     }
 }
@@ -410,7 +413,7 @@ private struct NoteExpansionView: View {
     @State private var checking = true
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Дополнение ИИ", systemImage: "sparkles").font(.system(size: 14, weight: .semibold)).foregroundStyle(Ink.accent)
+            Label("Дополнение ИИ", systemImage: "sparkles").font(AppTypography.bodyStrong).foregroundStyle(Ink.accent)
             if checking { ProgressView().controlSize(.small) }
             else if !valid {
                 Text("Исходная запись или заметка изменилась. Разверните заметку заново, чтобы получить актуальные ссылки.").font(AppTypography.control).foregroundStyle(Ink.warning)
@@ -430,7 +433,7 @@ private struct NoteExpansionView: View {
                     }
                 }
                 if !expansion.openQuestions.isEmpty {
-                    Text("ИИ предлагает уточнить").font(.system(size: 14, weight: .semibold))
+                    Text("ИИ предлагает уточнить").font(AppTypography.bodyStrong)
                     ForEach(expansion.openQuestions, id: \.self) { Text("• " + $0).font(AppTypography.body).lineSpacing(4) }
                 }
                 ForEach(expansion.warnings, id: \.self) { Label($0, systemImage: "info.circle").font(AppTypography.control).foregroundStyle(.secondary) }
@@ -482,8 +485,8 @@ struct NotesContextsView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 17) {
-                Text("Контекст").font(.system(size: 25, weight: .semibold, design: .rounded))
-                Picker("Группировать", selection: $mode) { Text("Проекты").tag("project"); Text("Люди").tag("person") }.pickerStyle(.segmented)
+                Text("Проекты и люди").font(AppTypography.sectionTitle)
+                Picker("Группировать", selection: $mode) { Text("Проекты").tag("project"); Text("Люди").tag("person") }.pickerStyle(.segmented).tint(Ink.actionFill)
                 TextField("Найти", text: $query).textFieldStyle(.roundedBorder)
                 ScrollView {
                     VStack(spacing: 5) {
@@ -492,7 +495,7 @@ struct NotesContextsView: View {
                         }.buttonStyle(.plain) }
                     }
                 }
-            }.padding(25).frame(width: 280)
+            }.padding(24).frame(width: 248)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
@@ -500,13 +503,13 @@ struct NotesContextsView: View {
                         NotesEmpty(title: "Вспомните прошлый разговор", text: "Укажите проект или человека в разделе «Мои заметки → Контекст и шаблон». Здесь соберутся связанные встречи, решения и открытые вопросы.", icon: "rectangle.3.group")
                     } else {
                         VStack(alignment: .leading, spacing: 7) {
-                            Text(selected).font(.system(size: 28, weight: .semibold, design: .rounded))
+                            Text(selected).font(AppTypography.pageTitle)
                             Text("На чём остановились · \(related.count) встреч").font(AppTypography.body).foregroundStyle(.secondary)
                             Text("Сводка из сохранённых конспектов и собственных заметок. Каждая запись ведёт к встрече.").font(AppTypography.control).foregroundStyle(.secondary)
                         }
                         ForEach(related) { meeting in brief(meeting) }
                     }
-                }.frame(maxWidth: 760).padding(30).frame(maxWidth: .infinity)
+                }.frame(maxWidth: 760).padding(AppLayout.contentInset).frame(maxWidth: .infinity)
             }
         }.onAppear { notes.reload(); if let target = notes.contextSelection { mode = notes.contextMode; selected = target; notes.contextSelection = nil } else if selected.isEmpty { selected = labels.first ?? "" } }
             .onChange(of: mode) { _, _ in if !labels.contains(selected) { selected = labels.first ?? "" } }
@@ -556,10 +559,7 @@ struct NotesTasksView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 25) {
                 HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Что нужно сделать").font(.system(size: 28, weight: .semibold, design: .rounded))
-                        Text("Свои задачи и договорённости из всех встреч.").font(AppTypography.body).foregroundStyle(.secondary)
-                    }
+                    AppPageHeader(title: "Мои задачи", subtitle: "Свои задачи и договорённости из всех встреч.")
                     Spacer(); Button { notes.reload(); notes.loadTasks(); app.reloadLibrary() } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("Обновить задачи")
                 }
                 HStack(spacing: 12) {
@@ -567,7 +567,7 @@ struct NotesTasksView: View {
                     Button("Добавить", action: addTask).buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 HStack {
-                    Picker("Статус задач", selection: $filter) { Text("В работе").tag("open"); Text("Завершённые").tag("done"); Text("Все").tag("all") }.pickerStyle(.segmented).frame(maxWidth: 350)
+                    Picker("Статус задач", selection: $filter) { Text("В работе").tag("open"); Text("Завершённые").tag("done"); Text("Все").tag("all") }.pickerStyle(.segmented).tint(Ink.actionFill).frame(maxWidth: 350)
                     Spacer(); TextField("Текст, человек, встреча", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 260)
                 }
                 NotesMessage(notes: notes)
@@ -602,7 +602,7 @@ struct NotesTasksView: View {
                         }
                     }.padding(18).background(Ink.soft, in: RoundedRectangle(cornerRadius: 10))
                 }
-            }.frame(maxWidth: 860).padding(34).frame(maxWidth: .infinity)
+            }.appContentLayout()
         }.onAppear { notes.reload(); notes.loadTasks() }
             .onChange(of: notes.workspace.notes) { _, _ in notes.loadTasks() }
             .onChange(of: app.busy) { _, busy in if !busy { notes.reload(); notes.loadTasks() } }

@@ -54,7 +54,7 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Настройки После").font(.system(size: 23, weight: .semibold, design: .rounded))
+                Text("Настройки После").font(AppTypography.modalTitle)
                 Spacer()
                 Button { store.saveSettings(); dismiss() } label: { Image(systemName: "xmark").padding(6) }
                     .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Сохранить и закрыть настройки")
@@ -77,27 +77,34 @@ struct SettingsView: View {
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
-                        if store.busy {
-                            HStack { ProgressView().controlSize(.small); Text(store.progressText).font(AppTypography.control)
-                                Spacer(); if store.canCancelJob { Button("Отменить") { store.cancelJob() } }
-                            }
-                        }
-                        if let error = store.error {
-                            Label(error, systemImage: "exclamationmark.triangle").font(AppTypography.control)
-                                .foregroundStyle(Ink.warning).textSelection(.enabled)
-                        }
                         settingsContent
                     }.font(AppTypography.control).frame(maxWidth: .infinity, alignment: .leading).padding(26)
                 }.frame(maxWidth: .infinity)
             }
             Divider()
-            HStack {
-                Text("Изменения сохраняются при закрытии.").font(AppTypography.caption).foregroundStyle(.secondary)
-                Spacer()
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if store.busy {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small).accessibilityHidden(true)
+                            Text(store.progressText.isEmpty ? "Подготавливаю модели…" : store.progressText)
+                                .font(AppTypography.control).lineLimit(1).help(store.progressText)
+                            if store.canCancelJob { Button("Отменить") { store.cancelJob() }.buttonStyle(.bordered) }
+                        }.accessibilityElement(children: .contain)
+                    }
+                    if let error = store.error {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .font(AppTypography.caption).foregroundStyle(Ink.warning)
+                            .lineLimit(2).help(error).textSelection(.enabled)
+                    } else if !store.busy {
+                        Text("Изменения сохраняются при закрытии.")
+                            .font(AppTypography.caption).foregroundStyle(.secondary)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
                 Button("Готово") { store.saveSettings(); dismiss() }.buttonStyle(.borderedProminent)
                     .tint(Ink.actionFill).keyboardShortcut(.defaultAction)
-            }.padding(16)
-        }.frame(width: 900, height: 690).tint(Ink.accent)
+            }.padding(.horizontal, 16).frame(height: AppLayout.statusHeight)
+        }.frame(width: 900, height: 690).tint(Ink.accent).appControlDefaults()
             .sheet(isPresented: $showingTemplates) {
                 VStack(spacing: 16) {
                     HStack { Spacer(); Button("Готово") { showingTemplates = false }.keyboardShortcut(.cancelAction) }
@@ -189,7 +196,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(store.runtimeReady ? "Распознавание готово" : "Подготовьте распознавание").fontWeight(.medium)
                                 Text("Русский и английский определяются автоматически. Можно использовать совместимый Parakeet, уже скачанный в другом приложении.")
-                                    .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
+                                    .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
                             }
                             Spacer()
                             if store.runtimeReady {
@@ -210,8 +217,8 @@ struct SettingsView: View {
                             }.labelsHidden().frame(width: 220)
                                 .accessibilityLabel("Количество собеседников")
                         }.disabled(!store.settings.diarization)
-                        Text("Если голоса путаются, укажите число участников и создайте транскрипт заново.")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("Для готового транскрипта уточните число участников кнопкой «Собеседники» — повторное распознавание текста не нужно.")
+                            .font(AppTypography.caption).foregroundStyle(.secondary)
                     }
     }
     private var aiSettings: some View {
@@ -222,12 +229,12 @@ struct SettingsView: View {
                         }.pickerStyle(.segmented).tint(Ink.actionFill)
                         if store.settings.mode == "local" {
                             Text("Выберите источник модели для конспекта и карточек.")
-                                .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
+                                .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
                             Picker("Источник моделей", selection: Binding(get: { store.settings.localProvider }, set: { store.changeLocalProvider($0) })) {
                                 Text("После").tag("managed")
                                 Text("Ollama").tag("ollama")
                                 Text("LM Studio").tag("lmstudio")
-                            }.pickerStyle(.segmented)
+                            }.pickerStyle(.segmented).tint(Ink.actionFill)
                             if store.settings.localProvider == "managed" {
                                 Picker("Локальная модель", selection: localModelPreset) {
                                     Text("Качество · Qwen3.5 9B (6,6 ГБ)").tag("quality")
@@ -242,12 +249,12 @@ struct SettingsView: View {
                                     }
                                 }
                                 Text("После хранит свою модель отдельно. Для уже установленной Ollama или LM Studio выберите соответствующий источник выше.")
-                                    .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                                    .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
                             } else {
                                 Text(store.settings.localProvider == "lmstudio"
                                      ? "В LM Studio загрузите модель и включите локальный сервер в разделе Developer. Чтобы текст оставался на этом Mac, отключите LM Link."
                                      : "Откройте Ollama, затем найдите установленные модели здесь.")
-                                    .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
+                                    .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
                                 LabeledContent("Адрес сервера") {
                                     TextField(store.settings.resolvedLocalEndpoint, text: Binding(get: { store.settings.localEndpoint }, set: { endpoint in
                                         store.settings.localEndpoint = endpoint
@@ -267,18 +274,18 @@ struct SettingsView: View {
                             if store.settings.localProvider == "managed" {
                                 DisclosureGroup("Подключить модель из файла") { ggufModelSettings }
                                 Text("Для Air с 16 ГБ модели запускаются по очереди. Цифры в списке показывают размер скачивания; память также нужна macOS и тексту встречи. Уже скачанная модель используется повторно.")
-                                    .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                                    .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
                             } else {
                                 Text("После обращается к выбранному локальному серверу. Модель повторно не скачивается; сервером управляет выбранное приложение.")
-                                    .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                                    .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
                             }
                             if !store.localStatus.isEmpty {
-                                Text(store.localStatus).font(.system(size: 12)).foregroundStyle(Ink.accent).textSelection(.enabled)
+                                Text(store.localStatus).font(AppTypography.caption).foregroundStyle(Ink.accent).textSelection(.enabled)
                             }
                             Toggle("Создавать конспект после транскрипта", isOn: $store.settings.autoSummary).tint(Ink.actionFill)
                         } else {
                             Text("Для конспекта OpenAI получает транскрипт, для примера — одну карточку с контекстом. Аудио остаётся на Mac. Каждый облачный запрос запускается отдельной кнопкой.")
-                                .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(4)
+                                .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
                             LabeledContent("Модель OpenAI") {
                                 TextField("Имя модели", text: $store.settings.cloudModel).textFieldStyle(.roundedBorder)
                                     .accessibilityLabel("Модель OpenAI для конспекта и примеров")
@@ -300,10 +307,10 @@ struct SettingsView: View {
                             }.buttonStyle(.bordered).help("Пустое поле удалит сохранённый API-ключ")
                             if !keyMessage.isEmpty {
                                 Label(keyMessage, systemImage: keyMessageIsError ? "exclamationmark.triangle" : "checkmark.circle")
-                                    .font(.system(size: 11)).foregroundStyle(keyMessageIsError ? Ink.warning : Ink.green)
+                                    .font(AppTypography.caption).foregroundStyle(keyMessageIsError ? Ink.warning : Ink.green)
                             }
                             Text("Подписка ChatGPT не включает API. Стоимость запросов зависит от модели и длины текста.")
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                                .font(AppTypography.caption).foregroundStyle(.secondary)
                         }
                         Picker("Язык конспекта", selection: $store.settings.language) {
                             Text("Русский").tag("ru"); Text("English").tag("en")
@@ -313,8 +320,8 @@ struct SettingsView: View {
     private var focusSettings: some View {
         settingsSection("На что обращать внимание", "pin") {
                         Text("Этот фокус будет использоваться для новых встреч. Его можно изменить отдельно в конспекте каждой встречи.")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                        TextEditor(text: $store.settings.focus).font(.system(size: 12)).frame(height: 80).padding(8)
+                            .font(AppTypography.caption).foregroundStyle(.secondary)
+                        TextEditor(text: $store.settings.focus).font(AppTypography.caption).frame(height: 80).padding(8)
                             .scrollContentBackground(.hidden)
                             .background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Ink.line))
@@ -325,13 +332,13 @@ struct SettingsView: View {
     private var dataSettings: some View {
         settingsSection("Ваши данные", "lock") {
                         Text("Записи, транскрипты, конспекты и история повторений хранятся в папке приложения.")
-                            .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                            .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
                         Text("Обновления устанавливаются поверх приложения в «Программах» через файл .pkg. Встречи, модели и ключи хранятся отдельно и сохраняются.")
                             .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
                         Button("Открыть страницу обновлений") { NSWorkspace.shared.open(URL(string: "https://github.com/starkovsavva/posle/releases")!) }.buttonStyle(.bordered)
                         Button("Экспортировать мои заметки…") { store.exportManualNotes() }.buttonStyle(.bordered)
                         Button("Открыть папку данных") { NSWorkspace.shared.open(store.root) }.buttonStyle(.bordered)
-                        Text("После \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3") · Apple Silicon · macOS 15+").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("После \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.3") · Apple Silicon · macOS 15+").font(AppTypography.caption).foregroundStyle(.secondary)
                     }
     }
 
@@ -356,27 +363,27 @@ struct SettingsView: View {
 
     private var ggufModelSettings: some View {
         VStack(alignment: .leading, spacing: 11) {
-            Text("Подключить локальную модель из файла").font(.system(size: 12, weight: .medium))
+            Text("Подключить локальную модель из файла").font(AppTypography.captionStrong)
             Text("Подключите уже скачанную модель в формате GGUF. Повторно скачивать её не нужно.")
-                .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
             HStack {
                 Button("Найти модели на Mac") { store.discoverGGUFModels() }.buttonStyle(.bordered)
                 Button("Выбрать файл…") { store.chooseGGUFFile() }.buttonStyle(.bordered).disabled(!store.runtimeReady)
             }
             if !store.runtimeReady {
                 Text("Сначала подготовьте среду в разделе «Распознавание речи»: эта среда нужна для локального движка. Искать файлы можно уже сейчас.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if !store.ggufStatus.isEmpty {
-                Text(store.ggufStatus).font(.system(size: 12)).foregroundStyle(Ink.accent).textSelection(.enabled)
+                Text(store.ggufStatus).font(AppTypography.caption).foregroundStyle(Ink.accent).textSelection(.enabled)
             }
             ForEach(Array(store.installedGGUFModels.prefix(4))) { model in
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "shippingbox").foregroundStyle(Ink.accent).frame(width: 18)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(model.name).font(.system(size: 12, weight: .medium)).lineLimit(2)
-                        Text("\(model.source) · \(model.sizeLabel)").font(.system(size: 11)).foregroundStyle(.secondary)
-                        Text(model.path).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(model.name).font(AppTypography.captionStrong).lineLimit(2)
+                        Text("\(model.source) · \(model.sizeLabel)").font(AppTypography.caption).foregroundStyle(.secondary)
+                        Text(model.path).font(AppTypography.caption).foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle).help(model.path)
                     }
                     Spacer(minLength: 4)
@@ -387,10 +394,10 @@ struct SettingsView: View {
             }
             if store.installedGGUFModels.count > 4 {
                 Text("Показаны первые 4 модели. Другую можно выбрать через «Выбрать файл…».")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .font(AppTypography.caption).foregroundStyle(.secondary)
             }
             ForEach(Array(store.ggufNotes.prefix(2).enumerated()), id: \.offset) { _, note in
-                Text(note).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(note).font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }.padding(.top, 5)
     }
@@ -406,11 +413,11 @@ struct SettingsView: View {
             }
             if store.settings.asrModelPath.isEmpty {
                 Text("Автоматический выбор: После сначала ищет совместимую модель на Mac.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .font(AppTypography.caption).foregroundStyle(.secondary)
             } else {
                 Label(URL(fileURLWithPath: store.settings.asrModelPath).lastPathComponent, systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(Ink.green).font(.system(size: 12, weight: .medium))
-                Text(store.settings.asrModelPath).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .foregroundStyle(Ink.green).font(AppTypography.captionStrong)
+                Text(store.settings.asrModelPath).font(AppTypography.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle).help(store.settings.asrModelPath).textSelection(.enabled)
             }
             HStack {
@@ -418,19 +425,19 @@ struct SettingsView: View {
                 Button("Выбрать папку…") { store.chooseASRFolder() }.buttonStyle(.bordered)
             }
             if !store.asrStatus.isEmpty {
-                Text(store.asrStatus).font(.system(size: 12)).foregroundStyle(Ink.accent).textSelection(.enabled)
+                Text(store.asrStatus).font(AppTypography.caption).foregroundStyle(Ink.accent).textSelection(.enabled)
             }
             ForEach(Array(store.installedASRModels.prefix(6))) { model in
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: model.compatible ? "waveform" : "exclamationmark.circle")
                         .foregroundStyle(model.compatible ? Ink.accent : Ink.warning).frame(width: 18)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(model.name).font(.system(size: 12, weight: .medium))
-                        Text("\(model.source) · \(model.format.uppercased())").font(.system(size: 11)).foregroundStyle(.secondary)
-                        Text(model.path).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(model.name).font(AppTypography.captionStrong)
+                        Text("\(model.source) · \(model.format.uppercased())").font(AppTypography.caption).foregroundStyle(.secondary)
+                        Text(model.path).font(AppTypography.caption).foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle).help(model.path)
                         if !model.reason.isEmpty {
-                            Text(model.reason).font(.system(size: 11)).foregroundStyle(model.compatible ? Color.secondary : Ink.warning)
+                            Text(model.reason).font(AppTypography.caption).foregroundStyle(model.compatible ? Color.secondary : Ink.warning)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -448,19 +455,19 @@ struct SettingsView: View {
             }
             if store.installedASRModels.count > 6 {
                 Text("Показаны первые 6 моделей. Для другой модели выберите её папку.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .font(AppTypography.caption).foregroundStyle(.secondary)
             }
             ForEach(Array(store.asrNotes.prefix(3).enumerated()), id: \.offset) { _, note in
-                Text(note).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(note).font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Text("Обнаружение и выбор папки ничего не скачивают. Формат модели проверяется перед использованием.")
-                .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
         }
     }
 
     private func settingsSection<Content: View>(_ title: String, _ icon: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label(title, systemImage: icon).font(.system(size: 15, weight: .semibold, design: .rounded))
+            Label(title, systemImage: icon).font(AppTypography.heading)
                 .accessibilityAddTraits(.isHeader)
             content()
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -476,7 +483,7 @@ struct RecordView: View {
     @State private var video = false
     var body: some View {
         VStack(alignment: .leading, spacing: 23) {
-            Label("Новая встреча", systemImage: "record.circle").font(.system(size: 26, weight: .semibold, design: .rounded))
+            Label("Новая встреча", systemImage: "record.circle").font(AppTypography.pageTitle)
             TextField("Название встречи", text: $title).textFieldStyle(.roundedBorder).controlSize(.large)
                 .accessibilityLabel("Название новой встречи")
             Picker("Источник звука", selection: $systemAudio) {
@@ -486,25 +493,25 @@ struct RecordView: View {
             Toggle("Также сохранить видео экрана", isOn: $video).tint(Ink.actionFill)
             if video {
                 Text("MP4 · H.264 · до 720p · 30 кадров/с · около 0,5 ГБ в час. Запишется основной экран, включая видимые на нём окна.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
+                    .font(AppTypography.caption).foregroundStyle(.secondary).lineSpacing(4)
             }
             Text(systemAudio ? "Запишутся ваш микрофон и звук приложений: Zoom, Meet, Teams и других. Для чистого разделения используйте наушники."
                  : "Запишется выбранный в macOS микрофон. Поставьте ноутбук ближе к участникам.")
-                .font(.system(size: 12)).lineSpacing(5).foregroundStyle(.secondary)
-            Label(video ? "MP4 с видео и отдельный MP3" : "Итоговая запись — MP3, только аудио", systemImage: video ? "video" : "waveform").font(.system(size: 12, weight: .medium)).foregroundStyle(Ink.accent)
+                .font(AppTypography.caption).lineSpacing(5).foregroundStyle(.secondary)
+            Label(video ? "MP4 с видео и отдельный MP3" : "Итоговая запись — MP3, только аудио", systemImage: video ? "video" : "waveform").font(AppTypography.captionStrong).foregroundStyle(Ink.accent)
             if !store.runtimeReady {
                 Text("Подготовьте модели в настройках, чтобы записывать встречи и создавать транскрипты.")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .font(AppTypography.caption).foregroundStyle(.secondary)
             }
-            Label("Убедитесь, что участники знают о записи.", systemImage: "person.2").font(.system(size: 11)).foregroundStyle(.secondary)
+            Label("Убедитесь, что участники знают о записи.", systemImage: "person.2").font(AppTypography.caption).foregroundStyle(.secondary)
             if let error = store.error {
-                Label(error, systemImage: "exclamationmark.triangle").font(.system(size: 12)).foregroundStyle(Ink.warning).textSelection(.enabled)
+                Label(error, systemImage: "exclamationmark.triangle").font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled)
                     .accessibilityLabel("Ошибка: \(error)")
             }
             if store.busy {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small).accessibilityHidden(true)
-                    Text(store.progressText.isEmpty ? "Подготавливаю запись…" : store.progressText).font(.system(size: 12))
+                    Text(store.progressText.isEmpty ? "Подготавливаю запись…" : store.progressText).font(AppTypography.caption)
                 }.accessibilityElement(children: .combine)
             }
             HStack {

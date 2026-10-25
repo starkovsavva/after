@@ -11,6 +11,7 @@ Each component retains its original license and notices in the installed runtime
 - [Sherpa ONNX](https://github.com/k2-fsa/sherpa-onnx), Apache-2.0. Segmentation and speaker embeddings: see the upstream release model notices.
 - [Ollama](https://github.com/ollama/ollama), MIT. Optional local runtime.
 - [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-9B), Apache-2.0; see the selected model's full model card and license.
+- [CPython](https://www.python.org/), Python Software Foundation License. The private installed runtime is embedded by the native Rust speech helper through the public stable ABI; it is not bundled into the app download.
 - [uv](https://github.com/astral-sh/uv), Apache-2.0 / MIT.
 - [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg), BSD-2-Clause. The separately downloaded FFmpeg binary retains its upstream licensing.
 - [rustup](https://github.com/rust-lang/rustup), Apache-2.0 / MIT. Developer toolchain installer only; the app bundles its compiled Rust worker and does not require Rust on the user's Mac.

@@ -24,5 +24,53 @@ enum AppTypography {
     static let caption = Font.system(size: 12)
     static let control = Font.system(size: 13)
     static let body = Font.system(size: 14)
+    static let controlStrong = Font.system(size: 13, weight: .semibold)
+    static let captionStrong = Font.system(size: 12, weight: .medium)
+    static let bodyStrong = Font.system(size: 14, weight: .semibold)
     static let heading = Font.system(size: 17, weight: .semibold, design: .rounded)
+    static let sectionTitle = Font.system(size: 20, weight: .semibold, design: .rounded)
+    static let pageTitle = Font.system(size: 28, weight: .semibold, design: .rounded)
+    static let modalTitle = Font.system(size: 23, weight: .semibold, design: .rounded)
+    static let emptyTitle = Font.system(size: 20, weight: .medium, design: .rounded)
+    static let cardFront = Font.system(size: 26, weight: .medium, design: .rounded)
+    static let cardAnswer = Font.system(size: 17)
+}
+
+/// Layout values shared by every workspace and sheet. Content changes never
+/// change the size of the app chrome or the typography of adjacent controls.
+enum AppLayout {
+    static let contentInset: CGFloat = 32
+    static let readableWidth: CGFloat = 860
+    static let toolbarHeight: CGFloat = 64
+    static let statusHeight: CGFloat = 64
+    static let controlRadius: CGFloat = 8
+    static let cardRadius: CGFloat = 12
+}
+
+struct AppPageHeader: View {
+    let title: String
+    let subtitle: String
+    var compact = false
+    var modal = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(modal ? AppTypography.modalTitle : compact ? AppTypography.sectionTitle : AppTypography.pageTitle)
+                .accessibilityAddTraits(.isHeader)
+            Text(subtitle).font(AppTypography.body).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct AppContentLayout: ViewModifier {
+    func body(content: Content) -> some View {
+        content.frame(maxWidth: AppLayout.readableWidth, alignment: .leading)
+            .padding(AppLayout.contentInset).frame(maxWidth: .infinity, alignment: .top)
+    }
+}
+
+extension View {
+    func appContentLayout() -> some View { modifier(AppContentLayout()) }
+    /// Native controls use the same regular size and font in windows and sheets.
+    func appControlDefaults() -> some View { font(AppTypography.control).controlSize(.regular) }
 }

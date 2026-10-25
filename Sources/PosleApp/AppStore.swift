@@ -101,6 +101,8 @@ final class AppStore: ObservableObject {
     var python: URL { root.appendingPathComponent("runtime/venv/bin/python") }
     var rustEngine: URL {
         if let path = ProcessInfo.processInfo.environment["POSLE_RUST_ENGINE"] { return URL(fileURLWithPath: path) }
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/После Обработка.app/Contents/MacOS/После Обработка")
+        if FileManager.default.isExecutableFile(atPath: helper.path) { return helper }
         return Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/posle-engine")
     }
 
@@ -341,6 +343,17 @@ final class AppStore: ObservableObject {
             updateMeeting(id) { $0.status = "imported"; $0.error = error.localizedDescription }
             self.error = error.localizedDescription; refreshResults(id)
         }
+    }
+    func rediarizeMeeting(_ id: String, speakers: Int) async {
+        guard !busy, !isRecording, runtimeReady, (0...100).contains(speakers) else { return }
+        beginJob(id: id); progressText = "Пересчитываю собеседников…"
+        defer { endJob() }
+        do {
+            try await worker("diarize", id: id, extra: ["--speakers", String(speakers)])
+            reloadLibrary(); refreshResults(id)
+            if selection == id { tab = "transcript" }
+            notice = "Собеседники пересчитаны. Проверьте реплики и задайте имена голосам. Предыдущая версия сохранена в истории."
+        } catch { self.error = error.localizedDescription; reloadLibrary(); refreshResults(id) }
     }
     func summarizeSelected() {
         guard let id = selection, !busy, !isRecording else { return }

@@ -51,6 +51,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--check-ui-consistency") {
+            Task {
+                do { try await UIConsistencyChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native UI consistency check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-notes") {
             Task {
                 do { try await NotesNativeChecks.run(); NSApp.terminate(nil) }
@@ -79,6 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let tabIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "--preview-tab"),
                ProcessInfo.processInfo.arguments.count > tabIndex + 1 { previewStore.tab = ProcessInfo.processInfo.arguments[tabIndex + 1] }
             let screen = option("--preview-screen") ?? "meeting"
+            if arguments.contains("--preview-busy") { previewStore.busy = true; previewStore.canCancelJob = true; previewStore.progressText = "Проверяю установленные модели…" }
+            if arguments.contains("--preview-error") { previewStore.error = "Не удалось подключиться к модели. Проверьте локальный сервер в настройках." }
             if ["inbox", "tasks", "contexts", "cards-library"].contains(screen) {
                 previewStore.librarySection = screen == "cards-library" ? "cards" : screen
             }
@@ -107,14 +116,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 else { content = AnyView(NotesInboxView(notes: previewStore.notes).environmentObject(previewStore)) }
             case "quick-note": content = AnyView(QuickCaptureView(notes: previewStore.notes, initialMeetingID: previewStore.selection, initialTimestamp: 65, close: {}).environmentObject(previewStore))
             case "record": content = AnyView(RecordView().environmentObject(previewStore))
+            case "speakers": content = AnyView(SpeakerReviewView(meetingID: previewStore.selection ?? "").environmentObject(previewStore))
             case "search":
                 previewStore.showingSearch = true; previewStore.searchQuery = option("--preview-query") ?? "доступ"
                 content = AnyView(SearchView().environmentObject(previewStore))
             default: content = AnyView(MainView().environmentObject(previewStore))
             }
             let dark = option("--appearance") == "dark"
-            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : screen == "record" ? 570 : 1260
-            let defaultHeight: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 330 : screen == "search" ? 650 : screen == "settings" ? 690 : screen == "record" ? 620 : 820
+            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : screen == "record" ? 570 : screen == "speakers" ? 620 : 1260
+            let defaultHeight: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 330 : screen == "search" ? 650 : screen == "settings" ? 690 : screen == "record" ? 620 : screen == "speakers" ? 440 : 820
             let width = option("--width").flatMap(Double.init) ?? defaultWidth
             let height = option("--height").flatMap(Double.init) ?? defaultHeight
             let view = NSHostingView(rootView: content

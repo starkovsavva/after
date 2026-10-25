@@ -42,15 +42,38 @@ swift build --scratch-path "$BUILD" -c release
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources/backend"
 cp "$BUILD/release/Posle" "$APP/Contents/MacOS/Posle"
 cp "$RUST_RELEASE/posle-engine" "$APP/Contents/MacOS/posle-engine"
+# Helpers are real native processes. The speech helper embeds the private
+# CPython runtime in-process; it never execs a Python interpreter.
+python3 - "$APP" "$RUST_RELEASE/posle-engine" "$PROJECT/packaging/Info.plist" <<'PYHELPERS'
+import plistlib, shutil, sys
+from pathlib import Path
+app, engine, version_file = map(Path, sys.argv[1:])
+with version_file.open("rb") as stream: version = plistlib.load(stream)
+for title, executable, identifier in [
+    ("После Распознавание", "После Речь", "app.posle.meetings.speech"),
+    ("После Обработка", "После Обработка", "app.posle.meetings.processing"),
+]:
+    helper = app / "Contents/Helpers" / (title + ".app") / "Contents"
+    (helper / "MacOS").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(engine, helper / "MacOS" / executable)
+    with (helper / "Info.plist").open("wb") as stream:
+        plistlib.dump({"CFBundleName": title, "CFBundleDisplayName": title,
+                      "CFBundleExecutable": executable, "CFBundleIdentifier": identifier,
+                      "CFBundlePackageType": "APPL", "CFBundleVersion": version["CFBundleVersion"],
+                      "CFBundleShortVersionString": version["CFBundleShortVersionString"], "LSBackgroundOnly": True,
+                      "LSMinimumSystemVersion": "15.0"}, stream, sort_keys=False)
+PYHELPERS
 cp "$RUST_RELEASE/libposle_core.dylib" "$APP/Contents/Frameworks/libposle_core.dylib"
 cp "$PROJECT/packaging/Info.plist" "$APP/Contents/Info.plist"
-cp "$PROJECT/backend/engine.py" "$PROJECT/backend/models.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$APP/Contents/Resources/backend/"
+cp "$PROJECT/backend/engine.py" "$PROJECT/backend/models.py" "$PROJECT/backend/media_runtime.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$APP/Contents/Resources/backend/"
 cp "$PROJECT/THIRD_PARTY.md" "$APP/Contents/Resources/THIRD_PARTY.md"
 swift "$PROJECT/scripts/icon.swift" "$BUILD/AppIcon.iconset"
 iconutil -c icns "$BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 install_name_tool -id @rpath/libposle_core.dylib "$APP/Contents/Frameworks/libposle_core.dylib"
 codesign --force --sign - "$APP/Contents/Frameworks/libposle_core.dylib"
 codesign --force --sign - "$APP/Contents/MacOS/posle-engine"
+codesign --force --sign - "$APP/Contents/Helpers/После Распознавание.app"
+codesign --force --sign - "$APP/Contents/Helpers/После Обработка.app"
 codesign --force --sign - --entitlements "$PROJECT/packaging/entitlements.plist" "$APP"
 codesign --verify --deep --strict "$APP"
 bash "$PROJECT/scripts/package.sh"

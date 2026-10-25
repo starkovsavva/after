@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import gc
+import fcntl
 import hashlib
 import json
 import math
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 import wave
 from collections import defaultdict
@@ -30,6 +32,8 @@ MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 SEGMENTATION_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
 EMBEDDING_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx"
 PROTOCOL = sys.stdout
+DIARIZATION_THRESHOLD = 0.65
+DIARIZATION_WARNING = "Собеседники: "
 
 
 def emit(event: str, **values):
@@ -117,6 +121,17 @@ def prepare(root: Path):
     emit("done", asrModel=local_models.public_model(selected))
 
 
+def remove_owned_runtime_aliases(directory: Path):
+    """Allow a verified upgrade to replace only our own same-directory aliases."""
+    for parent in (directory, directory / "bin"):
+        for original, branded in (("ollama", "После ИИ"), ("llama-server", "После Модель")):
+            alias = parent / original
+            target = parent / branded
+            if (alias.is_symlink() and os.readlink(alias) == branded
+                    and target.is_file() and not target.is_symlink()):
+                alias.unlink()
+
+
 def install_local(root: Path):
     """Pinned official release with independently recorded SHA256; no global install."""
     directory = root / "runtime" / "ollama"
@@ -135,6 +150,7 @@ def install_local(root: Path):
         archive.unlink(missing_ok=True)
         raise RuntimeError("Проверка загрузки Ollama не прошла. Повторите установку.")
     directory.mkdir(parents=True, exist_ok=True)
+    remove_owned_runtime_aliases(directory)
     with tarfile.open(archive) as package:
         package.extractall(directory, filter="data")
     # The official tar release can carry stale arm64 signatures. Its bytes have
@@ -221,29 +237,203 @@ def diarize(path: Path, root: Path, count: int):
             num_threads=4,
         ),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(embedding), num_threads=4),
-        clustering=sherpa_onnx.FastClusteringConfig(num_clusters=count if count > 0 else -1, threshold=0.65),
+        clustering=sherpa_onnx.FastClusteringConfig(num_clusters=-1, threshold=DIARIZATION_THRESHOLD),
         min_duration_on=0.3, min_duration_off=0.5,
     )
     if not config.validate():
         raise RuntimeError("Модели собеседников повреждены. Повторите установку в настройках.")
     model = sherpa_onnx.OfflineSpeakerDiarization(config)
-    previous = -1
+    previous, attempt = -1, 0
+    samples = read_wave(path)
 
     def callback(done, total):
         nonlocal previous
         percent = int(100 * done / max(total, 1))
         if percent != previous:
             previous = percent
-            progress(f"Разделяю собеседников · {percent}%", 0.60 + percent * 0.0035)
+            message = (f"Уточняю голоса · проверка {attempt} из 4 · {percent}%" if count > 0
+                       else f"Разделяю собеседников · {percent}%")
+            fraction = 0.60 + (((attempt - 1) + percent / 100) / 4 * 0.35 if count > 0 else percent * 0.0035)
+            progress(message, fraction)
         return 0
 
-    turns = model.process(read_wave(path), callback=callback).sort_by_start_time()
+    def process(clusters):
+        nonlocal previous, attempt
+        previous, attempt = -1, attempt + 1
+        config.clustering.num_clusters = clusters if clusters > 0 else -1
+        model.set_config(config)
+        return model.process(samples, callback=callback).sort_by_start_time()
+
+    return counted_speaker_turns(process, count)
+
+
+def counted_speaker_turns(process, count: int):
+    """Match audible people, not raw embedding clusters, in at most four passes.
+
+    Sherpa clusters short/noisy window embeddings before voting on actual speech
+    frames. Some clusters disappear during that vote. Asking for four embedding
+    clusters can therefore merge two real people and produce only three audible
+    speakers. Start with automatic output; when a known count needs correction,
+    test bounded cluster counts and inspect the final turns after every pass.
+    No fabricated identities, forced splitting or hidden truncation is used.
+    """
+    automatic = process(0)
+    identities = {turn.speaker for turn in automatic}
+    if count == 0 or len(identities) == count or count == 1:
+        return normalized_speaker_turns(automatic, count)
+    # Native cluster IDs are zero-based and strictly below the embedding-row
+    # count. This observed bound prevents native cutree_k(k > rows), including
+    # requests for 100 people on a tiny or silent recording.
+    upper = max(identities, default=-1) + 1
+    if count > upper:
+        return normalized_speaker_turns(automatic, count)
+    best = automatic if len(identities) < count else None
+    best_count = len(identities) if best is not None else -1
+    internal = count
+    for _ in range(3):
+        candidate = process(internal)
+        actual = len({turn.speaker for turn in candidate})
+        if actual == count:
+            return normalized_speaker_turns(candidate, count)
+        if best_count < actual < count:
+            best, best_count = candidate, actual
+        if actual > count:
+            break  # Single-window native path ignores clustering altogether.
+        following = min(upper, internal + max(1, count - actual))
+        if following <= internal:
+            break
+        internal = following
+    if best is None:
+        raise RuntimeError("Модель не смогла соблюсти указанное число участников. Предыдущая транскрипция сохранена; попробуйте более длинную запись.")
+    return normalized_speaker_turns(best, count)
+
+
+def normalized_speaker_turns(turns, count: int):
+    """Validate native results, including Sherpa's short-audio special case.
+
+    Sherpa skips clustering for a single segmentation window. For an explicitly
+    single speaker, all local slots must still refer to that one identity. For
+    larger exact counts, reject an over-count rather than write invented people.
+    """
     names = {}
     result = []
     for turn in turns:
-        key = names.setdefault(turn.speaker, f"speaker_{len(names) + 1}")
-        result.append({"start": float(turn.start), "end": float(turn.end), "speaker": key})
-    return result
+        start, end = float(turn.start), float(turn.end)
+        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
+            raise RuntimeError("Модель собеседников вернула некорректные временные метки.")
+        identity = 0 if count == 1 else turn.speaker
+        key = names.setdefault(identity, f"speaker_{len(names) + 1}")
+        result.append({"start": start, "end": end, "speaker": key})
+    if count > 0 and len(names) > count:
+        raise RuntimeError("Модель не смогла соблюсти указанное число участников. Предыдущая транскрипция сохранена; попробуйте более длинную запись.")
+    return sorted(result, key=lambda turn: (turn["start"], turn["end"]))
+
+
+def remote_speaker_count(total: int, has_self: bool):
+    """The UI specifies all participants; a separately recorded mic is one."""
+    return max(1, total - int(has_self)) if total > 0 else 0
+
+
+def meeting_speaker_turns(path: Path, root: Path, count: int, has_self: bool):
+    turns = diarize(path, root, remote_speaker_count(count, has_self))
+    if count == 1 and has_self:
+        return [dict(turn, speaker="self") for turn in turns]
+    return turns
+
+
+def speaker_diagnostics(segments: list[dict], turns: list[dict], requested: int, enabled: bool = True):
+    identities = {segment["speaker"] for segment in segments if segment["speaker"] != "unknown"}
+    durations = defaultdict(float)
+    for turn in turns:
+        durations[turn["speaker"]] += max(0.0, turn["end"] - turn["start"])
+    voiced_duration = sum(durations.values())
+    short = sum(value < max(3.0, voiced_duration * 0.01) for value in durations.values())
+    diagnostics = {"version": 2, "mode": "exact" if requested > 0 else "auto",
+                   "requestedCount": requested, "detectedCount": len(identities),
+                   "clusteringThreshold": DIARIZATION_THRESHOLD, "shortVoiceCount": short,
+                   "enabled": enabled}
+    warnings = []
+    if enabled and requested == 0 and (len(durations) >= 12 or short >= max(3, math.ceil(len(durations) * 0.4))):
+        warnings.append(DIARIZATION_WARNING + f"автоопределение выделило {len(identities)} голосов. Короткие реплики или шум могут разделить одного человека на несколько. Укажите известное число участников кнопкой «Собеседники».")
+    if enabled and requested > 0 and len(identities) < requested:
+        warnings.append(DIARIZATION_WARNING + f"указано участников: {requested}, в тексте различимо голосов: {len(identities)}. Некоторые участники могли не говорить; проверьте короткие и одновременные реплики.")
+    return diagnostics, warnings
+
+
+def _regular_bytes(path: Path):
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("Данные встречи должны храниться в обычных файлах.")
+    return path.read_bytes()
+
+
+def rediarize(directory: Path, root: Path, count: int):
+    """Correct identities without ASR; preserve every evidence ID, time and word."""
+    transcript_path, meta_path = directory / "transcript.json", directory / "meta.json"
+    original_bytes = _regular_bytes(transcript_path)
+    original = json.loads(original_bytes)
+    segments = original.get("segments")
+    if not isinstance(segments, list) or not segments:
+        raise RuntimeError("Сначала создайте транскрипцию этой встречи.")
+    meta = json.loads(_regular_bytes(meta_path))
+    has_self = bool(meta.get("recordingTracks", False)) and any(segment.get("speaker") == "self" for segment in segments)
+    wav = directory / "audio.wav"
+    if wav.is_symlink():
+        raise RuntimeError("Звуковая дорожка не должна быть символической ссылкой.")
+    if not wav.is_file():
+        source = directory / ("system.m4a" if meta.get("recordingTracks", False) and (directory / "system.m4a").is_file() else meta["source"])
+        if source.parent != directory or source.is_symlink() or not source.is_file():
+            raise RuntimeError("Исходная звуковая дорожка не найдена. Предыдущая транскрипция сохранена.")
+        progress("Подготавливаю звуковую дорожку…", 0.02)
+        audio_wave(source, wav)
+    progress("Заново разделяю собеседников…", 0.60)
+    turns = meeting_speaker_turns(wav, root, count, has_self)
+    if not turns and any(not has_self or segment.get("speaker") != "self" for segment in segments):
+        raise RuntimeError("Модель не обнаружила голоса на звуковой дорожке. Предыдущая транскрипция сохранена.")
+    updated = dict(original)
+    updated_segments = []
+    for segment in segments:
+        revised = dict(segment)
+        if has_self and segment.get("speaker") == "self":
+            revised["speaker"], revised["overlap"] = "self", False
+        else:
+            revised["speaker"], revised["overlap"] = assign_speaker(float(segment["start"]), float(segment["end"]), turns)
+        updated_segments.append(revised)
+    diagnostics, warnings = speaker_diagnostics(updated_segments, turns, count)
+    diagnostics["preservedSegmentBoundaries"] = True
+    updated["segments"], updated["diarization"] = updated_segments, diagnostics
+    updated["warnings"] = [value for value in original.get("warnings", []) if not value.startswith(DIARIZATION_WARNING) and not value.startswith("Речь сохранена, но разделить собеседников")]
+    updated["warnings"].extend(warnings)
+    # Old long segments may cross newly discovered turns. Keep existing source
+    # links valid rather than inventing word times or silently changing their IDs.
+    updated["warnings"].append(DIARIZATION_WARNING + "текст, время и ссылки сохранены. Длинная реплика может содержать несколько голосов; для новых границ реплик создайте транскрипцию заново.")
+    if count > 0 and diagnostics["detectedCount"] > count:
+        raise RuntimeError("Не удалось соблюсти указанное число участников. Предыдущая транскрипция сохранена.")
+    lock_path = directory / ".posle-storage.lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "r+b") as lock:
+        # Matches Rust File::lock(), so speaker renames and metadata edits do not
+        # race this read-modify-write transaction in a second app window.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if _regular_bytes(transcript_path) != original_bytes:
+            raise RuntimeError("Транскрипция изменилась во время обработки. Повторите разделение собеседников.")
+        current_meta = json.loads(_regular_bytes(meta_path))
+        backup = directory / "diarization-history" / f"{time.time_ns()}-{hashlib.sha256(original_bytes).hexdigest()[:12]}.json"
+        if backup.parent.is_symlink():
+            raise RuntimeError("Папка истории не должна быть символической ссылкой.")
+        atomic(backup, {"transcript": original, "speakerNames": current_meta.get("speakerNames", {})})
+        os.chmod(backup.parent, 0o700)
+        revised_meta = dict(current_meta)
+        revised_meta["speakerNames"] = {key: value for key, value in current_meta.get("speakerNames", {}).items() if key == "self"}
+        # Clear old names first: interruption can leave anonymous old labels,
+        # but can never falsely attach an old person's name to a new identity.
+        atomic(meta_path, revised_meta)
+        try:
+            atomic(transcript_path, updated)
+        except BaseException:
+            atomic(meta_path, current_meta)
+            raise
+    progress("Собеседники обновлены", 1)
+    emit("done", speakerCount=diagnostics["detectedCount"], requestedSpeakerCount=count, backup=str(backup))
 
 
 def assign_speaker(start: float, end: float, turns: list[dict]):
@@ -445,13 +635,6 @@ class ASRAdapter:
 
 
 def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
-    import imageio_ffmpeg
-    binary_dir = root / "runtime" / "bin"
-    binary_dir.mkdir(parents=True, exist_ok=True)
-    alias = binary_dir / "ffmpeg"
-    if not alias.exists():
-        alias.symlink_to(imageio_ffmpeg.get_ffmpeg_exe())
-    os.environ["PATH"] = str(binary_dir) + os.pathsep + os.environ.get("PATH", "")
     finalize_recording(directory)
     meta = load(directory / "meta.json")
     source = directory / meta["source"]
@@ -502,7 +685,7 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
     if use_diarization:
         progress("Разделяю собеседников…", 0.60)
         try:
-            turns = diarize(wav, root, count)
+            turns = meeting_speaker_turns(wav, root, count, multitrack and bool(all_tokens[1]))
         except Exception as exc:
             warnings.append(f"Речь сохранена, но разделить собеседников не удалось: {exc}")
     segments = group_tokens(all_tokens[0], turns)
@@ -513,7 +696,9 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
         segment["id"] = index
     if not segments:
         warnings.append("Речь не обнаружена. Проверьте источник звука или выберите другой участок записи.")
-    transcript = {"duration": duration, "segments": segments, "warnings": warnings, "model": selected["name"],
+    diagnostics, speaker_warnings = speaker_diagnostics(segments, turns, count, enabled=use_diarization)
+    warnings.extend(speaker_warnings)
+    transcript = {"duration": duration, "segments": segments, "warnings": warnings, "diarization": diagnostics, "model": selected["name"],
                   "modelFormat": selected["format"], "modelPath": selected["path"]}
     atomic(directory / "transcript.json", transcript)
     # A re-transcription invalidates old evidence IDs; preserve existing review history.
@@ -522,7 +707,7 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
     emit("done", count=len(segments), duration=duration)
 
 
-WORKER_COMMANDS = ("prepare", "install-local", "finalize", "transcribe", "discover-models")
+WORKER_COMMANDS = ("prepare", "install-local", "finalize", "transcribe", "diarize", "discover-models")
 
 
 def parse_arguments(argv=None):
@@ -535,12 +720,12 @@ def parse_arguments(argv=None):
     args = parser.parse_args(argv)
     if not args.root.is_absolute():
         parser.error("--root must be an absolute path")
-    if args.command in ("finalize", "transcribe") and args.meeting is None:
+    if args.command in ("finalize", "transcribe", "diarize") and args.meeting is None:
         parser.error("this command requires --meeting")
     if args.meeting is not None and not args.meeting.is_absolute():
         parser.error("--meeting must be an absolute path")
-    if args.speakers < 0:
-        parser.error("--speakers must be nonnegative")
+    if not 0 <= args.speakers <= 100:
+        parser.error("--speakers must be between 0 (automatic) and 100")
     return args
 
 
@@ -549,6 +734,9 @@ def main():
     os.umask(0o077)
     os.environ.setdefault("HF_HOME", str(args.root / "cache" / "huggingface"))
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    if args.command in ("prepare", "transcribe", "finalize", "diarize"):
+        from media_runtime import configure
+        configure(args.root)
     if args.command == "prepare":
         prepare(args.root)
     elif args.command == "install-local":
@@ -558,6 +746,8 @@ def main():
         emit("done")
     elif args.command == "transcribe":
         transcribe(args.meeting, args.root, args.speakers, not args.no_diarization)
+    elif args.command == "diarize":
+        rediarize(args.meeting, args.root, args.speakers)
     elif args.command == "discover-models":
         found, notes = local_models.discover_asr(args.root)
         emit("done", asrModels=[local_models.public_model(model) for model in found], notes=notes)

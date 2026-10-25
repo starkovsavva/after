@@ -122,7 +122,7 @@ struct QuickCaptureView: View {
             }
             ZStack(alignment: .topLeading) {
                 if text.isEmpty { Text("Мысль, вопрос или обещание…").font(AppTypography.body).foregroundStyle(.tertiary).padding(.top, 9).padding(.leading, 5).allowsHitTesting(false) }
-                TextEditor(text: $text).font(.system(size: 15)).scrollContentBackground(.hidden).focused($focused).frame(minHeight: 100)
+                TextEditor(text: $text).font(AppTypography.body).scrollContentBackground(.hidden).focused($focused).frame(minHeight: 100)
                     .accessibilityLabel("Текст быстрой заметки")
             }.padding(7).background(Ink.soft, in: RoundedRectangle(cornerRadius: 9))
             HStack {
@@ -140,7 +140,7 @@ struct QuickCaptureView: View {
                 }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command])
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-        }.padding(20).frame(width: 490).background(Ink.paper)
+        }.padding(20).frame(width: 490).background(Ink.paper).appControlDefaults()
             .onAppear { meetingID = initialMeetingID ?? ""; focused = true }
     }
 }

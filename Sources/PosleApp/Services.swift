@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import PosleCore
 import Security
@@ -198,6 +199,99 @@ enum Keychain {
     }
 }
 
+/// Give the private, app-owned model runtime real executable identities. Keeping
+/// compatibility symlinks in the same directory preserves Ollama's library and
+/// llama-server discovery without changing argv or touching external providers.
+enum ManagedModelRuntime {
+    static let serverName = "После ИИ"
+    static let modelName = "После Модель"
+
+    static func brandedExecutable(root: URL) throws -> URL {
+        let manager = FileManager.default
+        let runtime = root.appendingPathComponent("runtime")
+        let base = runtime.appendingPathComponent("ollama")
+        try ownedDirectory(runtime)
+        try ownedDirectory(base)
+        let lockURL = base.appendingPathComponent(".posle-identity.lock")
+        let descriptor = lockURL.path.withCString { Darwin.open($0, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600) }
+        guard descriptor >= 0 else { throw failure() }
+        defer { Darwin.close(descriptor) }
+        var information = stat()
+        guard fstat(descriptor, &information) == 0,
+              information.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              information.st_uid == getuid(), flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw failure() }
+        defer { flock(descriptor, LOCK_UN) }
+        let bin = base.appendingPathComponent("bin")
+        if manager.fileExists(atPath: bin.path) { try ownedDirectory(bin) }
+        let candidates = [bin, base]
+        guard let directory = candidates.first(where: {
+            exists($0.appendingPathComponent("ollama")) || exists($0.appendingPathComponent(serverName))
+        }) else {
+            throw AppError.message("В настройках нажмите «Подготовить локальный ИИ» или выберите установленную Ollama / LM Studio.")
+        }
+        let server = try brand(directory: directory, original: "ollama", display: serverName)
+        let modelDirectories = [directory, base.appendingPathComponent("lib/ollama")]
+        if let models = modelDirectories.first(where: {
+            exists($0.appendingPathComponent("llama-server")) || exists($0.appendingPathComponent(modelName))
+        }) {
+            if models != directory {
+                try ownedDirectory(base.appendingPathComponent("lib"))
+                try ownedDirectory(models)
+            }
+            _ = try brand(directory: models, original: "llama-server", display: modelName)
+        }
+        return server
+    }
+
+    private static func exists(_ url: URL) -> Bool {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil
+    }
+
+    private static func ownedDirectory(_ url: URL) throws {
+        let values = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard values[.type] as? FileAttributeType == .typeDirectory,
+              (values[.ownerAccountID] as? NSNumber)?.uint32Value == getuid() else { throw failure() }
+    }
+
+    private static func ownedExecutable(_ url: URL) throws {
+        let values = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard values[.type] as? FileAttributeType == .typeRegular,
+              (values[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+              FileManager.default.isExecutableFile(atPath: url.path) else { throw failure() }
+    }
+
+    private static func brand(directory: URL, original: String, display: String) throws -> URL {
+        try ownedDirectory(directory)
+        let manager = FileManager.default
+        let source = directory.appendingPathComponent(original)
+        let destination = directory.appendingPathComponent(display)
+        if exists(destination) { try ownedExecutable(destination) }
+        if let values = try? manager.attributesOfItem(atPath: source.path) {
+            if values[.type] as? FileAttributeType == .typeSymbolicLink {
+                guard try manager.destinationOfSymbolicLink(atPath: source.path) == display else { throw failure() }
+                try ownedExecutable(destination)
+                return destination
+            }
+            try ownedExecutable(source)
+            // rename is atomic, keeps the verified Mach-O bytes/signature and
+            // replaces a previous branded version only after a runtime update.
+            let result = source.path.withCString { from in
+                destination.path.withCString { to in Darwin.rename(from, to) }
+            }
+            guard result == 0 else { throw failure() }
+        } else {
+            // Recover if an earlier launch stopped between rename and symlink.
+            try ownedExecutable(destination)
+        }
+        try manager.createSymbolicLink(atPath: source.path, withDestinationPath: display)
+        return destination
+    }
+
+    private static func failure() -> AppError {
+        .message("Не удалось подготовить процессы локального ИИ. Повторите подготовку в настройках.")
+    }
+}
+
 @MainActor
 final class LocalModelService {
     private var process: Process?
@@ -251,11 +345,7 @@ final class LocalModelService {
             if !(await healthy()) { available = true; break }
         }
         guard available else { throw AppError.message("Порты локального ИИ заняты. Перезапустите После.") }
-        let base = root.appendingPathComponent("runtime/ollama")
-        let candidates = [base.appendingPathComponent("bin/ollama"), base.appendingPathComponent("ollama")]
-        guard let binary = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else {
-            throw AppError.message("В настройках нажмите «Подготовить локальный ИИ» или выберите установленную Ollama / LM Studio.")
-        }
+        let binary = try ManagedModelRuntime.brandedExecutable(root: root)
         let p = Process(); p.executableURL = binary; p.arguments = ["serve"]
         p.standardInput = FileHandle.nullDevice; p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         p.environment = ProcessInfo.processInfo.environment.merging([

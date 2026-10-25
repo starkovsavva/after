@@ -3,6 +3,7 @@
 set -euo pipefail
 ROOT="${1:?Specify the application support directory}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+HOST="${2:-}"
 umask 077
 mkdir -p "$ROOT/runtime" "$ROOT/cache"
 if [ "$(uname -m)" != arm64 ]; then
@@ -28,11 +29,14 @@ fi
 echo 'Устанавливаю Python и распознавание речи…'
 "$UV" venv --python 3.12 --python-preference only-managed "$ROOT/runtime/venv" --allow-existing
 "$UV" pip install --python "$ROOT/runtime/venv/bin/python" -r "$HERE/requirements.txt"
-"$ROOT/runtime/venv/bin/python" -c 'import imageio_ffmpeg, pathlib, sys; alias = pathlib.Path(sys.executable).parent / "ffmpeg"; alias.exists() or alias.symlink_to(imageio_ffmpeg.get_ffmpeg_exe())'
 export PATH="$ROOT/runtime/venv/bin:$PATH"
 echo 'Проверяю скачанные модели Parakeet и готовлю разделение собеседников…'
 export HF_HOME="$ROOT/cache/huggingface"
 export HF_HUB_DISABLE_TELEMETRY=1
-"$ROOT/runtime/venv/bin/python" "$HERE/engine.py" prepare --root "$ROOT"
+if [[ -n "$HOST" && -x "$HOST" ]]; then
+  "$HOST" --posle-python-host "$ROOT/runtime/venv/bin/python" "$HERE/engine.py" prepare --root "$ROOT"
+else
+  "$ROOT/runtime/venv/bin/python" -B -u -E -s "$HERE/engine.py" prepare --root "$ROOT"
+fi
 touch "$ROOT/runtime/ready-v2"
 echo 'Готово. Можно добавить первую встречу.'
