@@ -65,6 +65,19 @@ def main():
     def api(endpoint):
         return json.loads(run([gh, "api", endpoint], capture=True))
 
+    def release_for_tag():
+        # GitHub's releases/tags endpoint can return 404 for drafts without a
+        # Git tag. Authenticated release listings include those drafts by ID.
+        page = 1
+        while True:
+            releases = api("repos/" + args.repo + "/releases?per_page=100&page=" + str(page))
+            for candidate in releases:
+                if candidate["tag_name"] == tag:
+                    return candidate
+            if len(releases) < 100:
+                return None
+            page += 1
+
     repo = api("repos/" + args.repo)
     if not repo["private"]:
         raise RuntimeError("This personal project's release helper expects a private repository")
@@ -76,21 +89,20 @@ def main():
         raise RuntimeError("The existing version tag points to different sources; choose a new version")
     if existing_tag.returncode != 0 and "404" not in existing_tag.stderr:
         raise RuntimeError("Could not inspect the version tag: " + existing_tag.stderr)
-    existing = subprocess.run([gh, "api", "repos/" + args.repo + "/releases/tags/" + tag], cwd=PROJECT, text=True, capture_output=True)
-    if existing.returncode == 0:
-        release = json.loads(existing.stdout)
+    release = release_for_tag()
+    if release is not None:
         if not release["draft"]:
             raise RuntimeError("This version is already published; choose a new version")
         run([gh, "release", "edit", tag, "--repo", args.repo, "--target", revision,
              "--title", "После " + version, "--notes-file", str(args.notes_file.resolve())])
         run([gh, "release", "upload", tag, *[str(PROJECT / "dist" / name) for name in ASSETS], "--repo", args.repo, "--clobber"])
-    elif "404" in existing.stderr:
+    else:
         run([gh, "release", "create", tag, *[str(PROJECT / "dist" / name) for name in ASSETS],
              "--repo", args.repo, "--draft", "--target", revision, "--title", "После " + version,
              "--notes-file", str(args.notes_file.resolve())])
-    else:
-        raise RuntimeError("Could not inspect the existing release: " + existing.stderr)
-    release = api("repos/" + args.repo + "/releases/tags/" + tag)
+    release = release_for_tag()
+    if release is None:
+        raise RuntimeError("GitHub did not return the prepared draft release")
     uploaded = {asset["name"]: asset for asset in release["assets"]}
     for name in ASSETS:
         local = PROJECT / "dist" / name
@@ -100,7 +112,7 @@ def main():
             raise RuntimeError("Uploaded asset verification failed; release remains a draft: " + name)
     run([gh, "release", "edit", tag, "--repo", args.repo, "--draft=false",
          "--prerelease=" + str(not args.stable).lower(), "--latest=" + str(args.stable).lower()])
-    release = api("repos/" + args.repo + "/releases/tags/" + tag)
+    release = api("repos/" + args.repo + "/releases/" + str(release["id"]))
     if release["draft"]:
         raise RuntimeError("GitHub did not confirm publication")
     tag_info = api("repos/" + args.repo + "/git/ref/tags/" + tag)
