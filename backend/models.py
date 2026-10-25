@@ -10,10 +10,25 @@ import hashlib
 import json
 import os
 import struct
+import zipfile
 from collections import deque
 from pathlib import Path
 
 DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+# Immutable Hub revisions; listed download sizes exclude the tiny runtime/config.
+ASR_CATALOG = {
+    "parakeet-v3": {"repo": DEFAULT_MODEL, "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15", "family": "parakeet", "name": "Parakeet v3", "bytes": 2508532829},
+    "whisper-turbo": {"repo": "mlx-community/whisper-large-v3-turbo", "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb", "family": "whisper", "name": "Whisper Large v3 Turbo", "bytes": 1613977880},
+    "whisper-small": {"repo": "mlx-community/whisper-small-mlx", "revision": "45f3915923c7a79a5a5b5a7d909d39aeb0e5630e", "family": "whisper", "name": "Whisper Small", "bytes": 481307858},
+}
+
+
+def catalog_model(settings):
+    key = settings.get("speechLocalModel", "parakeet-v3")
+    if key not in ASR_CATALOG:
+        raise RuntimeError("Выберите доступную модель распознавания в настройках.")
+    return ASR_CATALOG[key]
+
 MAX_JSON = 1024 * 1024
 MAX_HEADER = 16 * 1024 * 1024
 MAX_NODES = 800
@@ -85,7 +100,7 @@ def inspect_model(directory: Path, source: str = "Выбранная папка"
     directory = directory.expanduser().absolute()
     files = _files(directory)
     names = set(files)
-    inferred = "mlx" if any(name.endswith(".safetensors") for name in names) else "onnx"
+    inferred = "mlx" if any(name.endswith((".safetensors", ".npz")) for name in names) else "onnx"
     name = (directory.parent.parent.name.removeprefix("models--").replace("--", "/")
             if directory.parent.name == "snapshots" and directory.parent.parent.name.startswith("models--") else directory.name)
     result = {"id": hashlib.sha256(os.fsencode(str(directory))).hexdigest()[:20],
@@ -98,6 +113,22 @@ def inspect_model(directory: Path, source: str = "Выбранная папка"
             raise ValueError("Неизвестный формат модели; выберите auto, mlx или onnx")
         if inferred == "mlx":
             config = _json(directory / "config.json")
+            if isinstance(config, dict) and all(isinstance(config.get(key), int) and config[key] > 0 for key in ("n_mels", "n_audio_ctx", "n_audio_state", "n_audio_head", "n_audio_layer", "n_vocab", "n_text_ctx", "n_text_state", "n_text_head", "n_text_layer")):
+                weights = next((files[name] for name in ("weights.safetensors", "weights.npz") if name in files), None)
+                if weights is None:
+                    raise ValueError("Whisper MLX: файл весов не найден")
+                if weights.suffix == ".safetensors":
+                    _safetensors(weights)
+                else:
+                    _weight(weights, 1024)
+                    with zipfile.ZipFile(weights) as archive:
+                        names = archive.namelist()
+                        if not names or any(not name.endswith(".npy") or Path(name).name != name for name in names):
+                            raise ValueError("Whisper MLX: повреждён архив весов")
+                result.update(compatible=True, layout="whisper-mlx", files={"model": str(weights)}, reason="Whisper MLX · русский и английский")
+                if requested_format == "onnx":
+                    raise ValueError("Выбран ONNX, а папка содержит Whisper MLX")
+                return result
             if not isinstance(config, dict) or not isinstance(config.get("encoder"), dict) or not isinstance(config.get("joint"), dict):
                 raise ValueError("Это не MLX-конвертация Parakeet TDT")
             if not config["joint"].get("vocabulary") or not config.get("model_defaults", {}).get("tdt_durations"):
@@ -211,7 +242,7 @@ def discover_asr(root: Path, roots=None):
                             "blobs", ".locks", "refs", "meetings", "transcriptions", "recordings", "test_wavs", ".git"):
                         children.append(Path(entry.path))
             candidate = (("parakeet" in str(directory).lower() and any(name.endswith((".onnx", ".nemo", ".gguf", ".safetensors")) for name in names))
-                         or "model.safetensors" in names and "config.json" in names
+                         or any(name in names for name in ("model.safetensors", "weights.safetensors", "weights.npz")) and "config.json" in names
                          or any(name.startswith("encoder-model") for name in names))
             if candidate:
                 item = inspect_model(directory, source)
@@ -246,4 +277,8 @@ def selected_asr(root: Path):
             raise RuntimeError("Выбранная модель Parakeet: " + model["reason"] + ". Повторная загрузка не выполнялась.")
         return model
     found, _ = discover_asr(root)
-    return next((model for model in found if model["compatible"] and selected_format in ("auto", model["format"])), None)
+    catalog = catalog_model(settings)
+    candidates = [model for model in found if model["compatible"] and selected_format in ("auto", model["format"])]
+    if catalog["family"] == "whisper":
+        return next((model for model in candidates if model["layout"] == "whisper-mlx" and (model["name"] == catalog["repo"] or Path(model["path"]).name == catalog["repo"].split("/")[-1])), None)
+    return next((model for model in candidates if model["layout"] != "whisper-mlx"), None)

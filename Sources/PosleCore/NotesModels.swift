@@ -45,14 +45,47 @@ public struct CapturedNote: Codable, Identifiable, Hashable {
     public var completed: Bool
     public var attachments: [NoteAttachment]
     public var expansion: NoteExpansion?
+    public var title: String
+    public var contentRTF: String
+    public var folder: String
+    public var tags: [String]
+    public var pinned: Bool
+    public var trashedAt: Double?
     public init(id: String = UUID().uuidString.lowercased(), text: String = "", kind: String = "note",
                 meetingID: String? = nil, timestamp: Double? = nil, createdAt: Double = Date().timeIntervalSince1970,
                 updatedAt: Double = Date().timeIntervalSince1970, revision: Int = 0, sourceURL: String = "",
                 owner: String = "", due: String = "", completed: Bool = false,
-                attachments: [NoteAttachment] = [], expansion: NoteExpansion? = nil) {
+                attachments: [NoteAttachment] = [], expansion: NoteExpansion? = nil, title: String = "", contentRTF: String = "", folder: String = "", tags: [String] = [], pinned: Bool = false, trashedAt: Double? = nil) {
         self.id = id; self.text = text; self.kind = kind; self.meetingID = meetingID; self.timestamp = timestamp
         self.createdAt = createdAt; self.updatedAt = updatedAt; self.revision = revision; self.sourceURL = sourceURL
         self.owner = owner; self.due = due; self.completed = completed; self.attachments = attachments; self.expansion = expansion
+        self.title = title; self.contentRTF = contentRTF; self.folder = folder; self.tags = tags; self.pinned = pinned; self.trashedAt = trashedAt
+    }
+    public var displayTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (text.split(separator: "\n").first.map(String.init) ?? "Новая заметка") : title }
+    private enum CodingKeys: String, CodingKey {
+        case id, text, kind, meetingID, timestamp, createdAt, updatedAt, revision, sourceURL, owner, due, completed, attachments, expansion
+        case title, contentRTF, folder, tags, pinned, trashedAt
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "note"
+        meetingID = try c.decodeIfPresent(String.self, forKey: .meetingID)
+        timestamp = try c.decodeIfPresent(Double.self, forKey: .timestamp)
+        createdAt = try c.decode(Double.self, forKey: .createdAt); updatedAt = try c.decode(Double.self, forKey: .updatedAt)
+        revision = try c.decodeIfPresent(Int.self, forKey: .revision) ?? 0
+        sourceURL = try c.decodeIfPresent(String.self, forKey: .sourceURL) ?? ""
+        owner = try c.decodeIfPresent(String.self, forKey: .owner) ?? ""; due = try c.decodeIfPresent(String.self, forKey: .due) ?? ""
+        completed = try c.decodeIfPresent(Bool.self, forKey: .completed) ?? false
+        attachments = try c.decodeIfPresent([NoteAttachment].self, forKey: .attachments) ?? []
+        expansion = try c.decodeIfPresent(NoteExpansion.self, forKey: .expansion)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        contentRTF = try c.decodeIfPresent(String.self, forKey: .contentRTF) ?? ""
+        folder = try c.decodeIfPresent(String.self, forKey: .folder) ?? ""
+        tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+        pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        trashedAt = try c.decodeIfPresent(Double.self, forKey: .trashedAt)
     }
 }
 public struct NoteTemplate: Codable, Identifiable, Hashable {

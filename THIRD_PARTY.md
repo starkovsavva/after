@@ -9,9 +9,12 @@ Each component retains its original license and notices in the installed runtime
 - [onnx-asr](https://github.com/istupakov/onnx-asr), MIT. Optional adapter for existing NeMo ONNX Parakeet weights.
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime), MIT. CPU inference for existing ONNX models.
 - [Sherpa ONNX](https://github.com/k2-fsa/sherpa-onnx), Apache-2.0. Segmentation and speaker embeddings: see the upstream release model notices.
+- [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper), MIT; optional local Whisper adapter.
+- [Whisper](https://github.com/openai/whisper), MIT; selected model weights and tokenizer retain upstream notices.
+- Catalog conversions [Whisper Large v3 Turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo) and [Whisper Small MLX](https://huggingface.co/mlx-community/whisper-small-mlx): see the selected model cards and upstream license notices. Catalog weights use pinned repository revisions recorded in `backend/models.py`.
 - [Ollama](https://github.com/ollama/ollama), MIT. Optional local runtime.
 - [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-9B), Apache-2.0; see the selected model's full model card and license.
-- [CPython](https://www.python.org/), Python Software Foundation License. The private installed runtime is embedded by the native Rust speech helper through the public stable ABI; it is not bundled into the app download.
+- [CPython](https://www.python.org/), Python Software Foundation License. The separately installed private runtime is embedded on a dedicated Rust/Python thread inside the main app process for local speech recognition and diarization. Its initialization uses the matching installed CPython runtime/API; it is not bundled into the app download. Compatibility worker processes are retained for other explicit operations.
 - [uv](https://github.com/astral-sh/uv), Apache-2.0 / MIT.
 - [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg), BSD-2-Clause. The separately downloaded FFmpeg binary retains its upstream licensing.
 - [rustup](https://github.com/rust-lang/rustup), Apache-2.0 / MIT. Developer toolchain installer only; the app bundles its compiled Rust worker and does not require Rust on the user's Mac.
@@ -33,4 +36,6 @@ and transitive dependencies are recorded in `rust-core/Cargo.lock`.
 - [serde_json](https://github.com/serde-rs/json), MIT OR Apache-2.0.
 - [uuid](https://github.com/uuid-rs/uuid), MIT OR Apache-2.0.
 
-Cloud mode optionally calls the OpenAI API; its terms and billing are separate from this app.
+Text generation optionally calls the selected OpenAI, OpenRouter, Polza or user-configured compatible Chat Completions/Responses API. Cloud speech recognition separately uses OpenAI or a configured compatible audio transcription endpoint; selecting a text service does not imply audio support. Provider terms, retention policies and billing apply separately from this app.
+
+Calendar integration uses Apple's system EventKit framework. Google and Yandex calendar accounts are configured and synchronized by macOS (Google/CalDAV); their credentials are not handled by the app. No Google Tasks or Yandex task-list SDK is bundled. Native notes and OCR use AppKit/SwiftUI and Apple Vision supplied by macOS.

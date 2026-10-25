@@ -29,8 +29,27 @@ fi
 echo 'Устанавливаю Python и распознавание речи…'
 "$UV" venv --python 3.12 --python-preference only-managed "$ROOT/runtime/venv" --allow-existing
 "$UV" pip install --python "$ROOT/runtime/venv/bin/python" -r "$HERE/requirements.txt"
+# Whisper's heavier dependencies are installed only after explicit selection.
+SPEECH_FAMILY="$("$ROOT/runtime/venv/bin/python" -B - "$ROOT" "$HERE" <<'PYMODEL'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+import models
+path = root / "settings.json"
+settings = json.loads(path.read_text()) if path.exists() else {}
+if settings.get("speechMode", "local") == "cloud":
+    print("cloud")
+else:
+    selected = models.selected_asr(root)
+    print("whisper-local" if selected and selected["layout"] == "whisper-mlx" else settings.get("speechLocalModel", "parakeet-v3"))
+PYMODEL
+)"
+if [[ "$SPEECH_FAMILY" == whisper-* ]]; then
+  "$UV" pip install --python "$ROOT/runtime/venv/bin/python" mlx-whisper==0.4.3
+fi
 export PATH="$ROOT/runtime/venv/bin:$PATH"
-echo 'Проверяю скачанные модели Parakeet и готовлю разделение собеседников…'
+echo 'Проверяю выбранную модель и разделение собеседников…'
 export HF_HOME="$ROOT/cache/huggingface"
 export HF_HUB_DISABLE_TELEMETRY=1
 if [[ -n "$HOST" && -x "$HOST" ]]; then

@@ -6,6 +6,8 @@
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 use std::ffi::OsString;
+use std::fs::OpenOptions;
+use std::os::unix::fs::OpenOptionsExt;
 use std::io::{self, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -42,10 +44,12 @@ struct WorkerSpec {
     executable: PathBuf,
     arguments: Vec<OsString>,
     forwards_plain_progress: bool,
+    accepts_speech_key: bool,
 }
 
 /// Run only an audio/model command. Cloud/local LLM commands are deliberately
-/// absent from the allowlist, and provider secrets are removed from the child.
+/// absent from the allowlist. Only explicitly selected cloud ASR may receive
+/// its dedicated speech credential; all text-provider secrets are removed.
 pub fn run_worker(
     root: &Path,
     backend: &Path,
@@ -127,6 +131,7 @@ fn worker_spec(
             .map_err(|_| anyhow!("Не удалось найти движок приложения."))?),
         arguments,
         forwards_plain_progress: false,
+        accepts_speech_key: command == "transcribe" && cloud_speech_selected(root),
     })
 }
 
@@ -162,7 +167,42 @@ fn setup_spec(root: &Path, backend: &Path) -> Result<WorkerSpec> {
         executable: PathBuf::from("/bin/bash"),
         arguments: vec![backend.join("setup.sh").into_os_string(), root.as_os_str().to_owned(), native_host_path(&std::env::current_exe()?).into_os_string()],
         forwards_plain_progress: true,
+        accepts_speech_key: false,
     })
+}
+
+/// A missing, malformed, oversized or linked settings file never authorizes a
+/// secret. Read a bounded regular file, without following a replacement symlink.
+fn cloud_speech_selected(root: &Path) -> bool {
+    let Ok(file) = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(root.join("settings.json")) else { return false; };
+    let Ok(metadata) = file.metadata() else { return false; };
+    const MAX_SETTINGS: u64 = 1024 * 1024;
+    if !metadata.is_file() || metadata.len() > MAX_SETTINGS { return false; }
+    let mut bytes = Vec::new();
+    if file.take(MAX_SETTINGS + 1).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > MAX_SETTINGS {
+        return false;
+    }
+    serde_json::from_slice::<Value>(&bytes).ok()
+        .and_then(|settings| settings.get("speechMode").and_then(Value::as_str).map(|mode| mode == "cloud"))
+        .unwrap_or(false)
+}
+
+/// Text-model credentials never cross into an audio worker. The single speech
+/// credential is preserved only for a cloud transcription spec; setup and local
+/// ASR receive the same stripped environment as before.
+fn sanitize_environment(command: &mut Command, accepts_speech_key: bool,
+                        variables: impl IntoIterator<Item = (OsString, OsString)>) {
+    for (name, _) in variables {
+        if sensitive_key(&name.to_string_lossy()) && !(accepts_speech_key && name == "POSLE_SPEECH_API_KEY") {
+            command.env_remove(name);
+        }
+    }
+    command.env_remove("POSLE_API_KEY");
+    if !accepts_speech_key { command.env_remove("POSLE_SPEECH_API_KEY"); }
+    for name in ["__PYVENV_LAUNCHER__", "PYTHONEXECUTABLE", "PYTHONHOME", "PYTHONPATH"] {
+        command.env_remove(name);
+    }
 }
 
 extern "C" fn cancel_signal(signal: libc::c_int) {
@@ -236,16 +276,18 @@ struct Redactor {
 }
 
 impl Redactor {
-    fn from_environment() -> Self {
+    fn from_environment() -> Self { Self::from_variables(std::env::vars_os()) }
+
+    fn from_variables(variables: impl IntoIterator<Item = (OsString, OsString)>) -> Self {
         let mut values = Vec::new();
-        for (name, value) in std::env::vars_os() {
+        for (name, value) in variables {
             let name = name.to_string_lossy();
             // pip/proxy URLs may contain basic-auth credentials. They remain
             // usable for installation, but never become progress messages.
             let url_setting = ["PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
                 .iter().any(|key| name.eq_ignore_ascii_case(key));
             if sensitive_key(&name) || url_setting {
-                if let Some(value) = value.to_str().filter(|value| value.len() >= 4) {
+                if let Some(value) = value.to_str().filter(|value| value.len() >= 4 || (name == "POSLE_SPEECH_API_KEY" && !value.is_empty())) {
                     values.push(value.to_owned());
                 }
             }
@@ -280,18 +322,7 @@ fn run(root: &Path, spec: WorkerSpec) -> Result<()> {
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .process_group(0);
-    for (name, _) in std::env::vars_os() {
-        if sensitive_key(&name.to_string_lossy()) {
-            command.env_remove(name);
-        }
-    }
-    // Explicit even when the parent environment did not contain it at scan time.
-    command.env_remove("POSLE_API_KEY");
-    // Python's executable override is honoured on macOS even with -E. Clear
-    // it here as well as in the native helper; setup must not inherit it either.
-    for name in ["__PYVENV_LAUNCHER__", "PYTHONEXECUTABLE", "PYTHONHOME", "PYTHONPATH"] {
-        command.env_remove(name);
-    }
+    sanitize_environment(&mut command, spec.accepts_speech_key, std::env::vars_os());
     let child = command.spawn().map_err(|_| anyhow!("Не удалось запустить модуль распознавания. Проверьте установку моделей."))?;
     let group = libc::pid_t::try_from(child.id()).map_err(|_| anyhow!("Не удалось подготовить процесс распознавания."))?;
     let mut child = ChildGroup { child, group };
@@ -500,6 +531,57 @@ mod tests {
         assert!(!sensitive_key("HOME"));
     }
 
+    #[test]
+    fn only_cloud_transcription_specs_may_receive_the_speech_key() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Path::new("/tmp/backend");
+        let meeting = Path::new("/tmp/meeting");
+        std::fs::write(root.path().join("settings.json"), r#"{"speechMode":"cloud"}"#).unwrap();
+        for command in ["prepare", "transcribe", "diarize", "finalize", "install-local"] {
+            let spec = worker_spec(root.path(), backend, command, Some(meeting), 0, true).unwrap();
+            assert_eq!(spec.accepts_speech_key, command == "transcribe");
+        }
+        assert!(!setup_spec(root.path(), backend).unwrap().accepts_speech_key);
+        for content in [r#"{"speechMode":"local"}"#, r#"{"mode":"cloud"}"#, "broken JSON"] {
+            std::fs::write(root.path().join("settings.json"), content).unwrap();
+            assert!(!worker_spec(root.path(), backend, "transcribe", Some(meeting), 0, true).unwrap().accepts_speech_key);
+        }
+        std::fs::remove_file(root.path().join("settings.json")).unwrap();
+        assert!(!cloud_speech_selected(root.path()));
+        let target = root.path().join("linked-settings.json");
+        std::fs::write(&target, r#"{"speechMode":"cloud"}"#).unwrap();
+        std::os::unix::fs::symlink(&target, root.path().join("settings.json")).unwrap();
+        assert!(!cloud_speech_selected(root.path()));
+    }
+
+    #[test]
+    fn actual_child_receives_only_authorized_speech_credential() {
+        let variables: Vec<(OsString, OsString)> = [
+            ("POSLE_SPEECH_API_KEY", "test-only-speech-key"),
+            ("POSLE_API_KEY", "test-text-key"), ("OPENAI_API_KEY", "other-text-key"),
+            ("HF_TOKEN", "test-hf-token"), ("AWS_SECRET_ACCESS_KEY", "test-aws-secret"),
+            ("PYTHONPATH", "/untrusted/python"), ("SAFE_SETTING", "retained"),
+        ].into_iter().map(|(key, value)| (key.into(), value.into())).collect();
+        for accepts_speech_key in [false, true] {
+            let mut child = Command::new("/usr/bin/env");
+            child.env_clear().envs(variables.clone());
+            sanitize_environment(&mut child, accepts_speech_key, variables.clone());
+            let output = child.output().unwrap();
+            assert!(output.status.success());
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert_eq!(text.contains("POSLE_SPEECH_API_KEY=test-only-speech-key"), accepts_speech_key);
+            assert!(text.contains("SAFE_SETTING=retained"));
+            for forbidden in ["POSLE_API_KEY=", "OPENAI_API_KEY=", "HF_TOKEN=", "AWS_SECRET_ACCESS_KEY=", "PYTHONPATH="] {
+                assert!(!text.contains(forbidden));
+            }
+            let redactor = Redactor::from_variables(variables.clone());
+            assert_eq!(redactor.clean("speech test-only-speech-key; text test-text-key", 200), "speech [hidden]; text [hidden]");
+            assert!(!redactor.clean(&text, 2000).contains("test-only-speech-key"));
+        }
+        let short = Redactor::from_variables([(OsString::from("POSLE_SPEECH_API_KEY"), OsString::from("abc"))]);
+        assert_eq!(short.clean("key: abc", 100), "key: [hidden]");
+    }
+
     // This helper runs only in a separate copy of the test binary: sending
     // SIGTERM to the ordinary cargo test runner would disturb unrelated tests.
     #[test]
@@ -510,6 +592,7 @@ mod tests {
             executable: PathBuf::from("/bin/bash"),
             arguments: vec![directory.join("fixture.sh").into_os_string(), directory.join("pids").into_os_string()],
             forwards_plain_progress: false,
+            accepts_speech_key: false,
         });
         assert!(result.unwrap_err().to_string().contains("остановлена"));
     }

@@ -111,7 +111,7 @@ struct SettingsView: View {
             }
             .onAppear {
                 if !store.settings.defaultTemplateID.isEmpty && !store.notes.templates.contains(where: { $0.id == store.settings.defaultTemplateID }) { store.settings.defaultTemplateID = "" }
-                apiKey = ProcessInfo.processInfo.arguments.contains("--preview") ? "" : Keychain.read()
+                apiKey = ""
                 savedApiKey = apiKey
                 editingCustomLocalModel = !isPresetModel(store.settings.localModel)
                 customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
@@ -130,7 +130,7 @@ struct SettingsView: View {
     }
     @ViewBuilder private var settingsContent: some View {
         switch section {
-        case "speech": speechSettings.disabled(store.busy || store.isRecording)
+        case "speech": SpeechSettingsView().disabled(store.busy || store.isRecording)
         case "ai": aiSettings.disabled(store.busy || store.isRecording)
         case "record": recordSettings.disabled(store.isRecording)
         case "notes": notesSettings
@@ -145,7 +145,7 @@ struct SettingsView: View {
     private var generalSettings: some View {
         settingsSection("Общие", "gearshape") {
             Picker("При запуске открывать", selection: $store.settings.startSection) {
-                Text("Все встречи").tag("meetings"); Text("Входящие заметки").tag("inbox")
+                Text("Все встречи").tag("meetings"); Text("Заметки").tag("inbox")
                 Text("Мои задачи").tag("tasks"); Text("Карточки").tag("cards")
             }
         }
@@ -182,7 +182,7 @@ struct SettingsView: View {
             Toggle("Отмечать важный момент по ⌃⌥B", isOn: $store.settings.bookmarkShortcutEnabled)
             LabeledContent("Общий поиск", value: "⌘K")
             LabeledContent("Добавить запись", value: "⌘O")
-            LabeledContent("Новая встреча", value: "⌘N")
+            LabeledContent("Новая заметка или запись", value: "⌘N")
             if let message = store.notes.hotkeyNotice { Text(message).foregroundStyle(Ink.warning).font(AppTypography.caption) }
         }
     }
@@ -277,37 +277,7 @@ struct SettingsView: View {
                 }
                 Toggle("Создавать конспект после транскрипта", isOn: $store.settings.autoSummary)
             } else {
-                Text("OpenAI получает транскрипт для конспекта и карточку с контекстом для примеров. Аудио остаётся на Mac. Каждый запрос запускается отдельной кнопкой.")
-                    .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                LabeledContent("Модель OpenAI") {
-                    TextField("Имя модели", text: $store.settings.cloudModel).textFieldStyle(.roundedBorder)
-                        .accessibilityLabel("Модель OpenAI для конспекта и примеров")
-                }
-                LabeledContent("API-ключ") {
-                    SecureField("API-ключ OpenAI", text: $apiKey).textFieldStyle(.roundedBorder)
-                        .accessibilityLabel("API-ключ OpenAI")
-                }
-                HStack {
-                    Button(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !savedApiKey.isEmpty ? "Удалить ключ" : "Сохранить ключ") {
-                        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                        do {
-                            try Keychain.save(key); savedApiKey = key
-                            keyMessageIsError = false
-                            keyMessage = key.isEmpty ? "Ключ удалён" : "Ключ сохранён в Связке ключей"
-                        } catch { keyMessageIsError = true; keyMessage = error.localizedDescription }
-                    }.buttonStyle(.bordered).disabled(!keyIsDirty)
-                    if keyMessageIsError && !keyMessage.isEmpty {
-                        Label(keyMessage, systemImage: "exclamationmark.triangle").font(AppTypography.caption).foregroundStyle(Ink.warning)
-                    } else if keyIsDirty {
-                        Text("Не сохранён").font(AppTypography.caption).foregroundStyle(Ink.warning)
-                    } else if !keyMessage.isEmpty {
-                        Label(keyMessage, systemImage: keyMessageIsError ? "exclamationmark.triangle" : "checkmark.circle")
-                            .font(AppTypography.caption).foregroundStyle(keyMessageIsError ? Ink.warning : Ink.green)
-                    }
-                }
-                Text("API оплачивается отдельно от подписки ChatGPT.")
-                    .font(AppTypography.caption).foregroundStyle(.secondary)
-                    .help("Стоимость запросов зависит от модели и длины текста.")
+                CloudSettingsView()
             }
             Picker("Язык конспекта", selection: $store.settings.language) {
                 Text("Русский").tag("ru"); Text("English").tag("en")

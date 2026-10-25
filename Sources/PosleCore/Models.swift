@@ -160,6 +160,16 @@ public struct ReviewState: Codable {
     }
 }
 
+public struct CloudProfile: Codable, Equatable {
+    public var endpoint: String
+    public var model: String
+    public var api: String
+    public var output: String
+    public init(endpoint: String = "", model: String, api: String = "chat", output: String = "schema") {
+        self.endpoint = endpoint; self.model = model; self.api = api; self.output = output
+    }
+}
+
 public struct AppSettings: Codable {
     public static let qualityLocalModel = "qwen3.5:9b-q4_K_M"
     public static let fastLocalModel = "qwen3.5:4b-q4_K_M"
@@ -178,7 +188,19 @@ public struct AppSettings: Codable {
     public var localEndpoint = ""
     public var asrModelPath = ""
     public var asrModelFormat = "auto"
+    public var speechMode = "local"
+    public var speechLocalModel = "parakeet-v3"
+    public var speechCloudProvider = "openai"
+    public var speechCloudEndpoint = ""
+    public var speechCloudModel = "gpt-transcribe"
+    public var speechResponseFormat = "json"
+    public var speechLanguage = "auto"
     public var cloudModel = "gpt-4.1-mini"
+    public var cloudProvider = "openai"
+    public var cloudEndpoint = ""
+    public var cloudAPI = "responses"
+    public var cloudOutput = "schema"
+    public var cloudProfiles: [String: CloudProfile] = [:]
     public var language = "ru"
     public var diarization = true
     public var speakerCount = 0
@@ -192,10 +214,64 @@ public struct AppSettings: Codable {
         return localProvider == "lmstudio" ? "http://127.0.0.1:1234" : "http://127.0.0.1:11434"
     }
 
+    public var cloudProviderTitle: String {
+        switch cloudProvider {
+        case "openrouter": return "OpenRouter"
+        case "polza": return "Polza"
+        case "custom": return "Свой провайдер"
+        default: return "OpenAI"
+        }
+    }
+
+    public var resolvedCloudEndpoint: String {
+        switch cloudProvider {
+        case "openai": return "https://api.openai.com/v1"
+        case "openrouter": return "https://openrouter.ai/api/v1"
+        case "polza": return "https://polza.ai/api/v1"
+        case "custom": return cloudEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        default: return ""
+        }
+    }
+
+    /// Same address rules as the Rust client. Keys are scoped to this exact base
+    /// URL; a half-edited or invalid address must not reuse a different host's key.
+    public func validatedCloudEndpoint() -> URL? {
+        let raw = resolvedCloudEndpoint
+        guard var components = URLComponents(string: raw),
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              let host = components.host?.lowercased(), !host.isEmpty,
+              let scheme = components.scheme?.lowercased() else { return nil }
+        let local = ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)
+        guard scheme == "https" || (cloudProvider == "custom" && scheme == "http" && local) else { return nil }
+        components.scheme = scheme
+        components.host = host == "localhost" ? "127.0.0.1" : host
+        if (scheme == "https" && components.port == 443) || (scheme == "http" && components.port == 80) { components.port = nil }
+        while components.path.hasSuffix("/") { components.path.removeLast() }
+        guard let url = components.url, url.host != nil else { return nil }
+        return url
+    }
+
+    public mutating func switchCloudProvider(_ provider: String) {
+        guard ["openai", "openrouter", "polza", "custom"].contains(provider), provider != cloudProvider else { return }
+        cloudProfiles[cloudProvider] = CloudProfile(endpoint: cloudEndpoint, model: cloudModel, api: cloudAPI, output: cloudOutput)
+        cloudProvider = provider
+        let defaults: CloudProfile
+        switch provider {
+        case "openai": defaults = CloudProfile(model: "gpt-4.1-mini", api: "responses")
+        case "openrouter", "polza": defaults = CloudProfile(model: "openai/gpt-4.1-mini")
+        default: defaults = CloudProfile(model: "")
+        }
+        let profile = cloudProfiles[provider] ?? defaults
+        cloudEndpoint = profile.endpoint; cloudModel = profile.model
+        cloudAPI = profile.api; cloudOutput = profile.output
+    }
+
     private enum CodingKeys: String, CodingKey {
         case startSection, recordSystemAudio, recordVideo, quickCaptureEnabled, bookmarkShortcutEnabled, quickCaptureShortcut, notesAutoTimestamp, notesSaveToActiveMeeting, defaultTemplateID
         case mode, localModel, localProvider, localEndpoint, asrModelPath, asrModelFormat
-        case cloudModel, language, diarization, speakerCount, autoSummary, focus
+        case speechMode, speechLocalModel, speechCloudProvider, speechCloudEndpoint, speechCloudModel, speechResponseFormat, speechLanguage
+        case cloudModel, cloudProvider, cloudEndpoint, cloudAPI, cloudOutput, cloudProfiles, language, diarization, speakerCount, autoSummary, focus
     }
 
     // Defaults are applied per field, so adding settings never resets an existing setup.
@@ -217,7 +293,19 @@ public struct AppSettings: Codable {
         localEndpoint = try values.decodeIfPresent(String.self, forKey: .localEndpoint) ?? localEndpoint
         asrModelPath = try values.decodeIfPresent(String.self, forKey: .asrModelPath) ?? asrModelPath
         asrModelFormat = try values.decodeIfPresent(String.self, forKey: .asrModelFormat) ?? asrModelFormat
+        speechMode = try values.decodeIfPresent(String.self, forKey: .speechMode) ?? speechMode
+        speechLocalModel = try values.decodeIfPresent(String.self, forKey: .speechLocalModel) ?? speechLocalModel
+        speechCloudProvider = try values.decodeIfPresent(String.self, forKey: .speechCloudProvider) ?? speechCloudProvider
+        speechCloudEndpoint = try values.decodeIfPresent(String.self, forKey: .speechCloudEndpoint) ?? speechCloudEndpoint
+        speechCloudModel = try values.decodeIfPresent(String.self, forKey: .speechCloudModel) ?? speechCloudModel
+        speechResponseFormat = try values.decodeIfPresent(String.self, forKey: .speechResponseFormat) ?? speechResponseFormat
+        speechLanguage = try values.decodeIfPresent(String.self, forKey: .speechLanguage) ?? speechLanguage
         cloudModel = try values.decodeIfPresent(String.self, forKey: .cloudModel) ?? cloudModel
+        cloudProvider = try values.decodeIfPresent(String.self, forKey: .cloudProvider) ?? cloudProvider
+        cloudEndpoint = try values.decodeIfPresent(String.self, forKey: .cloudEndpoint) ?? cloudEndpoint
+        cloudAPI = try values.decodeIfPresent(String.self, forKey: .cloudAPI) ?? cloudAPI
+        cloudOutput = try values.decodeIfPresent(String.self, forKey: .cloudOutput) ?? cloudOutput
+        cloudProfiles = try values.decodeIfPresent([String: CloudProfile].self, forKey: .cloudProfiles) ?? cloudProfiles
         language = try values.decodeIfPresent(String.self, forKey: .language) ?? language
         diarization = try values.decodeIfPresent(Bool.self, forKey: .diarization) ?? diarization
         speakerCount = try values.decodeIfPresent(Int.self, forKey: .speakerCount) ?? speakerCount

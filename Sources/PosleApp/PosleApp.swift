@@ -9,16 +9,23 @@ struct PosleApp: App {
     var body: some Scene {
         WindowGroup("После") {
             MainView().environmentObject(store)
+                .environment(\.locale, Locale(identifier: "ru_RU"))
                 .frame(minWidth: 1040, minHeight: 700)
                 .onAppear { delegate.connect(store) }
-                .onOpenURL { store.importFile($0) }
+                .onOpenURL { url in
+                    if store.calendar.openLink(url) { store.librarySection = "calendar" }
+                    else if url.isFileURL { store.importFile(url) }
+                }
         }
         .defaultSize(width: 1260, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Добавить запись…") { store.chooseFile() }.keyboardShortcut("o")
-                Button("Записать встречу…") { store.showingRecord = true }.keyboardShortcut("n")
+                Button(store.librarySection == "inbox" ? "Новая заметка" : "Записать встречу…") {
+                    if store.librarySection == "inbox" { store.notes.newLibraryNoteRequest = UUID() }
+                    else { store.showingRecord = true }
+                }.keyboardShortcut("n")
             }
             CommandGroup(after: .newItem) {
                 Button("Быстрая заметка…") { store.quickCaptureAction?() }.keyboardShortcut("n", modifiers: [.command, .shift])
@@ -46,11 +53,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.bookmarkAction = { [weak controller] in controller?.markImportant() }
         }
     }
-    func applicationWillTerminate(_ notification: Notification) { capture?.stop(); store?.localService.stop() }
+    func applicationWillTerminate(_ notification: Notification) { capture?.stop(); store?.localService.stop(); store?.calendar.stop() }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--check-embedded-speech") {
+            Task {
+                do { try await EmbeddedSpeechNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Embedded NSApplication check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-calendar") {
+            Task {
+                do { try await CalendarNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Calendar check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-ui-consistency") {
             Task {
                 do { try await UIConsistencyChecks.run(); NSApp.terminate(nil) }
@@ -89,8 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if arguments.contains("--preview-busy") { previewStore.busy = true; previewStore.canCancelJob = true; previewStore.progressText = "Проверяю установленные модели…" }
             if arguments.contains("--preview-error") { previewStore.error = "Не удалось подключиться к модели. Проверьте локальный сервер в настройках." }
             if arguments.contains("--preview-notes-error") { previewStore.notes.error = "Не удалось сохранить заметку. Ваш текст остался в редакторе." }
-            if ["inbox", "tasks", "contexts", "cards-library"].contains(screen) {
-                previewStore.librarySection = screen == "cards-library" ? "cards" : screen
+            if ["inbox", "tasks", "contexts", "cards-library", "calendar", "calendar-disconnected"].contains(screen) {
+                previewStore.librarySection = screen == "cards-library" ? "cards" : screen.hasPrefix("calendar") ? "calendar" : screen
             }
             if screen == "notes" { previewStore.librarySection = "meetings"; previewStore.tab = "notes" }
             if screen == "welcome" { previewStore.selection = nil; previewStore.meetings = []; previewStore.loadSelection() }
@@ -129,12 +150,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 content = AnyView(SearchView().environmentObject(previewStore))
             default: content = AnyView(MainView().environmentObject(previewStore))
             }
+            #if DEBUG
+            if screen == "calendar" { previewStore.calendar.seedPreview() }
+            #endif
+            if let provider = option("--cloud-provider") { previewStore.settings.mode = "cloud"; previewStore.settings.switchCloudProvider(provider) }
+            if let speechMode = option("--speech-mode") { previewStore.settings.speechMode = speechMode }
             let dark = option("--appearance") == "dark"
             let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : screen == "record" ? 520 : screen == "speakers" ? 560 : screen.hasPrefix("sources") ? 470 : 1260
             let defaultHeight: Double = screen == "note-editor" ? 650 : screen == "quick-note" ? 280 : screen == "search" ? 650 : screen == "settings" ? 690 : screen == "record" ? 460 : screen == "speakers" ? 430 : screen.hasPrefix("sources") ? 460 : 820
             let width = option("--width").flatMap(Double.init) ?? defaultWidth
             let height = option("--height").flatMap(Double.init) ?? defaultHeight
             let view = NSHostingView(rootView: content
+                .environment(\.locale, Locale(identifier: "ru_RU"))
                 .environment(\.colorScheme, dark ? .dark : .light)
                 .frame(width: width, height: height)
                 .background(Ink.paper).clipped())
@@ -165,6 +192,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if !NoteDraftPersistence.flushAll() {
+            sender.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Не удалось сохранить заметку"
+            alert.informativeText = "Ваши правки остались в редакторе. Повторите сохранение или сохраните копию перед выходом."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "К заметкам")
+            alert.addButton(withTitle: "Выйти без сохранения")
+            if alert.runModal() != .alertSecondButtonReturn {
+                store?.librarySection = "inbox"
+                return .terminateCancel
+            }
+        }
         guard let store, store.isRecording || store.busy else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = store.isRecording ? "Сохранить запись перед выходом?" : "Остановить обработку и выйти?"
@@ -183,7 +223,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return .terminateLater
         }
-        store.runner.cancel()
-        return .terminateNow
+        store.cancelJob()
+        Task {
+            while store.busy { try? await Task.sleep(for: .milliseconds(100)) }
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }

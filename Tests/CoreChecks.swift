@@ -80,6 +80,18 @@ struct CoreChecks {
         expect(!linked.hasVerifiedOverviewClaims(transcript: transcript), "uncited fact cannot support claim")
         expect(!summary.hasVerifiedOverviewClaims(transcript: nil), "no transcript does not fabricate evidence")
         print("PASS: legacy summaries, linked claims and stale source safety")
-        print("7 Swift checks passed")
+        var cloud = try JSONDecoder().decode(AppSettings.self, from: legacySettings)
+        expect(cloud.cloudProvider == "openai" && cloud.cloudAPI == "responses" && cloud.cloudModel == "custom-cloud", "Legacy cloud settings keep OpenAI and model")
+        cloud.switchCloudProvider("openrouter"); cloud.cloudModel = "vendor/model"
+        cloud.switchCloudProvider("custom"); cloud.cloudEndpoint = "https://example.com/gateway/v1"; cloud.cloudModel = "my-model"; cloud.cloudOutput = "json"
+        cloud.switchCloudProvider("openrouter"); expect(cloud.cloudModel == "vendor/model", "Provider models stay independent")
+        cloud.switchCloudProvider("custom"); expect(cloud.cloudModel == "my-model" && cloud.cloudOutput == "json" && cloud.resolvedCloudEndpoint.contains("gateway"), "Custom connection restores endpoint and output mode")
+        let providerCopy = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(cloud))
+        expect(providerCopy.cloudProvider == "custom" && providerCopy.cloudAPI == "chat", "Cloud protocol settings roundtrip with exact acronym")
+        expect(providerCopy.speechMode == "local" && providerCopy.speechLocalModel == "parakeet-v3", "Speech model defaults migrate without an implicit cloud upload")
+        cloud.cloudEndpoint = "https://user:password@example.com/v1"; expect(cloud.validatedCloudEndpoint() == nil, "URL credentials are refused")
+        cloud.cloudEndpoint = "http://example.com/v1"; expect(cloud.validatedCloudEndpoint() == nil, "Remote plaintext HTTP is refused")
+        print("PASS: cloud provider migration, independent profiles, exact API format and endpoint validation")
+        print("8 Swift checks passed")
     }
 }

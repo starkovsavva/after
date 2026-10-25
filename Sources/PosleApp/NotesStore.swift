@@ -14,6 +14,7 @@ final class NotesStore: ObservableObject {
     @Published var notice: String?
     @Published var attachmentBusy = false
     @Published var tasks: [LibraryTask] = []
+    @Published var newLibraryNoteRequest = UUID()
     @Published var selectedNoteID: String?
     @Published var highlightedNoteID: String?
     @Published var hotkeyNotice: String?
@@ -22,7 +23,7 @@ final class NotesStore: ObservableObject {
     @Published var contextSelection: String?
     var contextMode = "project"
     init(root: URL) { self.root = root; reload() }
-    var notes: [CapturedNote] { workspace.notes.sorted { $0.updatedAt > $1.updatedAt } }
+    var notes: [CapturedNote] { workspace.notes.filter { $0.trashedAt == nil }.sorted { $0.pinned != $1.pinned ? $0.pinned : $0.updatedAt > $1.updatedAt } }
     var templates: [NoteTemplate] { workspace.templates }
     func notes(for meetingID: String?) -> [CapturedNote] { notes.filter { $0.meetingID == meetingID } }
     func inbox(meetingIDs: Set<String>) -> [CapturedNote] {
@@ -53,9 +54,21 @@ final class NotesStore: ObservableObject {
     }
     func delete(_ note: CapturedNote) {
         do {
+            _ = try RustBridge.shared.get().request(root: root, command: "note-trash", arguments: ["id": note.id, "revision": note.revision])
+            reload()
+            if selectedNoteID == note.id { selectedNoteID = nil }
+        } catch { self.error = error.localizedDescription }
+    }
+    func restore(_ note: CapturedNote) {
+        do {
+            let data = try RustBridge.shared.get().request(root: root, command: "note-restore", arguments: ["id": note.id, "revision": note.revision])
+            accept(try JSONDecoder().decode(CapturedNote.self, from: data))
+        } catch { self.error = error.localizedDescription }
+    }
+    func purge(_ note: CapturedNote) {
+        do {
             _ = try RustBridge.shared.get().request(root: root, command: "note-delete", arguments: ["id": note.id, "revision": note.revision])
             workspace.notes.removeAll { $0.id == note.id }
-            if selectedNoteID == note.id { selectedNoteID = nil }
         } catch { self.error = error.localizedDescription }
     }
     @discardableResult func saveContext(_ context: MeetingContext) -> Bool {
@@ -136,8 +149,7 @@ final class NotesStore: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
     /// Paste reads only the content the user explicitly asked to add.
-    func paste(into note: CapturedNote) {
-        let board = NSPasteboard.general
+    func paste(into note: CapturedNote, board: NSPasteboard = .general) {
         if let urls = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
             attach(urls, to: note.id); return
         }

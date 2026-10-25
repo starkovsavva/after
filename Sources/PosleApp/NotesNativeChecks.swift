@@ -136,7 +136,32 @@ enum NotesNativeChecks {
         let roundtrip = try JSONDecoder().decode(Preview.self, from: roundtripData)
         try expect(roundtrip.total == 1 && roundtrip.cards.first?.front == "follow up" && roundtrip.cards.first?.segmentIDs.isEmpty == true, "App export imports as cards with no invented source references")
         print("PASS: native cards import/export, deck identity, real meeting destinations and accessible Inbox fallback for legacy deck notes")
-        print("7 native notes checks passed")
+        var formatted = CapturedNote(text: "План\n☐ Проверить договор", title: "Договор на пилот", folder: "Проект", tags: ["пилот", "договор"], pinned: true)
+        let styled = NSAttributedString(string: formatted.text, attributes: [.font: NSFont.systemFont(ofSize: 16, weight: .bold)])
+        formatted.contentRTF = try styled.data(from: NSRange(location: 0, length: styled.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]).base64EncodedString()
+        guard let richSaved = notes.save(formatted) else { throw AppError.message(notes.error ?? "Rich note did not save") }
+        notes.reload()
+        guard let rich = notes.notes.first(where: { $0.id == richSaved.id }) else { throw AppError.message("Rich note disappeared") }
+        try expect(rich.title == formatted.title && rich.folder == "Проект" && rich.tags == formatted.tags && rich.pinned && rich.contentRTF == formatted.contentRTF, "Formatting, folder, tags and pin survive native Rust roundtrip")
+        notes.delete(rich); notes.loadTasks()
+        guard let trashed = notes.workspace.notes.first(where: { $0.id == rich.id }) else { throw AppError.message("Trash removed the recoverable document") }
+        try expect(trashed.trashedAt != nil && !notes.notes.contains(where: { $0.id == rich.id }) && !trashed.contentRTF.isEmpty, "Trash preserves rich content without appearing in active notes")
+        let hidden = try bridge.request(root: app.root, command: "notes-search", arguments: ["query": "Договор на пилот"])
+        let hiddenJSON = try JSONSerialization.jsonObject(with: hidden) as? [String: Any]
+        try expect((hiddenJSON?["notes"] as? [Any])?.isEmpty == true, "Trashed documents stay out of global note search")
+        notes.restore(trashed)
+        guard var restoredRich = notes.notes.first(where: { $0.id == rich.id }) else { throw AppError.message("Restore failed") }
+        restoredRich.text += "\nПравка из обычного редактора"
+        guard let plainSaved = notes.save(restoredRich) else { throw AppError.message(notes.error ?? "Plain edit failed") }
+        try expect(plainSaved.contentRTF.isEmpty && plainSaved.folder == rich.folder, "Plain edits cannot retain stale rich text and keep note organization")
+        notes.purge(plainSaved)
+        try expect(!notes.workspace.notes.contains(where: { $0.id == rich.id }), "Explicit permanent deletion removes the restored document")
+        print("PASS: rich note metadata/RTF roundtrip, recoverable Trash, search exclusion, restore and stale formatting safety")
+        try NoteDraftPersistence.verifyImmediatePersistence(notes: notes)
+        print("PASS: immediate quit flushes debounce, failed CAS retains both versions and the draft recovers as a copy")
+        try RichNoteNativeChecks.run()
+        print("PASS: native formatting Undo/Redo preserves typed text, heading size and table RTF")
+        print("10 native notes checks passed")
     }
     private static func syntheticImage() throws -> Data {
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 800, pixelsHigh: 160, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0), let context = NSGraphicsContext(bitmapImageRep: bitmap) else { throw AppError.message("Cannot create synthetic image") }

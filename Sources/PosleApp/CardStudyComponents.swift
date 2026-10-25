@@ -64,7 +64,7 @@ struct StudyCardContent: View {
                     Spacer()
                 }
                 if app.settings.mode == "cloud" {
-                    Text("Для примера карточка и контекст отправятся в OpenAI. API оплачивается отдельно.")
+                    Text("Для примера \(app.settings.cloudProviderTitle) получит карточку и контекст. API оплачивается отдельно.")
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

@@ -215,6 +215,7 @@ struct NoteEditorView: View {
     @State private var showDelete = false
     @State private var dismissConfirmation = false
     @State private var showingSource = false
+    @StateObject private var richCommands = RichNoteCommands()
     init(notes: NotesStore, note: CapturedNote) { self.notes = notes; _session = State(initialValue: NoteEditingSession(note: note)) }
     private var persisted: CapturedNote? { notes.workspace.notes.first { $0.id == session.baseline.id } }
     private var current: CapturedNote { persisted ?? session.baseline }
@@ -245,7 +246,10 @@ struct NoteEditorView: View {
                         Spacer()
                         if let time = session.draft.timestamp { Text(Exporter.timestamp(time)).font(AppTypography.control).monospacedDigit().foregroundStyle(Ink.accent) }
                     }
-                    TextEditor(text: $session.draft.text).font(AppTypography.body).scrollContentBackground(.hidden).frame(minHeight: 100, maxHeight: 160)
+                    RichNoteToolbar(commands: richCommands)
+                    RichNoteEditor(text: $session.draft.text, rtf: $session.draft.contentRTF, commands: richCommands, onAttachmentPaste: { board in
+                        persistBeforeAttachment { note in notes.paste(into: note, board: board) }
+                    }).frame(minHeight: 160, maxHeight: 240)
                         .padding(10).background(Ink.field, in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel("Текст заметки")
                     Picker("Встреча", selection: Binding(get: { session.draft.meetingID ?? "" }, set: { value in
                         if session.draft.meetingID != (value.isEmpty ? nil : value) { session.draft.timestamp = nil }; session.draft.meetingID = value.isEmpty ? nil : value
@@ -289,7 +293,7 @@ struct NoteEditorView: View {
                             .help(app.settings.mode == "cloud" ? "Облачный ИИ" : "ИИ на этом Mac")
                     }
                     if app.settings.mode == "cloud" {
-                        Label("OpenAI получит вашу пометку и выбранные фрагменты транскрипта. Аудио и файлы вложений остаются на Mac.", systemImage: "cloud").font(AppTypography.control).foregroundStyle(.secondary)
+                        Label("\(app.settings.cloudProviderTitle) получит пометку и выбранные фрагменты транскрипта. Аудио и вложения остаются на Mac.", systemImage: "cloud").font(AppTypography.control).foregroundStyle(.secondary)
                     }
                     if let expansion = current.expansion { NoteExpansionView(expansion: expansion, note: current) }
                 }.padding(24)
@@ -642,6 +646,7 @@ struct NotesTasksView: View {
                                 Text(task.text).font(AppTypography.body).lineSpacing(4).strikethrough(task.completed).textSelection(.enabled)
                                 HStack(spacing: 10) {
                                     if !task.owner.isEmpty || !task.due.isEmpty { Text([task.owner, task.due].filter { !$0.isEmpty }.joined(separator: " · ")).lineLimit(1) }
+                                    TaskCalendarSummary(task: task)
                                     if let meetingID = task.meetingID, app.noteMeetings.contains(where: { $0.id == meetingID }) {
                                         Button { app.openMeeting(meetingID, tab: task.noteID == nil ? "summary" : "notes"); notes.highlightedNoteID = task.noteID } label: { Text(task.title).lineLimit(1) }.buttonStyle(.borderless).help(task.title)
                                         if let source = task.segmentIDs.first {
@@ -653,6 +658,7 @@ struct NotesTasksView: View {
                                     }
                                 }.font(AppTypography.caption).foregroundStyle(.secondary)
                             }.padding(.top, 3).frame(maxWidth: .infinity, alignment: .leading)
+                            TaskCalendarButton(task: task)
                             if let id = task.noteID, let note = notes.workspace.notes.first(where: { $0.id == id }) {
                                 Button { editing = note } label: { Image(systemName: "pencil").frame(width: 24, height: 24) }
                                     .buttonStyle(.plain).help("Изменить задачу").accessibilityLabel("Изменить задачу")

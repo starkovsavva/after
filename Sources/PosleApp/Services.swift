@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import CryptoKit
 import Foundation
 import PosleCore
 import Security
@@ -100,7 +101,7 @@ final class ProcessRunner: @unchecked Sendable {
                 process.arguments = arguments
                 process.standardInput = FileHandle.nullDevice
                 process.standardOutput = output; process.standardError = errors
-                process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+                process.environment = ProcessEnvironment.withoutSecrets(ProcessInfo.processInfo.environment).merging(environment) { _, new in new }
                 self.lock.lock(); self.process = process; self.lock.unlock()
                 defer { self.lock.lock(); self.process = nil; self.lock.unlock() }
                 do { try process.run() }
@@ -168,11 +169,48 @@ private final class LockedTail: @unchecked Sendable {
     }
 }
 
+enum ProcessEnvironment {
+    static func withoutSecrets(_ values: [String: String]) -> [String: String] {
+        values.filter { key, _ in
+            let name = key.uppercased()
+            return !["API_KEY", "ACCESS_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "COOKIE"].contains { name.contains($0) }
+        }
+    }
+}
+
 enum Keychain {
     private static let service = "app.posle.meetings"
-    static func read() -> String {
+    static func account(for settings: AppSettings) -> String {
+        switch settings.cloudProvider {
+        case "openai": return "openai" // Preserve the key from releases before provider selection.
+        case "openrouter": return "cloud.openrouter"
+        case "polza": return "cloud.polza"
+        default: return scopedAccount(prefix: "cloud.custom", endpoint: settings.cloudEndpoint)
+        }
+    }
+    static func speechAccount(for settings: AppSettings) -> String {
+        switch settings.speechCloudProvider {
+        case "openai": return "speech.openai"
+        default: return scopedAccount(prefix: "speech.custom", endpoint: settings.speechCloudEndpoint)
+        }
+    }
+    private static func scopedAccount(prefix: String, endpoint: String) -> String {
+        let raw = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        var components = URLComponents(string: raw)
+        let scheme = components?.scheme?.lowercased(), host = components?.host?.lowercased()
+        components?.scheme = scheme; components?.host = host
+        if (components?.scheme == "https" && components?.port == 443) || (components?.scheme == "http" && components?.port == 80) { components?.port = nil }
+        if var path = components?.percentEncodedPath {
+            while path.hasSuffix("/") { path.removeLast() }
+            components?.percentEncodedPath = path
+        }
+        let normalized = components?.string ?? raw
+        let digest = SHA256.hash(data: Data(normalized.utf8)).map { String(format: "%02x", $0) }.joined()
+        return prefix + "." + digest
+    }
+    static func read(account: String = "openai") -> String {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service, kSecAttrAccount as String: "openai",
+            kSecAttrService as String: service, kSecAttrAccount as String: account,
             kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var value: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &value) == errSecSuccess,
@@ -180,9 +218,9 @@ enum Keychain {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    static func save(_ key: String) throws {
+    static func save(_ key: String, account: String = "openai") throws {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service, kSecAttrAccount as String: "openai"]
+            kSecAttrService as String: service, kSecAttrAccount as String: account]
         if key.isEmpty {
             let status = SecItemDelete(query as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -348,7 +386,7 @@ final class LocalModelService {
         let binary = try ManagedModelRuntime.brandedExecutable(root: root)
         let p = Process(); p.executableURL = binary; p.arguments = ["serve"]
         p.standardInput = FileHandle.nullDevice; p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
-        p.environment = ProcessInfo.processInfo.environment.merging([
+        p.environment = ProcessEnvironment.withoutSecrets(ProcessInfo.processInfo.environment).merging([
             "OLLAMA_HOST": "127.0.0.1:\(port)", "OLLAMA_MODELS": root.appendingPathComponent("cache/ollama-models").path,
             "OLLAMA_NO_CLOUD": "1", "OLLAMA_CONTEXT_LENGTH": "16384", "OLLAMA_NUM_PARALLEL": "1",
             "OLLAMA_MAX_LOADED_MODELS": "1", "OLLAMA_KEEP_ALIVE": "0"

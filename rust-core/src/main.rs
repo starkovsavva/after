@@ -8,7 +8,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, ValueEnum)]
-enum Command { Prepare, Transcribe, Diarize, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview }
+enum Command { Prepare, Transcribe, Diarize, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, CheckCloud, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview }
 
 #[derive(Parser)]
 #[command(version, about="После: ядро библиотеки и обработки встреч")]
@@ -63,6 +63,7 @@ fn run(args: Args) -> Result<Value> {
             storage::review(&args.root, id, &args.card, args.rating)
         }
         Command::Check => ai::check(&args.root),
+        Command::CheckCloud => ai::check_cloud(&args.root),
         Command::DiscoverModels => models::discover(&args.root, args.path.as_deref()),
         Command::DiscoverLocal => ai::discover_local_models(&args.root),
         Command::DiscoverGguf => models::discover_gguf(&args.root),
@@ -118,7 +119,7 @@ fn main() {
         Err(error) => {
             if worker::error_was_reported(&error) { std::process::exit(1); }
             let mut message = error.to_string();
-            for name in ["POSLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] {
+            for name in ["POSLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "POSLE_SPEECH_API_KEY"] {
                 if let Ok(secret) = std::env::var(name) { if !secret.is_empty() { message = message.replace(&secret, "[hidden]"); } }
             }
             println!("{}", json!({"event":"error","message":message}));

@@ -525,5 +525,84 @@ class LocalModelTests(unittest.TestCase):
         self.assertEqual(original, {p.name: (p.stat().st_size, p.stat().st_mtime_ns) for p in directory.iterdir()})
 
 
+class WhisperChunkTests(unittest.TestCase):
+    def setUp(self):
+        import numpy as np
+        import wave
+        self.temp = tempfile.TemporaryDirectory(prefix="posle-whisper-owned-")
+        self.root = Path(self.temp.name)
+        self.directory = self.root / "meeting"; self.directory.mkdir()
+        self.audio = self.directory / "synthetic.wav"
+        self.samples = ((np.arange(75 * 16000, dtype=np.int32) % 32768) - 16384).astype(np.int16)
+        with wave.open(str(self.audio), "wb") as out:
+            out.setparams((1, 2, 16000, 0, "NONE", "not compressed")); out.writeframes(self.samples.tobytes())
+        self.words = [(0.1, 0.7, "first"), (28.5, 28.8, "bridge"), (29.1, 29.4, "joined"),
+                      (56.4, 56.8, "owner"), (57.4, 57.8, "action"), (74.4, 74.8, "tail")]
+        self.calls = []
+        self.closed = []
+        self.selected = {"layout": "whisper-mlx", "path": "/models/synthetic-whisper", "name": "Synthetic Whisper", "format": "mlx"}
+        self.adapter = object.__new__(engine.ASRAdapter)
+        self.adapter.selected = self.selected
+        self.adapter.close = lambda: self.closed.append(True)
+        def decode(audio, **options):
+            index = len(self.calls); start = (0, 28, 56)[index]
+            self.assertEqual(len(audio), (30 if index < 2 else 19) * 16000)
+            self.assertEqual(audio.dtype, np.float32)
+            self.assertAlmostEqual(float(audio[0]), int(self.samples[start * 16000]) / 32768.0)
+            self.assertEqual(options["path_or_hf_repo"], self.selected["path"])
+            self.assertTrue(options["word_timestamps"])
+            self.assertFalse(options["condition_on_previous_text"])
+            self.calls.append((start, len(audio)))
+            words = [{"word": word, "start": left - start, "end": right - start}
+                     for left, right, word in self.words if start <= left and right <= start + len(audio) / 16000]
+            return {"segments": [{"text": " ".join(word["word"] for word in words), "words": words}]}
+        self.adapter.model = types.SimpleNamespace(transcribe=decode)
+        engine.atomic(self.directory / "meta.json", {"source": "synthetic.wav"})
+        self.output = patch.object(engine, "PROTOCOL", io.StringIO()); self.output.start()
+
+    def tearDown(self):
+        self.output.stop(); self.temp.cleanup()
+
+    def test_whisper_windows_keep_boundary_words_once_and_preserve_final_tail_offsets(self):
+        progress = []
+        tokens = self.adapter.transcribe(self.audio, lambda done, total: progress.append((done, total)))
+        self.assertEqual([token["text"].strip() for token in tokens], [word for _, _, word in self.words])
+        self.assertEqual(len(self.calls), 3)
+        for token, (start, end, _) in zip(tokens, self.words):
+            self.assertAlmostEqual(token["start"], start); self.assertAlmostEqual(token["end"], end)
+        self.assertEqual(progress[0], (0, 3)); self.assertEqual(progress[-1], (3, 3))
+        self.assertIn((1, 3), progress); self.assertIn((2, 3), progress)
+
+    def pipeline(self, progress):
+        import shutil
+        with patch.object(engine, "audio_wave", side_effect=lambda source, target, *a: shutil.copyfile(source, target)), \
+                patch.object(engine, "ffmpeg"), patch.object(engine, "resolve_asr", return_value=self.selected), \
+                patch.object(engine, "ASRAdapter", return_value=self.adapter), patch.object(engine, "progress", side_effect=progress):
+            engine.transcribe(self.directory, self.root, 0, False)
+
+    def test_full_pipeline_keeps_word_text_source_ids_and_tail(self):
+        self.pipeline(lambda *_: None)
+        transcript = engine.load(self.directory / "transcript.json")
+        self.assertEqual(transcript["duration"], 75)
+        self.assertEqual([segment["id"] for segment in transcript["segments"]], list(range(len(transcript["segments"]))))
+        self.assertEqual(" ".join(segment["text"] for segment in transcript["segments"]), "first bridge joined owner action tail")
+        self.assertAlmostEqual(transcript["segments"][-1]["end"], 74.8)
+        self.assertEqual(self.closed, [True])
+
+    def test_cancel_after_first_window_prevents_next_decode_and_preserves_previous_results(self):
+        class SyntheticStop(BaseException): pass
+        transcript = self.directory / "transcript.json"; transcript.write_bytes(b'{"previous-transcript":true}')
+        summary = self.directory / "summary.json"; summary.write_bytes(b'{"previous-summary":true}')
+        original_audio = self.audio.read_bytes()
+        def progress(message, fraction=-1):
+            if message == "Распознаю речь · 33%": raise SyntheticStop()
+        with self.assertRaises(SyntheticStop): self.pipeline(progress)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.closed, [True])
+        self.assertEqual(transcript.read_bytes(), b'{"previous-transcript":true}')
+        self.assertEqual(summary.read_bytes(), b'{"previous-summary":true}')
+        self.assertEqual(self.audio.read_bytes(), original_audio)
+
+
 if __name__ == "__main__":
     unittest.main()

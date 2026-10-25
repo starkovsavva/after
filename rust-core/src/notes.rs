@@ -36,6 +36,12 @@ pub struct CapturedNote {
     #[serde(default, rename = "sourceURL", alias = "sourceUrl")] pub source_url: String,
     #[serde(default)] pub owner: String, #[serde(default)] pub due: String,
     #[serde(default)] pub completed: bool,
+    #[serde(default)] pub title: String,
+    #[serde(default, rename="contentRTF", alias="contentRtf")] pub content_rtf: String,
+    #[serde(default)] pub folder: String,
+    #[serde(default)] pub tags: Vec<String>,
+    #[serde(default)] pub pinned: bool,
+    #[serde(default)] pub trashed_at: Option<f64>,
     #[serde(default)] pub attachments: Vec<NoteAttachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub expansion: Option<Value>,
 }
@@ -129,6 +135,11 @@ fn validate_note(note: &CapturedNote) -> Result<()> {
     ensure!(note.created_at.is_finite() && note.created_at >= 0.0 && note.updated_at.is_finite() && note.updated_at >= 0.0, "Некорректная дата заметки");
     if let Some(id) = &note.meeting_id { ensure!(valid_id(id), "Некорректный ID встречи"); }
     if let Some(time) = note.timestamp { ensure!(note.meeting_id.is_some() && time.is_finite() && (0.0..=604_800.0).contains(&time), "Некорректный таймкод заметки"); }
+    bounded(&note.title,1024,"название")?; bounded(&note.folder,256,"папка")?;
+    bounded(&note.content_rtf,2_000_000,"форматирование")?;
+    ensure!(note.tags.len() <= 30,"В заметке можно сохранить до 30 тегов");
+    for tag in &note.tags { bounded(tag,128,"тег")?; }
+    if let Some(time)=note.trashed_at { ensure!(time.is_finite() && time >= 0.0,"Некорректная дата удаления"); }
     bounded(&note.source_url,8192,"источник")?;
     if !note.source_url.is_empty() {
         let url = reqwest::Url::parse(&note.source_url).context("Источник должен быть HTTP- или HTTPS-ссылкой")?;
@@ -187,6 +198,9 @@ pub fn save_note(root: &Path,mut note: CapturedNote) -> Result<CapturedNote> {
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
     if let Some(index)=data.notes.iter().position(|n|n.id == note.id) {
         let old=&data.notes[index]; ensure!(old.revision == note.revision, CONFLICT);
+        ensure!(old.trashed_at == note.trashed_at,"Состояние Корзины изменилось. Обновите заметку.");
+        // Plain-text edits made by older editor surfaces must not retain stale rich content.
+        if old.text != note.text && old.content_rtf == note.content_rtf { note.content_rtf.clear(); }
         // Trashing a meeting must not make the user's independent note
         // read-only or erase its historical timestamp/link. Validate only a
         // newly introduced target; retaining an old ID reads no meeting files.
@@ -206,6 +220,13 @@ pub fn save_note(root: &Path,mut note: CapturedNote) -> Result<CapturedNote> {
         note.created_at=now(); note.updated_at=note.created_at; note.revision=1; data.notes.push(note.clone());
     }
     persist(&dir,&data)?; Ok(note)
+}
+pub fn trash_note(root:&Path,id:&str,revision:u64,restore:bool) -> Result<CapturedNote> {
+    let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
+    let note=expected(&mut data,id,revision)?;
+    note.trashed_at=if restore { None } else { Some(now()) };
+    note.revision=bumped(note.revision)?; note.updated_at=now();
+    let result=note.clone(); persist(&dir,&data)?; Ok(result)
 }
 pub fn delete_note(root:&Path,id:&str,revision:u64) -> Result<Value> {
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
@@ -321,9 +342,10 @@ pub fn search(root:&Path,query:&str,scope:&str,meeting_id:Option<&str>) -> Resul
     let mut notes=Vec::new();
     let matcher=crate::search::QueryMatcher::new(query)?;
     for note in data.notes {
+        if note.trashed_at.is_some() { continue; }
         if scope=="tasks" && note.kind!="task" { continue; }
         if meeting_id.is_some_and(|id|note.meeting_id.as_deref()!=Some(id)) { continue; }
-        let body=format!("{} {} {} {} {}",note.text,note.owner,note.due,note.source_url,note.attachments.iter().map(|a|format!("{} {}",a.name,a.extracted_text)).collect::<Vec<_>>().join(" "));
+        let body=format!("{} {} {} {} {} {} {} {}",note.title,note.folder,note.tags.join(" "),note.text,note.owner,note.due,note.source_url,note.attachments.iter().map(|a|format!("{} {}",a.name,a.extracted_text)).collect::<Vec<_>>().join(" "));
         if matcher.matches(&body) { notes.push(note); }
     }
     notes.sort_by(|a,b|b.updated_at.total_cmp(&a.updated_at));
@@ -336,6 +358,7 @@ pub fn dispatch(root:&Path,value:&Value) -> Result<Value> {
         "notes-list"=>Ok(serde_json::to_value(list(root)?)?),
         "note-save"=>Ok(serde_json::to_value(save_note(root,serde_json::from_value(value["note"].clone())?)?)?),
         "note-delete"=>delete_note(root,string("id")?,revision()?),
+        "note-trash"|"note-restore"=>Ok(serde_json::to_value(trash_note(root,string("id")?,revision()?,value["command"]=="note-restore")?)?),
         "context-save"=>Ok(serde_json::to_value(save_context(root,serde_json::from_value(value["context"].clone())?)?)?),
         "template-save"=>Ok(serde_json::to_value(save_template(root,serde_json::from_value(value["template"].clone())?)?)?),
         "template-delete"=>delete_template(root,string("id")?,revision()?),
@@ -348,14 +371,14 @@ pub fn dispatch(root:&Path,value:&Value) -> Result<Value> {
         "notes-brief"=>brief(root,string("meetingID")?),
         "note-expansion-validate"|"note-expansion-valid"=>Ok(json!({"valid":expansion_valid(root,string("noteID")?)?})),
         "notes-search"=>search(root,value["query"].as_str().unwrap_or(""),value["scope"].as_str().unwrap_or("all"),value["meetingID"].as_str()),
-        "note-search-validate"=>Ok(json!({"valid":list(root)?.notes.iter().any(|n|n.id==value["noteID"].as_str().unwrap_or("") && n.revision==value["revision"].as_u64().unwrap_or(0))})),
+        "note-search-validate"=>Ok(json!({"valid":list(root)?.notes.iter().any(|n|n.trashed_at.is_none() && n.id==value["noteID"].as_str().unwrap_or("") && n.revision==value["revision"].as_u64().unwrap_or(0))})),
         _=>bail!("Неизвестная команда заметок"),
     }
 }
 
 pub fn load_note_snapshot(root:&Path,id:&str) -> Result<CapturedNote> {
     ensure!(valid_id(id),"Некорректный ID заметки");
-    list(root)?.notes.into_iter().find(|note|note.id==id).context("Заметка не найдена")
+    list(root)?.notes.into_iter().find(|note|note.id==id && note.trashed_at.is_none()).context("Заметка не найдена")
 }
 fn transcript_snapshot(root:&Path,meeting_id:&str) -> Result<(Value,String)> {
     ensure_meeting(root,Some(meeting_id))?;
@@ -416,7 +439,7 @@ pub fn search_hits(root:&Path,query:&str) -> Result<Vec<Value>> {
     for raw in result["notes"].as_array().context("Нет результатов заметок")? {
         let note:CapturedNote=serde_json::from_value(raw.clone())?;
         let title=if let Some(id)=note.meeting_id.as_deref() { meetings.iter().find(|m|m["id"].as_str()==Some(id)).and_then(|m|m["title"].as_str()).unwrap_or("Встреча недоступна") } else { "Входящие заметки" };
-        let content=format!("{} {} {} {} {}",note.text,note.owner,note.due,note.source_url,note.attachments.iter().map(|a|format!("{} {}",a.name,a.extracted_text)).collect::<Vec<_>>().join(" "));
+        let content=format!("{} {} {} {} {} {} {} {}",note.title,note.folder,note.tags.join(" "),note.text,note.owner,note.due,note.source_url,note.attachments.iter().map(|a|format!("{} {}",a.name,a.extracted_text)).collect::<Vec<_>>().join(" "));
         let snippet=crate::search::query_excerpt(&content,query)?;
         hits.push(json!({"id":format!("manual:{}",note.id),"meetingID":note.meeting_id.clone().unwrap_or_default(),"meetingTitle":title,
             "createdAt":note.created_at,"kind":"manual","text":note.text,"snippet":snippet,"segmentIDs":[],"itemIndex":null,"cardID":null,
@@ -427,7 +450,7 @@ pub fn search_hits(root:&Path,query:&str) -> Result<Vec<Value>> {
 pub fn tasks(root:&Path) -> Result<Value> {
     let workspace=list(root)?; let meetings=crate::storage::list_meetings(root)?;
     let mut tasks=Vec::new();
-    for note in workspace.notes.iter().filter(|n|n.kind=="task") {
+    for note in workspace.notes.iter().filter(|n|n.kind=="task" && n.trashed_at.is_none()) {
         let meeting=meetings.iter().find(|m|m["id"].as_str()==note.meeting_id.as_deref());
         tasks.push(json!({"id":format!("manual:{}",note.id),"meetingID":note.meeting_id,"title":meeting.and_then(|m|m["title"].as_str()).unwrap_or("Входящие заметки"),
             "text":note.text,"owner":note.owner,"due":note.due,"completed":note.completed,"segmentIDs":[],"itemIndex":null,"noteID":note.id,"noteRevision":note.revision,"timestamp":note.timestamp}));

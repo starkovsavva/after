@@ -17,8 +17,9 @@ struct MainView: View {
                 topbar
                 ZStack(alignment: .topTrailing) {
                     Group {
-                        if store.librarySection == "inbox" { NotesInboxView(notes: store.notes) }
+                        if store.librarySection == "inbox" { NotesLibraryView(notes: store.notes) }
                         else if store.librarySection == "tasks" { NotesTasksView(notes: store.notes) }
+                        else if store.librarySection == "calendar" { CalendarView() }
                         else if store.librarySection == "contexts" { NotesContextsView(notes: store.notes) }
                         else if store.librarySection == "cards" { CardsLibraryView() }
                         else if let meeting = store.selected { MeetingView(meeting: meeting) }
@@ -75,8 +76,9 @@ struct MainView: View {
 
             VStack(spacing: 3) {
                 libraryButton("meetings", "Все встречи", "rectangle.stack")
-                libraryButton("inbox", "Входящие", "tray")
+                libraryButton("inbox", "Заметки", "note.text")
                 libraryButton("tasks", "Мои задачи", "checklist")
+                libraryButton("calendar", "Календарь", "calendar")
                 libraryButton("contexts", "Проекты и люди", "person.2")
                 libraryButton("cards", "Карточки", "rectangle.on.rectangle.angled")
             }.padding(.horizontal, 14)
@@ -327,7 +329,7 @@ struct MeetingView: View {
             Image(systemName: store.stoppingRecording ? "square.and.arrow.down" : store.isRecording ? "waveform" : "waveform.badge.magnifyingglass").font(.system(size: 42)).foregroundStyle(Ink.accent)
             Text(store.stoppingRecording ? "Сохраняю запись" : store.isRecording ? "Идёт запись" : "Запись сохранена").font(.title3.weight(.semibold))
             if !store.isRecording {
-                Button(store.runtimeReady ? "Распознать встречу" : "Установить модели") {
+                Button(store.runtimeReady ? (store.settings.speechMode == "cloud" ? "Распознать в облаке…" : "Распознать встречу") : "Установить модели") {
                     if store.runtimeReady { Task { await store.processMeeting(meeting.id) } }
                     else { store.openSettings("speech") }
                 }.buttonStyle(.borderedProminent).tint(Ink.actionFill).controlSize(.large).disabled(store.busy)
@@ -382,7 +384,7 @@ struct SummaryView: View {
                     }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(overviewLocked)
                 }
                 if store.settings.mode == "cloud" {
-                    Text("В OpenAI отправится текст встречи. Запрос оплачивается через API.")
+                    Text("\(store.settings.cloudProviderTitle) получит текст встречи. Запрос оплачивается через API.")
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }
 

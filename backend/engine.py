@@ -3,7 +3,7 @@
 
 This worker only handles MLX/ONNX, media files, and model installation.
 Meeting AI, HTTP generation, persistence APIs, and spaced repetition live in Rust.
-The only network operations here download model/runtime assets.
+Network operations download model/runtime assets or run explicitly selected cloud ASR.
 """
 from __future__ import annotations
 
@@ -79,6 +79,12 @@ def download(url: str, target: Path):
         partial.unlink(missing_ok=True)
 
 
+def speaker_models_installed(root: Path):
+    directory = root / "cache" / "speakers"
+    return ((directory / "sherpa-onnx-pyannote-segmentation-3-0" / "model.onnx").is_file()
+            and (directory / "nemo_en_titanet_small.onnx").is_file())
+
+
 def speaker_models(root: Path):
     directory = root / "cache" / "speakers"
     segmentation = directory / "sherpa-onnx-pyannote-segmentation-3-0" / "model.onnx"
@@ -99,26 +105,31 @@ def resolve_asr(root: Path, allow_download: bool = False):
     selected = local_models.selected_asr(root)
     if selected is not None:
         return selected
-    if not allow_download:
-        raise RuntimeError("Совместимая модель Parakeet не найдена. Выберите папку модели или установите её в настройках.")
     settings = load(root / "settings.json", {})
+    catalog = local_models.catalog_model(settings)
+    if not allow_download:
+        raise RuntimeError("Выбранная модель распознавания не найдена. Нажмите «Скачать / проверить» в настройках.")
     if settings.get("asrModelFormat") == "onnx":
-        raise RuntimeError("Локальная ONNX-модель не найдена. Выберите папку Parakeet ONNX или автоматический формат для установки MLX.")
+        raise RuntimeError("Локальная ONNX-модель не найдена. Выберите её папку или модель из каталога MLX.")
     from huggingface_hub import snapshot_download
-    progress("Локальная модель не найдена. Загружаю Parakeet MLX…")
-    directory = snapshot_download(MODEL, cache_dir=str(root / "cache/huggingface/hub"),
-                                  allow_patterns=["*.json", "*.safetensors"])
+    progress(f"Загружаю {catalog['name']}…")
+    directory = snapshot_download(catalog["repo"], revision=catalog["revision"], cache_dir=str(root / "cache/huggingface/hub"),
+                                  allow_patterns=["*.json", "*.safetensors", "*.npz"])
     selected = local_models.inspect_model(Path(directory), "После", "mlx")
     if not selected["compatible"]:
-        raise RuntimeError("Не удалось подготовить Parakeet: " + selected["reason"])
+        raise RuntimeError("Не удалось подготовить модель: " + selected["reason"])
     return selected
 
 
 def prepare(root: Path):
-    selected = resolve_asr(root, allow_download=True)
-    progress(f"Использую скачанную модель Parakeet · {selected['format'].upper()}")
-    speaker_models(root)
-    emit("done", asrModel=local_models.public_model(selected))
+    settings = load(root / "settings.json", {})
+    selected = None
+    if settings.get("speechMode", "local") == "local":
+        selected = resolve_asr(root, allow_download=True)
+        progress(f"Модель готова · {selected['name']}")
+    if settings.get("diarization", True):
+        speaker_models(root)
+    emit("done", **({"asrModel": local_models.public_model(selected)} if selected else {}))
 
 
 def remove_owned_runtime_aliases(directory: Path):
@@ -395,6 +406,10 @@ def rediarize(directory: Path, root: Path, count: int):
         revised = dict(segment)
         if has_self and segment.get("speaker") == "self":
             revised["speaker"], revised["overlap"] = "self", False
+        elif segment.get("timingApproximate", False):
+            # Recalculation cannot recover missing word times from a cloud
+            # fragment; retain the honest unknown label from transcription.
+            revised["speaker"], revised["overlap"] = "unknown", False
         else:
             revised["speaker"], revised["overlap"] = assign_speaker(float(segment["start"]), float(segment["end"]), turns)
         updated_segments.append(revised)
@@ -549,7 +564,15 @@ class ASRAdapter:
         self.wrapper = None
         self.mx = None
         files = selected["files"]
-        if selected["layout"] == "mlx":
+        if selected["layout"] == "whisper-mlx":
+            import mlx.core as mx
+            try:
+                import mlx_whisper
+            except ImportError as exc:
+                raise RuntimeError("Нажмите «Скачать / проверить» в настройках для установки Whisper.") from exc
+            self.mx = mx
+            self.model = mlx_whisper
+        elif selected["layout"] == "mlx":
             import mlx.core as mx
             from parakeet_mlx import from_pretrained
             self.mx = mx
@@ -593,6 +616,42 @@ class ASRAdapter:
                                             preprocessor_config={"use_numpy_preprocessors": True}).with_timestamps()
 
     def transcribe(self, path: Path, callback):
+        if self.selected["layout"] == "whisper-mlx":
+            # Bound a non-interruptible native decode to one 30 s window. The
+            # persistent app host can cancel between windows without killing a
+            # Python thread; ModelHolder reuses the same loaded weights.
+            # mlx-whisper accepts numpy PCM directly, so no global PATH or
+            # library-progress monkey-patching is needed.
+            import numpy as np
+            all_tokens = []
+            with wave.open(str(path)) as source:
+                rate = source.getframerate()
+                if rate != 16000 or source.getnchannels() != 1 or source.getsampwidth() != 2:
+                    raise RuntimeError("Whisper ожидает PCM 16 бит, моно 16 кГц")
+                duration = source.getnframes() / rate
+                windows = chunk_windows(duration, length=30, overlap=2)
+                callback(0, len(windows))
+                for index, (start, end, left, right) in enumerate(windows):
+                    # Also check before decoding the next window, including
+                    # cancellation requested by the preceding progress event.
+                    callback(index, len(windows))
+                    source.setpos(round(start * rate))
+                    audio = np.frombuffer(source.readframes(round((end - start) * rate)), dtype=np.int16).astype(np.float32) / 32768.0
+                    result = self.model.transcribe(audio, path_or_hf_repo=self.selected["path"], word_timestamps=True,
+                                                   verbose=None, condition_on_previous_text=False)
+                    tokens = []
+                    for segment in result.get("segments", []):
+                        words = segment.get("words", [])
+                        if segment.get("text", "").strip() and not words:
+                            raise RuntimeError("Whisper не вернула временные метки слов. Транскрипция не перезаписана.")
+                        for word in words:
+                            word_start, word_end = float(word["start"]), float(word["end"])
+                            if not math.isfinite(word_start) or not math.isfinite(word_end) or word_start < 0 or word_end < word_start:
+                                raise RuntimeError("Whisper вернула некорректные временные метки.")
+                            tokens.append({"text": " " + word["word"].lstrip(), "start": word_start, "end": word_end})
+                    all_tokens.extend(owned_chunk_words(tokens, start, left, right, index == len(windows) - 1))
+                    callback(index + 1, len(windows))
+            return all_tokens
         if self.selected["layout"] == "mlx":
             from parakeet_mlx.parakeet import DecodingConfig
             from parakeet_mlx.alignment import SentenceConfig
@@ -625,6 +684,10 @@ class ASRAdapter:
         return all_tokens
 
     def close(self):
+        if self.selected["layout"] == "whisper-mlx" and self.model is not None:
+            from mlx_whisper.transcribe import ModelHolder
+            ModelHolder.model = None
+            ModelHolder.model_path = None
         self.model = None
         gc.collect()
         if self.mx is not None:
@@ -661,36 +724,87 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
             duration = max(duration, f.getnframes() / f.getframerate())
     if duration < 0.2:
         raise RuntimeError("Запись слишком короткая. Добавьте файл с речью.")
-    selected = resolve_asr(root)
-    progress(f"Загружаю выбранный Parakeet · {selected['format'].upper()}…", 0.06)
-    with contextlib.redirect_stdout(sys.stderr):
-        adapter = ASRAdapter(selected, root)
-    all_tokens = []
-    warnings = []
-    if "v2" in selected["path"].lower():
-        warnings.append("Выбран Parakeet v2: эта модель поддерживает только английский. Для русского выберите v3.")
-    if selected["format"] == "onnx":
-        warnings.append("ONNX возвращает начала токенов; время окончания слов приблизительное.")
-    try:
+    settings = load(root / "settings.json", {})
+    cloud = settings.get("speechMode", "local") == "cloud"
+    if settings.get("speechMode", "local") not in ("local", "cloud"):
+        raise RuntimeError("Выберите локальное или облачное распознавание в настройках.")
+    warnings, cloud_segments, cloud_labels = [], [], False
+    if cloud:
+        import cloud_speech
+        selected = {"name": settings.get("speechCloudModel", "gpt-transcribe"), "format": "cloud", "path": ""}
+        all_tokens = []
         for index, path in enumerate(tracks):
             def callback(done, total):
                 fraction = (index + min(done / max(total, 1), 1)) / len(tracks)
-                progress(f"Распознаю речь · {int(100 * fraction)}%", 0.08 + 0.50 * fraction)
-            progress("Распознаю речь…", 0.08 + 0.50 * index / len(tracks))
-            with contextlib.redirect_stdout(sys.stderr):
-                all_tokens.append(adapter.transcribe(path, callback))
-    finally:
-        adapter.close()
+                progress(f"Отправляю аудио и распознаю · {int(100 * fraction)}%", 0.08 + 0.50 * fraction)
+            segments, notices, labels = cloud_speech.transcribe(path, root, settings, callback)
+            cloud_segments.append(segments)
+            warnings.extend(notices)
+            if index == 0:
+                cloud_labels = labels and use_diarization
+    else:
+        selected = resolve_asr(root)
+        progress(f"Загружаю {selected['name']} · {selected['format'].upper()}…", 0.06)
+        with contextlib.redirect_stdout(sys.stderr):
+            adapter = ASRAdapter(selected, root)
+        all_tokens = []
+        warnings = []
+        if "v2" in selected["path"].lower():
+            warnings.append("Выбран Parakeet v2: эта модель поддерживает только английский. Для русского выберите v3.")
+        if selected["format"] == "onnx":
+            warnings.append("ONNX возвращает начала токенов; время окончания слов приблизительное.")
+        try:
+            for index, path in enumerate(tracks):
+                def callback(done, total):
+                    fraction = (index + min(done / max(total, 1), 1)) / len(tracks)
+                    progress(f"Распознаю речь · {int(100 * fraction)}%", 0.08 + 0.50 * fraction)
+                progress("Распознаю речь…", 0.08 + 0.50 * index / len(tracks))
+                with contextlib.redirect_stdout(sys.stderr):
+                    all_tokens.append(adapter.transcribe(path, callback))
+        finally:
+            adapter.close()
     turns = []
-    if use_diarization:
+    has_self = multitrack and bool(cloud_segments[1] if cloud else all_tokens[1])
+    if cloud_labels and count > 0:
+        detected = len({segment["speaker"] for segment in cloud_segments[0]}) + int(has_self)
+        if detected > count:
+            warnings.append("Сервис выделил больше голосов, чем указано участников; использую локальное разделение при наличии моделей.")
+            cloud_labels = False
+    has_timed_cloud_segments = not cloud or any(
+        not (segment.get("_approximateTiming", False) or segment.get("timingApproximate", False))
+        for segment in cloud_segments[0])
+    if use_diarization and not cloud_labels and has_timed_cloud_segments:
         progress("Разделяю собеседников…", 0.60)
         try:
-            turns = meeting_speaker_turns(wav, root, count, multitrack and bool(all_tokens[1]))
+            if cloud and not speaker_models_installed(root):
+                raise RuntimeError("локальные модели голосов не установлены; подготовьте компоненты в настройках")
+            turns = meeting_speaker_turns(wav, root, count, has_self)
         except Exception as exc:
             warnings.append(f"Речь сохранена, но разделить собеседников не удалось: {exc}")
-    segments = group_tokens(all_tokens[0], turns)
-    if multitrack:
-        segments += group_tokens(all_tokens[1], [], fixed_speaker="self")
+    if cloud:
+        segments = cloud_segments[0]
+        approximate_speakers = False
+        for segment in segments:
+            if segment.pop("_approximateTiming", False):
+                # Fragment bounds are not word times. Sequential speakers within
+                # an untimed minute must not be presented as one voice or overlap.
+                segment["speaker"], segment["overlap"] = "unknown", False
+                segment["timingApproximate"] = True
+                approximate_speakers = True
+            elif not cloud_labels:
+                segment["speaker"], segment["overlap"] = assign_speaker(segment["start"], segment["end"], turns)
+        if approximate_speakers and use_diarization:
+            warnings.append("Сервис вернул текст без точных таймкодов. Собеседники в таких аудиофрагментах не определены; выберите модель с таймкодами или локальное распознавание.")
+        if cloud_labels:
+            turns = [{key: segment[key] for key in ("start", "end", "speaker")} for segment in segments]
+        if multitrack:
+            for segment in cloud_segments[1]:
+                segment.pop("_approximateTiming", None)
+            segments += [dict(segment, speaker="self", overlap=False) for segment in cloud_segments[1]]
+    else:
+        segments = group_tokens(all_tokens[0], turns)
+        if multitrack:
+            segments += group_tokens(all_tokens[1], [], fixed_speaker="self")
     segments.sort(key=lambda s: (s["start"], s["end"]))
     for index, segment in enumerate(segments):
         segment["id"] = index

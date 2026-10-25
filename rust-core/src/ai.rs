@@ -66,9 +66,9 @@ Do not number facts or cards and use those new numbers as evidence IDs."#;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, rename_all="camelCase")]
-pub struct Settings { pub mode: String, pub local_model: String, pub local_provider: String, pub local_endpoint: String, pub cloud_model: String, pub language: String, pub focus: String }
+pub struct Settings { pub mode: String, pub local_model: String, pub local_provider: String, pub local_endpoint: String, pub cloud_model: String, pub cloud_provider: String, pub cloud_endpoint: String, #[serde(rename="cloudAPI", alias="cloudApi")] pub cloud_api: String, pub cloud_output: String, pub language: String, pub focus: String }
 impl Default for Settings {
-    fn default() -> Self { Self { mode:"local".into(), local_model:"qwen3.5:9b-q4_K_M".into(), local_provider:"managed".into(), local_endpoint:String::new(), cloud_model:"gpt-4.1-mini".into(), language:"ru".into(), focus:String::new() } }
+    fn default() -> Self { Self { mode:"local".into(), local_model:"qwen3.5:9b-q4_K_M".into(), local_provider:"managed".into(), local_endpoint:String::new(), cloud_model:"gpt-4.1-mini".into(), cloud_provider:"openai".into(), cloud_endpoint:String::new(), cloud_api:"responses".into(), cloud_output:"schema".into(), language:"ru".into(), focus:String::new() } }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -246,37 +246,121 @@ fn client(local:bool, timeout:u64) -> Result<Client> {
     if local { builder=builder.no_proxy(); }
     Ok(builder.build()?)
 }
-fn checked(response:std::result::Result<Response,reqwest::Error>) -> Result<Response> {
-    let response=response.map_err(|_|anyhow::anyhow!("Нет ответа от ИИ. Проверьте соединение и локальную модель."))?;
-    match response.status() {
-        StatusCode::UNAUTHORIZED|StatusCode::FORBIDDEN=>bail!("Проверьте API-ключ и доступ к выбранной модели."),
-        StatusCode::NOT_FOUND=>bail!("Модель не найдена. Проверьте имя и загрузите её в настройках."),
-        StatusCode::TOO_MANY_REQUESTS=>bail!("Лимит запросов или средств у провайдера. Транскрипция сохранена."),
-        status if !status.is_success()=>bail!("ИИ вернул ошибку HTTP {}. Транскрипция сохранена.",status.as_u16()),
-        _=>Ok(response),
+/// Only OpenAI-compatible protocols are accepted. A preset cannot be pointed at
+/// a different host; custom hosts have their own keychain account in the UI.
+#[derive(Debug)]
+struct CloudConfig { provider:String, title:&'static str, base:Url, api:String, output:String, local:bool }
+fn cloud_config(settings:&Settings) -> Result<CloudConfig> {
+    let (title,raw)=match settings.cloud_provider.as_str() {
+        "openai"=>("OpenAI","https://api.openai.com/v1"),
+        "openrouter"=>("OpenRouter","https://openrouter.ai/api/v1"),
+        "polza"=>("Polza","https://polza.ai/api/v1"),
+        "custom"=>("Свой провайдер",settings.cloud_endpoint.trim()),
+        _=>bail!("Выберите облачный сервис в настройках."),
+    };
+    if !["responses","chat"].contains(&settings.cloud_api.as_str()) {bail!("Выберите формат API: Responses или Chat Completions.");}
+    if !["schema","json","prompt"].contains(&settings.cloud_output.as_str()) {bail!("Выберите формат ответа: JSON Schema, JSON или JSON по инструкции.");}
+    if settings.cloud_model.trim().is_empty() || settings.cloud_model.chars().any(char::is_control) {bail!("Укажите имя облачной модели.");}
+    let mut base=Url::parse(raw).map_err(|_|anyhow::anyhow!("Укажите базовый адрес API, например https://example.com/v1."))?;
+    let authority=raw.split_once("://").map(|(_,rest)|rest.split(['/', '?', '#']).next().unwrap_or("")).unwrap_or("");
+    if base.host_str().is_none() || !base.username().is_empty() || base.password().is_some()
+        || authority.contains('@') || base.query().is_some() || base.fragment().is_some() {
+        bail!("Адрес API не должен содержать логин, пароль, параметры или фрагмент. Ключ хранится отдельно.");
+    }
+    let local=matches!(base.host_str(),Some("localhost"|"127.0.0.1"|"[::1]"));
+    if base.scheme()!="https" && !(settings.cloud_provider=="custom" && base.scheme()=="http" && local) {
+        bail!("Для облачного API нужен HTTPS. HTTP разрешён только для сервера на этом Mac.");
+    }
+    if base.host_str()==Some("localhost") {base.set_host(Some("127.0.0.1")).map_err(|_|anyhow::anyhow!("Некорректный адрес API"))?;}
+    let path=format!("{}/",base.path().trim_end_matches('/')); base.set_path(&path);
+    Ok(CloudConfig{provider:settings.cloud_provider.clone(),title,base,api:settings.cloud_api.clone(),output:settings.cloud_output.clone(),local})
+}
+impl CloudConfig {
+    fn endpoint(&self)->Result<Url> {Ok(self.base.join(if self.api=="responses" {"responses"} else {"chat/completions"})?)}
+}
+fn cloud_error(config:&CloudConfig,status:StatusCode,value:Option<&Value>,key:&str)->anyhow::Error {
+    let hint=match status {
+        StatusCode::UNAUTHORIZED|StatusCode::FORBIDDEN=>"Проверьте API-ключ и доступ к выбранной модели.",
+        StatusCode::PAYMENT_REQUIRED=>"Недостаточно средств у провайдера. Пополните баланс API.",
+        StatusCode::TOO_MANY_REQUESTS=>"Достигнут лимит запросов или средств. Проверьте баланс и повторите позже.",
+        StatusCode::NOT_FOUND=>"Модель или адрес API не найдены. Проверьте имя модели и базовый адрес.",
+        StatusCode::BAD_REQUEST|StatusCode::UNPROCESSABLE_ENTITY=>"Проверьте модель, формат API и поддержку выбранного режима JSON в дополнительных настройках.",
+        status if status.is_redirection()=>"Сервер вернул перенаправление. Укажите конечный HTTPS-адрес API; ключ не передан другому адресу.",
+        _=>"Провайдер не выполнил запрос. Повторите позже.",
+    };
+    // Do not echo arbitrary provider messages: they can contain the prompt or
+    // credentials. A bounded machine-readable error code is enough to diagnose.
+    let code=value.and_then(|v|v["error"]["code"].as_str().or_else(||v["error"]["type"].as_str()))
+        .filter(|v|v.len()<=80 && v.chars().all(|c|c.is_ascii_alphanumeric() || "_.-".contains(c)))
+        .map(|v|format!(" · {}",v.replace(key,"[hidden]"))).unwrap_or_default();
+    anyhow::anyhow!("{}: HTTP {}{}. {}",config.title,status.as_u16(),code,hint)
+}
+fn cloud_request_body(settings:&Settings,config:&CloudConfig,system:&str,prompt:&str,schema:&Value,max_tokens:usize)->Value {
+    let system=if config.output=="schema" {system.to_owned()} else {
+        format!("{system}\nReturn exactly one JSON object matching this JSON Schema, with no Markdown or other text:\n{schema}")
+    };
+    if config.api=="responses" {
+        let mut body=json!({"model":settings.cloud_model.trim(),"store":false,"instructions":system,"input":prompt,"max_output_tokens":max_tokens});
+        if config.output=="schema" {body["text"]=json!({"format":{"type":"json_schema","name":"meeting_notes","strict":true,"schema":schema}});}
+        else if config.output=="json" {body["text"]=json!({"format":{"type":"json_object"}});}
+        if config.provider=="openrouter" && config.output!="prompt" {body["provider"]=json!({"require_parameters":true});}
+        body
+    } else {
+        let mut body=json!({"model":settings.cloud_model.trim(),"messages":[{"role":"system","content":system},{"role":"user","content":prompt}],"stream":false});
+        body[if config.provider=="openai" {"max_completion_tokens"} else {"max_tokens"}]=json!(max_tokens);
+        if config.output=="schema" {body["response_format"]=json!({"type":"json_schema","json_schema":{"name":"meeting_notes","strict":true,"schema":schema}});}
+        else if config.output=="json" {body["response_format"]=json!({"type":"json_object"});}
+        if config.provider=="openrouter" && config.output!="prompt" {body["provider"]=json!({"require_parameters":true});}
+        body
     }
 }
-fn post(client:&Client,url:Url,body:&Value,key:Option<&str>) -> Result<Value> {
-    let mut request=client.post(url).json(body);
-    if let Some(key)=key { request=request.bearer_auth(key); }
-    checked(request.send())?.json().context("ИИ вернул некорректный ответ")
+fn cloud_generate(settings:&Settings,config:&CloudConfig,key:&str,system:&str,prompt:&str,schema:&Value,max_tokens:usize,timeout:u64)->Result<Value> {
+    if key.trim().is_empty() {bail!("Добавьте API-ключ выбранного провайдера в настройках.");}
+    let response=client(config.local,timeout)?.post(config.endpoint()?).bearer_auth(key.trim())
+        .json(&cloud_request_body(settings,config,system,prompt,schema,max_tokens)).send()
+        .map_err(|_|anyhow::anyhow!("Нет ответа от {}. Проверьте адрес API и соединение.",config.title))?;
+    let status=response.status();
+    let mut bytes=Vec::new(); response.take(4*1024*1024+1).read_to_end(&mut bytes).map_err(|_|anyhow::anyhow!("Ответ {} прервался.",config.title))?;
+    if bytes.len()>4*1024*1024 {bail!("Ответ ИИ превышает допустимый размер.");}
+    let value:Option<Value>=serde_json::from_slice(&bytes).ok();
+    if !status.is_success() {return Err(cloud_error(config,status,value.as_ref(),key));}
+    let result=value.context("Провайдер вернул некорректный ответ JSON.")?;
+    if result.get("error").is_some_and(|error|!error.is_null()) {return Err(cloud_error(config,StatusCode::BAD_REQUEST,Some(&result),key));}
+    let answer=if config.api=="responses" {
+        if result["status"]!="completed" {bail!("ИИ не закончил ответ. Повторите позже или выберите другую модель.");}
+        let mut text=String::new();
+        for item in result["output"].as_array().into_iter().flatten() {
+            for part in item["content"].as_array().into_iter().flatten() {
+                if part["type"]=="refusal" {bail!("Модель отказалась обработать запрос.");}
+                if part["type"]=="output_text" {text.push_str(part["text"].as_str().unwrap_or(""));}
+            }
+        }
+        text
+    } else {
+        let choice=result["choices"].as_array().and_then(|values|values.first()).context("Провайдер не вернул ответ модели.")?;
+        if choice["finish_reason"]!="stop" {bail!("ИИ не закончил ответ. Проверьте размер контекста и выбранную модель.");}
+        if choice["message"]["refusal"].as_str().is_some_and(|value|!value.is_empty()) {bail!("Модель отказалась обработать запрос.");}
+        choice["message"]["content"].as_str().context("Модель не вернула текст JSON.")?.to_owned()
+    };
+    serde_json::from_str(&answer).context("ИИ вернул ответ неподходящего формата. Проверьте режим JSON; исходные данные сохранены.")
+}
+
+/// Explicit tiny generation, never a meeting upload or automatic background call.
+pub fn check_cloud(root:&Path)->Result<Value> {
+    let settings=settings(root)?; let config=cloud_config(&settings)?;
+    let key=std::env::var("POSLE_API_KEY").unwrap_or_default();
+    let schema=object(json!({"ok":{"type":"boolean","enum":[true]}}));
+    let result=cloud_generate(&settings,&config,&key,"You test JSON output. Return only the requested JSON object.","Return exactly {\"ok\":true}.",&schema,256,30)?;
+    if result!=json!({"ok":true}) {bail!("Модель ответила, но не прошла проверку JSON. Выберите другой формат ответа или модель.");}
+    Ok(json!({"ok":true,"provider":config.provider,"model":settings.cloud_model,"endpoint":config.endpoint()?.as_str(),"api":config.api,"output":config.output,
+        "message":format!("{} · модель отвечает, JSON проверен",config.title)}))
 }
 
 fn generate(settings:&Settings,system:&str,prompt:&str,schema:&Value) -> Result<Value> {
     let answer=if settings.mode=="cloud" {
+        let config=cloud_config(settings)?;
         let key=std::env::var("POSLE_API_KEY").unwrap_or_default();
-        if key.trim().is_empty() { bail!("Добавьте API-ключ в Связку ключей macOS через настройки."); }
-        let body=json!({"model":settings.cloud_model,"store":false,"instructions":system,"input":prompt,"max_output_tokens":MAX_GENERATION_TOKENS,
-            "text":{"format":{"type":"json_schema","name":"meeting_notes","strict":true,"schema":schema}}});
-        let result=post(&client(false,600)?,Url::parse("https://api.openai.com/v1/responses")?,&body,Some(&key))?;
-        if result["status"]!="completed" { bail!("ИИ не закончил ответ. Повторите позже или выберите другую модель."); }
-        let mut text=String::new();
-        for item in result["output"].as_array().into_iter().flatten() {
-            for part in item["content"].as_array().into_iter().flatten() {
-                if part["type"]=="output_text" { text.push_str(part["text"].as_str().unwrap_or("")); }
-            }
-        }
-        text
+        return cloud_generate(settings,&config,&key,system,prompt,schema,MAX_GENERATION_TOKENS,600);
     } else if settings.mode=="local" {
         let config=local_config(settings)?;
         if system.len()+prompt.len()+schema.to_string().len()>20000 { bail!("Запрос слишком велик для локального контекста. Сократите фокус встречи."); }
@@ -567,7 +651,7 @@ pub fn summarize(root:&Path,directory:&Path) -> Result<()> {
     let source_system=format!("{system}\n{SOURCE_OUTPUT_CONTRACT}");
     let schema=summary_schema(); let overhead=source_system.len()+schema.to_string().len()+context.to_string().len();
     let chunks=split_segments(&segments,19000usize.saturating_sub(overhead).max(2000))?;
-    let endpoint=if settings.mode=="local" {local_config(&settings)?.url.to_string()} else {"https://api.openai.com/v1/responses".to_owned()};
+    let endpoint=if settings.mode=="local" {local_config(&settings)?.url.to_string()} else {cloud_config(&settings)?.endpoint()?.to_string()};
     let fingerprint=summary_fingerprint(&settings,&source_system,&context,&schema,&chunks,&endpoint)?;
     let checkpoint=directory.join("summary-progress.json");
     let (mut parts,mut removed)=load_summary_progress(&checkpoint,&fingerprint,&chunks);
@@ -1314,6 +1398,126 @@ mod tests {
         });
         (endpoint,handle)
     }
+    fn cloud_fixture_settings(endpoint:&str,api:&str,output:&str)->Settings {
+        Settings{mode:"cloud".into(),cloud_provider:"custom".into(),cloud_endpoint:format!("{endpoint}/gateway/v1"),
+            cloud_model:"provider/test-model".into(),cloud_api:api.into(),cloud_output:output.into(),..Settings::default()}
+    }
+    fn cloud_reply(api:&str,text:&str)->Value {
+        if api=="responses" {json!({"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":text}]}]})}
+        else {json!({"choices":[{"finish_reason":"stop","message":{"content":text}}]})}
+    }
+    #[test]
+    fn cloud_settings_migrate_old_openai_and_use_swift_api_field() {
+        let old:Settings=serde_json::from_value(json!({"mode":"cloud","cloudModel":"my-old-model"})).unwrap();
+        assert_eq!(old.cloud_provider,"openai"); assert_eq!(old.cloud_api,"responses"); assert_eq!(old.cloud_output,"schema");
+        assert_eq!(old.cloud_model,"my-old-model");
+        assert_eq!(cloud_config(&old).unwrap().endpoint().unwrap().as_str(),"https://api.openai.com/v1/responses");
+        let new:Settings=serde_json::from_value(json!({"cloudAPI":"chat"})).unwrap();
+        assert_eq!(new.cloud_api,"chat"); assert_eq!(serde_json::to_value(new).unwrap()["cloudAPI"],"chat");
+    }
+    #[test]
+    fn cloud_endpoints_preserve_gateway_paths_and_reject_unsafe_urls() {
+        for raw in ["https://gateway.example/api/v1", "https://gateway.example/api/v1/"] {
+            let config=cloud_config(&Settings{cloud_provider:"custom".into(),cloud_endpoint:raw.into(),cloud_api:"chat".into(),..Settings::default()}).unwrap();
+            assert_eq!(config.endpoint().unwrap().as_str(),"https://gateway.example/api/v1/chat/completions");
+        }
+        for raw in ["http://localhost:1234/v1","http://127.0.0.1:1234/v1","http://[::1]:1234/v1"] {
+            let config=cloud_config(&Settings{cloud_provider:"custom".into(),cloud_endpoint:raw.into(),..Settings::default()}).unwrap();
+            assert!(config.local); assert!(config.endpoint().unwrap().path().ends_with("/v1/responses"));
+        }
+        for raw in ["http://example.com/v1","http://localhost.attacker.test/v1","http://192.168.1.2/v1","http://127.0.0.2/v1",
+            "https://user:secret@example.com/v1","https://@example.com/v1","https://example.com/v1?key=secret","https://example.com/v1#secret",
+            "https://example.com/v1?","https://example.com/v1#","file:///tmp/api","ftp://example.com/v1",""] {
+            let error=cloud_config(&Settings{cloud_provider:"custom".into(),cloud_endpoint:raw.into(),..Settings::default()}).unwrap_err().to_string();
+            assert!(!error.contains("secret"),"invalid URL must not leak its key");
+        }
+        for (provider,base) in [("openai","https://api.openai.com/v1/"),("openrouter","https://openrouter.ai/api/v1/"),("polza","https://polza.ai/api/v1/")] {
+            let config=cloud_config(&Settings{cloud_provider:provider.into(),cloud_endpoint:"https://unrelated.example/key".into(),..Settings::default()}).unwrap();
+            assert_eq!(config.base.as_str(),base,"preset address must not accidentally route its key to a custom host");
+        }
+        assert!(cloud_config(&Settings{cloud_provider:"anthropic-native".into(),..Settings::default()}).is_err());
+        assert!(cloud_config(&Settings{cloud_api:"unknown".into(),..Settings::default()}).is_err());
+        assert!(cloud_config(&Settings{cloud_output:"unknown".into(),..Settings::default()}).is_err());
+        assert!(cloud_config(&Settings{cloud_model:" ".into(),..Settings::default()}).is_err());
+    }
+    #[test]
+    fn cloud_protocols_and_all_json_modes_use_exact_selected_endpoint_and_key() {
+        let modes=[("responses","schema"),("responses","json"),("responses","prompt"),("chat","schema"),("chat","json"),("chat","prompt")];
+        let replies=modes.iter().map(|(api,_)|(200,cloud_reply(api,r#"{"ok":true}"#))).collect();
+        let (endpoint,server)=model_server(replies);
+        let schema=object(json!({"ok":{"type":"boolean","enum":[true]}}));
+        for (api,output) in modes {
+            let settings=cloud_fixture_settings(&endpoint,api,output); let config=cloud_config(&settings).unwrap();
+            assert_eq!(cloud_generate(&settings,&config,"test-secret-key","System instructions","Return exactly {\"ok\":true}.",&schema,256,30).unwrap(),json!({"ok":true}));
+        }
+        let requests=server.join().unwrap(); assert_eq!(requests.len(),6);
+        for ((api,output),request) in modes.iter().zip(&requests) {
+            let route=if *api=="responses" {"responses"} else {"chat/completions"};
+            assert_eq!(request.0,format!("POST /gateway/v1/{route} HTTP/1.1"));
+            assert!(request.2.to_lowercase().contains("authorization: bearer test-secret-key"));
+            let body=&request.1; assert_eq!(body["model"],"provider/test-model");
+            let (format,instructions)=if *api=="responses" {
+                assert_eq!(body["max_output_tokens"],256); assert_eq!(body["store"],false);
+                (&body["text"]["format"],body["instructions"].as_str().unwrap())
+            } else {
+                assert_eq!(body["max_tokens"],256); assert_eq!(body["stream"],false);
+                (&body["response_format"],body["messages"][0]["content"].as_str().unwrap())
+            };
+            match *output {
+                "schema"=> {assert_eq!(format["type"],"json_schema"); assert_eq!(instructions,"System instructions");
+                    let payload=if *api=="responses" {format} else {&format["json_schema"]};
+                    assert_eq!(payload["schema"],schema); assert_eq!(payload["strict"],true);},
+                "json"=>{assert_eq!(format["type"],"json_object"); assert!(instructions.contains(&schema.to_string()));},
+                _=>{assert!(format.is_null()); assert!(instructions.contains(&schema.to_string()));},
+            }
+            assert!(body.get("models").is_none()); assert!(body.get("route").is_none());
+        }
+    }
+    #[test]
+    fn openrouter_requires_json_parameters_and_openai_chat_uses_completion_token_limit() {
+        let schema=object(json!({"ok":{"type":"boolean"}}));
+        for api in ["responses","chat"] {for output in ["schema","json","prompt"] {
+            let settings=Settings{cloud_provider:"openrouter".into(),cloud_api:api.into(),cloud_output:output.into(),..Settings::default()};
+            let config=cloud_config(&settings).unwrap(); let body=cloud_request_body(&settings,&config,"S","P",&schema,256);
+            if output=="prompt" {assert!(body["provider"].is_null());} else {assert_eq!(body["provider"]["require_parameters"],true);}
+        }}
+        let settings=Settings{cloud_api:"chat".into(),..Settings::default()};
+        let body=cloud_request_body(&settings,&cloud_config(&settings).unwrap(),"S","P",&schema,256);
+        assert_eq!(body["max_completion_tokens"],256); assert!(body["max_tokens"].is_null());
+    }
+    #[test]
+    fn cloud_errors_are_actionable_redacted_and_do_not_retry_another_host_or_format() {
+        for (status,hint) in [(401,"API-ключ"),(402,"средств"),(429,"лимит"),(400,"формат API"),(302,"перенаправление")] {
+            let (endpoint,server)=model_server(vec![(status,json!({"error":{"code":"test_error","message":"test-secret-key and PRIVATE_MEETING_TEXT"}}))]);
+            let settings=cloud_fixture_settings(&endpoint,"chat","schema"); let config=cloud_config(&settings).unwrap();
+            let error=cloud_generate(&settings,&config,"test-secret-key","PRIVATE_MEETING_TEXT","P",&json!({}),256,30).unwrap_err().to_string();
+            assert!(error.contains(hint),"{error}"); assert!(error.contains("test_error"));
+            assert!(!error.contains("test-secret-key")); assert!(!error.contains("PRIVATE_MEETING_TEXT"));
+            assert_eq!(server.join().unwrap().len(),1,"explicit errors must not trigger a fallback or redirect");
+        }
+        let config=cloud_config(&Settings::default()).unwrap();
+        let error=cloud_error(&config,StatusCode::UNAUTHORIZED,Some(&json!({"error":{"code":"test-secret-key"}})),"test-secret-key").to_string();
+        assert!(!error.contains("test-secret-key")); assert!(error.contains("[hidden]"));
+    }
+    #[test]
+    fn cloud_truncation_refusal_and_malformed_json_do_not_create_a_draft() {
+        let replies=vec![
+            (200,json!({"status":"incomplete","output":[]})),
+            (200,json!({"status":"completed","output":[{"content":[{"type":"refusal","refusal":"PRIVATE"}]}]})),
+            (200,json!({"choices":[{"finish_reason":"length","message":{"content":"{}"}}]})),
+            (200,cloud_reply("chat","not JSON PRIVATE")),
+            (200,json!({"choices":[{"finish_reason":"stop","message":{"content":"{}","refusal":"PRIVATE"}}]})),
+            (200,json!({"error":{"code":"invalid_model","message":"PRIVATE"}})),
+        ];
+        let (endpoint,server)=model_server(replies);
+        for api in ["responses","responses","chat","chat","chat","chat"] {
+            let settings=cloud_fixture_settings(&endpoint,api,"schema"); let config=cloud_config(&settings).unwrap();
+            let error=cloud_generate(&settings,&config,"key","S","P",&json!({}),256,30).unwrap_err().to_string();
+            assert!(!error.contains("PRIVATE"));
+        }
+        assert_eq!(server.join().unwrap().len(),6);
+    }
+
     fn provider_settings(provider:&str,endpoint:&str) -> Settings {
         Settings{local_provider:provider.into(),local_endpoint:endpoint.into(),local_model:"my-qwen".into(),..Settings::default()}
     }
@@ -1821,6 +2025,10 @@ mod tests {
         let mut changed = settings.clone(); changed.local_provider = "lmstudio".into(); variants.push(changed);
         let mut changed = settings.clone(); changed.local_endpoint = "http://127.0.0.1:1235".into(); variants.push(changed);
         let mut changed = settings.clone(); changed.cloud_model = "another-cloud-model".into(); variants.push(changed);
+        let mut changed = settings.clone(); changed.cloud_provider = "openrouter".into(); variants.push(changed);
+        let mut changed = settings.clone(); changed.cloud_endpoint = "https://custom.example/v1".into(); variants.push(changed);
+        let mut changed = settings.clone(); changed.cloud_api = "chat".into(); variants.push(changed);
+        let mut changed = settings.clone(); changed.cloud_output = "json".into(); variants.push(changed);
         let mut changed = settings.clone(); changed.language = "en".into(); variants.push(changed);
         let mut changed = settings.clone(); changed.focus = "Different important details".into(); variants.push(changed);
         for settings in variants {

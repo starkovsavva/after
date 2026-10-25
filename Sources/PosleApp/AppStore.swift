@@ -10,6 +10,7 @@ final class AppStore: ObservableObject {
     @Published var meetings: [Meeting] = []
     @Published var librarySection = "meetings"
     let notes: NotesStore
+    let calendar: CalendarStore
     var quickCaptureAction: (() -> Void)?
     var bookmarkAction: (() -> Void)?
     var captureMeetingID: String? { isRecording ? recordingID : nil }
@@ -58,12 +59,17 @@ final class AppStore: ObservableObject {
     @Published var isPlaying = false
     @Published var playbackTime = 0.0
     @Published var playbackDuration = 1.0
+    @Published var cloudConnectionStatus: String?
+    @Published var cloudConnectionError = false
     @Published var localStatus = ""
     @Published var installedLocalModels: [InstalledLocalModel] = []
     @Published var installedASRModels: [InstalledASRModel] = []
     @Published var installedGGUFModels: [InstalledGGUFModel] = []
     @Published var ggufStatus = ""
     @Published var ggufNotes: [String] = []
+    @Published private(set) var verifiedASRSelection: String?
+    var asrSelectionIdentity: String { [settings.speechLocalModel, settings.asrModelPath, settings.asrModelFormat].joined(separator: "\u{1F}") }
+    var selectedASRVerified: Bool { verifiedASRSelection == asrSelectionIdentity }
     @Published var asrStatus = ""
     @Published var asrNotes: [String] = []
     private var modelsByProvider: [String: String] = [:]
@@ -75,6 +81,7 @@ final class AppStore: ObservableObject {
 
     let root: URL
     let runner = ProcessRunner()
+    let embeddedSpeech = EmbeddedSpeechService()
     let recorder = MeetingRecorder()
     let localService = LocalModelService()
     private var player: AVPlayer?
@@ -83,6 +90,8 @@ final class AppStore: ObservableObject {
     private var assertions: IOPMAssertionID = 0
     private var recentReviewIDs: Set<String> = []
     private var cancellationRequested = false
+    private var confirmingCloudSpeech = false
+    private static let stoppedProcessingMessage = "Обработка остановлена. Запись сохранена."
     private var preview: Bool
 
     var selected: Meeting? { meetings.first { $0.id == selection } }
@@ -117,6 +126,7 @@ final class AppStore: ObservableObject {
         }
         root = dataRoot
         notes = NotesStore(root: dataRoot)
+        calendar = CalendarStore(root: dataRoot, preview: preview)
         do {
             try FileManager.default.createDirectory(at: root.appendingPathComponent("meetings"), withIntermediateDirectories: true,
                                                    attributes: [.posixPermissions: 0o700])
@@ -128,6 +138,7 @@ final class AppStore: ObservableObject {
             selection = meetings.first?.id
             loadSelection()
         } catch { self.error = error.localizedDescription }
+        calendar.bindNotes(notes)
         recorder.failed = { [weak self] message in
             Task { @MainActor in
                 guard let self else { return }
@@ -273,6 +284,8 @@ final class AppStore: ObservableObject {
         if command == "pull" && settings.localProvider != "managed" {
             throw AppError.message("Выберите установленную модель в настройках. Для Ollama и LM Studio скачивание выполняется в самом приложении.")
         }
+        let requestedASR = asrSelectionIdentity
+        let requestedLocalASR = command == "transcribe" && settings.speechMode == "local"
         try write(settings, root.appendingPathComponent("settings.json"))
         if ["check", "pull", "discover-local", "import-gguf"].contains(command) || (settings.mode == "local" && ["summarize", "example", "expand-notes"].contains(command)) {
             try await localService.ensure(root: root, settings: settings, cancelled: { self.cancellationRequested })
@@ -284,13 +297,29 @@ final class AppStore: ObservableObject {
         // Secrets live only in Keychain and the short-lived child environment, never argv/files.
         var environment = ["PYTHONUNBUFFERED": "1", "HF_HOME": root.appendingPathComponent("cache/huggingface").path,
                            "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL]
-        if settings.mode == "cloud" && ["summarize", "example", "expand-notes"].contains(command) { environment["POSLE_API_KEY"] = Keychain.read() }
-        let result = try await runner.run(rustEngine, arguments: arguments, environment: environment) { [weak self] event in
+        if settings.mode == "cloud" && ["summarize", "example", "expand-notes", "check-cloud"].contains(command) {
+            environment["POSLE_API_KEY"] = preview ? "" : Keychain.read(account: Keychain.account(for: settings))
+        }
+        if settings.speechMode == "cloud" && command == "transcribe" {
+            environment["POSLE_SPEECH_API_KEY"] = preview ? "" : Keychain.read(account: Keychain.speechAccount(for: settings))
+        }
+        let receive: @Sendable (WorkerEvent) -> Void = { [weak self] event in
             Task { @MainActor in
                 if let message = event.message { self?.progressText = message }
                 if let fraction = event.fraction { self?.progress = fraction }
             }
         }
+        let result: WorkerEvent?
+        if command == "diarize" || command == "finalize" || (command == "transcribe" && settings.speechMode == "local") {
+            let speakerIndex = extra.firstIndex(of: "--speakers")
+            let speakers = speakerIndex.flatMap { extra.indices.contains($0 + 1) ? Int(extra[$0 + 1]) : nil } ?? settings.speakerCount
+            result = try await embeddedSpeech.run(root: root, interpreter: python, backend: backend, command: command,
+                                                   meeting: id.map { meetingDirectory($0) }, speakers: speakers,
+                                                   diarization: !extra.contains("--no-diarization") && settings.diarization, event: receive)
+        } else {
+            result = try await runner.run(rustEngine, arguments: arguments, environment: environment, event: receive)
+        }
+        if requestedLocalASR { verifiedASRSelection = requestedASR }
         if let models = result?.installedModels { installedLocalModels = models }
         if let models = result?.models {
             installedLocalModels = models.map { InstalledLocalModel(id: $0, name: $0, provider: settings.localProvider, endpoint: localService.baseURL) }
@@ -303,8 +332,29 @@ final class AppStore: ObservableObject {
         }
         return result
     }
+    func checkCloudConnection() {
+        guard !busy, !isRecording else { return }
+        beginJob(id: nil); progressText = "Проверяю подключение…"
+        cloudConnectionStatus = nil; cloudConnectionError = false
+        let configuration = settings
+        Task {
+            defer { endJob() }
+            do {
+                try await worker("check-cloud")
+                guard settings.cloudProvider == configuration.cloudProvider,
+                      settings.resolvedCloudEndpoint == configuration.resolvedCloudEndpoint,
+                      settings.cloudModel == configuration.cloudModel,
+                      settings.cloudAPI == configuration.cloudAPI,
+                      settings.cloudOutput == configuration.cloudOutput else { return }
+                cloudConnectionStatus = "Подключение работает"
+            } catch {
+                cloudConnectionError = true; cloudConnectionStatus = error.localizedDescription
+            }
+        }
+    }
+    func prepareSelectedSpeechModel() { saveSettings(); installRuntime() }
     func beginJob(id: String?) {
-        cancellationRequested = false; runner.resetCancellation()
+        cancellationRequested = false; runner.resetCancellation(); embeddedSpeech.resetCancellation()
         canCancelJob = true
         busy = true; processingID = id; progress = -1; error = nil; notice = nil
         IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
@@ -318,10 +368,56 @@ final class AppStore: ObservableObject {
     }
     func cancelJob() {
         guard canCancelJob else { return }
-        cancellationRequested = true; runner.cancel()
+        cancellationRequested = true; runner.cancel(); embeddedSpeech.cancel()
+        progressText = "Останавливаю обработку…"
+    }
+    /// Importing or finishing a recording never authorizes a cloud upload by
+    /// itself. Confirm this meeting and the current destination on every run.
+    private func confirmCloudTranscription(_ id: String) -> Bool {
+        guard settings.speechMode == "cloud" else { return true }
+        guard !preview else { return false }
+        let provider = settings.speechCloudProvider
+        let endpoint = settings.resolvedSpeechEndpoint
+        let model = settings.speechCloudModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty, !model.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+            error = "Укажите корректное имя модели распознавания в настройках."; return false
+        }
+        guard ["openai", "custom"].contains(provider), let destination = URLComponents(string: endpoint),
+              let host = destination.host?.lowercased(), !host.isEmpty,
+              destination.user == nil, destination.password == nil, destination.query == nil, destination.fragment == nil,
+              destination.scheme?.lowercased() == "https" ||
+                (destination.scheme?.lowercased() == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)) else {
+            error = "Укажите HTTPS-адрес API распознавания без логина, пароля и параметров. HTTP доступен только на этом Mac."; return false
+        }
+        let title = meetings.first(where: { $0.id == id })?.title ?? "Встреча"
+        let service = provider == "openai" ? "OpenAI" : settings.speechDestinationLabel
+        confirmingCloudSpeech = true
+        defer { confirmingCloudSpeech = false }
+        let alert = NSAlert()
+        alert.messageText = "Отправить запись в облако?"
+        alert.informativeText = "«\(title)»\n\nСервис: \(service)\nАдрес API: \(endpoint)\nМодель: \(model)\n\nАудиозапись этой встречи будет отправлена выбранному сервису для распознавания. Запрос оплачивается по его тарифам."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Отправить и распознать")
+        alert.addButton(withTitle: "Отмена")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            self.error = nil; notice = Self.stoppedProcessingMessage
+            return false
+        }
+        guard settings.speechMode == "cloud", settings.speechCloudProvider == provider,
+              settings.resolvedSpeechEndpoint == endpoint,
+              settings.speechCloudModel.trimmingCharacters(in: .whitespacesAndNewlines) == model else {
+            notice = "Настройки распознавания изменились. Запустите обработку ещё раз."
+            return false
+        }
+        return true
+    }
+    private func processingWasCancelled(_ error: Error) -> Bool {
+        error is CancellationError || cancellationRequested
     }
     func processMeeting(_ id: String) async {
-        guard !busy, !isRecording else { return }
+        guard !busy, !isRecording, !confirmingCloudSpeech else { return }
+        guard confirmCloudTranscription(id), !busy, !isRecording else { return }
         beginJob(id: id); defer { endJob() }
         updateMeeting(id) { $0.status = "processing"; $0.error = nil }
         do {
@@ -339,14 +435,28 @@ final class AppStore: ObservableObject {
                     updateMeeting(id) { $0.status = "ready" }
                     refreshResults(id)
                     if selection == id { tab = "summary" }
-                } catch { self.error = "Транскрипция готова. Конспект: \(error.localizedDescription)" }
+                } catch {
+                    if processingWasCancelled(error) { self.error = nil; notice = Self.stoppedProcessingMessage }
+                    else { self.error = "Транскрипция готова. Конспект: \(error.localizedDescription)" }
+                }
             } else if settings.mode == "cloud" {
-                notice = "Транскрипция готова. Нажмите «Конспект в облаке», чтобы отправить текст в OpenAI."
+                notice = "Транскрипция готова. Создайте конспект через \(settings.cloudProviderTitle)."
             }
             if selection == id { loadSelection() }
         } catch {
-            updateMeeting(id) { $0.status = "imported"; $0.error = error.localizedDescription }
-            self.error = error.localizedDescription; refreshResults(id)
+            if processingWasCancelled(error) {
+                let savedTranscript: Transcript? = read(meetingDirectory(id).appendingPathComponent("transcript.json"))
+                let savedSummary: Summary? = read(meetingDirectory(id).appendingPathComponent("summary.json"))
+                updateMeeting(id) {
+                    $0.status = savedTranscript == nil ? "imported" : savedSummary == nil ? "transcribed" : "ready"
+                    $0.error = nil
+                }
+                self.error = nil; notice = Self.stoppedProcessingMessage
+            } else {
+                updateMeeting(id) { $0.status = "imported"; $0.error = error.localizedDescription }
+                self.error = error.localizedDescription
+            }
+            refreshResults(id)
         }
     }
     func rediarizeMeeting(_ id: String, speakers: Int) async {
@@ -358,7 +468,11 @@ final class AppStore: ObservableObject {
             reloadLibrary(); refreshResults(id)
             if selection == id { tab = "transcript" }
             notice = "Собеседники пересчитаны. Проверьте реплики и задайте имена голосам. Предыдущая версия сохранена в истории."
-        } catch { self.error = error.localizedDescription; reloadLibrary(); refreshResults(id) }
+        } catch {
+            if processingWasCancelled(error) { self.error = nil; notice = Self.stoppedProcessingMessage }
+            else { self.error = error.localizedDescription }
+            reloadLibrary(); refreshResults(id)
+        }
     }
     func summarizeSelected() {
         guard let id = selection, !busy, !isRecording else { return }
@@ -425,6 +539,7 @@ final class AppStore: ObservableObject {
     func installRuntime() {
         guard !busy, !isRecording else { return }
         Task {
+            let requestedASR = settings.speechMode == "local" ? asrSelectionIdentity : nil
             beginJob(id: nil); progressText = "Подготавливаю распознавание и проверяю скачанные модели…"
             defer { endJob() }
             do {
@@ -433,7 +548,9 @@ final class AppStore: ObservableObject {
                                      arguments: ["install-runtime", "--root", root.path, "--backend", backend.path]) { [weak self] event in
                     Task { @MainActor in if let message = event.message { self?.progressText = message } }
                 }
-                runtimeReady = true; notice = "Распознавание готово. Добавьте или выберите запись."
+                runtimeReady = true
+                if let requestedASR { verifiedASRSelection = requestedASR }
+                notice = "Распознавание готово. Добавьте или выберите запись."
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -561,7 +678,7 @@ final class AppStore: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
         panel.prompt = "Проверить модель"
-        panel.message = "Выберите папку с уже скачанной моделью Parakeet. После проверит её формат."
+        panel.message = "Выберите папку с уже скачанной моделью распознавания. После проверит её формат."
         if panel.runModal() == .OK, let url = panel.url { discoverASRModels(path: url) }
     }
     func selectASRModel(_ model: InstalledASRModel) {
@@ -807,7 +924,7 @@ final class AppStore: ObservableObject {
     func startRecording(systemAudio: Bool, video: Bool = false, title: String) async {
         guard !busy, !isRecording else { return }
         pause(); error = nil
-        cancellationRequested = false; runner.resetCancellation()
+        cancellationRequested = false; runner.resetCancellation(); embeddedSpeech.resetCancellation()
         processAfterRecording = true
         canCancelJob = false
         var meeting = Meeting(title: title.isEmpty ? "Встреча \(Date().formatted(date: .abbreviated, time: .shortened))" : title,
@@ -847,7 +964,9 @@ final class AppStore: ObservableObject {
                     try await worker("finalize", id: id)
                     finalized = true
                 } catch {
-                    if !cancellationRequested {
+                    if processingWasCancelled(error) {
+                        cancellationRequested = true; self.error = nil
+                    } else {
                         self.error = "Исходная запись сохранена. Преобразование в MP3: \(error.localizedDescription)"
                     }
                 }
@@ -863,7 +982,7 @@ final class AppStore: ObservableObject {
             if shouldProcess {
                 await processMeeting(id)
             } else if wasCancelled {
-                notice = "Обработка отменена. Запись сохранена; распознать встречу можно позже."
+                notice = Self.stoppedProcessingMessage
             } else if !runtimeReady {
                 notice = "Встреча записана. Установите модели в настройках."
             } else if !finalized {
@@ -872,7 +991,12 @@ final class AppStore: ObservableObject {
                 notice = "Встреча записана и сохранена в MP3."
             }
         } catch {
-            isRecording = false; recordingID = nil; recordingDate = nil; endJob(); self.error = error.localizedDescription
+            let wasCancelled = processingWasCancelled(error)
+            isRecording = false; recordingID = nil; recordingDate = nil; endJob()
+            if wasCancelled {
+                updateMeeting(id) { $0.status = "imported"; $0.error = nil }
+                self.error = nil; notice = Self.stoppedProcessingMessage
+            } else { self.error = error.localizedDescription }
         }
     }
 }

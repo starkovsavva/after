@@ -36,7 +36,7 @@ pub fn request(value: &Value) -> Result<Value> {
     let root = PathBuf::from(value["root"].as_str().context("Нужна папка данных приложения")?);
     if !root.is_absolute() { bail!("Папка данных должна иметь абсолютный путь"); }
     match value["command"].as_str().context("Нет команды ядра")? {
-        command if ["notes-list", "note-save", "note-delete", "context-save", "template-save", "template-delete", "note-attach", "attachment-path", "attachment-remove", "attachment-text", "notes-search", "notes-tasks", "notes-task-complete", "notes-brief", "note-search-validate", "note-expansion-validate", "note-expansion-valid"].contains(&command) => notes::dispatch(&root, value),
+        command if ["notes-list", "note-save", "note-delete", "note-trash", "note-restore", "context-save", "template-save", "template-delete", "note-attach", "attachment-path", "attachment-remove", "attachment-text", "notes-search", "notes-tasks", "notes-task-complete", "notes-brief", "note-search-validate", "note-expansion-validate", "note-expansion-valid"].contains(&command) => notes::dispatch(&root, value),
         "cards-import" | "cards-import-preview" => cards::dispatch(&root,value),
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),
         "search-validate" => search::validate(&root, value["meetingID"].as_str().context("Нет ID встречи")?, value["sourceFingerprint"].as_str().unwrap_or("")),
@@ -114,3 +114,5 @@ mod tests {
         }
     }
 }
+
+pub mod embedded_speech;
