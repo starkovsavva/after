@@ -16,6 +16,7 @@ import json
 import math
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -169,15 +170,51 @@ def remove_owned_runtime_aliases(directory: Path):
             alias = parent / original
             target = parent / branded
             if (alias.is_symlink() and os.readlink(alias) == branded
-                    and target.is_file() and not target.is_symlink()):
+                    and alias.lstat().st_uid == os.getuid() and not target.is_symlink()
+                    and (target.is_file() or not target.exists())):
                 alias.unlink()
+
+
+def installed_local_runtime(directory: Path):
+    """A marker alone cannot prove that the owned executable is still usable."""
+    def owned(path, directory=False):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return False
+        expected = stat.S_ISDIR if directory else stat.S_ISREG
+        if info.st_uid != os.getuid() or not expected(info.st_mode):
+            raise RuntimeError("Папка локального ИИ должна содержать только собственные файлы «После».")
+        return True
+    for parent in (directory.parent, directory, directory / "bin"):
+        if not owned(parent, directory=True):
+            if parent != directory / "bin":
+                return False
+    if not owned(directory / "installed-v0.40.3-signed1"):
+        return False
+    for parent in (directory / "bin", directory):
+        original, branded = parent / "ollama", parent / "После ИИ"
+        if original.is_symlink():
+            if original.lstat().st_uid != os.getuid() or os.readlink(original) != branded.name:
+                raise RuntimeError("Локальный ИИ «После» не может использовать внешний исполняемый файл.")
+            binary = branded
+        elif original.exists():
+            binary = original
+        elif branded.exists() or branded.is_symlink():
+            binary = branded
+        else:
+            continue
+        if not owned(binary) or not os.access(binary, os.X_OK):
+            return False
+        return subprocess.run(["/usr/bin/codesign", "--verify", str(binary)], capture_output=True).returncode == 0
+    return False
 
 
 def install_local(root: Path):
     """Pinned official release with independently recorded SHA256; no global install."""
     directory = root / "runtime" / "ollama"
     marker = directory / "installed-v0.40.3-signed1"
-    if marker.exists():
+    if installed_local_runtime(directory):
         emit("done")
         return
     progress("Загружаю локальный движок конспекта…")

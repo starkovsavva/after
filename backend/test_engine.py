@@ -378,6 +378,76 @@ class LocalModelTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_runtime_marker_repairs_missing_or_broken_executable_without_touching_model_weights(self):
+        import shutil
+        import tarfile
+        replacement = b"\xcf\xfa\xed\xfe" + b"synthetic verified runtime"
+        archive = self.root / "synthetic-runtime.tgz"
+        with tarfile.open(archive, "w:gz") as package:
+            info = tarfile.TarInfo("ollama"); info.mode = 0o700; info.size = len(replacement)
+            package.addfile(info, io.BytesIO(replacement))
+        digest = types.SimpleNamespace(update=lambda *_: None, hexdigest=lambda: "a2d1d906a2c8febd9cb18f5c183854d0a6db5dc522940d68b0c0ed048e8dfdea")
+        for kind in ("missing", "dangling-owned-alias", "nonexecutable", "branded-nonexecutable", "bad-signature"):
+            with self.subTest(kind=kind):
+                root = self.root / kind
+                directory = root / "runtime/ollama"; directory.mkdir(parents=True)
+                marker = directory / "installed-v0.40.3-signed1"; marker.touch()
+                original = directory / "ollama"
+                if kind == "branded-nonexecutable":
+                    branded = directory / "После ИИ"; branded.write_bytes(b"broken runtime"); branded.chmod(0o600)
+                    original.symlink_to(branded.name)
+                elif kind == "dangling-owned-alias": original.symlink_to("После ИИ")
+                elif kind != "missing":
+                    original.write_bytes(b"broken runtime"); original.chmod(0o700 if kind == "bad-signature" else 0o600)
+                weights = root / "cache/ollama-models/blobs/existing-weights"
+                weights.parent.mkdir(parents=True); weights.write_bytes(b"preserve downloaded model weights")
+                def download(url, target):
+                    self.assertIn("ollama-darwin", url)
+                    shutil.copyfile(archive, target)
+                def verify(arguments, **_):
+                    self.assertEqual(arguments[:2], ["/usr/bin/codesign", "--verify"])
+                    return types.SimpleNamespace(returncode=0 if Path(arguments[2]).read_bytes() == replacement else 1)
+                with patch.object(engine, "download", side_effect=download) as fetched, \
+                        patch.object(engine.hashlib, "sha256", return_value=digest), patch.object(engine.subprocess, "run", side_effect=verify):
+                    engine.install_local(root)
+                    self.assertEqual(fetched.call_count, 1)
+                    self.assertEqual(original.read_bytes(), replacement)
+                    self.assertTrue(marker.is_file())
+                    fetched.reset_mock()
+                    engine.install_local(root)
+                    fetched.assert_not_called()
+                self.assertEqual(weights.read_bytes(), b"preserve downloaded model weights")
+
+    def test_signed_branded_runtime_with_owned_alias_does_not_download_again(self):
+        directory = self.root / "runtime/ollama"; directory.mkdir(parents=True)
+        (directory / "installed-v0.40.3-signed1").touch()
+        branded = directory / "После ИИ"; branded.write_bytes(b"synthetic signed runtime"); branded.chmod(0o700)
+        (directory / "ollama").symlink_to(branded.name)
+        with patch.object(engine, "download") as fetched, \
+                patch.object(engine.subprocess, "run", return_value=types.SimpleNamespace(returncode=0)) as verify:
+            engine.install_local(self.root)
+            fetched.assert_not_called()
+            verify.assert_called_once_with(["/usr/bin/codesign", "--verify", str(branded)], capture_output=True)
+        self.assertTrue((directory / "ollama").is_symlink())
+        self.assertEqual(branded.read_bytes(), b"synthetic signed runtime")
+
+    def test_runtime_marker_never_trusts_foreign_directory_or_executable_alias(self):
+        outside = self.root / "foreign"; outside.mkdir()
+        foreign = outside / "ollama"; foreign.write_bytes(b"foreign executable"); foreign.chmod(0o700)
+        (outside / "installed-v0.40.3-signed1").touch()
+        for directory_link in (False, True):
+            with self.subTest(directory_link=directory_link):
+                root = self.root / str(directory_link); (root / "runtime").mkdir(parents=True)
+                directory = root / "runtime/ollama"
+                if directory_link: directory.symlink_to(outside, target_is_directory=True)
+                else:
+                    directory.mkdir(); (directory / "installed-v0.40.3-signed1").touch()
+                    (directory / "ollama").symlink_to(foreign)
+                with patch.object(engine, "download") as fetched, patch.object(engine.subprocess, "run") as verify, self.assertRaises(RuntimeError):
+                    engine.install_local(root)
+                fetched.assert_not_called(); verify.assert_not_called()
+                self.assertEqual(foreign.read_bytes(), b"foreign executable")
+
     def sparse(self, path, size):
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("wb") as out:

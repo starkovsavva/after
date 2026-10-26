@@ -32,20 +32,102 @@ def seed(source, destination):
                    check=True, capture_output=True)
 
 
+# Compile the actual service and settings types. The custom URLProtocol makes
+# every health request synthetic; no installed server or model can be reached.
+SERVICE_CHECKS = r'''
+private final class SyntheticHealth: URLProtocol {
+    private static let lock = NSLock()
+    private static var requests: [URL] = []
+    static var urls: [URL] { lock.lock(); defer { lock.unlock() }; return requests }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock(); if let url = request.url { Self.requests.append(url) }; Self.lock.unlock()
+        let response = HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: "HTTP/1.1", headerFields: [:])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+@main
+private enum RuntimeChecks {
+    @MainActor static func main() async throws {
+        if CommandLine.arguments[1] != "--service" {
+            print(try ManagedModelRuntime.brandedExecutable(root: URL(fileURLWithPath: CommandLine.arguments[1])).path)
+            return
+        }
+        let root = URL(fileURLWithPath: CommandLine.arguments[2])
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [SyntheticHealth.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let service = LocalModelService(session: session)
+        defer { service.stop() }
+        func expect(_ condition: @autoclosure () -> Bool, _ detail: String) throws {
+            if !condition() { throw AppError.message(detail) }
+        }
+        // External providers neither inspect the owned runtime nor start a process.
+        // Use the real settings resolver, including its provider-specific defaults.
+        var settings = AppSettings()
+        for (provider, endpoint) in [("ollama", "http://127.0.0.1:11434"), ("lmstudio", "http://127.0.0.1:1234")] {
+            settings.localProvider = provider; settings.localEndpoint = ""
+            try await service.ensure(root: root, settings: settings)
+            try expect(service.baseURL == endpoint, "External provider endpoint changed")
+            settings.localEndpoint = "http://localhost:12555/"
+            try await service.ensure(root: root, settings: settings)
+            try expect(service.baseURL == "http://localhost:12555", "Explicit external endpoint changed")
+        }
+        try expect(SyntheticHealth.urls.isEmpty && !FileManager.default.fileExists(atPath: root.path), "External route touched managed runtime or health endpoint")
+        // ASR can be installed while the independent text runtime is absent.
+        // Managed selection must report setup, never reuse the previous external URL.
+        settings.localProvider = "managed"
+        for missing in [root, root.appendingPathComponent("missing-model")] {
+            if missing != root { try FileManager.default.createDirectory(at: missing.appendingPathComponent("runtime"), withIntermediateDirectories: true) }
+            do {
+                try await service.ensure(root: missing, settings: settings)
+                throw AppError.message("Missing managed runtime was accepted")
+            } catch {
+                try expect(error.localizedDescription.contains("Локальный ИИ «После» не подготовлен") && error.localizedDescription.contains("Подготовить ИИ"), "Missing runtime leaked a Cocoa file error")
+            }
+            try expect(service.baseURL == "http://127.0.0.1:11436" && SyntheticHealth.urls.isEmpty, "Managed route fell back to external provider or probed before preflight")
+        }
+        let binary = root.appendingPathComponent("runtime/ollama/ollama")
+        try FileManager.default.createDirectory(at: binary.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("invalid synthetic executable".utf8).write(to: binary)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: binary.path)
+        do {
+            try await service.ensure(root: root, settings: settings)
+            throw AppError.message("Nonexecutable runtime was accepted")
+        } catch {
+            try expect(error.localizedDescription.contains("Не удалось подготовить процессы локального ИИ «После»"), "Nonexecutable runtime leaked a binary error")
+        }
+        try expect(SyntheticHealth.urls.isEmpty, "Nonexecutable runtime reached health scan")
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binary.path)
+        do {
+            try await service.ensure(root: root, settings: settings)
+            throw AppError.message("Invalid executable started")
+        } catch {
+            try expect(error.localizedDescription.contains("Не удалось запустить локальный ИИ «После»") && !error.localizedDescription.contains("ollama"), "Process launch failure leaked a file error")
+        }
+        try expect(SyntheticHealth.urls.map(\.absoluteString) == ["http://127.0.0.1:11436/api/tags"], "Managed service contacted an external route")
+        try expect(service.baseURL == "http://127.0.0.1:11436", "Managed process failure changed provider")
+        print("PASS: real service keeps managed/Ollama/LM Studio routing explicit; missing, nonexecutable and invalid runtime errors are actionable")
+    }
+}
+'''
+
 def main():
     with tempfile.TemporaryDirectory(prefix="posle-managed-identity-") as temporary:
         directory = Path(temporary).resolve()
         source = (PROJECT / "Sources/PosleApp/Services.swift").read_text()
         start = source.index("enum ManagedModelRuntime {")
-        end = source.index("@MainActor\nfinal class LocalModelService", start)
         swift = directory / "check.swift"
-        swift.write_text("import Foundation\nimport Darwin\n"
-                         "enum AppError: Error { case message(String) }\n" + source[start:end] +
-                         '\nprint(try ManagedModelRuntime.brandedExecutable(root: '
-                         'URL(fileURLWithPath: CommandLine.arguments[1])).path)\n')
+        app_error = source[source.index("enum AppError:"):source.index("struct InstalledLocalModel:")]
+        environment = source[source.index("enum ProcessEnvironment {"):source.index("enum Keychain {")]
+        swift.write_text("import Foundation\nimport Darwin\n" + app_error + environment + source[start:] + SERVICE_CHECKS)
         checker = directory / "check"
-        subprocess.run(["swiftc", "-module-cache-path", str(directory / "module-cache"),
-                        str(swift), "-o", str(checker)], check=True)
+        subprocess.run(["swiftc", "-module-cache-path", str(directory / "module-cache"), "-parse-as-library",
+                        *sorted((PROJECT / "Sources/PosleCore").glob("*.swift")), str(swift), "-o", str(checker)], check=True)
+        subprocess.run([str(checker), "--service", str(directory / "service")], check=True)
 
         def prepare(root, succeeds=True):
             result = subprocess.run([str(checker), str(root)], capture_output=True, text=True)
@@ -106,6 +188,20 @@ def main():
         other, other_binary = fixture("bin layout", True)
         assert prepare(other) == str(other_binary / SERVER)
         print("PASS: repeat launch, interrupted migration, runtime update and bin layout")
+
+        # The installer restores the original name while keeping the old branded
+        # file. Brand the new signed executable even if that old file lost +x.
+        for old, display in (("ollama", SERVER), ("llama-server", MODEL)):
+            (binary / display).chmod(0o600)
+            (binary / old).unlink()
+            seed("/bin/sleep", binary / old)
+            replacement = digest(binary / old)
+            assert prepare(root) == str(binary / SERVER)
+            assert os.access(binary / display, os.X_OK)
+            assert digest(binary / display) == replacement
+            assert (binary / old).is_symlink() and os.readlink(binary / old) == display
+            subprocess.run(["/usr/bin/codesign", "--verify", "--strict", str(binary / display)], check=True)
+        print("PASS: installed replacements atomically repair owned branded files without executable permission")
 
         # No foreign runtime, compatibility link, lock file, or branded target is
         # followed or overwritten, including a link that points to a real binary.

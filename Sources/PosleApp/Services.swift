@@ -288,7 +288,7 @@ enum ManagedModelRuntime {
         guard let directory = candidates.first(where: {
             exists($0.appendingPathComponent("ollama")) || exists($0.appendingPathComponent(serverName))
         }) else {
-            throw AppError.message("В настройках нажмите «Подготовить локальный ИИ» или выберите установленную Ollama / LM Studio.")
+            throw notPrepared()
         }
         let server = try brand(directory: directory, original: "ollama", display: serverName)
         let modelDirectories = [directory, base.appendingPathComponent("lib/ollama")]
@@ -308,17 +308,28 @@ enum ManagedModelRuntime {
         (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil
     }
 
+    private static func attributes(_ url: URL) throws -> [FileAttributeKey: Any] {
+        do { return try FileManager.default.attributesOfItem(atPath: url.path) }
+        catch let error as CocoaError where [.fileNoSuchFile, .fileReadNoSuchFile].contains(error.code) {
+            throw notPrepared()
+        } catch { throw failure() }
+    }
+
     private static func ownedDirectory(_ url: URL) throws {
-        let values = try FileManager.default.attributesOfItem(atPath: url.path)
+        let values = try attributes(url)
         guard values[.type] as? FileAttributeType == .typeDirectory,
               (values[.ownerAccountID] as? NSNumber)?.uint32Value == getuid() else { throw failure() }
     }
 
-    private static func ownedExecutable(_ url: URL) throws {
-        let values = try FileManager.default.attributesOfItem(atPath: url.path)
+    private static func ownedFile(_ url: URL) throws {
+        let values = try attributes(url)
         guard values[.type] as? FileAttributeType == .typeRegular,
-              (values[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
-              FileManager.default.isExecutableFile(atPath: url.path) else { throw failure() }
+              (values[.ownerAccountID] as? NSNumber)?.uint32Value == getuid() else { throw failure() }
+    }
+
+    private static func ownedExecutable(_ url: URL) throws {
+        try ownedFile(url)
+        guard FileManager.default.isExecutableFile(atPath: url.path) else { throw failure() }
     }
 
     private static func brand(directory: URL, original: String, display: String) throws -> URL {
@@ -326,7 +337,6 @@ enum ManagedModelRuntime {
         let manager = FileManager.default
         let source = directory.appendingPathComponent(original)
         let destination = directory.appendingPathComponent(display)
-        if exists(destination) { try ownedExecutable(destination) }
         if let values = try? manager.attributesOfItem(atPath: source.path) {
             if values[.type] as? FileAttributeType == .typeSymbolicLink {
                 guard try manager.destinationOfSymbolicLink(atPath: source.path) == display else { throw failure() }
@@ -334,6 +344,9 @@ enum ManagedModelRuntime {
                 return destination
             }
             try ownedExecutable(source)
+            // A verified replacement may repair our old nonexecutable file;
+            // it must never replace a symlink or a file owned by someone else.
+            if exists(destination) { try ownedFile(destination) }
             // rename is atomic, keeps the verified Mach-O bytes/signature and
             // replaces a previous branded version only after a runtime update.
             let result = source.path.withCString { from in
@@ -348,8 +361,12 @@ enum ManagedModelRuntime {
         return destination
     }
 
+    private static func notPrepared() -> AppError {
+        .message("Локальный ИИ «После» не подготовлен. В настройках «Конспект и карточки → На Mac → После» нажмите «Подготовить ИИ».")
+    }
+
     private static func failure() -> AppError {
-        .message("Не удалось подготовить процессы локального ИИ. Повторите подготовку в настройках.")
+        .message("Не удалось подготовить процессы локального ИИ «После». В настройках «Конспект и карточки» повторите подготовку ИИ.")
     }
 }
 
@@ -359,12 +376,16 @@ final class LocalModelService {
     private var port = 11436
     private var externalURL: String?
     var baseURL: String { externalURL ?? "http://127.0.0.1:\(port)" }
-    private let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.connectionProxyDictionary = [:]
-        configuration.timeoutIntervalForRequest = 2
-        return URLSession(configuration: configuration)
-    }()
+    private let session: URLSession
+    init(session: URLSession? = nil) {
+        if let session { self.session = session }
+        else {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.connectionProxyDictionary = [:]
+            configuration.timeoutIntervalForRequest = 2
+            self.session = URLSession(configuration: configuration)
+        }
+    }
 
     static func validatedEndpoint(_ value: String) throws -> String {
         guard let url = URL(string: value), let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -398,6 +419,9 @@ final class LocalModelService {
         externalURL = nil
         if process?.isRunning == true, await healthy() { return }
         if process != nil { stop() }
+        // Missing or damaged app-owned runtime is independent of ASR readiness.
+        // Validate it before probing ports; never fall back to an external provider.
+        let binary = try ManagedModelRuntime.brandedExecutable(root: root)
         // The managed service owns its port and model cache. External servers are selected explicitly.
         var available = false
         for candidate in 11436...11456 {
@@ -406,7 +430,6 @@ final class LocalModelService {
             if !(await healthy()) { available = true; break }
         }
         guard available else { throw AppError.message("Порты локального ИИ заняты. Перезапустите После.") }
-        let binary = try ManagedModelRuntime.brandedExecutable(root: root)
         let p = Process(); p.executableURL = binary; p.arguments = ["serve"]
         p.standardInput = FileHandle.nullDevice; p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         p.environment = ProcessEnvironment.withoutSecrets(ProcessInfo.processInfo.environment).merging([
@@ -414,7 +437,11 @@ final class LocalModelService {
             "OLLAMA_NO_CLOUD": "1", "OLLAMA_CONTEXT_LENGTH": "16384", "OLLAMA_NUM_PARALLEL": "1",
             "OLLAMA_MAX_LOADED_MODELS": "1", "OLLAMA_KEEP_ALIVE": "0"
         ]) { _, new in new }
-        try p.run(); process = p
+        do { try p.run() }
+        catch {
+            throw AppError.message("Не удалось запустить локальный ИИ «После». В настройках «Конспект и карточки» повторите подготовку ИИ.")
+        }
+        process = p
         for _ in 0..<40 {
             guard !cancelled() else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
             if await healthy() { return }
