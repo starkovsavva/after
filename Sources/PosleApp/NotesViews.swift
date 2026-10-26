@@ -407,7 +407,7 @@ private struct MeetingContextEditor: View {
     }
 }
 
-private struct NotesMessage: View {
+struct NotesMessage: View {
     @ObservedObject var notes: NotesStore
     @State private var details = false
     private var text: String? { notes.error ?? notes.notice }
@@ -603,96 +603,6 @@ struct NotesContextsView: View {
 }
 
 struct NotesTasksView: View {
-    @EnvironmentObject private var app: AppStore
     @ObservedObject var notes: NotesStore
-    @State private var filter = "open"
-    @State private var query = ""
-    @State private var editing: CapturedNote?
-    @State private var newText = ""
-    private var filtered: [LibraryTask] {
-        notes.tasks.filter { task in
-            (filter == "all" || (filter == "open" ? !task.completed : task.completed)) &&
-            (query.isEmpty || [task.text, task.owner, task.due, task.title].joined(separator: " ").localizedCaseInsensitiveContains(query))
-        }
-    }
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    Text("Мои задачи").font(AppTypography.sectionTitle).accessibilityAddTraits(.isHeader)
-                    Spacer()
-                    Button { notes.reload(); notes.loadTasks(); app.reloadLibrary() } label: { Image(systemName: "arrow.clockwise").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).accessibilityLabel("Обновить задачи").help("Обновить задачи")
-                }
-                HStack(spacing: 10) {
-                    TextField("Новая задача…", text: $newText).textFieldStyle(.roundedBorder).onSubmit(addTask)
-                    Button("Добавить", action: addTask).buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                HStack(spacing: 16) {
-                    Picker("Статус задач", selection: $filter) { Text("В работе").tag("open"); Text("Завершённые").tag("done"); Text("Все").tag("all") }
-                        .pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(maxWidth: 320).accessibilityLabel("Статус задач")
-                    Spacer(minLength: 0)
-                    TextField("Поиск в задачах", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
-                }
-                if filtered.isEmpty && notes.error == nil {
-                    NotesEmpty(title: !query.isEmpty ? "Задачи не найдены" : filter == "done" ? "Нет завершённых задач" : filter == "open" ? "Нет открытых задач" : "Задач пока нет", text: "", icon: "checklist")
-                }
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(filtered) { task in
-                        HStack(alignment: .top, spacing: 10) {
-                            Button {
-                                notes.complete(task, completed: !task.completed); app.reloadLibrary()
-                                if app.selection == task.meetingID { app.refreshResults(task.meetingID ?? "") }
-                            } label: { Image(systemName: task.completed ? "checkmark.circle.fill" : "circle").font(.system(size: 18)).foregroundStyle(task.completed ? Ink.green : .secondary).frame(width: 26, height: 26) }
-                                .buttonStyle(.plain).accessibilityLabel(task.completed ? "Вернуть задачу в работу" : "Завершить задачу")
-                            VStack(alignment: .leading, spacing: 7) {
-                                Text(task.text).font(AppTypography.body).lineSpacing(4).strikethrough(task.completed).textSelection(.enabled)
-                                HStack(spacing: 10) {
-                                    if !task.owner.isEmpty || !task.due.isEmpty { Text([task.owner, task.due].filter { !$0.isEmpty }.joined(separator: " · ")).lineLimit(1) }
-                                    TaskCalendarSummary(task: task)
-                                    if let meetingID = task.meetingID, app.noteMeetings.contains(where: { $0.id == meetingID }) {
-                                        Button { app.openMeeting(meetingID, tab: task.noteID == nil ? "summary" : "notes"); notes.highlightedNoteID = task.noteID } label: { Text(task.title).lineLimit(1) }.buttonStyle(.borderless).help(task.title)
-                                        if let source = task.segmentIDs.first {
-                                            Button { app.openMeeting(meetingID, tab: "transcript", segmentID: source) } label: { Image(systemName: "quote.bubble").frame(width: 24, height: 24) }
-                                                .buttonStyle(.plain).help("Исходная реплика").accessibilityLabel("Открыть исходную реплику задачи")
-                                        }
-                                    } else {
-                                        Button { app.librarySection = "inbox"; notes.highlightedNoteID = task.noteID } label: { Label(task.meetingID == nil ? "Входящие" : "Встреча недоступна", systemImage: "tray") }.buttonStyle(.borderless)
-                                    }
-                                }.font(AppTypography.caption).foregroundStyle(.secondary)
-                            }.padding(.top, 3).frame(maxWidth: .infinity, alignment: .leading)
-                            TaskCalendarButton(task: task)
-                            if let id = task.noteID, let note = notes.workspace.notes.first(where: { $0.id == id }) {
-                                Button { editing = note } label: { Image(systemName: "pencil").frame(width: 24, height: 24) }
-                                    .buttonStyle(.plain).help("Изменить задачу").accessibilityLabel("Изменить задачу")
-                            } else {
-                                Menu { Button("Создать свою задачу по этой") {
-                                    var note = CapturedNote(text: task.text, kind: "task", meetingID: task.meetingID, timestamp: task.timestamp)
-                                    note.owner = task.owner; note.due = task.due
-                                    if let saved = notes.save(note) { editing = saved; notes.loadTasks() }
-                                } } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
-                                    .menuStyle(.borderlessButton).frame(width: 26).accessibilityLabel("Действия с задачей")
-                            }
-                        }.padding(.vertical, 12)
-                        Divider()
-                    }
-                }
-            }.appContentLayout()
-        }.onAppear { notes.reload(); notes.loadTasks(); updateNewTaskEditing() }
-            .onChange(of: newText) { _, _ in updateNewTaskEditing() }
-            .onDisappear { notes.editingNewTask = false }
-            .onChange(of: notes.workspace.notes) { _, _ in notes.loadTasks() }
-            .onChange(of: app.busy) { _, busy in if !busy { notes.reload(); notes.loadTasks() } }
-            .overlay(alignment: .bottomTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
-            .sheet(item: $editing, onDismiss: { notes.loadTasks() }) { note in NoteEditorView(notes: notes, note: note).environmentObject(app) }
-    }
-    private func updateNewTaskEditing() {
-        notes.editingNewTask = !newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-    private func addTask() {
-        guard !newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if notes.capture(text: newText, kind: "task") != nil {
-            newText = ""; notes.editingNewTask = false; notes.loadTasks()
-        }
-    }
+    var body: some View { TasksWorkspaceView(notes: notes) }
 }

@@ -207,7 +207,7 @@ struct NotesLibraryView: View {
     private var noteList: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Заметки").font(AppTypography.heading)
+                Text("Заметки").font(AppTypography.controlStrong)
                 Spacer()
                 Menu {
                     Button("Новая заметка") { createNote() }
@@ -315,7 +315,7 @@ struct NotesLibraryView: View {
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Ink.warning.opacity(0.06))
             }
             VStack(alignment: .leading, spacing: 8) {
-                TextField("Новая заметка", text: binding(\.title)).font(AppTypography.sectionTitle).textFieldStyle(.plain).disabled(draft.trashedAt != nil)
+                TextField("Новая заметка", text: binding(\.title)).font(AppTypography.pageTitle).textFieldStyle(.plain).disabled(draft.trashedAt != nil)
                     .accessibilityLabel("Заголовок заметки")
                 HStack(spacing: 10) {
                     Text(Date(timeIntervalSince1970: draft.updatedAt), style: .date).font(AppTypography.caption).foregroundStyle(.secondary)

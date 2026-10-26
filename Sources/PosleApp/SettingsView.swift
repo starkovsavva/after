@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var theme = ThemeController.shared
     @State private var editingCustomLocalModel = false
     @State private var customLocalModel = ""
 
@@ -43,7 +44,7 @@ struct SettingsView: View {
     @State private var showingTemplates = false
     init(section: String = "general") { _section = State(initialValue: section) }
     private let sections: [(String, String, String)] = [
-        ("general", "Общие", "gearshape"), ("record", "Запись", "record.circle"),
+        ("general", "Общие", "gearshape"), ("appearance", "Оформление", "paintpalette"), ("record", "Запись", "record.circle"),
         ("speech", "Распознавание речи", "waveform"), ("ai", "Конспект и карточки", "sparkles"),
         ("notes", "Заметки и шаблоны", "square.and.pencil"), ("keys", "Горячие клавиши", "keyboard"),
         ("data", "Данные и экспорт", "externaldrive"),
@@ -64,8 +65,8 @@ struct SettingsView: View {
                         Button { section = id } label: {
                             Label(title, systemImage: icon).font(AppTypography.control)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 11).padding(.vertical, 11)
-                                .background(section == id ? Ink.accent.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8))
-                                .foregroundStyle(section == id ? Ink.accent : Color.primary)
+                                .background(section == id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 6))
+                                .foregroundStyle(Color.primary)
                         }.buttonStyle(.plain).accessibilityAddTraits(section == id ? .isSelected : [])
                     }
                     Spacer()
@@ -100,6 +101,7 @@ struct SettingsView: View {
                     .tint(Ink.actionFill).keyboardShortcut(.defaultAction)
             }.padding(.horizontal, 16).frame(height: AppLayout.statusHeight)
         }.frame(width: 900, height: 690).tint(Ink.accent).appControlDefaults()
+            .preferredColorScheme(theme.colorScheme)
             .sheet(isPresented: $showingTemplates) {
                 VStack(spacing: 16) {
                     HStack { Spacer(); Button("Готово") { showingTemplates = false }.keyboardShortcut(.cancelAction) }
@@ -107,6 +109,7 @@ struct SettingsView: View {
                 }.padding(25).frame(width: 700, height: 600)
             }
             .onAppear {
+                theme.configure(root: store.root)
                 if !store.settings.defaultTemplateID.isEmpty && !store.notes.templates.contains(where: { $0.id == store.settings.defaultTemplateID }) { store.settings.defaultTemplateID = "" }
                 editingCustomLocalModel = !isPresetModel(store.settings.localModel)
                 customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
@@ -125,6 +128,7 @@ struct SettingsView: View {
     }
     @ViewBuilder private var settingsContent: some View {
         switch section {
+        case "appearance": ThemeSettingsView(theme: theme)
         case "speech": SpeechSettingsView().disabled(store.busy || store.isRecording)
         case "ai": aiSettings.disabled(store.busy || store.isRecording)
         case "record": recordSettings.disabled(store.isRecording)
@@ -173,6 +177,7 @@ struct SettingsView: View {
                 Text("⌃⌥N").tag("controlOptionN"); Text("⌃⇧Пробел").tag("controlShiftSpace")
             }.disabled(!store.settings.quickCaptureEnabled)
             Toggle("Отмечать важный момент по ⌃⌥B", isOn: $store.settings.bookmarkShortcutEnabled)
+            Toggle("Голосовое поручение по ⌃⌥M", isOn: $store.settings.voiceShortcutEnabled)
             LabeledContent("Общий поиск", value: "⌘K")
             LabeledContent("Добавить запись", value: "⌘O")
             LabeledContent("Новая заметка или запись", value: "⌘N")

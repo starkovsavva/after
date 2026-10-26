@@ -32,9 +32,16 @@ struct PosleApp: App {
                 }.keyboardShortcut("n")
             }
             CommandGroup(after: .newItem) {
+                Button("Голосовое поручение…") { store.presentVoice() }.keyboardShortcut("m", modifiers: [.command, .shift])
                 Button("Быстрая заметка…") { store.quickCaptureAction?() }.keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("Отметить важный момент") { store.bookmarkAction?() }
                 Button("Поиск по библиотеке…") { store.openGlobalSearch() }.keyboardShortcut("k")
+            }
+            CommandMenu("Встреча") {
+                Button("Конспект") { store.librarySection = "meetings"; store.tab = "summary" }.keyboardShortcut("1")
+                Button("Транскрипт") { store.librarySection = "meetings"; store.tab = "transcript" }.keyboardShortcut("2")
+                Button("Карточки встречи") { store.librarySection = "meetings"; store.tab = "cards" }.keyboardShortcut("3")
+                Button("Заметки встречи") { store.librarySection = "meetings"; store.tab = "notes" }.keyboardShortcut("4")
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Настройки…") { store.openSettings() }.keyboardShortcut(",")
@@ -68,6 +75,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task {
                 do { try await EmbeddedSpeechNativeChecks.run(); NSApp.terminate(nil) }
                 catch { fputs("Embedded NSApplication check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-pipeline") {
+            Task {
+                do { try await PipelineNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native pipeline check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-tasks") {
+            Task {
+                do { try await TasksNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native tasks check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-themes") {
+            do { try ThemeNativeChecks.run(); NSApp.terminate(nil) }
+            catch { fputs("Native theme check failed: \(error)\n", stderr); exit(1) }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-voice") {
+            Task {
+                do { try await VoiceNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native voice check failed: \(error)\n", stderr); exit(1) }
             }
             return
         }
@@ -145,6 +178,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if ["inbox", "tasks", "contexts", "cards-library", "calendar", "calendar-disconnected"].contains(screen) {
                 previewStore.librarySection = screen == "cards-library" ? "cards" : screen.hasPrefix("calendar") ? "calendar" : screen
             }
+            #if DEBUG
+            if ["voice", "voice-result"].contains(screen) { previewStore.voice.seedPreview(screen) }
+            #endif
             if screen == "notes" { previewStore.librarySection = "meetings"; previewStore.tab = "notes" }
             if screen == "welcome" { previewStore.selection = nil; previewStore.meetings = []; previewStore.loadSelection() }
             if screen == "processing" {
@@ -204,6 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.contentView = view; window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             window.center(); window.makeKeyAndOrderFront(nil)
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                window.makeFirstResponder(nil)
                 view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                 // The snapshot window uses a transparent title bar. Exclude its
                 // safe-area strip from the cached image, in either coordinate system.
@@ -228,6 +265,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.notice = "Завершите работу и сохраните правки перед обновлением"
             return .terminateCancel
         }
+        if store?.notes.flushCaptureDrafts() == false { store?.error = store?.notes.error; return .terminateCancel }
+        if store?.voice.flushDraft() == false { store?.presentVoice(); return .terminateCancel }
         if store?.flushOverviewDrafts() == false { return .terminateCancel }
         if !NoteDraftPersistence.flushAll() {
             sender.activate(ignoringOtherApps: true)

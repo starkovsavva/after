@@ -60,10 +60,28 @@ struct CalendarTaskLink: Codable, Identifiable, Equatable {
     static func plainTitle(_ title: String) -> String {
         completion(in: title) == nil ? title : String(title.dropFirst(2))
     }
-    static func signature(for task: LibraryTask) -> String? {
-        guard task.noteID == nil,
-              let data = try? JSONSerialization.data(withJSONObject: ["text": task.text, "segments": task.segmentIDs, "meeting": task.meetingID ?? ""], options: [.sortedKeys]) else { return nil }
+    /// Resolve a legacy source ID or a task materialized as a stable note.
+    /// Matching needs an exact source fingerprint and a unique same-meeting
+    /// candidate; a reused summary position can never inherit an event.
+    func replacement(in tasks: [LibraryTask]) -> LibraryTask? {
+        guard taskID.hasPrefix("summary:"), !tasks.contains(where: { $0.id == taskID }),
+              let sourceSignature else { return nil }
+        let matches = tasks.filter { task in
+            guard let meetingID = task.meetingID, taskID.hasPrefix("summary:\(meetingID):") else { return false }
+            if let origin = task.taskOrigin {
+                return Self.fingerprint(text: origin.sourceText, segments: origin.segmentIDs, meetingID: origin.meetingID) == sourceSignature
+            }
+            return Self.signature(for: task) == sourceSignature
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+    private static func fingerprint(text: String, segments: [Int], meetingID: String) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["text": text, "segments": segments, "meeting": meetingID], options: [.sortedKeys]) else { return nil }
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+    static func signature(for task: LibraryTask) -> String? {
+        guard task.noteID == nil else { return nil }
+        return fingerprint(text: task.text, segments: task.segmentIDs, meetingID: task.meetingID ?? "")
     }
 }
 
@@ -152,7 +170,7 @@ final class CalendarStore: ObservableObject {
 
     func bindNotes(_ notes: NotesStore) {
         self.notes = notes
-        notes.$tasks.dropFirst().debounce(for: .milliseconds(180), scheduler: RunLoop.main).sink { [weak self] _ in self?.reconcileTasks() }.store(in: &cancellables)
+        notes.$tasks.dropFirst().debounce(for: .milliseconds(180), scheduler: RunLoop.main).sink { [weak self] _ in self?.migrateTaskIdentities(); self?.reconcileTasks() }.store(in: &cancellables)
         notes.$workspace.dropFirst().debounce(for: .milliseconds(180), scheduler: RunLoop.main).sink { [weak self, weak notes] _ in
             if self?.connected == true { notes?.loadTasks() }
         }.store(in: &cancellables)
@@ -380,6 +398,17 @@ final class CalendarStore: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
+    private func migrateTaskIdentities() {
+        guard !preview, !preferenceLoadFailed, let notes else { return }
+        let original = links
+        for index in links.indices {
+            if let task = links[index].replacement(in: notes.tasks) {
+                links[index].taskID = task.id
+                links[index].sourceSignature = CalendarTaskLink.signature(for: task)
+            }
+        }
+        if links != original { do { try persist() } catch { links = original; self.error = error.localizedDescription } }
+    }
     private func reconcileTasks() {
         guard connected, !preview, !preferenceLoadFailed, let notes, let eventStore, !links.isEmpty else { return }
         let original = links

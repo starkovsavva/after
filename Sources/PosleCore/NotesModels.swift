@@ -30,6 +30,27 @@ public struct NoteExpansion: Codable, Hashable {
         self.provider = provider; self.model = model; self.warnings = warnings; self.sourceFingerprint = sourceFingerprint
     }
 }
+public struct TaskOrigin: Codable, Hashable {
+    public var meetingID: String
+    public var itemSignature: String
+    public var sourceText: String
+    public var segmentIDs: [Int]
+    public var summaryTaskID: String
+}
+public struct TaskHistory: Codable, Identifiable, Hashable {
+    public var id: String
+    public var operationID: String
+    public var text: String
+    public var createdAt: Double
+}
+public struct TaskSubtask: Codable, Identifiable, Hashable {
+    public var id: String
+    public var text: String
+    public var completed: Bool
+    public init(id: String = UUID().uuidString.lowercased(), text: String, completed: Bool = false) {
+        self.id = id; self.text = text; self.completed = completed
+    }
+}
 public struct CapturedNote: Codable, Identifiable, Hashable {
     public var id: String
     public var text: String
@@ -51,20 +72,23 @@ public struct CapturedNote: Codable, Identifiable, Hashable {
     public var tags: [String]
     public var pinned: Bool
     public var trashedAt: Double?
+    public var taskOrigin: TaskOrigin?
+    public var history: [TaskHistory]
+    public var subtasks: [TaskSubtask]
     public init(id: String = UUID().uuidString.lowercased(), text: String = "", kind: String = "note",
                 meetingID: String? = nil, timestamp: Double? = nil, createdAt: Double = Date().timeIntervalSince1970,
                 updatedAt: Double = Date().timeIntervalSince1970, revision: Int = 0, sourceURL: String = "",
                 owner: String = "", due: String = "", completed: Bool = false,
-                attachments: [NoteAttachment] = [], expansion: NoteExpansion? = nil, title: String = "", contentRTF: String = "", folder: String = "", tags: [String] = [], pinned: Bool = false, trashedAt: Double? = nil) {
+                attachments: [NoteAttachment] = [], expansion: NoteExpansion? = nil, title: String = "", contentRTF: String = "", folder: String = "", tags: [String] = [], pinned: Bool = false, trashedAt: Double? = nil, taskOrigin: TaskOrigin? = nil, history: [TaskHistory] = [], subtasks: [TaskSubtask] = []) {
         self.id = id; self.text = text; self.kind = kind; self.meetingID = meetingID; self.timestamp = timestamp
         self.createdAt = createdAt; self.updatedAt = updatedAt; self.revision = revision; self.sourceURL = sourceURL
         self.owner = owner; self.due = due; self.completed = completed; self.attachments = attachments; self.expansion = expansion
-        self.title = title; self.contentRTF = contentRTF; self.folder = folder; self.tags = tags; self.pinned = pinned; self.trashedAt = trashedAt
+        self.title = title; self.contentRTF = contentRTF; self.folder = folder; self.tags = tags; self.pinned = pinned; self.trashedAt = trashedAt; self.taskOrigin = taskOrigin; self.history = history; self.subtasks = subtasks
     }
     public var displayTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (text.split(separator: "\n").first.map(String.init) ?? "Новая заметка") : title }
     private enum CodingKeys: String, CodingKey {
         case id, text, kind, meetingID, timestamp, createdAt, updatedAt, revision, sourceURL, owner, due, completed, attachments, expansion
-        case title, contentRTF, folder, tags, pinned, trashedAt
+        case title, contentRTF, folder, tags, pinned, trashedAt, taskOrigin, history, subtasks
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -86,6 +110,9 @@ public struct CapturedNote: Codable, Identifiable, Hashable {
         tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         trashedAt = try c.decodeIfPresent(Double.self, forKey: .trashedAt)
+        taskOrigin = try c.decodeIfPresent(TaskOrigin.self, forKey: .taskOrigin)
+        history = try c.decodeIfPresent([TaskHistory].self, forKey: .history) ?? []
+        subtasks = try c.decodeIfPresent([TaskSubtask].self, forKey: .subtasks) ?? []
     }
 }
 public struct NoteTemplate: Codable, Identifiable, Hashable {
@@ -130,6 +157,10 @@ public struct LibraryTask: Codable, Identifiable, Hashable {
     public var itemIndex: Int?
     public var noteID: String?
     public var noteRevision: Int?
+    public var taskTitle: String?
+    public var taskOrigin: TaskOrigin?
+    public var history: [TaskHistory]?
+    public var subtasks: [TaskSubtask]?
     public var timestamp: Double?
 }
 public struct LibraryTasksResponse: Decodable { public var tasks: [LibraryTask] }

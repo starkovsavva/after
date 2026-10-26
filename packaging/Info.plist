@@ -7,8 +7,8 @@
   <key>CFBundleExecutable</key><string>Posle</string>
   <key>CFBundleIdentifier</key><string>app.posle.meetings</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.8.1</string>
-  <key>CFBundleVersion</key><string>10</string>
+  <key>CFBundleShortVersionString</key><string>0.9.0</string>
+  <key>CFBundleVersion</key><string>11</string>
   <key>SUFeedURL</key><string>https://raw.githubusercontent.com/starkovsavva/posle/updates/appcast.xml</string>
   <key>SUPublicEDKey</key><string>M0KZyIhcEoO1zC6FcDJZTmBhxEdeCv6CXhdqavL9Pk0=</string>
   <key>SUEnableAutomaticChecks</key><true/>
@@ -23,7 +23,7 @@
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSCalendarsFullAccessUsageDescription</key><string>После показывает выбранные календари и синхронизирует события, которые вы связываете с задачами.</string>
-  <key>NSMicrophoneUsageDescription</key><string>После записывает ваш голос для транскрипции встречи. Записи хранятся на этом Mac.</string>
+  <key>NSMicrophoneUsageDescription</key><string>После использует микрофон для записи встреч и голосовых поручений.</string>
   <key>NSAudioCaptureUsageDescription</key><string>После записывает звук звонка, чтобы разделить реплики собеседников и создать транскрипцию.</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
   <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>app.posle.meetings.calendar</string><key>CFBundleURLSchemes</key><array><string>posle</string></array></dict></array>

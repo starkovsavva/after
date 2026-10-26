@@ -52,6 +52,22 @@ enum CalendarNativeChecks {
         let object: [String: Any] = ["id": "summary:meeting:0", "meetingID": "meeting", "title": "Демо", "text": "Проверить договор", "owner": "", "due": "", "completed": false, "segmentIDs": [1, 2]]
         var summaryTask = try JSONDecoder().decode(LibraryTask.self, from: JSONSerialization.data(withJSONObject: object))
         let originalSignature = CalendarTaskLink.signature(for: summaryTask)
+        var legacy = CalendarTaskLink(taskID: summaryTask.id, calendarID: "fixture", title: summaryTask.text,
+            start: now, end: now.addingTimeInterval(600), lastTaskText: summaryTask.text,
+            lastTaskCompleted: false, lastEventTitle: summaryTask.text)
+        legacy.sourceSignature = originalSignature
+        var stable = summaryTask; stable.id = "summary:meeting:source-hash"
+        try expect(legacy.replacement(in: [stable])?.id == stable.id, "Legacy calendar link must migrate only to an exact source fingerprint")
+        var duplicate = stable; duplicate.id += "-duplicate"
+        try expect(legacy.replacement(in: [stable, duplicate]) == nil, "Ambiguous source identity must not retarget a calendar link")
+        var changed = stable; changed.segmentIDs = [99]
+        try expect(legacy.replacement(in: [changed]) == nil, "A reused summary position must not acquire an old calendar link")
+        var canonicalJSON = object
+        canonicalJSON["id"] = "manual:canonical"; canonicalJSON["noteID"] = "canonical"
+        canonicalJSON["text"] = "Проверить договор и дополнение"
+        canonicalJSON["taskOrigin"] = ["meetingID": "meeting", "itemSignature": "source-hash", "sourceText": "Проверить договор", "segmentIDs": [1, 2], "summaryTaskID": "summary:meeting:source-hash"]
+        let canonicalTask = try JSONDecoder().decode(LibraryTask.self, from: JSONSerialization.data(withJSONObject: canonicalJSON))
+        try expect(legacy.replacement(in: [canonicalTask])?.id == canonicalTask.id, "Materialization must preserve the original calendar association despite task additions")
         summaryTask.text = "Другая задача на том же месте"
         try expect(CalendarTaskLink.signature(for: summaryTask) != originalSignature, "Regenerated summary index must not impersonate the original task")
         summaryTask.text = "Проверить договор"; summaryTask.segmentIDs = [4, 9]

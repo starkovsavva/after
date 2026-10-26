@@ -1,6 +1,22 @@
 import Darwin
 import Foundation
 
+struct DictationResult: Decodable, Sendable {
+    var text: String
+    var duration: Double
+    var model: String
+    var pid: Int
+    var warnings: [String]
+    var segments: [DictationSegment]
+}
+
+struct DictationSegment: Decodable, Sendable {
+    var id: Int
+    var start: Double
+    var end: Double
+    var text: String
+}
+
 /// Local ASR executes on the persistent Rust/Python thread inside this app's
 /// own PID. The main actor receives only progress and the final result.
 final class EmbeddedSpeechService: @unchecked Sendable {
@@ -34,7 +50,31 @@ final class EmbeddedSpeechService: @unchecked Sendable {
     func run(root: URL, interpreter: URL, backend: URL, command: String, meeting: URL?,
              speakers: Int = 0, diarization: Bool = true,
              event: @escaping @Sendable (WorkerEvent) -> Void) async throws -> WorkerEvent? {
-        try await withCheckedThrowingContinuation { continuation in
+        var input: [String: Any] = ["root": root.path, "interpreter": interpreter.path, "backend": backend.path,
+                                   "command": command, "speakers": speakers, "diarization": diarization]
+        if let meeting { input["meeting"] = meeting.path }
+        let response = try await perform(input: input, event: event)
+        guard let value = response["value"] as? [String: Any] else { return nil }
+        return try JSONDecoder().decode(WorkerEvent.self, from: JSONSerialization.data(withJSONObject: value))
+    }
+
+    /// Explicit short-audio ASR; it never creates a meeting or persists text.
+    /// Keep the session's input until this method finishes, including on cancel.
+    func dictate(root: URL, interpreter: URL, backend: URL, audio: URL, apiKey: String? = nil,
+                 event: @escaping @Sendable (WorkerEvent) -> Void) async throws -> DictationResult {
+        var input: [String: Any] = ["root": root.path, "interpreter": interpreter.path, "backend": backend.path,
+                                   "command": "dictate", "audio": audio.path]
+        if let apiKey { input["apiKey"] = apiKey }
+        let response = try await perform(input: input, event: event)
+        guard let value = response["value"] as? [String: Any] else {
+            throw AppError.message("Распознавание не вернуло текст поручения.")
+        }
+        return try JSONDecoder().decode(DictationResult.self, from: JSONSerialization.data(withJSONObject: value))
+    }
+
+    private func perform(input: [String: Any], event: @escaping @Sendable (WorkerEvent) -> Void) async throws -> [String: Any] {
+        let data = try JSONSerialization.data(withJSONObject: input, options: [.sortedKeys])
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[String: Any], Error>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 self.lock.lock()
                 if self.running {
@@ -47,10 +87,6 @@ final class EmbeddedSpeechService: @unchecked Sendable {
                     let api = try self.loadAPI()
                     self.lock.lock(); let cancelled = self.cancelled; self.lock.unlock()
                     if cancelled { throw CancellationError() }
-                    var input: [String: Any] = ["root": root.path, "interpreter": interpreter.path, "backend": backend.path,
-                                               "command": command, "speakers": speakers, "diarization": diarization]
-                    if let meeting { input["meeting"] = meeting.path }
-                    let data = try JSONSerialization.data(withJSONObject: input, options: [.sortedKeys])
                     let context = EmbeddedSpeechCallback(event)
                     let retained = Unmanaged.passRetained(context)
                     defer { retained.release() }
@@ -74,11 +110,7 @@ final class EmbeddedSpeechService: @unchecked Sendable {
                         if envelope["cancelled"] as? Bool == true { throw CancellationError() }
                         throw AppError.message(envelope["error"] as? String ?? "Не удалось завершить распознавание.")
                     }
-                    let value: WorkerEvent?
-                    if let result = envelope["value"] as? [String: Any] {
-                        value = try JSONDecoder().decode(WorkerEvent.self, from: JSONSerialization.data(withJSONObject: result))
-                    } else { value = nil }
-                    continuation.resume(returning: value)
+                    continuation.resume(returning: envelope)
                 } catch { continuation.resume(throwing: error) }
             }
         }

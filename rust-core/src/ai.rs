@@ -109,7 +109,7 @@ struct Example { example:String, translation:String, explanation:String }
 fn read(path:&Path) -> Result<Value> {
     serde_json::from_slice(&fs::read(path).context("Не удалось открыть данные встречи")?).context("Не удалось прочитать данные встречи")
 }
-fn settings(root:&Path) -> Result<Settings> {
+pub(crate) fn settings(root:&Path) -> Result<Settings> {
     if !root.join("settings.json").exists() { return Ok(Settings::default()); }
     serde_json::from_value(read(&root.join("settings.json"))?).context("Проверьте настройки ИИ")
 }
@@ -356,7 +356,7 @@ pub fn check_cloud(root:&Path)->Result<Value> {
         "message":format!("{} · модель отвечает, JSON проверен",config.title)}))
 }
 
-fn generate(settings:&Settings,system:&str,prompt:&str,schema:&Value) -> Result<Value> {
+pub(crate) fn generate(settings:&Settings,system:&str,prompt:&str,schema:&Value) -> Result<Value> {
     let answer=if settings.mode=="cloud" {
         let config=cloud_config(settings)?;
         let key=std::env::var("POSLE_API_KEY").unwrap_or_default();

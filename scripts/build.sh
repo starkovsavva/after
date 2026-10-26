@@ -96,7 +96,7 @@ fi
 codesign --verify --deep --strict "$SPARKLE"
 ditto --noextattr --norsrc --noqtn "$SPARKLE" "$APP/Contents/Frameworks/Sparkle.framework"
 codesign --verify --deep --strict "$APP/Contents/Frameworks/Sparkle.framework"
-cp "$PROJECT/backend/engine.py" "$PROJECT/backend/models.py" "$PROJECT/backend/media_runtime.py" "$PROJECT/backend/cloud_speech.py" "$PROJECT/backend/embedded_bridge.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$APP/Contents/Resources/backend/"
+cp "$PROJECT/backend/engine.py" "$PROJECT/backend/models.py" "$PROJECT/backend/media_runtime.py" "$PROJECT/backend/cloud_speech.py" "$PROJECT/backend/embedded_bridge.py" "$PROJECT/backend/short_speech.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$APP/Contents/Resources/backend/"
 cp "$PROJECT/THIRD_PARTY.md" "$APP/Contents/Resources/THIRD_PARTY.md"
 swift "$PROJECT/scripts/icon.swift" "$BUILD/AppIcon.iconset"
 iconutil -c icns "$BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"

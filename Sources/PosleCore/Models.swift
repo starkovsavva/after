@@ -178,6 +178,7 @@ public struct AppSettings: Codable {
     public var recordVideo = false
     public var quickCaptureEnabled = true
     public var bookmarkShortcutEnabled = true
+    public var voiceShortcutEnabled = true
     public var quickCaptureShortcut = "controlOptionN"
     public var notesAutoTimestamp = true
     public var notesSaveToActiveMeeting = true
@@ -268,7 +269,7 @@ public struct AppSettings: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case startSection, recordSystemAudio, recordVideo, quickCaptureEnabled, bookmarkShortcutEnabled, quickCaptureShortcut, notesAutoTimestamp, notesSaveToActiveMeeting, defaultTemplateID
+        case startSection, recordSystemAudio, recordVideo, quickCaptureEnabled, bookmarkShortcutEnabled, voiceShortcutEnabled, quickCaptureShortcut, notesAutoTimestamp, notesSaveToActiveMeeting, defaultTemplateID
         case mode, localModel, localProvider, localEndpoint, asrModelPath, asrModelFormat
         case speechMode, speechLocalModel, speechCloudProvider, speechCloudEndpoint, speechCloudModel, speechResponseFormat, speechLanguage
         case cloudModel, cloudProvider, cloudEndpoint, cloudAPI, cloudOutput, cloudProfiles, language, diarization, speakerCount, autoSummary, focus
@@ -283,6 +284,7 @@ public struct AppSettings: Codable {
         recordVideo = try values.decodeIfPresent(Bool.self, forKey: .recordVideo) ?? recordVideo
         quickCaptureEnabled = try values.decodeIfPresent(Bool.self, forKey: .quickCaptureEnabled) ?? quickCaptureEnabled
         bookmarkShortcutEnabled = try values.decodeIfPresent(Bool.self, forKey: .bookmarkShortcutEnabled) ?? bookmarkShortcutEnabled
+        voiceShortcutEnabled = try values.decodeIfPresent(Bool.self, forKey: .voiceShortcutEnabled) ?? voiceShortcutEnabled
         quickCaptureShortcut = try values.decodeIfPresent(String.self, forKey: .quickCaptureShortcut) ?? quickCaptureShortcut
         notesAutoTimestamp = try values.decodeIfPresent(Bool.self, forKey: .notesAutoTimestamp) ?? notesAutoTimestamp
         notesSaveToActiveMeeting = try values.decodeIfPresent(Bool.self, forKey: .notesSaveToActiveMeeting) ?? notesSaveToActiveMeeting

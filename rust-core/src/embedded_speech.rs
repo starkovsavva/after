@@ -185,6 +185,27 @@ fn runtime(input:&Value)->Result<Runtime> {
     if !base.join("lib/libpython3.12.dylib").is_file() || !base.join("lib/python3.12/encodings/__init__.py").is_file() {bail!("Движок распознавания установлен не полностью.");}
     Ok(Runtime{interpreter,real,base,venv,backend})
 }
+/// Reject unsupported commands and unowned dictation paths before loading Python.
+fn validate_request(input: &Value) -> Result<()> {
+    let command = input["command"].as_str().context("Не указана команда распознавания")?;
+    if !["transcribe", "diarize", "finalize", "probe", "dictate"].contains(&command) {
+        bail!("Эта команда не поддерживается встроенным распознаванием.");
+    }
+    if command != "dictate" { return Ok(()); }
+    let root = Path::new(input["root"].as_str().context("Не выбрана папка приложения")?);
+    let audio = Path::new(input["audio"].as_str().context("Не выбрана запись голосового поручения")?);
+    let session = audio.parent().context("Некорректная запись поручения")?;
+    if !root.is_absolute() || !audio.is_absolute()
+        || root.components().chain(audio.components()).any(|part|matches!(part, std::path::Component::ParentDir))
+        || session.parent() != Some(root.join("voice-inputs").as_path())
+        || session.file_name().and_then(|name|name.to_str()).and_then(|name|uuid::Uuid::parse_str(name).ok()).is_none()
+    { bail!("Голосовое поручение должно находиться в собственной папке приложения."); }
+    if let Some(key) = input.get("apiKey") {
+        let key = key.as_str().context("Некорректный ключ распознавания")?;
+        if key.len() > 16_000 || key.contains(['\r', '\n']) { bail!("Некорректный ключ распознавания."); }
+    }
+    Ok(())
+}
 unsafe extern "C" fn cancellation()->c_int {i32::from(CANCELLED.load(Ordering::Acquire))}
 fn host()->Result<&'static mpsc::Sender<Job>> {
     match HOST.get_or_init(|| {
@@ -227,8 +248,10 @@ pub unsafe extern "C" fn posle_speech_run(input:*const c_char,callback:Option<Ev
         if input.is_null() {bail!("Пустой запрос распознавания.");}
         let input=CStr::from_ptr(input).to_str().context("Ожидается UTF-8")?;
         if input.len()>100_000 {bail!("Слишком большой запрос распознавания.");}
+        let input: Value = serde_json::from_str(input)?;
+        validate_request(&input)?;
         let (reply,receiver)=mpsc::sync_channel(1);
-        host()?.send(Job{input:serde_json::from_str(input)?,callback,context:context as usize,reply}).map_err(|_|anyhow::anyhow!("Перезапустите приложение для распознавания."))?;
+        host()?.send(Job{input,callback,context:context as usize,reply}).map_err(|_|anyhow::anyhow!("Перезапустите приложение для распознавания."))?;
         receiver.recv().map_err(|_|anyhow::anyhow!("Распознавание прервалось. Исходная запись сохранена."))?
     });
     let envelope=match result {Ok(Ok(value))=>value,Ok(Err(error))=>json!({"ok":false,"error":error.to_string()}),Err(_)=>json!({"ok":false,"error":"Не удалось завершить распознавание. Исходная запись сохранена."})};
@@ -247,4 +270,18 @@ mod tests {
         assert_eq!(std::mem::offset_of!(PyConfig312,program_name),272);
         assert_eq!(std::mem::offset_of!(PyConfig312,module_search_paths),312);
     }
+    #[test]
+    fn dictation_paths_are_owned_and_bounded_before_loading_python() {
+        let mut input = json!({"root":"/private/tmp/posle-fixture", "command":"dictate", "audio":"/private/tmp/posle-fixture/voice-inputs/34ae2e5f-ac02-44ca-8f06-c1aaa66b5974/input.m4a"});
+        assert!(validate_request(&input).is_ok());
+        for path in ["/private/tmp/outside.wav", "/private/tmp/posle-fixture/voice-inputs/not-a-session/input.m4a", "/private/tmp/posle-fixture/voice-inputs/34ae2e5f-ac02-44ca-8f06-c1aaa66b5974/../input.m4a"] {
+            input["audio"] = json!(path);
+            assert!(validate_request(&input).is_err());
+        }
+        input["command"] = json!("prepare");
+        assert!(validate_request(&input).is_err());
+        input["command"] = json!("probe");
+        assert!(validate_request(&input).is_ok());
+    }
+
 }

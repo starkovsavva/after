@@ -35,15 +35,15 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     private var flushLibraryDrafts: () -> Bool = { NoteDraftPersistence.flushAll() }
 
     var currentVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.8.1"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.9.0"
     }
     private var workInProgress: Bool {
         guard let store else { return false }
-        return store.isRecording || store.stoppingRecording || store.busy || store.notes.attachmentBusy
+        return store.isRecording || store.stoppingRecording || store.busy || store.notes.attachmentBusy || store.voice.isWorking
     }
     private var editorOpen: Bool {
         guard let store else { return false }
-        return store.editingOverview || store.notes.editingNewTask || store.showingCaptureDrafts || store.showingSettings || store.showingRecord || store.showingSearch || NSApp.modalWindow != nil ||
+        return store.voice.isPresented || store.editingOverview || store.notes.editingNewTask || store.showingCaptureDrafts || store.showingSettings || store.showingRecord || store.showingSearch || NSApp.modalWindow != nil ||
             NSApp.windows.contains { $0.attachedSheet != nil || ($0 is NSPanel && $0.isVisible && $0.title == "Быстрая заметка") }
     }
     var canSafelyRelaunch: Bool { !workInProgress && !editorOpen && !hasQuickDraft() && store?.notes.hasUnsavedCaptureDrafts != true && !failedLibraryFlush && !failedOverviewFlush }
@@ -181,6 +181,23 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         if promptedCaptureKey != key {
             promptedCaptureKey = key
             if store.noteMeetings.contains(where: { $0.id == key }) { store.openMeeting(key, tab: "notes") }
+            else if key == "newtask" || ["taskappend:", "tasksubtask:", "taskmeta:"].contains(where: key.hasPrefix) {
+                store.notes.reload(); store.notes.loadTasks()
+                let taskID = key.firstIndex(of: ":").map { String(key[key.index(after: $0)...]) }
+                if key == "newtask" || store.notes.tasks.contains(where: { task in
+                    guard let taskID else { return false }
+                    return task.id == taskID || task.noteID == taskID || task.taskOrigin?.summaryTaskID == taskID
+                }) {
+                    store.librarySection = "tasks"; store.notes.selectedTaskID = taskID
+                } else {
+                    // A removed source must not strand the user's remaining text.
+                    if key.hasPrefix("taskmeta:"), let text = store.notes.captureDrafts[key],
+                       let data = text.data(using: .utf8), let metadata = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        store.notes.captureDrafts[key] = ["Уточнение к задаче", metadata["owner"].map { "Ответственный: \($0)" } ?? "", metadata["due"].map { "Срок: \($0)" } ?? ""].filter { !$0.isEmpty }.joined(separator: "\n")
+                    }
+                    store.recoveryCaptureDraftKey = key; store.showingCaptureDrafts = true
+                }
+            }
             else { store.recoveryCaptureDraftKey = key; store.showingCaptureDrafts = true }
             store.notice = "Сохраните черновик заметки перед обновлением"
         }

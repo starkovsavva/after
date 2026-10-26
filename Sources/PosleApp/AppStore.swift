@@ -12,6 +12,8 @@ final class AppStore: ObservableObject {
     let notes: NotesStore
     let calendar: CalendarStore
     let updates = AppUpdateController()
+    let voice = VoiceCommandController()
+    var isPreview: Bool { preview }
     var quickCaptureAction: (() -> Void)?
     var bookmarkAction: (() -> Void)?
     var captureMeetingID: String? { isRecording ? recordingID : nil }
@@ -143,6 +145,9 @@ final class AppStore: ObservableObject {
                                                    attributes: [.posixPermissions: 0o700])
             if let saved: AppSettings = read(root.appendingPathComponent("settings.json")) { settings = saved }
             overviewDrafts = read(root.appendingPathComponent("overview-drafts.json")) ?? [:]
+            // Finish only previously committed, explicitly authorized operations.
+            do { _ = try RustBridge.shared.get().request(root: root, command: "voice-recover") }
+            catch { self.error = "Не удалось завершить прерванное поручение: \(error.localizedDescription)" }
             librarySection = ["meetings", "inbox", "tasks", "cards"].contains(settings.startSection) ? settings.startSection : "meetings"
             runtimeReady = FileManager.default.isExecutableFile(atPath: python.path)
                 && FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime/ready-v2").path)
@@ -151,6 +156,7 @@ final class AppStore: ObservableObject {
             loadSelection()
         } catch { self.error = error.localizedDescription }
         calendar.bindNotes(notes)
+        voice.connect(self)
         recorder.failed = { [weak self] message in
             Task { @MainActor in
                 guard let self else { return }
@@ -262,12 +268,22 @@ final class AppStore: ObservableObject {
         guard let id = selection else { return }
         updateMeeting(id) { $0.speakerNames[key] = name.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
+    func taskCompleted(_ item: Insight) -> Bool {
+        if let meetingID = selection,
+           let note = notes.notes.first(where: { note in
+               guard let origin = note.taskOrigin else { return false }
+               return origin.meetingID == meetingID && origin.sourceText == item.text && origin.segmentIDs == item.segmentIDs
+           }) { return note.completed }
+        return selected?.completedTasks.contains(item.id) == true
+    }
     func toggleTask(_ item: Insight) {
-        guard let id = selection else { return }
-        updateMeeting(id) {
-            if $0.completedTasks.contains(item.id) { $0.completedTasks.removeAll { $0 == item.id } }
-            else { $0.completedTasks.append(item.id) }
-        }
+        guard let id = selection, let index = summary?.items.firstIndex(where: { $0.id == item.id }) else { return }
+        do {
+            _ = try RustBridge.shared.get().request(root: root, command: "notes-task-complete", arguments: [
+                "meetingID": id, "itemIndex": index, "text": item.text, "expectedSegmentIDs": item.segmentIDs, "completed": !taskCompleted(item)
+            ])
+            notes.reload(); notes.loadTasks(); reloadLibrary()
+        } catch { self.error = error.localizedDescription }
     }
 
     func chooseFile() {
@@ -303,7 +319,7 @@ final class AppStore: ObservableObject {
     }
 
     @discardableResult
-    func worker(_ command: String, id: String? = nil, extra: [String] = []) async throws -> WorkerEvent? {
+    func worker(_ command: String, id: String? = nil, extra: [String] = [], input: Data? = nil) async throws -> WorkerEvent? {
         guard !cancellationRequested else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
         if ["transcribe", "finalize", "install-local", "import-gguf"].contains(command) && !runtimeReady {
             throw AppError.message("Сначала подготовьте распознавание в настройках.")
@@ -314,7 +330,7 @@ final class AppStore: ObservableObject {
         let requestedASR = asrSelectionIdentity
         let requestedLocalASR = command == "transcribe" && settings.speechMode == "local"
         try write(settings, root.appendingPathComponent("settings.json"))
-        if ["check", "pull", "discover-local", "import-gguf"].contains(command) || (settings.mode == "local" && ["summarize", "example", "expand-notes"].contains(command)) {
+        if ["check", "pull", "discover-local", "import-gguf"].contains(command) || (settings.mode == "local" && ["summarize", "example", "expand-notes", "voice-plan"].contains(command)) {
             try await localService.ensure(root: root, settings: settings, cancelled: { self.cancellationRequested })
         }
         guard !cancellationRequested else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
@@ -324,7 +340,7 @@ final class AppStore: ObservableObject {
         // Secrets live only in Keychain and the short-lived child environment, never argv/files.
         var environment = ["PYTHONUNBUFFERED": "1", "HF_HOME": root.appendingPathComponent("cache/huggingface").path,
                            "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL]
-        if settings.mode == "cloud" && ["summarize", "example", "expand-notes", "check-cloud"].contains(command) {
+        if settings.mode == "cloud" && ["summarize", "example", "expand-notes", "check-cloud", "voice-plan"].contains(command) {
             environment["POSLE_API_KEY"] = preview ? "" : Keychain.read(account: Keychain.account(for: settings))
         }
         if settings.speechMode == "cloud" && command == "transcribe" {
@@ -346,7 +362,7 @@ final class AppStore: ObservableObject {
                                                    meeting: id.map { meetingDirectory($0) }, speakers: speakers,
                                                    diarization: !extra.contains("--no-diarization") && settings.diarization, event: receive)
         } else {
-            result = try await runner.run(rustEngine, arguments: arguments, environment: environment, event: receive)
+            result = try await runner.run(rustEngine, arguments: arguments, environment: environment, input: input, event: receive)
         }
         if requestedLocalASR { verifiedASRSelection = requestedASR }
         if let models = result?.installedModels { installedLocalModels = models }
@@ -386,18 +402,21 @@ final class AppStore: ObservableObject {
         cancellationRequested = false; runner.resetCancellation(); embeddedSpeech.resetCancellation()
         canCancelJob = true
         busy = true; processingID = id; progress = -1; progressText = "Начинаю обработку…"; error = nil; notice = nil
-        IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
-                                   IOPMAssertionLevel(kIOPMAssertionLevelOn), "После обрабатывает встречу" as CFString, &assertions)
+        if assertions == 0 {
+            IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), "После обрабатывает встречу" as CFString, &assertions)
+        }
     }
     func endJob() {
         jobGeneration = UUID()
         cancellationRequested = false
         canCancelJob = false
         busy = false; processingID = nil; progress = -1
-        if assertions != 0 { IOPMAssertionRelease(assertions); assertions = 0 }
+        if assertions != 0 && !isRecording { IOPMAssertionRelease(assertions); assertions = 0 }
     }
     func cancelJob() {
         guard canCancelJob else { return }
+        if voice.isWorking { voice.cancelWork(); return }
         cancellationRequested = true; runner.cancel(); embeddedSpeech.cancel()
         progressText = "Останавливаю обработку…"
     }
@@ -1016,6 +1035,13 @@ final class AppStore: ObservableObject {
         guard let id = recordingID, isRecording, !stoppingRecording else { return }
         stoppingRecording = true
         defer { stoppingRecording = false }
+        // Finalizing a meeting has priority over a typed voice-assistant job.
+        // Wait for the shared runner to drain before using it for media work.
+        if busy && voice.isWorking {
+            voice.cancelWork()
+            while busy { try? await Task.sleep(for: .milliseconds(20)) }
+        }
+        cancellationRequested = false; runner.resetCancellation(); embeddedSpeech.resetCancellation()
         canCancelJob = false
         busy = true; progressText = "Сохраняю запись…"
         do {

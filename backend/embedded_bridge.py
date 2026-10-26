@@ -68,13 +68,18 @@ def _patch_audio_loaders(selected):
 
 def _validate(request):
     root = Path(request["root"])
-    if not root.is_absolute() or root.is_symlink():
+    if not root.is_absolute() or ".." in root.parts or root.is_symlink():
         raise RuntimeError("Нужна собственная папка данных приложения.")
     command = request.get("command")
-    if command not in ("transcribe", "diarize", "finalize", "probe"):
+    if command not in ("transcribe", "diarize", "finalize", "probe", "dictate"):
         raise RuntimeError("Эта команда не поддерживается встроенным распознаванием.")
     if command == "probe":
         return root, None, command
+    if command == "dictate":
+        from short_speech import validate_input
+        if (root / "settings.json").is_symlink():
+            raise RuntimeError("Настройки не должны быть символической ссылкой.")
+        return root, validate_input(root, request.get("audio")), command
     meeting = Path(request["meeting"])
     if not meeting.is_absolute() or meeting.parent != root / "meetings" or (root / "meetings").is_symlink() or meeting.is_symlink() or not meeting.is_dir():
         raise RuntimeError("Встреча должна находиться в библиотеке приложения.")
@@ -105,6 +110,9 @@ def run(raw: str) -> str:
     committing = False
     environment = _safe_environment(os.environ)
     secrets = [value for name, value in os.environ.items() if name not in environment and (len(value) >= 4 or name == "POSLE_SPEECH_API_KEY" and value)]
+
+    if isinstance(request.get("apiKey"), str) and request["apiKey"]:
+        secrets.append(request["apiKey"])
 
     def check():
         # A publication transaction is a short, non-cancellable checkpoint.
@@ -213,7 +221,10 @@ def run(raw: str) -> str:
                 raise RuntimeError("Подготовьте модели разделения собеседников в настройках.")
             return original_speaker_models(root)
         replace(engine, "speaker_models", speaker_models)
-        if command == "transcribe":
+        if command == "dictate":
+            from short_speech import transcribe as dictate
+            dictate(root, meeting, settings, request.get("apiKey"), check, emit)
+        elif command == "transcribe":
             engine.transcribe(meeting, root, request.get("speakers", 0), request.get("diarization", True))
         elif command == "diarize":
             engine.rediarize(meeting, root, request.get("speakers", 0))

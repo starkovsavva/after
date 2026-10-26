@@ -46,12 +46,13 @@ struct WorkerEvent: Decodable {
     var installedModels: [InstalledLocalModel]?
     var asrModels: [InstalledASRModel]?
     var notes: [String]?
+    var voicePlan: VoicePlan?
 
     init(event: String, message: String? = nil) {
         self.event = event; self.message = message
     }
 
-    private enum CodingKeys: String, CodingKey { case event, message, fraction, models, model, ggufModels, asrModels, notes }
+    private enum CodingKeys: String, CodingKey { case event, message, fraction, models, model, ggufModels, asrModels, notes, voicePlan }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         event = try values.decode(String.self, forKey: .event)
@@ -63,6 +64,7 @@ struct WorkerEvent: Decodable {
         installedModels = try? values.decode([InstalledLocalModel].self, forKey: .models)
         asrModels = try values.decodeIfPresent([InstalledASRModel].self, forKey: .asrModels)
         notes = try values.decodeIfPresent([String].self, forKey: .notes)
+        voicePlan = try values.decodeIfPresent(VoicePlan.self, forKey: .voicePlan)
     }
 }
 
@@ -90,7 +92,7 @@ final class ProcessRunner: @unchecked Sendable {
     }
 
     @discardableResult
-    func run(_ executable: URL, arguments: [String], environment: [String: String] = [:],
+    func run(_ executable: URL, arguments: [String], environment: [String: String] = [:], input: Data? = nil,
              event: @escaping @Sendable (WorkerEvent) -> Void) async throws -> WorkerEvent? {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WorkerEvent?, Error>) in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -99,7 +101,9 @@ final class ProcessRunner: @unchecked Sendable {
                 let output = Pipe(), errors = Pipe()
                 process.executableURL = executable
                 process.arguments = arguments
-                process.standardInput = FileHandle.nullDevice
+                let inputPipe = input.map { _ in Pipe() }
+                if let inputPipe { _ = fcntl(inputPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) }
+                process.standardInput = inputPipe ?? FileHandle.nullDevice as Any
                 process.standardOutput = output; process.standardError = errors
                 process.environment = ProcessEnvironment.withoutSecrets(ProcessInfo.processInfo.environment).merging(environment) { _, new in new }
                 self.lock.lock(); self.process = process; self.lock.unlock()
@@ -110,6 +114,13 @@ final class ProcessRunner: @unchecked Sendable {
                 if cancelled, process.isRunning { process.terminate() }
                 // Read stderr even when noisy downloads/ffmpeg fill the OS pipe buffer.
                 let group = DispatchGroup()
+                if let input, let inputPipe {
+                    group.enter()
+                    DispatchQueue.global(qos: .utility).async {
+                        defer { try? inputPipe.fileHandleForWriting.close(); group.leave() }
+                        try? inputPipe.fileHandleForWriting.write(contentsOf: input)
+                    }
+                }
                 let diagnostic = LockedTail()
                 group.enter()
                 DispatchQueue.global(qos: .utility).async {

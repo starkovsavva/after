@@ -44,6 +44,9 @@ pub struct CapturedNote {
     #[serde(default)] pub trashed_at: Option<f64>,
     #[serde(default)] pub attachments: Vec<NoteAttachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")] pub expansion: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub task_origin: Option<Value>,
+    #[serde(default)] pub history: Vec<Value>,
+    #[serde(default)] pub subtasks: Vec<Value>,
 }
 fn note_kind() -> String { "note".into() }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,6 +68,8 @@ pub struct NotesWorkspace {
     #[serde(default)] pub notes: Vec<CapturedNote>,
     #[serde(default)] pub templates: Vec<NoteTemplate>,
     #[serde(default)] pub contexts: Vec<MeetingContext>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub voice_plans: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub voice_operations: Vec<Value>,
 }
 fn defaults() -> NotesWorkspace {
     let templates = [
@@ -73,7 +78,7 @@ fn defaults() -> NotesWorkspace {
         ("one-on-one", "Один на один", "Как дела\n\nЧто получилось\n\nЧто мешает\n\nОбратная связь\n\nДоговорённости", "Обратная связь, препятствия, ожидания и договорённости. Отделяй мнение от подтверждённых фактов."),
         ("english", "Английский", "Тема разговора\n\nНовые фразы\n\nЧто было трудно сказать\n\nОшибки и исправления\n\nЧто повторить", "Полезные английские фразы с контекстом, переводом и исправлениями, только если они подтверждены записью."),
     ].into_iter().map(|(id,name,body,focus)| NoteTemplate { id:id.into(),name:name.into(),body:body.into(),focus:focus.into(),revision:1 }).collect();
-    NotesWorkspace { notes:vec![],templates,contexts:vec![] }
+    NotesWorkspace { notes:vec![],templates,contexts:vec![],voice_plans:vec![],voice_operations:vec![] }
 }
 fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
@@ -88,7 +93,7 @@ fn private_directory(path: &Path) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
-fn directory(root: &Path) -> Result<PathBuf> {
+pub(crate) fn directory(root: &Path) -> Result<PathBuf> {
     ensure!(root.is_absolute(), "Папка данных должна иметь абсолютный путь");
     private_directory(root)?;
     let directory = root.join("notes"); private_directory(&directory)?;
@@ -101,7 +106,7 @@ fn regular(path: &Path, max: u64) -> Result<File> {
     ensure!(file.metadata()?.is_file() && file.metadata()?.len() <= max, "Файл слишком большой");
     Ok(file)
 }
-fn lock(directory: &Path) -> Result<File> {
+pub(crate) fn lock(directory: &Path) -> Result<File> {
     let path = directory.join(".workspace.lock");
     if let Ok(info) = fs::symlink_metadata(&path) { ensure!(info.is_file() && !info.file_type().is_symlink(), "Некорректная блокировка заметок"); }
     let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
@@ -109,7 +114,7 @@ fn lock(directory: &Path) -> Result<File> {
     file.lock().context("Не удалось заблокировать заметки")?;
     Ok(file)
 }
-fn load(directory: &Path) -> Result<NotesWorkspace> {
+pub(crate) fn load(directory: &Path) -> Result<NotesWorkspace> {
     let path = directory.join("workspace.json");
     if fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) { return Ok(defaults()); }
     let mut bytes = Vec::new(); regular(&path,MAX_WORKSPACE)?.take(MAX_WORKSPACE+1).read_to_end(&mut bytes)?;
@@ -118,7 +123,7 @@ fn load(directory: &Path) -> Result<NotesWorkspace> {
     validate_workspace(&data)?;
     Ok(data)
 }
-fn persist(directory: &Path, data: &NotesWorkspace) -> Result<()> {
+pub(crate) fn persist(directory: &Path, data: &NotesWorkspace) -> Result<()> {
     validate_workspace(data)?;
     let path = directory.join("workspace.json");
     if let Ok(info) = fs::symlink_metadata(&path) { ensure!(info.is_file() && !info.file_type().is_symlink(), "Некорректный файл заметок"); }
@@ -155,11 +160,17 @@ fn validate_note(note: &CapturedNote) -> Result<()> {
         let extension=Path::new(&attachment.relative_path).extension().and_then(|s|s.to_str()).unwrap_or("");
         ensure!(attachment_type(extension)==Some(attachment.content_type.as_str()),"Некорректный тип вложения");
     }
+    ensure!(note.history.len() <= 1000 && note.subtasks.len() <= 200, "Слишком много дополнений или подзадач");
+    for entry in &note.history { ensure!(entry["text"].as_str().is_some_and(|text|text.len() <= MAX_TEXT) && entry["id"].as_str().is_some_and(valid_id) && entry["createdAt"].as_f64().is_some_and(|t|t.is_finite()&&t>=0.0), "Некорректная история задачи"); }
+    let mut subtask_ids=std::collections::HashSet::new();
+    for entry in &note.subtasks { ensure!(subtask_ids.insert(entry["id"].as_str()),"Повторный ID подзадачи"); ensure!(entry["text"].as_str().is_some_and(|text|!text.trim().is_empty()&&text.len()<=10_000) && entry["id"].as_str().is_some_and(valid_id) && entry["completed"].as_bool().is_some(), "Некорректная подзадача"); }
+    if let Some(origin)=&note.task_origin { ensure!(note.kind=="task" && origin["meetingID"].as_str().is_some_and(valid_id) && origin["itemSignature"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit())), "Некорректный источник задачи"); }
     if let Some(expansion) = &note.expansion { ensure!(expansion.is_object() && serde_json::to_vec(expansion)?.len() <= 200_000, "Некорректное дополнение заметки"); }
     Ok(())
 }
 fn validate_workspace(data: &NotesWorkspace) -> Result<()> {
     ensure!(data.notes.len() <= MAX_NOTES && data.templates.len() <= 100 && data.contexts.len() <= MAX_NOTES,"Слишком много заметок или шаблонов");
+    ensure!(data.voice_plans.len() <= 100 && data.voice_operations.len() <= 500, "Слишком много голосовых операций");
     let mut ids = std::collections::HashSet::new();
     for note in &data.notes { validate_note(note)?; ensure!(ids.insert(&note.id),"Повторный ID заметки"); }
     let mut ids = std::collections::HashSet::new();
@@ -199,6 +210,9 @@ pub fn save_note(root: &Path,mut note: CapturedNote) -> Result<CapturedNote> {
     if let Some(index)=data.notes.iter().position(|n|n.id == note.id) {
         let old=&data.notes[index]; ensure!(old.revision == note.revision, CONFLICT);
         ensure!(old.trashed_at == note.trashed_at,"Состояние Корзины изменилось. Обновите заметку.");
+        // Provenance and append history belong to the operation journal. Older
+        // editors which do not encode these fields must preserve them too.
+        note.task_origin=old.task_origin.clone(); note.history=old.history.clone();
         // Plain-text edits made by older editor surfaces must not retain stale rich content.
         if old.text != note.text && old.content_rtf == note.content_rtf { note.content_rtf.clear(); }
         // Trashing a meeting must not make the user's independent note
@@ -355,7 +369,7 @@ pub fn dispatch(root:&Path,value:&Value) -> Result<Value> {
     let string=|key:&str|value[key].as_str().with_context(||format!("Нет поля {key}"));
     let revision=||value["revision"].as_u64().context("Нет ревизии заметки");
     match value["command"].as_str().unwrap_or("") {
-        "notes-list"=>Ok(serde_json::to_value(list(root)?)?),
+        "notes-list"=>{let data=list(root)?;Ok(json!({"notes":data.notes,"templates":data.templates,"contexts":data.contexts}))},
         "note-save"=>Ok(serde_json::to_value(save_note(root,serde_json::from_value(value["note"].clone())?)?)?),
         "note-delete"=>delete_note(root,string("id")?,revision()?),
         "note-trash"|"note-restore"=>Ok(serde_json::to_value(trash_note(root,string("id")?,revision()?,value["command"]=="note-restore")?)?),
@@ -367,7 +381,7 @@ pub fn dispatch(root:&Path,value:&Value) -> Result<Value> {
         "attachment-remove"=>Ok(serde_json::to_value(remove_attachment(root,string("noteID")?,revision()?,string("attachmentID")?)?)?),
         "attachment-text"=>Ok(serde_json::to_value(attachment_text(root,string("noteID")?,revision()?,string("attachmentID")?,string("text")?)?)?),
         "notes-tasks"=>tasks(root),
-        "notes-task-complete"=>complete_task(root,string("meetingID")?,value["itemIndex"].as_u64().context("Нет номера задачи")? as usize,string("text")?,value["completed"].as_bool().context("Нет статуса задачи")?),
+        "notes-task-complete"=>complete_task_checked(root,string("meetingID")?,value["itemIndex"].as_u64().context("Нет номера задачи")? as usize,string("text")?,value["completed"].as_bool().context("Нет статуса задачи")?,value.get("expectedSegmentIDs")),
         "notes-brief"=>brief(root,string("meetingID")?),
         "note-expansion-validate"|"note-expansion-valid"=>Ok(json!({"valid":expansion_valid(root,string("noteID")?)?})),
         "notes-search"=>search(root,value["query"].as_str().unwrap_or(""),value["scope"].as_str().unwrap_or("all"),value["meetingID"].as_str()),
@@ -450,13 +464,16 @@ pub fn search_hits(root:&Path,query:&str) -> Result<Vec<Value>> {
     }
     Ok(hits)
 }
+pub(crate) fn task_signature(item:&Value) -> String {
+    format!("{:x}",Sha256::digest(serde_json::to_vec(&json!([item["text"],item["segmentIDs"]])).expect("JSON value")))
+}
 pub fn tasks(root:&Path) -> Result<Value> {
     let workspace=list(root)?; let meetings=crate::storage::list_meetings(root)?;
     let mut tasks=Vec::new();
     for note in workspace.notes.iter().filter(|n|n.kind=="task" && n.trashed_at.is_none()) {
         let meeting=meetings.iter().find(|m|m["id"].as_str()==note.meeting_id.as_deref());
         tasks.push(json!({"id":format!("manual:{}",note.id),"meetingID":note.meeting_id,"title":meeting.and_then(|m|m["title"].as_str()).unwrap_or("Входящие заметки"),
-            "text":note.text,"owner":note.owner,"due":note.due,"completed":note.completed,"segmentIDs":[],"itemIndex":null,"noteID":note.id,"noteRevision":note.revision,"timestamp":note.timestamp}));
+            "text":note.text,"owner":note.owner,"due":note.due,"completed":note.completed,"segmentIDs":note.task_origin.as_ref().map(|origin|origin["segmentIDs"].clone()).unwrap_or_else(||json!([])),"itemIndex":null,"noteID":note.id,"noteRevision":note.revision,"timestamp":note.timestamp,"taskTitle":note.title,"history":note.history,"subtasks":note.subtasks,"taskOrigin":note.task_origin}));
     }
     for meeting in &meetings {
         let id=meeting["id"].as_str().context("Нет ID встречи")?;
@@ -465,12 +482,16 @@ pub fn tasks(root:&Path) -> Result<Value> {
         let mut bytes=Vec::new(); (&mut file).take(8*1_048_576+1).read_to_end(&mut bytes)?;
         let Ok(summary)=serde_json::from_slice::<Value>(&bytes) else { continue; };
         let Some(items)=summary["items"].as_array() else { continue; };
+        let mut source_ids=std::collections::HashSet::new();
         for (index,item) in items.iter().take(10_000).enumerate().filter(|(_,item)|item["kind"]=="action") {
             let Some(text)=item["text"].as_str().filter(|text|text.len()<=MAX_TEXT) else { continue; };
             let refs=item["segmentIDs"].as_array().map(|ids|ids.iter().filter_map(Value::as_u64).collect::<Vec<_>>()).unwrap_or_default();
+            let signature=task_signature(item);
+            if !source_ids.insert(signature.clone()) { continue; }
+            if workspace.notes.iter().any(|note|note.task_origin.as_ref().is_some_and(|origin|origin["meetingID"]==id && origin["itemSignature"]==signature)) { continue; }
             let insight_id=format!("action-{}-{text}",refs.iter().map(ToString::to_string).collect::<Vec<_>>().join("-"));
             let completed=meeting["completedTasks"].as_array().is_some_and(|ids|ids.iter().any(|id|id.as_str()==Some(&insight_id)));
-            tasks.push(json!({"id":format!("summary:{id}:{index}"),"meetingID":id,"title":meeting["title"],"text":text,
+            tasks.push(json!({"id":format!("summary:{id}:{signature}"),"meetingID":id,"title":meeting["title"],"text":text,
                 "owner":item["owner"].as_str().unwrap_or(""),"due":item["due"].as_str().unwrap_or(""),"completed":completed,
                 "segmentIDs":refs,"itemIndex":index,"noteID":null,"noteRevision":null,"timestamp":null}));
         }
@@ -492,7 +513,13 @@ pub fn brief(root:&Path,meeting_id:&str) -> Result<Value> {
 /// Summary task completion shares storage's meeting lock, so it cannot erase
 /// speaker renames or another simultaneous completion from a different window.
 pub fn complete_task(root:&Path,meeting_id:&str,item_index:usize,text:&str,completed:bool) -> Result<Value> {
+    complete_task_checked(root,meeting_id,item_index,text,completed,None)
+}
+fn complete_task_checked(root:&Path,meeting_id:&str,item_index:usize,text:&str,completed:bool,expected_segment_ids:Option<&Value>) -> Result<Value> {
     ensure_meeting(root,Some(meeting_id))?;
+    // Keep the established workspace → meeting lock order used by grounded
+    // note expansion. Validate the source before mutating a canonical task.
+    let notes_dir=directory(root)?;let _notes_lock=lock(&notes_dir)?;let mut workspace=load(&notes_dir)?;
     let dir=crate::storage::meeting_directory(root,meeting_id)?;
     let lock_path=dir.join(".posle-storage.lock");
     if let Ok(info)=fs::symlink_metadata(&lock_path) { ensure!(info.is_file() && !info.file_type().is_symlink(),"Некорректная блокировка встречи"); }
@@ -507,6 +534,12 @@ pub fn complete_task(root:&Path,meeting_id:&str,item_index:usize,text:&str,compl
     let item=summary["items"].as_array().and_then(|items|items.get(item_index)).context("Задача больше не существует")?;
     ensure!(item["kind"]=="action" && item["text"].as_str()==Some(text),"Задача изменилась. Обновите список.");
     let refs=item["segmentIDs"].as_array().context("Некорректные ссылки задачи")?.iter().map(|id|id.as_u64().context("Некорректный ID реплики")).collect::<Result<Vec<_>>>()?;
+    if let Some(expected)=expected_segment_ids { ensure!(*expected==json!(refs),"Исходные реплики задачи изменились. Обновите конспект."); }
+    let signature=task_signature(item);
+    if let Some(note)=workspace.notes.iter_mut().find(|note|note.trashed_at.is_none()&&note.task_origin.as_ref().is_some_and(|origin|origin["meetingID"]==meeting_id&&origin["itemSignature"]==signature)) {
+        if note.completed!=completed {note.completed=completed;note.revision=bumped(note.revision)?;note.updated_at=now();note.history.push(json!({"id":Uuid::new_v4().to_string(),"operationID":Uuid::new_v4().to_string(),"text":if completed{"Задача выполнена"}else{"Задача снова открыта"},"createdAt":now()}));}
+        let note=note.clone();persist(&notes_dir,&workspace)?;return Ok(json!({"saved":true,"note":note}));
+    }
     let insight_id=format!("action-{}-{text}",refs.iter().map(ToString::to_string).collect::<Vec<_>>().join("-"));
     let object=meta.as_object_mut().context("Некорректные метаданные встречи")?;
     ensure!(object.get("id").and_then(Value::as_str)==Some(meeting_id),"Некорректный ID встречи");

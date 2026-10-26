@@ -25,7 +25,7 @@ final class RichNoteCommands: ObservableObject {
         guard let view = editor else { return }; view.window?.makeFirstResponder(view)
         recordUndo(view)
         let range = view.selectedRange()
-        let font = (range.length > 0 ? view.textStorage?.attribute(.font, at: range.location, effectiveRange: nil) : view.typingAttributes[.font]) as? NSFont ?? .systemFont(ofSize: 14)
+        let font = (range.length > 0 ? view.textStorage?.attribute(.font, at: range.location, effectiveRange: nil) : view.typingAttributes[.font]) as? NSFont ?? .systemFont(ofSize: CGFloat(ThemeRuntime.shared.palette.textSize))
         let manager = NSFontManager.shared
         let target = manager.traits(of: font).contains(trait) ? manager.convert(font, toNotHaveTrait: trait) : manager.convert(font, toHaveTrait: trait)
         if range.length == 0 { view.typingAttributes[.font] = target }
@@ -72,10 +72,10 @@ final class RichNoteCommands: ObservableObject {
                 block.setWidth(8, type: .absoluteValueType, for: .padding)
                 block.setContentWidth(50, type: .percentageValueType)
                 let paragraph = NSMutableParagraphStyle(); paragraph.textBlocks = [block]
-                result.append(NSAttributedString(string: row == 0 ? "Столбец \(column + 1)\n" : "\t\n", attributes: [.paragraphStyle: paragraph, .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor]))
+                result.append(NSAttributedString(string: row == 0 ? "Столбец \(column + 1)\n" : "\t\n", attributes: [.paragraphStyle: paragraph, .font: NSFont.systemFont(ofSize: CGFloat(ThemeRuntime.shared.palette.textSize)), .foregroundColor: NSColor.labelColor]))
             }
         }
-        result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor]))
+        result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: CGFloat(ThemeRuntime.shared.palette.textSize)), .foregroundColor: NSColor.labelColor]))
         view.insertText(result, replacementRange: view.selectedRange())
     }
     func undo() { editor?.undoManager?.undo() }
@@ -83,13 +83,14 @@ final class RichNoteCommands: ObservableObject {
 }
 
 struct RichNoteToolbar: View {
+    @ObservedObject private var theme = ThemeController.shared
     @ObservedObject var commands: RichNoteCommands
     var body: some View {
         HStack(spacing: 5) {
             Menu {
                 Button("Заголовок") { commands.style(24, bold: true) }
                 Button("Подзаголовок") { commands.style(18, bold: true) }
-                Button("Основной текст") { commands.style(14) }
+                Button("Основной текст") { commands.style(CGFloat(theme.palette.textSize)) }
             } label: { Text("Aa").font(AppTypography.bodyStrong) }.menuStyle(.borderlessButton).frame(width: 42).help("Стиль текста")
             Divider().frame(height: 18)
             control("bold", "Жирный") { commands.trait(.boldFontMask) }
@@ -154,6 +155,7 @@ private final class ChecklistTextView: NSTextView {
 }
 
 struct RichNoteEditor: NSViewRepresentable {
+    @ObservedObject private var theme = ThemeController.shared
     @Binding var text: String
     @Binding var rtf: String
     let commands: RichNoteCommands
@@ -164,7 +166,7 @@ struct RichNoteEditor: NSViewRepresentable {
         let editor = ChecklistTextView(frame: .zero)
         editor.isRichText = true; editor.importsGraphics = false; editor.allowsUndo = true
         editor.isEditable = editable; editor.isSelectable = true; editor.drawsBackground = false
-        editor.font = .systemFont(ofSize: 14); editor.textColor = .labelColor
+        editor.font = .systemFont(ofSize: CGFloat(ThemeRuntime.shared.palette.textSize)); editor.textColor = .labelColor
         editor.textContainerInset = NSSize(width: 4, height: 12)
         editor.autoresizingMask = [.width]; editor.isVerticallyResizable = true; editor.isHorizontallyResizable = false
         editor.textContainer?.widthTracksTextView = true; editor.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
@@ -181,6 +183,7 @@ struct RichNoteEditor: NSViewRepresentable {
         editor.attachmentPaste = onAttachmentPaste
         commands.editor = editor; editor.isEditable = editable
         if editor.string != text || context.coordinator.lastRTF != rtf { context.coordinator.load(editor, text: text, rtf: rtf) }
+        if rtf.isEmpty { context.coordinator.applyDefaultFont(editor, size: CGFloat(theme.palette.textSize)) }
     }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -203,8 +206,14 @@ struct RichNoteEditor: NSViewRepresentable {
                 }
                 editor.textStorage?.setAttributedString(readable)
             } else {
-                editor.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor]))
+                editor.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: CGFloat(ThemeRuntime.shared.palette.textSize)), .foregroundColor: NSColor.labelColor]))
+                applyDefaultFont(editor, size: CGFloat(ThemeRuntime.shared.palette.textSize))
             }
+        }
+        func applyDefaultFont(_ editor: NSTextView, size: CGFloat) {
+            let font = NSFont.systemFont(ofSize: size)
+            editor.textStorage?.addAttribute(.font, value: font, range: NSRange(location: 0, length: editor.string.utf16.count))
+            editor.typingAttributes[.font] = font
         }
         func textDidChange(_ notification: Notification) {
             guard !loading, let view = notification.object as? NSTextView, let storage = view.textStorage else { return }

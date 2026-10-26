@@ -3,15 +3,27 @@ import SwiftUI
 
 /// Semantic colors resolve against the window appearance, including dark mode.
 enum Ink {
-    static let accent = Color(nsColor: adaptive("accent", light: (0.31, 0.29, 0.76), dark: (0.69, 0.67, 1.0)))
-    static let actionFill = Color(nsColor: adaptive("actionFill", light: (0.31, 0.29, 0.76), dark: (0.43, 0.40, 0.79)))
+    static var accent: Color { Color(nsColor: themedAccent(fill: false)) }
+    static var actionFill: Color { Color(nsColor: themedAccent(fill: true)) }
     static let recordFill = Color(red: 0.72, green: 0.16, blue: 0.16)
     static let green = Color(nsColor: adaptive("success", light: (0.16, 0.43, 0.32), dark: (0.43, 0.80, 0.65)))
     static let warning = Color(nsColor: adaptive("warning", light: (0.57, 0.29, 0.04), dark: (1.0, 0.74, 0.39)))
     static let paper = Color(nsColor: .windowBackgroundColor)
     static let soft = Color.primary.opacity(0.045)
     static let field = Color(nsColor: .textBackgroundColor)
-    static let line = Color.primary.opacity(0.10)
+    static let line = Color.primary.opacity(0.08)
+    static let selection = Color.primary.opacity(0.075)
+    static let sidebar = Color(nsColor: NSColor(name: "posle.sidebar") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .underPageBackgroundColor : .windowBackgroundColor
+    })
+
+    private static func themedAccent(fill: Bool) -> NSColor {
+        let palette = ThemeRuntime.shared.palette
+        return NSColor(name: NSColor.Name("posle.\(fill ? "actionFill" : "accent").\(palette.accent)")) { appearance in
+            ThemeRuntime.accessibleAccent(palette.color,
+                dark: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua, fill: fill)
+        }
+    }
 
     private static func adaptive(_ name: String, light: (Double, Double, Double), dark: (Double, Double, Double)) -> NSColor {
         NSColor(name: NSColor.Name("posle.\(name)")) { appearance in
@@ -24,13 +36,13 @@ enum Ink {
 enum AppTypography {
     static let caption = Font.system(size: 12)
     static let control = Font.system(size: 13)
-    static let body = Font.system(size: 14)
+    static var body: Font { .system(size: CGFloat(ThemeRuntime.shared.palette.textSize)) }
     static let controlStrong = Font.system(size: 13, weight: .semibold)
     static let captionStrong = Font.system(size: 12, weight: .medium)
-    static let bodyStrong = Font.system(size: 14, weight: .semibold)
-    static let heading = Font.system(size: 17, weight: .semibold)
-    static let sectionTitle = Font.system(size: 20, weight: .semibold)
-    static let pageTitle = Font.system(size: 26, weight: .semibold)
+    static var bodyStrong: Font { .system(size: CGFloat(ThemeRuntime.shared.palette.textSize), weight: .semibold) }
+    static var heading: Font { .system(size: CGFloat(max(17, ThemeRuntime.shared.palette.textSize + 2)), weight: .semibold) }
+    static var sectionTitle: Font { .system(size: CGFloat(max(20, ThemeRuntime.shared.palette.textSize + 4)), weight: .semibold) }
+    static let pageTitle = Font.system(size: 25, weight: .semibold)
     static let modalTitle = Font.system(size: 20, weight: .semibold)
     static let emptyTitle = Font.system(size: 20, weight: .medium)
     static let cardFront = Font.system(size: 26, weight: .medium)
@@ -40,8 +52,8 @@ enum AppTypography {
 /// Layout values shared by every workspace and sheet. Content changes never
 /// change the size of the app chrome or the typography of adjacent controls.
 enum AppLayout {
-    static let contentInset: CGFloat = 24
-    static let readableWidth: CGFloat = 780
+    static var contentInset: CGFloat { ThemeRuntime.shared.palette.density == "compact" ? 20 : 28 }
+    static let readableWidth: CGFloat = 740
     static let toolbarHeight: CGFloat = 48
     static let statusHeight: CGFloat = 48
     static let controlRadius: CGFloat = 8

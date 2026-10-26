@@ -14,15 +14,16 @@ final class NotesStore: ObservableObject {
     @Published var notice: String?
     @Published var attachmentBusy = false
     @Published var tasks: [LibraryTask] = []
+    @Published var selectedTaskID: String?
     @Published var newLibraryNoteRequest = UUID()
     @Published var selectedNoteID: String?
     @Published var highlightedNoteID: String?
     @Published var hotkeyNotice: String?
-    @Published var captureDrafts: [String: String] = [:]
-    @Published var captureKinds: [String: String] = [:]
+    @Published var captureDrafts: [String: String] = [:] { didSet { scheduleDraftPersistence() } }
+    @Published var captureKinds: [String: String] = [:] { didSet { scheduleDraftPersistence() } }
     @Published var editingNewTask = false
-    /// Composer drafts are intentionally memory-only until the user saves.
-    /// Keep hidden meeting drafts in the update gate as well as the visible one.
+    /// Drafts keep their original destination across navigation and restarts.
+    /// Hidden drafts remain part of the update gate until saved or discarded.
     var firstPendingCaptureDraftKey: String? {
         captureDrafts.keys.sorted().first { key in
             !(captureDrafts[key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -31,7 +32,37 @@ final class NotesStore: ObservableObject {
     var hasUnsavedCaptureDrafts: Bool { firstPendingCaptureDraftKey != nil }
     @Published var contextSelection: String?
     var contextMode = "project"
-    init(root: URL) { self.root = root; reload() }
+    private struct Drafts: Codable { var texts: [String: String]; var kinds: [String: String] }
+    private var draftSaveTask: Task<Void, Never>?
+    private var restoringDrafts = false
+    init(root: URL) {
+        self.root = root; reload()
+        restoringDrafts = true
+        if let bridge = try? RustBridge.shared.get(),
+           let data = try? bridge.read(root: root, url: root.appendingPathComponent("capture-drafts.json")),
+           let drafts = try? JSONDecoder().decode(Drafts.self, from: data) {
+            captureDrafts = drafts.texts; captureKinds = drafts.kinds
+        }
+        restoringDrafts = false
+    }
+    private func scheduleDraftPersistence() {
+        guard !restoringDrafts else { return }
+        draftSaveTask?.cancel()
+        draftSaveTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            _ = self?.flushCaptureDrafts()
+        }
+    }
+    @discardableResult func flushCaptureDrafts() -> Bool {
+        draftSaveTask?.cancel(); draftSaveTask = nil
+        do {
+            try RustBridge.shared.get().write(root: root, url: root.appendingPathComponent("capture-drafts.json"),
+                value: Drafts(texts: captureDrafts, kinds: captureKinds))
+            return true
+        } catch {
+            self.error = "Не удалось сохранить черновик. Ваш текст остался в редакторе."; return false
+        }
+    }
     var notes: [CapturedNote] { workspace.notes.filter { $0.trashedAt == nil }.sorted { $0.pinned != $1.pinned ? $0.pinned : $0.updatedAt > $1.updatedAt } }
     var templates: [NoteTemplate] { workspace.templates }
     func notes(for meetingID: String?) -> [CapturedNote] { notes.filter { $0.meetingID == meetingID } }
@@ -225,6 +256,7 @@ final class NotesStore: ObservableObject {
         do {
             let data = try RustBridge.shared.get().request(root: root, command: "notes-tasks")
             tasks = try JSONDecoder().decode(LibraryTasksResponse.self, from: data).tasks
+            reconcileTaskDrafts()
         } catch { self.error = error.localizedDescription }
     }
     func complete(_ task: LibraryTask, completed: Bool) {
@@ -233,7 +265,7 @@ final class NotesStore: ObservableObject {
             if save(note) != nil { loadTasks() }
         } else if let meetingID = task.meetingID, let index = task.itemIndex {
             do {
-                _ = try RustBridge.shared.get().request(root: root, command: "notes-task-complete", arguments: ["meetingID": meetingID, "itemIndex": index, "text": task.text, "completed": completed])
+                _ = try RustBridge.shared.get().request(root: root, command: "notes-task-complete", arguments: ["meetingID": meetingID, "itemIndex": index, "text": task.text, "expectedSegmentIDs": task.segmentIDs, "completed": completed])
                 loadTasks()
             } catch { self.error = error.localizedDescription }
         }

@@ -3,6 +3,7 @@ pub mod models;
 pub mod storage;
 pub mod notes;
 pub mod cards;
+pub mod voice;
 pub mod search;
 pub mod worker;
 
@@ -19,11 +20,11 @@ fn data_path(root: &Path, relative: &str) -> Result<PathBuf> {
     if relative.components().any(|p| !matches!(p, Component::Normal(_))) {
         bail!("Недопустимый путь библиотеки");
     }
-    let allowed = ["settings.json", "overview-drafts.json", "meta.json", "transcript.json", "summary.json", "examples.json", "review-state.json"];
+    let allowed = ["settings.json", "overview-drafts.json", "voice-draft.json", "capture-drafts.json", "meta.json", "transcript.json", "summary.json", "examples.json", "review-state.json"];
     let name = relative.file_name().and_then(|s| s.to_str()).context("Нет имени файла")?;
     if !allowed.contains(&name) { bail!("Этот файл не относится к библиотеке"); }
     let components: Vec<_> = relative.components().collect();
-    if ["settings.json", "overview-drafts.json"].contains(&name) {
+    if ["settings.json", "overview-drafts.json", "voice-draft.json", "capture-drafts.json"].contains(&name) {
         if components.len() != 1 { bail!("Недопустимый путь настроек"); }
     } else {
         if components.len() != 3 || components[0].as_os_str() != "meetings" { bail!("Недопустимый путь встречи"); }
@@ -37,6 +38,7 @@ pub fn request(value: &Value) -> Result<Value> {
     if !root.is_absolute() { bail!("Папка данных должна иметь абсолютный путь"); }
     match value["command"].as_str().context("Нет команды ядра")? {
         command if ["notes-list", "note-save", "note-delete", "note-trash", "note-restore", "context-save", "template-save", "template-delete", "note-attach", "attachment-path", "attachment-remove", "attachment-text", "notes-search", "notes-tasks", "notes-task-complete", "notes-brief", "note-search-validate", "note-expansion-validate", "note-expansion-valid"].contains(&command) => notes::dispatch(&root, value),
+        "voice-plan" | "voice-inspect" | "voice-choose" | "voice-apply" | "voice-undo" | "voice-recover" | "task-update" | "task-materialize" | "task-append" => voice::dispatch(&root, value),
         "cards-import" | "cards-import-preview" => cards::dispatch(&root,value),
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),
         "search-validate" => search::validate(&root, value["meetingID"].as_str().context("Нет ID встречи")?, value["sourceFingerprint"].as_str().unwrap_or("")),

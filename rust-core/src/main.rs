@@ -8,7 +8,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, ValueEnum)]
-enum Command { Prepare, Transcribe, Diarize, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, CheckCloud, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview }
+enum Command { Prepare, Transcribe, Diarize, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, CheckCloud, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview, VoicePlan }
 
 #[derive(Parser)]
 #[command(version, about="После: ядро библиотеки и обработки встреч")]
@@ -74,6 +74,11 @@ fn run(args: Args) -> Result<Value> {
         Command::CardsImport => posle_core::cards::import(&args.root,args.path.as_deref().context("Выберите CSV/TSV файл")?,Some(&args.separator),args.title.as_deref()),
         Command::CardsImportPreview => posle_core::cards::preview(args.path.as_deref().context("Выберите CSV/TSV файл")?,Some(&args.separator)),
         Command::ExpandNotes => { ai::expand_note(&args.root, &args.note)?; Ok(json!({})) }
+        Command::VoicePlan => {
+            let mut input=String::new(); io::stdin().take(20_000).read_to_string(&mut input)?;
+            let mut request:Value=serde_json::from_str(&input)?; request["root"]=json!(args.root); request["command"]=json!("voice-plan");
+            Ok(json!({"voicePlan":posle_core::request(&request)?}))
+        }
         Command::NotesList => posle_core::request(&json!({"root":args.root,"command":"notes-list"})),
         Command::NotesSearch => posle_core::request(&json!({"root":args.root,"command":"notes-search","query":args.query,"scope":args.scope})),
         Command::NotesTasks => posle_core::request(&json!({"root":args.root,"command":"notes-tasks"})),

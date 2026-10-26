@@ -75,7 +75,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def upload(audio_path, settings, key, opener=None):
+def upload(audio_path, settings, key, opener=None, timeout=300):
     if not key or any(ch in key for ch in "\r\n"):
         raise RuntimeError("Добавьте ключ распознавания в настройках → Распознавание речи → Облако.")
     data, content_type = multipart(request_fields(settings), audio_path.read_bytes())
@@ -91,7 +91,7 @@ def upload(audio_path, settings, key, opener=None):
             handlers.append(urllib.request.ProxyHandler({}))
         opener = urllib.request.build_opener(*handlers)
     try:
-        with opener.open(req, timeout=300) as response:
+        with opener.open(req, timeout=timeout) as response:
             payload = response.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
         exc.close()

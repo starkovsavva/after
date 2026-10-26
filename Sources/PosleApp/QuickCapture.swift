@@ -12,6 +12,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private var captureKey: EventHotKeyRef?
     private var bookmarkKey: EventHotKeyRef?
+    private var voiceKey: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
     private var settingsObserver: NSObjectProtocol?
     private var started = false
@@ -21,12 +22,14 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
     func start() {
         guard !started else { return }; started = true
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "После — заметки")
+        item.button?.image = ReplicaArtwork.menuBarImage()
         let menu = NSMenu()
         let capture = NSMenuItem(title: "Быстрая заметка…", action: #selector(showFromMenu), keyEquivalent: "")
         capture.target = self; menu.addItem(capture)
         let mark = NSMenuItem(title: "Отметить важный момент", action: #selector(markFromMenu), keyEquivalent: "")
         mark.target = self; menu.addItem(mark)
+        let voice = NSMenuItem(title: "Голосовое поручение…", action: #selector(voiceFromMenu), keyEquivalent: "")
+        voice.target = self; menu.addItem(voice)
         menu.addItem(.separator())
         let library = NSMenuItem(title: "Открыть После", action: #selector(openMain), keyEquivalent: "")
         library.target = self; menu.addItem(library)
@@ -40,7 +43,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
             guard status == noErr else { return status }
             let owner = Unmanaged<QuickCaptureController>.fromOpaque(data).takeUnretainedValue()
             let identifier = key.id
-            Task { @MainActor in if identifier == 1 { owner.show() } else if identifier == 2 { owner.markImportant() } }
+            Task { @MainActor in if identifier == 1 { owner.show() } else if identifier == 2 { owner.markImportant() } else if identifier == 3 { owner.showVoice() } }
             return noErr
         }, 1, &eventType, pointer, &eventHandler)
         if result != noErr { store?.notes.hotkeyNotice = "Горячие клавиши недоступны. Быстрая заметка работает из строки меню." }
@@ -52,6 +55,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
     func stop() {
         if let captureKey { UnregisterEventHotKey(captureKey) }; captureKey = nil
         if let bookmarkKey { UnregisterEventHotKey(bookmarkKey) }; bookmarkKey = nil
+        if let voiceKey { UnregisterEventHotKey(voiceKey) }; voiceKey = nil
         if let eventHandler { RemoveEventHandler(eventHandler) }; eventHandler = nil
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }; settingsObserver = nil
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }; statusItem = nil
@@ -60,6 +64,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
     private func registerShortcuts() {
         if let captureKey { UnregisterEventHotKey(captureKey) }; captureKey = nil
         if let bookmarkKey { UnregisterEventHotKey(bookmarkKey) }; bookmarkKey = nil
+        if let voiceKey { UnregisterEventHotKey(voiceKey) }; voiceKey = nil
         guard let store, eventHandler != nil else { return }
         store.notes.hotkeyNotice = nil
         if store.settings.quickCaptureEnabled {
@@ -68,6 +73,10 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
             let modifiers = UInt32(alternate ? (controlKey | shiftKey) : (controlKey | optionKey))
             let result = RegisterEventHotKey(code, modifiers, EventHotKeyID(signature: 0x50534C45, id: 1), GetApplicationEventTarget(), 0, &captureKey)
             if result != noErr { store.notes.hotkeyNotice = "Сочетание быстрой заметки занято. Выберите другое в настройках или используйте строку меню." }
+        }
+        if store.settings.voiceShortcutEnabled {
+            let result = RegisterEventHotKey(UInt32(kVK_ANSI_M), UInt32(controlKey | optionKey), EventHotKeyID(signature: 0x50534C45, id: 3), GetApplicationEventTarget(), 0, &voiceKey)
+            if result != noErr { store.notes.hotkeyNotice = "Сочетание ⌃⌥M занято. Поручение можно открыть кнопкой микрофона." }
         }
         if store.settings.bookmarkShortcutEnabled {
             let result = RegisterEventHotKey(UInt32(kVK_ANSI_B), UInt32(controlKey | optionKey), EventHotKeyID(signature: 0x50534C45, id: 2), GetApplicationEventTarget(), 0, &bookmarkKey)
@@ -101,6 +110,10 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
             store.notes.highlightedNoteID = note.id; store.notice = "Отмечено · \(Exporter.timestamp(time))"
         }
     }
+    func showVoice() {
+        openMain(); store?.presentVoice()
+    }
+    @objc private func voiceFromMenu() { showVoice() }
     @objc private func showFromMenu() { show() }
     @objc private func markFromMenu() { markImportant() }
     @objc private func openMain() {
@@ -223,6 +236,7 @@ struct QuickCaptureView: View {
                     .disabled(draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).help("Сохранить · ⌘↩")
             }
         }.padding(18).frame(width: 490).background(Ink.paper).appControlDefaults()
+            .modifier(PosleThemeRoot(root: notes.root))
             .onAppear { draft.prepare(meetingID: initialMeetingID, timestamp: initialTimestamp); focused = true }
     }
 }

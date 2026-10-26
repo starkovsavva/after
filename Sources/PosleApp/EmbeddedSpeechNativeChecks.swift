@@ -40,6 +40,30 @@ enum EmbeddedSpeechNativeChecks {
         _ = try await service.run(root: root, interpreter: interpreter, backend: backend, command: "probe", meeting: nil) { _ in }
         print("PASS: real Parakeet inference through Swift NSApplication; PID=\(getpid()); main-actor heartbeats=\(beats); segments=\(segments.count)")
         fflush(stdout)
+        let session = root.appendingPathComponent("voice-inputs/" + UUID().uuidString.lowercased())
+        let input = session.appendingPathComponent("input.wav")
+        try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: session) }
+        let original = meeting.appendingPathComponent("synthetic.wav")
+        let sourceBytes = try Data(contentsOf: original)
+        try sourceBytes.write(to: input)
+        let libraryBefore = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("meetings").path).sorted()
+        let dictationStartedAt = beats
+        service.resetCancellation()
+        let dictation = try await service.dictate(root: root, interpreter: interpreter, backend: backend, audio: input) { event in
+            if let message = event.message { print("Dictation event: \(message)"); fflush(stdout) }
+        }
+        guard !dictation.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !dictation.segments.isEmpty, dictation.duration > 0, dictation.pid == Int(getpid()),
+              beats - dictationStartedAt >= 3,
+              try Data(contentsOf: original) == sourceBytes,
+              try Data(contentsOf: input) == sourceBytes,
+              try FileManager.default.contentsOfDirectory(atPath: session.path) == ["input.wav"],
+              try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("meetings").path).sorted() == libraryBefore else {
+            throw AppError.message("Short dictation blocked the app, changed its source/library or left temporary audio.")
+        }
+        print("PASS E2E: real short Parakeet dictation → text in app PID=\(dictation.pid); main-actor beats=\(beats - dictationStartedAt); unchanged source; no fake meetings or temporary files")
+        fflush(stdout)
         if args.contains("--full-flow") { try await meetingFlow(root: root) }
     }
 
