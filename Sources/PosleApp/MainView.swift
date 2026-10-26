@@ -58,6 +58,7 @@ struct MainView: View {
             case .record: store.showingRecord = true
             case .importFile: store.chooseFile()
             case .speechSettings: store.openSettings("speech")
+            case .aiSettings: store.openSettings("ai")
             case .cards: store.librarySection = "cards"
             case nil: break
             }

@@ -3,10 +3,15 @@ import CryptoKit
 import PosleCore
 
 extension AppStore {
+    private static let chatGPTAICommands = ["summarize", "example", "expand-notes", "voice-plan"]
     static let queuedCommands: Set<String> = ["transcribe", "diarize", "finalize", "dictate", "summarize", "example", "expand-notes", "voice-plan"]
 
     func queuedWorker(_ command: String, id: String?, extra: [String], input: Data?) async throws -> WorkerEvent? {
         guard !isTerminating else { throw CancellationError() }
+        if settings.mode == "cloud", settings.cloudProvider == "chatgpt", Self.chatGPTAICommands.contains(command),
+           disconnectingChatGPTAccounts.contains(settings.chatGPTAccountID) {
+            throw AppError.message("Выполняется выход из ChatGPT. Повторите после входа в нужный аккаунт.")
+        }
         let configuration = JobConfiguration(command: command, meetingID: id, extra: extra, input: input, settings: settings)
         let speech = ["transcribe", "diarize", "finalize", "dictate"].contains(command)
         let cloud = speech ? ["transcribe", "dictate"].contains(command) && settings.speechMode == "cloud" : settings.mode == "cloud"
@@ -69,11 +74,12 @@ extension AppStore {
                            "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL,
                            "POSLE_JOB_SETTINGS": settingsJSON]
         if snapshot.mode == "cloud", ["summarize", "example", "expand-notes", "voice-plan"].contains(config.command) {
-            environment["POSLE_API_KEY"] = isPreview ? "" : Keychain.read(account: Keychain.account(for: snapshot))
+            environment["POSLE_API_KEY"] = try await cloudCredential(for: snapshot)
         }
         if snapshot.speechMode == "cloud", config.command == "transcribe" {
             environment["POSLE_SPEECH_API_KEY"] = isPreview ? "" : Keychain.read(account: Keychain.speechAccount(for: snapshot))
         }
+        guard !cancellation.isCancelled, !isTerminating else { throw CancellationError() }
         let result: WorkerEvent?
         if config.command == "dictate" {
             guard let index = config.extra.firstIndex(of: "--audio"), config.extra.indices.contains(index + 1) else { throw AppError.message("Не выбрана запись поручения.") }

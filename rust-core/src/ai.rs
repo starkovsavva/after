@@ -66,9 +66,9 @@ Do not number facts or cards and use those new numbers as evidence IDs."#;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, rename_all="camelCase")]
-pub struct Settings { pub mode: String, pub local_model: String, pub local_provider: String, pub local_endpoint: String, pub cloud_model: String, pub cloud_provider: String, pub cloud_endpoint: String, #[serde(rename="cloudAPI", alias="cloudApi")] pub cloud_api: String, pub cloud_output: String, pub language: String, pub focus: String }
+pub struct Settings { pub mode: String, pub local_model: String, pub local_provider: String, pub local_endpoint: String, pub cloud_model: String, pub cloud_provider: String, pub cloud_endpoint: String, #[serde(rename="cloudAPI", alias="cloudApi")] pub cloud_api: String, pub cloud_output: String, pub cloud_reasoning: String, #[serde(rename="chatGPTAccountID")] pub chat_gpt_account_id: String, pub language: String, pub focus: String }
 impl Default for Settings {
-    fn default() -> Self { Self { mode:"local".into(), local_model:"qwen3.5:9b-q4_K_M".into(), local_provider:"managed".into(), local_endpoint:String::new(), cloud_model:"gpt-4.1-mini".into(), cloud_provider:"openai".into(), cloud_endpoint:String::new(), cloud_api:"responses".into(), cloud_output:"schema".into(), language:"ru".into(), focus:String::new() } }
+    fn default() -> Self { Self { mode:"local".into(), local_model:"qwen3.5:9b-q4_K_M".into(), local_provider:"managed".into(), local_endpoint:String::new(), cloud_model:"gpt-4.1-mini".into(), cloud_provider:"openai".into(), cloud_endpoint:String::new(), cloud_api:"responses".into(), cloud_output:"schema".into(), cloud_reasoning:"none".into(), chat_gpt_account_id:String::new(), language:"ru".into(), focus:String::new() } }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -264,11 +264,16 @@ struct CloudConfig { provider:String, title:&'static str, base:Url, api:String, 
 fn cloud_config(settings:&Settings) -> Result<CloudConfig> {
     let (title,raw)=match settings.cloud_provider.as_str() {
         "openai"=>("OpenAI","https://api.openai.com/v1"),
+        "chatgpt"=>("ChatGPT","https://api.openai.com/v1"),
         "openrouter"=>("OpenRouter","https://openrouter.ai/api/v1"),
         "polza"=>("Polza","https://polza.ai/api/v1"),
         "custom"=>("Свой провайдер",settings.cloud_endpoint.trim()),
         _=>bail!("Выберите облачный сервис в настройках."),
     };
+    if settings.cloud_provider=="chatgpt" {
+        if settings.cloud_api!="responses" {bail!("Подписка ChatGPT поддерживает только Responses API.");}
+        crate::chatgpt::validate_reasoning(&settings.cloud_reasoning)?;
+    }
     if !["responses","chat"].contains(&settings.cloud_api.as_str()) {bail!("Выберите формат API: Responses или Chat Completions.");}
     if !["schema","json","prompt"].contains(&settings.cloud_output.as_str()) {bail!("Выберите формат ответа: JSON Schema, JSON или JSON по инструкции.");}
     if settings.cloud_model.trim().is_empty() || settings.cloud_model.chars().any(char::is_control) {bail!("Укажите имя облачной модели.");}
@@ -326,6 +331,10 @@ fn cloud_request_body(settings:&Settings,config:&CloudConfig,system:&str,prompt:
     }
 }
 fn cloud_generate(settings:&Settings,config:&CloudConfig,key:&str,system:&str,prompt:&str,schema:&Value,max_tokens:usize,timeout:u64)->Result<Value> {
+    if config.provider=="chatgpt" {
+        let body=crate::chatgpt::request_body(&settings.cloud_model,&settings.cloud_reasoning,&config.output,system,prompt,schema)?;
+        return crate::chatgpt::generate(&client(false,timeout)?,key,&body);
+    }
     if key.trim().is_empty() {bail!("Добавьте API-ключ выбранного провайдера в настройках.");}
     let response=client(config.local,timeout)?.post(config.endpoint()?).bearer_auth(key.trim())
         .json(&cloud_request_body(settings,config,system,prompt,schema,max_tokens)).send()
@@ -1618,6 +1627,23 @@ mod tests {
         assert_eq!(cloud_config(&old).unwrap().endpoint().unwrap().as_str(),"https://api.openai.com/v1/responses");
         let new:Settings=serde_json::from_value(json!({"cloudAPI":"chat"})).unwrap();
         assert_eq!(new.cloud_api,"chat"); assert_eq!(serde_json::to_value(new).unwrap()["cloudAPI"],"chat");
+    }
+    #[test]
+    fn chatgpt_uses_only_fixed_public_responses_and_default_no_reasoning() {
+        let old:Settings=serde_json::from_value(json!({"mode":"cloud","cloudProvider":"chatgpt","cloudModel":"gpt-6-luna"})).unwrap();
+        assert_eq!(old.cloud_reasoning,"none");
+        assert_eq!(serde_json::to_value(&old).unwrap()["cloudReasoning"],"none");
+        let selected:Settings=serde_json::from_value(json!({"chatGPTAccountID":"opaque-local-profile"})).unwrap();
+        assert_eq!(selected.chat_gpt_account_id,"opaque-local-profile");
+        assert_eq!(serde_json::to_value(&selected).unwrap()["chatGPTAccountID"],"opaque-local-profile");
+        let settings=Settings{cloud_endpoint:"https://unrelated.example/key".into(),..old.clone()};
+        let config=cloud_config(&settings).unwrap();
+        assert_eq!(config.title,"ChatGPT"); assert!(!config.local);
+        assert_eq!(config.endpoint().unwrap().as_str(),crate::chatgpt::RESPONSES_ENDPOINT);
+        assert!(cloud_config(&Settings{cloud_api:"chat".into(),..old.clone()}).is_err());
+        assert!(cloud_config(&Settings{cloud_reasoning:"unsupported".into(),..old}).is_err());
+        let error=cloud_generate(&settings,&config,"","S","P",&json!({}),256,30).unwrap_err().to_string();
+        assert!(error.contains("Войдите через ChatGPT"));
     }
     #[test]
     fn cloud_endpoints_preserve_gateway_paths_and_reject_unsafe_urls() {

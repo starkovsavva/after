@@ -5,6 +5,7 @@ import SwiftUI
 /// is being edited. Changing providers never silently forwards another key.
 struct CloudSettingsView: View {
     @EnvironmentObject private var store: AppStore
+    var chatGPTAccount: ChatGPTAccount = .shared
     @State private var drafts: [String: String] = [:]
     @State private var savedKeys: [String: String] = [:]
     @State private var loadedAccounts: Set<String> = []
@@ -12,7 +13,8 @@ struct CloudSettingsView: View {
     @State private var keyError = false
 
     private var account: String? {
-        guard store.settings.validatedCloudEndpoint() != nil else { return nil }
+        guard store.settings.cloudProvider != "chatgpt",
+              store.settings.validatedCloudEndpoint() != nil else { return nil }
         return Keychain.account(for: store.settings)
     }
     private var key: String { account.flatMap { drafts[$0] } ?? "" }
@@ -25,7 +27,8 @@ struct CloudSettingsView: View {
     }
     private var configuration: String {
         [store.settings.cloudProvider, store.settings.resolvedCloudEndpoint, store.settings.cloudModel,
-         store.settings.cloudAPI, store.settings.cloudOutput].joined(separator: "\n")
+         store.settings.cloudAPI, store.settings.cloudOutput, store.settings.chatGPTAccountID,
+         store.settings.cloudReasoning].joined(separator: "\n")
     }
 
     var body: some View {
@@ -33,11 +36,25 @@ struct CloudSettingsView: View {
             Picker("Провайдер", selection: Binding(get: { store.settings.cloudProvider }, set: {
                 store.settings.switchCloudProvider($0)
             })) {
-                Text("OpenAI").tag("openai")
+                Text("ChatGPT (подписка)").tag("chatgpt")
+                Text("OpenAI API").tag("openai")
                 Text("OpenRouter").tag("openrouter")
                 Text("Polza").tag("polza")
                 Text("Свой провайдер").tag("custom")
             }
+            if store.settings.cloudProvider == "chatgpt" {
+                ChatGPTSettingsView(account: chatGPTAccount)
+            } else {
+                apiSettings
+            }
+        }
+        .onAppear { loadAccount() }
+        .onChange(of: account) { _, _ in keyMessage = ""; keyError = false; loadAccount() }
+        .onChange(of: configuration) { _, _ in store.cloudConnectionStatus = nil }
+    }
+
+    private var apiSettings: some View {
+        Group {
             if store.settings.cloudProvider == "custom" {
                 LabeledContent("Адрес API") {
                     TextField("https://example.com/v1", text: $store.settings.cloudEndpoint)
@@ -105,9 +122,6 @@ struct CloudSettingsView: View {
             Text("Для конспекта сервис получает текст встречи. API и проверка подключения оплачиваются по тарифу провайдера.")
                 .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        .onAppear { loadAccount() }
-        .onChange(of: account) { _, _ in keyMessage = ""; keyError = false; loadAccount() }
-        .onChange(of: configuration) { _, _ in store.cloudConnectionStatus = nil }
     }
 
     private func loadAccount() {

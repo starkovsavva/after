@@ -78,6 +78,8 @@ final class AppStore: ObservableObject {
     @Published var playbackDuration = 1.0
     @Published var cloudConnectionStatus: String?
     @Published var cloudConnectionError = false
+    var cloudCheckAccountID: String?
+    @Published var disconnectingChatGPTAccounts: Set<String> = []
     @Published var localStatus = ""
     @Published var installedLocalModels: [InstalledLocalModel] = []
     @Published var installedASRModels: [InstalledASRModel] = []
@@ -359,17 +361,18 @@ final class AppStore: ObservableObject {
     @discardableResult
     private func legacyWorker(_ command: String, id: String? = nil, extra: [String] = [], input: Data? = nil) async throws -> WorkerEvent? {
         guard !cancellationRequested, !isTerminating else { throw CancellationError() }
+        let configuration = settings
         if ["transcribe", "finalize", "install-local", "import-gguf"].contains(command) && !runtimeReady {
             throw AppError.message("Сначала подготовьте распознавание в настройках.")
         }
-        if command == "pull" && settings.localProvider != "managed" {
+        if command == "pull" && configuration.localProvider != "managed" {
             throw AppError.message("Выберите установленную модель в настройках. Для Ollama и LM Studio скачивание выполняется в самом приложении.")
         }
         let requestedASR = asrSelectionIdentity
-        let requestedLocalASR = command == "transcribe" && settings.speechMode == "local"
-        try write(settings, root.appendingPathComponent("settings.json"))
-        if ["check", "pull", "discover-local", "import-gguf"].contains(command) || (settings.mode == "local" && ["summarize", "example", "expand-notes", "voice-plan"].contains(command)) {
-            try await localService.ensure(root: root, settings: settings, cancelled: { self.cancellationRequested })
+        let requestedLocalASR = command == "transcribe" && configuration.speechMode == "local"
+        try write(configuration, root.appendingPathComponent("settings.json"))
+        if ["check", "pull", "discover-local", "import-gguf"].contains(command) || (configuration.mode == "local" && ["summarize", "example", "expand-notes", "voice-plan"].contains(command)) {
+            try await localService.ensure(root: root, settings: configuration, cancelled: { self.cancellationRequested })
         }
         guard !cancellationRequested else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
         var arguments = [command, "--root", root.path, "--backend", backend.path]
@@ -377,13 +380,15 @@ final class AppStore: ObservableObject {
         arguments += extra
         // Secrets live only in Keychain and the short-lived child environment, never argv/files.
         var environment = ["PYTHONUNBUFFERED": "1", "HF_HOME": root.appendingPathComponent("cache/huggingface").path,
-                           "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL]
-        if settings.mode == "cloud" && ["summarize", "example", "expand-notes", "check-cloud", "voice-plan"].contains(command) {
-            environment["POSLE_API_KEY"] = preview ? "" : Keychain.read(account: Keychain.account(for: settings))
+                           "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL,
+                           "POSLE_JOB_SETTINGS": String(decoding: try JSONEncoder().encode(configuration), as: UTF8.self)]
+        if configuration.mode == "cloud" && ["summarize", "example", "expand-notes", "check-cloud", "voice-plan"].contains(command) {
+            environment["POSLE_API_KEY"] = try await cloudCredential(for: configuration)
         }
-        if settings.speechMode == "cloud" && command == "transcribe" {
-            environment["POSLE_SPEECH_API_KEY"] = preview ? "" : Keychain.read(account: Keychain.speechAccount(for: settings))
+        if configuration.speechMode == "cloud" && command == "transcribe" {
+            environment["POSLE_SPEECH_API_KEY"] = preview ? "" : Keychain.read(account: Keychain.speechAccount(for: configuration))
         }
+        guard !cancellationRequested, !isTerminating else { throw CancellationError() }
         let generation = jobGeneration
         let receive: @Sendable (WorkerEvent) -> Void = { [weak self] event in
             Task { @MainActor in
@@ -393,19 +398,19 @@ final class AppStore: ObservableObject {
             }
         }
         let result: WorkerEvent?
-        if command == "diarize" || command == "finalize" || (command == "transcribe" && settings.speechMode == "local") {
+        if command == "diarize" || command == "finalize" || (command == "transcribe" && configuration.speechMode == "local") {
             let speakerIndex = extra.firstIndex(of: "--speakers")
-            let speakers = speakerIndex.flatMap { extra.indices.contains($0 + 1) ? Int(extra[$0 + 1]) : nil } ?? settings.speakerCount
+            let speakers = speakerIndex.flatMap { extra.indices.contains($0 + 1) ? Int(extra[$0 + 1]) : nil } ?? configuration.speakerCount
             result = try await embeddedSpeech.run(root: root, interpreter: python, backend: backend, command: command,
                                                    meeting: id.map { meetingDirectory($0) }, speakers: speakers,
-                                                   diarization: !extra.contains("--no-diarization") && settings.diarization, event: receive)
+                                                   diarization: !extra.contains("--no-diarization") && configuration.diarization, event: receive)
         } else {
             result = try await runner.run(rustEngine, arguments: arguments, environment: environment, input: input, event: receive)
         }
         if requestedLocalASR { verifiedASRSelection = requestedASR }
         if let models = result?.installedModels { installedLocalModels = models }
         if let models = result?.models {
-            installedLocalModels = models.map { InstalledLocalModel(id: $0, name: $0, provider: settings.localProvider, endpoint: localService.baseURL) }
+            installedLocalModels = models.map { InstalledLocalModel(id: $0, name: $0, provider: configuration.localProvider, endpoint: localService.baseURL) }
         }
         if let models = result?.asrModels { installedASRModels = models }
         if let models = result?.ggufModels { installedGGUFModels = models }
@@ -420,17 +425,27 @@ final class AppStore: ObservableObject {
         beginJob(id: nil); progressText = "Проверяю подключение…"
         cloudConnectionStatus = nil; cloudConnectionError = false
         let configuration = settings
+        cloudCheckAccountID = configuration.cloudProvider == "chatgpt" ? configuration.chatGPTAccountID : nil
         Task {
-            defer { endJob() }
+            defer { cloudCheckAccountID = nil; endJob() }
             do {
                 try await worker("check-cloud")
                 guard settings.cloudProvider == configuration.cloudProvider,
                       settings.resolvedCloudEndpoint == configuration.resolvedCloudEndpoint,
                       settings.cloudModel == configuration.cloudModel,
                       settings.cloudAPI == configuration.cloudAPI,
-                      settings.cloudOutput == configuration.cloudOutput else { return }
+                      settings.cloudOutput == configuration.cloudOutput,
+                      settings.cloudReasoning == configuration.cloudReasoning,
+                      settings.chatGPTAccountID == configuration.chatGPTAccountID else { return }
                 cloudConnectionStatus = "Подключение работает"
             } catch {
+                guard settings.cloudProvider == configuration.cloudProvider,
+                      settings.resolvedCloudEndpoint == configuration.resolvedCloudEndpoint,
+                      settings.cloudModel == configuration.cloudModel,
+                      settings.cloudAPI == configuration.cloudAPI,
+                      settings.cloudOutput == configuration.cloudOutput,
+                      settings.cloudReasoning == configuration.cloudReasoning,
+                      settings.chatGPTAccountID == configuration.chatGPTAccountID else { return }
                 cloudConnectionError = true; cloudConnectionStatus = error.localizedDescription
             }
         }

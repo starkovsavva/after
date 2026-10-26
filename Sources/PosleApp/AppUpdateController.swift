@@ -39,11 +39,11 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     private var flushLibraryDrafts: () -> Bool = { NoteDraftPersistence.flushAll() }
 
     var currentVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.12.0"
     }
     private var workInProgress: Bool {
         guard let store else { return false }
-        return store.startingRecording || store.isRecording || store.stoppingRecording || store.isTerminating || store.busy || store.jobs.activeCount > 0 || store.notes.attachmentBusy || store.voice.isWorking
+        return store.startingRecording || store.isRecording || store.stoppingRecording || store.isTerminating || store.busy || store.jobs.activeCount > 0 || store.notes.attachmentBusy || store.voice.isWorking || ChatGPTAccount.shared.isConnecting || ChatGPTAccount.shared.isLoadingModels || ChatGPTAccount.shared.isRefreshing || ChatGPTAccount.shared.isSigningOut || !store.disconnectingChatGPTAccounts.isEmpty
     }
     private var editorOpen: Bool {
         guard let store else { return false }
@@ -70,6 +70,9 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         }.store(in: &observations)
         store.objectWillChange.sink { [weak self] _ in
             // Published fields notify before their new values are assigned.
+            DispatchQueue.main.async { self?.refreshAvailability() }
+        }.store(in: &observations)
+        ChatGPTAccount.shared.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.refreshAvailability() }
         }.store(in: &observations)
         store.notes.objectWillChange.sink { [weak self] _ in

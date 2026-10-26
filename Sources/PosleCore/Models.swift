@@ -217,6 +217,9 @@ public struct AppSettings: Codable {
     public var cloudEndpoint = ""
     public var cloudAPI = "responses"
     public var cloudOutput = "schema"
+    public var cloudReasoning = "none"
+    /// Non-secret identity pins queued work to the explicitly selected ChatGPT account.
+    public var chatGPTAccountID = ""
     public var cloudProfiles: [String: CloudProfile] = [:]
     public var language = "ru"
     public var diarization = true
@@ -233,6 +236,7 @@ public struct AppSettings: Codable {
 
     public var cloudProviderTitle: String {
         switch cloudProvider {
+        case "chatgpt": return "ChatGPT"
         case "openrouter": return "OpenRouter"
         case "polza": return "Polza"
         case "custom": return "Свой провайдер"
@@ -242,7 +246,7 @@ public struct AppSettings: Codable {
 
     public var resolvedCloudEndpoint: String {
         switch cloudProvider {
-        case "openai": return "https://api.openai.com/v1"
+        case "openai", "chatgpt": return "https://api.openai.com/v1"
         case "openrouter": return "https://openrouter.ai/api/v1"
         case "polza": return "https://polza.ai/api/v1"
         case "custom": return cloudEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -270,18 +274,19 @@ public struct AppSettings: Codable {
     }
 
     public mutating func switchCloudProvider(_ provider: String) {
-        guard ["openai", "openrouter", "polza", "custom"].contains(provider), provider != cloudProvider else { return }
+        guard ["openai", "chatgpt", "openrouter", "polza", "custom"].contains(provider), provider != cloudProvider else { return }
         cloudProfiles[cloudProvider] = CloudProfile(endpoint: cloudEndpoint, model: cloudModel, api: cloudAPI, output: cloudOutput)
         cloudProvider = provider
         let defaults: CloudProfile
         switch provider {
         case "openai": defaults = CloudProfile(model: "gpt-4.1-mini", api: "responses")
+        case "chatgpt": defaults = CloudProfile(model: "", api: "responses")
         case "openrouter", "polza": defaults = CloudProfile(model: "openai/gpt-4.1-mini")
         default: defaults = CloudProfile(model: "")
         }
         let profile = cloudProfiles[provider] ?? defaults
         cloudEndpoint = profile.endpoint; cloudModel = profile.model
-        cloudAPI = profile.api; cloudOutput = profile.output
+        cloudAPI = provider == "chatgpt" ? "responses" : profile.api; cloudOutput = profile.output
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -289,7 +294,7 @@ public struct AppSettings: Codable {
         case startSection, recordSystemAudio, recordVideo, quickCaptureEnabled, bookmarkShortcutEnabled, voiceShortcutEnabled, quickCaptureShortcut, notesAutoTimestamp, notesSaveToActiveMeeting, defaultTemplateID
         case mode, localModel, localProvider, localEndpoint, asrModelPath, asrModelFormat
         case speechMode, speechLocalModel, speechCloudProvider, speechCloudEndpoint, speechCloudModel, speechResponseFormat, speechLanguage
-        case cloudModel, cloudProvider, cloudEndpoint, cloudAPI, cloudOutput, cloudProfiles, language, diarization, speakerCount, autoSummary, focus
+        case cloudModel, cloudProvider, cloudEndpoint, cloudAPI, cloudOutput, cloudReasoning, chatGPTAccountID, cloudProfiles, language, diarization, speakerCount, autoSummary, focus
     }
 
     // Defaults are applied per field, so adding settings never resets an existing setup.
@@ -327,6 +332,8 @@ public struct AppSettings: Codable {
         cloudEndpoint = try values.decodeIfPresent(String.self, forKey: .cloudEndpoint) ?? cloudEndpoint
         cloudAPI = try values.decodeIfPresent(String.self, forKey: .cloudAPI) ?? cloudAPI
         cloudOutput = try values.decodeIfPresent(String.self, forKey: .cloudOutput) ?? cloudOutput
+        cloudReasoning = try values.decodeIfPresent(String.self, forKey: .cloudReasoning) ?? cloudReasoning
+        chatGPTAccountID = try values.decodeIfPresent(String.self, forKey: .chatGPTAccountID) ?? chatGPTAccountID
         cloudProfiles = try values.decodeIfPresent([String: CloudProfile].self, forKey: .cloudProfiles) ?? cloudProfiles
         language = try values.decodeIfPresent(String.self, forKey: .language) ?? language
         diarization = try values.decodeIfPresent(Bool.self, forKey: .diarization) ?? diarization

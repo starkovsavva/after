@@ -6,7 +6,7 @@ enum GuidancePresentation: String, Identifiable {
     case gettingStarted, whatsNew
     var id: String { rawValue }
 }
-enum GuidanceAction { case record, importFile, speechSettings, cards }
+enum GuidanceAction { case record, importFile, speechSettings, cards, aiSettings }
 
 private struct GuidancePreferences: Codable {
     var introSeen = false
@@ -42,7 +42,7 @@ final class GuidanceController: ObservableObject {
     private var pendingAction: GuidanceAction?
     private var consideredStartup = false
     // Bump only when a release introduces something worth teaching.
-    private let featureRelease = "0.11"
+    private let featureRelease = "0.12"
     var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development" }
 
     func configure(root: URL, preview: Bool) {
@@ -130,12 +130,12 @@ struct GuidanceSheet: View {
                 }
                 Button("Выбрать локальную или облачную модель") { controller.complete(with: .speechSettings) }.buttonStyle(.borderless)
             } else {
-                feature("Фоновые задачи", "Обработка встреч идёт в очереди. Можно продолжать записывать и работать с заметками.", "clock.arrow.circlepath")
                 HStack {
-                    feature("Карточки под вашим контролем", "Редактируйте выражения, отменяйте оценку и слушайте исходную реплику.", "rectangle.on.rectangle")
-                    Button("Попробовать") { controller.complete(with: .cards) }.buttonStyle(.bordered)
+                    feature("Подписка ChatGPT", "Войдите в личный аккаунт для конспектов, карточек и текстовых поручений.", "person.crop.circle")
+                    Button("Настроить") { controller.complete(with: .aiSettings) }.buttonStyle(.bordered)
                 }
-                feature("Три варианта оформления", "Графит, матовое стекло и системный Liquid Glass с отдельным выбором цвета.", "paintpalette")
+                feature("Ваши модели и рассуждения", "Список доступен после входа. Для Luna можно отключить рассуждения.", "slider.horizontal.3")
+                feature("Контроль лимитов", "При исчерпании лимита очередь приостановится. Использование можно проверить в ChatGPT.", "pause.circle")
             }
             Divider()
             HStack(spacing: 14) {

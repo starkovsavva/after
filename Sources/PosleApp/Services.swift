@@ -222,13 +222,23 @@ enum Keychain {
         return prefix + "." + digest
     }
     static func read(account: String = "openai") -> String {
+        (try? readChecked(account: account)) ?? ""
+    }
+
+    /// A temporarily locked or inaccessible vault must not look like an empty
+    /// account and allow a session manager to replace an existing registration.
+    static func readChecked(account: String) throws -> String {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service, kSecAttrAccount as String: account,
             kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var value: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &value) == errSecSuccess,
-              let data = value as? Data else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
+        let status = SecItemCopyMatching(query as CFDictionary, &value)
+        if status == errSecItemNotFound { return "" }
+        guard status == errSecSuccess, let data = value as? Data,
+              let result = String(data: data, encoding: .utf8) else {
+            throw AppError.message("Не удалось прочитать сессию из Связки ключей macOS.")
+        }
+        return result
     }
 
     static func save(_ key: String, account: String = "openai") throws {

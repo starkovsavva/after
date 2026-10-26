@@ -27,7 +27,9 @@ enum QueueNativeChecks {
         try await powerLease(root.appendingPathComponent("power"))
         try await ephemeralDictation(root.appendingPathComponent("dictation"))
         try await failedChain(root.appendingPathComponent("failed-chain"))
-        print("9 native durable queue groups passed"); fflush(stdout)
+        try await chatGPTQuota(root.appendingPathComponent("chatgpt-quota"))
+        try await chatGPTSignOut(root.appendingPathComponent("chatgpt-signout"))
+        print("11 native durable queue groups passed"); fflush(stdout)
     }
     private static func configuration(_ command: String = "example", object: String, autoSummary: Bool = false) -> JobConfiguration {
         var settings = AppSettings(); settings.autoSummary = autoSummary; settings.mode = "local"
@@ -203,6 +205,125 @@ enum QueueNativeChecks {
         await controller.shutdown()
         print("PASS: failed dependency releases active/power gates; explicit retry resumes only its dependent stage")
     }
+    private static func planConfiguration(object: String, account: String) -> JobConfiguration {
+        var config = configuration(object: object)
+        config.settings.mode = "cloud"; config.settings.cloudProvider = "chatgpt"
+        config.settings.chatGPTAccountID = account; config.settings.cloudModel = "fixture-model"
+        return config
+    }
+    private static func planSubmit(_ queue: JobCoordinator, object: String, account: String) -> Task<WorkerEvent?, Error> {
+        let config = planConfiguration(object: object, account: account)
+        return Task { try await queue.submit(config, resource: "cloud", revision: "v1", title: object, paid: true) }
+    }
+    private static func chatGPTQuota(_ root: URL) async throws {
+        let probe = QueueCheckProbe(quotaFailureObjects: ["plan-limit"])
+        let queue = try await coordinator(root.appendingPathComponent("admission"), probe: probe)
+        let limited = planSubmit(queue, object: "plan-limit", account: "account-a")
+        try await wait { await probe.startedObjects().contains("plan-limit") }
+        let running = submit(queue, "already-running")
+        try await wait { await probe.activeCount("cloud") == 2 }
+        let pending = planSubmit(queue, object: "plan-pending", account: "account-a")
+        let cancelled = planSubmit(queue, object: "plan-cancelled", account: "account-a")
+        let otherAccount = planSubmit(queue, object: "other-account", account: "account-b")
+        let otherProvider = submit(queue, "other-provider")
+        try await wait { try await queue.snapshot().count == 6 }
+        await probe.release("plan-limit")
+        do { _ = try await limited.value; throw AppError.message("Quota response unexpectedly succeeded") }
+        catch { try expect(error.localizedDescription.contains("subscription_sharing_usage_limit_exceeded"), "Exact quota failure was not returned to its caller") }
+        try await wait { await queue.chatGPTAdmissionPaused("account-a") }
+        try await wait { await probe.startedObjects().contains("other-account") }
+        let failedID = try await queue.snapshot().first { $0.objectID == "plan-limit" }!.id
+        let pendingJob = try await queue.snapshot().first { $0.objectID == "plan-pending" }!
+        try expect(pendingJob.state == "queued" && pendingJob.attempt == 0, "Quota-paused work was claimed or failed")
+        try expect(!(await probe.startedObjects()).contains("plan-pending"), "A new request used the exhausted account")
+        try expect(await probe.isCancelled("already-running") == false, "Quota pause cancelled an already-running request")
+        await probe.release("other-account"); _ = try await otherAccount.value
+        try await wait { await probe.startedObjects().contains("other-provider") }
+        await probe.release("other-provider"); _ = try await otherProvider.value
+        await probe.release("already-running"); _ = try await running.value
+        cancelled.cancel(); try await expectCancelled(cancelled)
+        let cancelledID = try await queue.snapshot().first { $0.objectID == "plan-cancelled" }!.id
+        try expect(await queue.subscriberCount(cancelledID) == 0, "Cancelling a quota-paused caller stranded a waiter")
+        do { try await queue.retry(failedID, confirmPaid: false); throw AppError.message("Unconfirmed retry bypassed quota pause") }
+        catch { try expect(error.localizedDescription != "Unconfirmed retry bypassed quota pause", "Paid retry did not require confirmation") }
+        try expect(await queue.chatGPTAdmissionPaused("account-a"), "Rejected retry cleared the account pause")
+        try await queue.retry(failedID, confirmPaid: true)
+        _ = try await queue.observe(failedID)
+        try await wait { await probe.startedObjects().contains("plan-pending") }
+        await probe.release("plan-pending"); _ = try await pending.value
+        try expect(!(await queue.chatGPTAdmissionPaused("account-a")), "Explicit retry did not resume the selected account")
+        try expect(try await queue.snapshot().first { $0.id == failedID }?.attempt == 2, "Confirmed quota retry lost attempt identity")
+        await queue.shutdown()
+
+        // Paused duplicate subscribers must release the activity lease and all
+        // waiting callers when the app closes, while SQLite retains their work.
+        let power = QueuePowerProbe(), cleanupProbe = QueueCheckProbe(quotaFailureObjects: ["cleanup-limit"])
+        let cleanup = BackgroundJobsController(root: root.appendingPathComponent("cleanup"), activityChanged: { power.transitions.append($0) })
+        cleanup.connect { job, cancellation, event in try await cleanupProbe.execute(job, cancellation, event) }
+        let limitConfig = planConfiguration(object: "cleanup-limit", account: "cleanup-account")
+        let cleanupLimit = Task { try await cleanup.submit(limitConfig, resource: "cloud", revision: "v1", title: "Limit", paid: true) }
+        try await wait { await cleanupProbe.startedObjects().contains("cleanup-limit") }
+        let busyConfig = configuration(object: "cleanup-running")
+        let cleanupRunning = Task { try await cleanup.submit(busyConfig, resource: "cloud", revision: "v1", title: "Other provider", paid: false) }
+        try await wait { await cleanupProbe.activeCount("cloud") == 2 }
+        let waitingConfig = planConfiguration(object: "cleanup-pending", account: "cleanup-account")
+        let firstWaiter = Task { try await cleanup.submit(waitingConfig, resource: "cloud", revision: "v1", title: "Paused", paid: true) }
+        let secondWaiter = Task { try await cleanup.submit(waitingConfig, resource: "cloud", revision: "v1", title: "Paused", paid: true) }
+        try await wait { cleanup.pendingSubmissions == 4 && cleanup.jobs.count == 3 }
+        await cleanupProbe.release("cleanup-limit")
+        do { _ = try await cleanupLimit.value; throw AppError.message("Cleanup quota response unexpectedly succeeded") }
+        catch { try expect(error.localizedDescription.contains("subscription_sharing_usage_limit_exceeded"), "Cleanup quota error missing") }
+        await cleanupProbe.release("cleanup-running"); _ = try await cleanupRunning.value
+        try await wait { cleanup.activeCount == 0 && cleanup.pausedChatGPTAccounts.contains("cleanup-account") }
+        try expect(power.transitions == [true, false], "Quota-only waiters kept the idle-sleep/update gate active")
+        try expect(cleanup.jobs.contains { $0.objectID == "cleanup-pending" && $0.state == "queued" && cleanup.isPaused($0) }, "Paused status did not reach the controller")
+        await cleanup.shutdown(); try await expectCancelled(firstWaiter); try await expectCancelled(secondWaiter)
+        try expect(cleanup.jobs.contains { $0.objectID == "cleanup-pending" && $0.state == "queued" }, "Shutdown discarded quota-paused durable work")
+        try expect(power.transitions == [true, false], "Quota shutdown leaked or double-released the activity lease")
+        // The same word in an unrelated error, or a speech command using its
+        // own API key, cannot put ChatGPT plan inference into a quota pause.
+        for (index, command, message) in [
+            (0, "example", "ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded_extra. Not the exact code."),
+            (1, "transcribe", "ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded. Speech fixture.")
+        ] {
+            let unrelated = JobCoordinator(root: root.appendingPathComponent("not-quota-\(index)"), changed: { _ in })
+            try await unrelated.start { _, _, _ in throw AppError.message(message) }
+            var config = planConfiguration(object: "unrelated", account: "unrelated-account"); config.command = command
+            do {
+                _ = try await unrelated.submit(config, resource: "cloud", revision: "v1", title: "Unrelated", paid: true)
+                throw AppError.message("Unrelated fixture unexpectedly succeeded")
+            } catch { try expect(error.localizedDescription == message, "Unrelated fixture changed its error") }
+            try expect(!(await unrelated.chatGPTAdmissionPaused("unrelated-account")), "Unrelated error or speech paused ChatGPT plan requests")
+            await unrelated.shutdown()
+        }
+        print("PASS: exact ChatGPT quota pauses only its account; other routes proceed, confirmed retry resumes, and paused cancellation/shutdown releases waiters and power")
+    }
+    private static func chatGPTSignOut(_ root: URL) async throws {
+        let probe = QueueCheckProbe(), queue = try await coordinator(root, probe: probe)
+        let first = planSubmit(queue, object: "signout-running-a", account: "signed-out-account")
+        let second = planSubmit(queue, object: "signout-running-b", account: "signed-out-account")
+        try await wait { await probe.activeCount("cloud") == 2 }
+        let queued = planSubmit(queue, object: "signout-queued", account: "signed-out-account")
+        let other = planSubmit(queue, object: "signout-other-account", account: "other-account")
+        var speechConfig = planConfiguration(object: "signout-speech", account: "signed-out-account")
+        speechConfig.command = "transcribe"; speechConfig.settings.speechMode = "cloud"
+        let speech = Task { try await queue.submit(speechConfig, resource: "cloud", revision: "v1", title: "Speech", paid: true) }
+        try await wait { try await queue.snapshot().count == 5 }
+        await queue.cancelChatGPTAccount("signed-out-account")
+        try await expectCancelled(first); try await expectCancelled(second); try await expectCancelled(queued)
+        try await wait {
+            let started = await probe.startedObjects()
+            return started.contains("signout-other-account") && started.contains("signout-speech")
+        }
+        try expect(!(await probe.startedObjects()).contains("signout-queued"), "Sign-out batch admitted a queued request between cancellations")
+        try expect(await probe.isCancelled("signout-other-account") == false, "Sign-out cancelled another account")
+        try expect(await probe.isCancelled("signout-speech") == false, "Sign-out cancelled API-backed speech")
+        await probe.release("signout-other-account"); await probe.release("signout-speech")
+        _ = try await other.value; _ = try await speech.value
+        try expect(!(await queue.chatGPTAdmissionPaused("signed-out-account")), "Temporary sign-out admission gate leaked after cancellation")
+        await queue.shutdown()
+        print("PASS: signing out cancels only that account's running/queued ChatGPT AI requests before admission resumes; other accounts and speech continue")
+    }
     private static func expectCancelled(_ task: Task<WorkerEvent?, Error>) async throws {
         do { _ = try await task.value; throw AppError.message("Expected cancellation") }
         catch is CancellationError {} catch { throw error }
@@ -218,6 +339,7 @@ private actor QueueCheckProbe {
     private let automatic: Bool
     private let ignoreCancellation: Bool
     private let failFirstTranscription: Bool
+    private let quotaFailureObjects: Set<String>
     private var released: Set<String> = []
     private var releaseEverything = false
     private var active: [String: BackgroundJob] = [:]
@@ -225,8 +347,10 @@ private actor QueueCheckProbe {
     private var started: [BackgroundJob] = []
     private var maxima: [String: Int] = [:]
     private var callbacks: [String: @Sendable (WorkerEvent) -> Void] = [:]
-    init(automatic: Bool = false, ignoreCancellation: Bool = false, failFirstTranscription: Bool = false) {
+    init(automatic: Bool = false, ignoreCancellation: Bool = false, failFirstTranscription: Bool = false,
+         quotaFailureObjects: Set<String> = []) {
         self.automatic = automatic; self.ignoreCancellation = ignoreCancellation; self.failFirstTranscription = failFirstTranscription
+        self.quotaFailureObjects = quotaFailureObjects
     }
     func execute(_ job: BackgroundJob, _ cancellation: JobCancellation, _ event: @escaping @Sendable (WorkerEvent) -> Void) async throws -> WorkerEvent? {
         active[job.id] = job; started.append(job); cancellations[job.objectID] = cancellation; callbacks[job.objectID] = event
@@ -239,12 +363,16 @@ private actor QueueCheckProbe {
         }
         if cancellation.isCancelled && !ignoreCancellation { throw AppError.message("Synthetic terminated subprocess") }
         if failFirstTranscription && job.kind == "transcribe" && job.attempt == 1 { throw AppError.message("Synthetic transcription failed") }
+        if quotaFailureObjects.contains(job.objectID), job.attempt == 1 {
+            throw AppError.message("ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded. Fixture limit.")
+        }
         return WorkerEvent(event: "done", message: job.id)
     }
     func release(_ id: String) { released.insert(id) }
     func releaseAll() { releaseEverything = true }
     func activeCount(_ resource: String) -> Int { active.values.filter { $0.resource == resource }.count }
     func startedCount(_ resource: String) -> Int { started.filter { $0.resource == resource }.count }
+    func startedObjects() -> [String] { started.map(\.objectID) }
     func maximum(_ resource: String) -> Int { maxima[resource] ?? 0 }
     func isCancelled(_ object: String) -> Bool { cancellations[object]?.isCancelled ?? false }
     func order() -> [String] { started.map(\.kind) }

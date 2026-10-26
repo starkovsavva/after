@@ -118,6 +118,21 @@ struct CoreChecks {
         cloud.cloudEndpoint = "https://user:password@example.com/v1"; expect(cloud.validatedCloudEndpoint() == nil, "URL credentials are refused")
         cloud.cloudEndpoint = "http://example.com/v1"; expect(cloud.validatedCloudEndpoint() == nil, "Remote plaintext HTTP is refused")
         print("PASS: cloud provider migration, independent profiles, exact API format and endpoint validation")
+        expect(cloud.cloudReasoning == "none" && cloud.chatGPTAccountID.isEmpty, "Legacy settings never connect a subscription or enable reasoning implicitly")
+        let apiProfile = cloud.cloudModel
+        cloud.switchCloudProvider("chatgpt")
+        expect(cloud.cloudModel.isEmpty && cloud.cloudAPI == "responses", "Subscription model must come from the signed-in account catalog")
+        cloud.cloudEndpoint = "https://other-provider.invalid/v1"
+        expect(cloud.resolvedCloudEndpoint == "https://api.openai.com/v1", "Subscription credentials cannot be redirected to a custom endpoint")
+        cloud.chatGPTAccountID = "synthetic-account"; cloud.cloudModel = "catalog-model"; cloud.cloudReasoning = "low"
+        let subscription = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(cloud))
+        expect(subscription.chatGPTAccountID == "synthetic-account" && subscription.cloudReasoning == "low", "Queued subscription settings keep non-secret account identity and chosen reasoning")
+        cloud.switchCloudProvider("custom")
+        expect(cloud.cloudModel == apiProfile, "Switching to subscription preserves the independent API profile")
+        cloud.switchCloudProvider("chatgpt")
+        expect(cloud.cloudModel == "catalog-model" && cloud.cloudProviderTitle == "ChatGPT", "Returning to subscription restores the selected catalog model")
+        expect(cloud.validatedCloudEndpoint()?.host == "api.openai.com", "Subscription uses the fixed public OpenAI endpoint")
+        print("PASS: subscription migration, account-pinned snapshots, fixed endpoint and independent provider profiles")
         let compact = RecordingVideoQuality.compact.dimensions(width: 1440, height: 900, scale: 2)
         expect(compact == RecordingVideoDimensions(width: 1152, height: 720), "Retina 16:10 stays full-display 16:10 at 720p")
         let clear = RecordingVideoQuality.clear.dimensions(width: 1440, height: 900, scale: 2)
@@ -146,7 +161,7 @@ struct CoreChecks {
         let qualityCopy = try JSONDecoder().decode(RecordingVideoQuality.self, from: JSONEncoder().encode(RecordingVideoQuality.native))
         expect(qualityCopy == .native && RecordingVideoQuality.allCases.allSatisfy { $0.frameRate == 30 }, "quality persists and every preset keeps 30 fps")
         print("PASS: full-display recording profiles, Retina geometry, aspect ratio, audio bitrates and disconnected-display safety")
-        print("9 Swift checks passed")
+        print("10 Swift checks passed")
     }
 }
 

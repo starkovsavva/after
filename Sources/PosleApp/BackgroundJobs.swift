@@ -12,6 +12,14 @@ struct JobConfiguration: Codable {
     var extra: [String]
     var input: Data?
     var settings: AppSettings
+
+    /// Speech keeps its separate API-key billing path even when summaries use ChatGPT.
+    var chatGPTPlanAccountID: String? {
+        guard settings.mode == "cloud", settings.cloudProvider == "chatgpt",
+              ["summarize", "example", "expand-notes", "voice-plan"].contains(command),
+              !settings.chatGPTAccountID.isEmpty else { return nil }
+        return settings.chatGPTAccountID
+    }
 }
 
 struct BackgroundJob: Decodable, Identifiable {
@@ -75,6 +83,9 @@ actor JobCoordinator {
     private let root: URL
     private let changed: @Sendable ([BackgroundJob]) -> Void
     private let failed: @Sendable (String) -> Void
+    private let admissionChanged: @Sendable ([String: BackgroundJob]) -> Void
+    private var pausedChatGPTFailures: [String: BackgroundJob] = [:]
+    private var signingOutChatGPTAccounts: Set<String> = []
     private var executor: Executor?
     private var running: [String: RunningAttempt] = [:]
     private var waiters: [String: [UUID: CheckedContinuation<WorkerEvent?, Error>]] = [:]
@@ -85,8 +96,9 @@ actor JobCoordinator {
     private var lastProgress: [String: Date] = [:]
 
     init(root: URL, changed: @escaping @Sendable ([BackgroundJob]) -> Void,
-         failed: @escaping @Sendable (String) -> Void = { _ in }) {
-        self.root = root; self.changed = changed; self.failed = failed
+         failed: @escaping @Sendable (String) -> Void = { _ in },
+         admissionChanged: @escaping @Sendable ([String: BackgroundJob]) -> Void = { _ in }) {
+        self.root = root; self.changed = changed; self.failed = failed; self.admissionChanged = admissionChanged
     }
     private func request(_ command: String, _ arguments: [String: Any] = [:]) throws -> Data {
         try RustBridge.shared.get().request(root: root, command: command, arguments: arguments)
@@ -107,7 +119,17 @@ actor JobCoordinator {
         }
     }
     private func publish() {
+        admissionChanged(pausedChatGPTFailures)
         do { changed(try snapshot()) } catch { failQueue(error) }
+    }
+    private func admissionPaused(_ job: BackgroundJob) -> Bool {
+        job.config.chatGPTPlanAccountID.map { pausedChatGPTFailures[$0] != nil || signingOutChatGPTAccounts.contains($0) } == true
+    }
+    private static func reachedChatGPTLimit(_ error: Error) -> Bool {
+        // Match the transport's exact allowlisted code, not a provider message
+        // containing the same word or a longer unrelated code.
+        error.localizedDescription.range(of: #"^ChatGPT: HTTP [0-9]{3} · subscription_sharing_usage_limit_exceeded\."#,
+                                         options: .regularExpression) != nil
     }
     func start(executor: @escaping Executor) throws {
         // A second UI connection must never recover an attempt still executing.
@@ -163,8 +185,22 @@ actor JobCoordinator {
             while true {
                 struct Claim: Decodable { var job: BackgroundJob? }
                 let allowed = recording ? ["cloud", "light"] : ["local-heavy", "cloud", "light"]
-                let claim = try JSONDecoder().decode(Claim.self, from: request("job-claim", ["allowedResources": allowed]))
-                guard let job = claim.job else { break }
+                let job: BackgroundJob?
+                if pausedChatGPTFailures.isEmpty && signingOutChatGPTAccounts.isEmpty {
+                    job = try JSONDecoder().decode(Claim.self, from: request("job-claim", ["allowedResources": allowed])).job
+                } else {
+                    // Keep paused rows durably queued. Asking SQLite to claim
+                    // an exact eligible ID still enforces dependencies, object
+                    // exclusion and resource capacity atomically.
+                    var eligible: BackgroundJob?
+                    for candidate in try snapshot() where candidate.state == "queued"
+                        && allowed.contains(candidate.resource) && !admissionPaused(candidate) {
+                        let claim = try JSONDecoder().decode(Claim.self, from: request("job-claim", ["allowedResources": allowed, "jobID": candidate.id]))
+                        if let claimed = claim.job { eligible = claimed; break }
+                    }
+                    job = eligible
+                }
+                guard let job else { break }
                 let cancellation = JobCancellation()
                 running[job.id] = RunningAttempt(number: job.attempt, cancellation: cancellation)
                 Task {
@@ -199,6 +235,11 @@ actor JobCoordinator {
             // arriving immediately after publication cannot make that unsaved.
             arguments["state"] = "succeeded"; arguments["message"] = "Готово"
         case .failure(let error):
+            if !cancelled, !(error is CancellationError), let account = job.config.chatGPTPlanAccountID,
+               Self.reachedChatGPTLimit(error) {
+                var failure = job; failure.state = "failed"; failure.message = String(error.localizedDescription.prefix(1000))
+                pausedChatGPTFailures[account] = failure
+            }
             let interrupted = stopping && (cancelled || error is CancellationError)
             arguments["state"] = interrupted ? "interrupted" : cancelled || error is CancellationError ? "cancelled" : "failed"
             arguments["message"] = interrupted ? "Работа прервалась при закрытии приложения." : cancelled || error is CancellationError ? "Отменено" : String(error.localizedDescription.prefix(1000))
@@ -227,10 +268,25 @@ actor JobCoordinator {
         }
         publish(); pump()
     }
+    func cancelChatGPTAccount(_ accountID: String) {
+        guard !accountID.isEmpty else { return }
+        // Admission closes before the first cancellation: cancel() may pump
+        // other routes, but cannot start the next job belonging to this account.
+        signingOutChatGPTAccounts.insert(accountID)
+        defer { signingOutChatGPTAccounts.remove(accountID); publish(); pump() }
+        do {
+            for job in try snapshot() where job.active && job.config.chatGPTPlanAccountID == accountID { cancel(job.id) }
+        } catch { failQueue(error) }
+    }
     func retry(_ id: String, confirmPaid: Bool) throws {
         guard !stopping else { throw CancellationError() }
         if let queueFailure { throw AppError.message(queueFailure) }
-        _ = try request("job-retry", ["jobID": id, "confirmPaid": confirmPaid]); publish(); pump()
+        struct Response: Decodable { var job: BackgroundJob }
+        let response = try JSONDecoder().decode(Response.self, from: request("job-retry", ["jobID": id, "confirmPaid": confirmPaid]))
+        // Only a successful explicit retry authorizes new requests for this
+        // account. A rejected paid confirmation leaves admission paused.
+        if let account = response.job.config.chatGPTPlanAccountID { pausedChatGPTFailures.removeValue(forKey: account) }
+        publish(); pump()
     }
     func observe(_ id: String) async throws -> WorkerEvent? {
         struct Response: Decodable { var job: BackgroundJob }
@@ -260,6 +316,7 @@ actor JobCoordinator {
     func isDrained() -> Bool { running.isEmpty }
     #if DEBUG
     func subscriberCount(_ id: String) -> Int { waiters[id]?.count ?? 0 }
+    func chatGPTAdmissionPaused(_ accountID: String) -> Bool { pausedChatGPTFailures[accountID] != nil }
     #endif
 }
 
@@ -269,12 +326,24 @@ final class BackgroundJobsController: ObservableObject {
     @Published var error: String?
     @Published var showing = false
     @Published private(set) var pendingSubmissions = 0 { didSet { updateActivityLease() } }
+    @Published private(set) var pausedChatGPTAccounts: Set<String> = [] { didSet { updateActivityLease() } }
+    @Published private(set) var pausedChatGPTFailures: [BackgroundJob] = []
+    private var pendingAccounts: [UUID: String] = [:] {
+        didSet { pendingSubmissions = pendingAccounts.count }
+    }
     private var coordinator: JobCoordinator!
     private let activityChanged: (Bool) -> Void
     private var activityHeld = false
     private var shuttingDown = false
     private var leaseClosed = false
-    var activeCount: Int { max(jobs.filter(\.active).count, pendingSubmissions) }
+    var activeCount: Int {
+        let runnable = jobs.filter { $0.active && !isPaused($0) }.count
+        let pending = pendingAccounts.values.filter { !pausedChatGPTAccounts.contains($0) }.count
+        return max(runnable, pending)
+    }
+    func isPaused(_ job: BackgroundJob) -> Bool {
+        job.state == "queued" && job.config.chatGPTPlanAccountID.map { pausedChatGPTAccounts.contains($0) } == true
+    }
     var needsAttention: Bool { jobs.contains { ["failed", "interrupted"].contains($0.state) } }
     init(root: URL, activityChanged: ((Bool) -> Void)? = nil) {
         if let activityChanged { self.activityChanged = activityChanged }
@@ -291,6 +360,11 @@ final class BackgroundJobsController: ObservableObject {
             }
         } failed: { [weak self] message in
             Task { @MainActor in self?.error = message }
+        } admissionChanged: { [weak self] failures in
+            Task { @MainActor in
+                self?.pausedChatGPTFailures = failures.values.sorted { $0.createdAt < $1.createdAt }
+                self?.pausedChatGPTAccounts = Set(failures.keys)
+            }
         }
     }
     func connect(_ executor: @escaping JobCoordinator.Executor) {
@@ -298,8 +372,9 @@ final class BackgroundJobsController: ObservableObject {
     }
     func submit(_ config: JobConfiguration, resource: String, revision: String, title: String, paid: Bool) async throws -> WorkerEvent? {
         guard !shuttingDown else { throw CancellationError() }
-        pendingSubmissions += 1
-        defer { pendingSubmissions -= 1 }
+        let subscription = UUID()
+        pendingAccounts[subscription] = config.chatGPTPlanAccountID ?? ""
+        defer { pendingAccounts.removeValue(forKey: subscription) }
         return try await coordinator.submit(config, resource: resource, revision: revision, title: title, paid: paid)
     }
     func setRecording(_ value: Bool) { Task { await coordinator.setRecording(value) } }
@@ -307,19 +382,25 @@ final class BackgroundJobsController: ObservableObject {
         jobs.contains { $0.active && $0.objectID == objectID && (kinds.isEmpty || kinds.contains($0.kind)) }
     }
     func cancel(_ id: String) { Task { await coordinator.cancel(id) } }
+    func cancelChatGPTAccount(_ accountID: String) async { await coordinator.cancelChatGPTAccount(accountID) }
     func retry(_ job: BackgroundJob) {
         var confirmed = !job.paid
         if job.paid {
             let alert = NSAlert()
             alert.messageText = "Повторить облачный запрос?"
-            alert.informativeText = "Сервис мог обработать предыдущий запрос до прерывания. Повтор может оплачиваться ещё раз. Будут использованы сохранённые настройки этой операции."
+            alert.informativeText = job.config.settings.cloudProvider == "chatgpt" && ["summarize", "example", "expand-notes", "voice-plan"].contains(job.config.command)
+                ? "ChatGPT мог обработать предыдущий запрос до прерывания. Повтор снова использует лимит подписки. Будут использованы сохранённые настройки этой операции."
+                : "Сервис мог обработать предыдущий запрос до прерывания. Повтор может оплачиваться ещё раз. Будут использованы сохранённые настройки этой операции."
             alert.addButton(withTitle: "Повторить"); alert.addButton(withTitle: "Отмена")
             confirmed = alert.runModal() == .alertFirstButtonReturn
         }
         guard confirmed else { return }
-        pendingSubmissions += 1
+        let subscription = UUID()
+        // A confirmed retry is an active admission action even while the
+        // coordinator is clearing the account's previous quota pause.
+        pendingAccounts[subscription] = ""
         Task {
-            defer { pendingSubmissions -= 1 }
+            defer { pendingAccounts.removeValue(forKey: subscription) }
             do { try await coordinator.retry(job.id, confirmPaid: confirmed); _ = try await coordinator.observe(job.id) }
             catch is CancellationError {} catch { self.error = error.localizedDescription }
         }
@@ -372,6 +453,28 @@ struct BackgroundJobsView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Фоновые задачи").font(AppTypography.modalTitle)
             if jobs.jobs.isEmpty { Text("Здесь появятся операции обработки встреч и генерации.").foregroundStyle(.secondary) }
+            if !jobs.pausedChatGPTAccounts.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Запросы ChatGPT приостановлены", systemImage: "pause.circle")
+                        .font(AppTypography.controlStrong)
+                    Text("Проверьте лимиты и нажмите «Повторить» у неудавшейся задачи, чтобы продолжить очередь.")
+                        .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                    HStack(spacing: 12) {
+                        Link("Использование ChatGPT", destination: URL(string: "https://chatgpt.com/settings/usage")!)
+                            .font(AppTypography.caption)
+                        if jobs.pausedChatGPTFailures.count == 1, let failed = jobs.pausedChatGPTFailures.first {
+                            Button("Продолжить очередь") { jobs.retry(failed) }.buttonStyle(.borderless)
+                                .help("Повторить неудавшийся запрос после подтверждения и продолжить очередь этого аккаунта.")
+                        } else if !jobs.pausedChatGPTFailures.isEmpty {
+                            Menu("Продолжить очередь") {
+                                ForEach(jobs.pausedChatGPTFailures) { failed in
+                                    Button("Повторить: " + failed.title) { jobs.retry(failed) }
+                                }
+                            }.menuStyle(.borderlessButton)
+                        }
+                    }
+                }.fixedSize(horizontal: false, vertical: true)
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(Array(jobs.jobs.sorted { left, right in
@@ -388,7 +491,7 @@ struct BackgroundJobsView: View {
                                     Button("Повторить") { jobs.retry(job) }.buttonStyle(.borderless)
                                 }
                             }
-                            Text(job.stateLabel).font(AppTypography.caption).foregroundStyle(job.state == "failed" ? Ink.warning : Ink.secondaryText).textSelection(.enabled)
+                            Text(jobs.isPaused(job) ? "Ожидает: лимит подписки ChatGPT" : job.stateLabel).font(AppTypography.caption).foregroundStyle(job.state == "failed" ? Ink.warning : Ink.secondaryText).textSelection(.enabled)
                             if job.state == "running" { if let fraction = job.progress, fraction >= 0 { ProgressView(value: fraction) } else { ProgressView().controlSize(.small) } }
                         }
                     }

@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 showQuickDraft: { [weak controller] in controller?.show() })
         }
     }
-    func applicationWillTerminate(_ notification: Notification) { capture?.stop(); store?.localService.stop(); store?.calendar.stop() }
+    func applicationWillTerminate(_ notification: Notification) { ChatGPTAccount.shared.cancelSignIn(); capture?.stop(); store?.localService.stop(); store?.calendar.stop() }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -80,6 +80,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task {
                 do { try await EmbeddedSpeechNativeChecks.run(); NSApp.terminate(nil) }
                 catch { fputs("Embedded NSApplication check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-chatgpt-auth") {
+            Task {
+                do { try await ChatGPTAuthNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("ChatGPT auth check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-chatgpt-ui") {
+            Task {
+                do { try await ChatGPTUINativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("ChatGPT UI check failed: \(error)\n", stderr); exit(1) }
             }
             return
         }

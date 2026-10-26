@@ -48,7 +48,9 @@ struct SummaryView: View {
                     }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(overviewLocked || overviewEditing)
                 }
                 if store.settings.mode == "cloud" {
-                    Text("\(store.settings.cloudProviderTitle) получит текст встречи. Запрос оплачивается через API.")
+                    Text(store.settings.cloudProvider == "chatgpt"
+                         ? "ChatGPT получит текст встречи. Используются лимиты вашей подписки."
+                         : "\(store.settings.cloudProviderTitle) получит текст встречи. Запрос оплачивается через API.")
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }
 

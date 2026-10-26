@@ -80,7 +80,9 @@ struct StudyCardContent: View {
                     Spacer()
                 }
                 if app.settings.mode == "cloud" {
-                    Text("Для примера \(app.settings.cloudProviderTitle) получит карточку и контекст. API оплачивается отдельно.")
+                    Text(app.settings.cloudProvider == "chatgpt"
+                         ? "ChatGPT получит карточку и контекст. Используются лимиты вашей подписки."
+                         : "Для примера \(app.settings.cloudProviderTitle) получит карточку и контекст. API оплачивается отдельно.")
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
