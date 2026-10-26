@@ -128,7 +128,11 @@ fn main() {
             for name in ["POSLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "POSLE_SPEECH_API_KEY"] {
                 if let Ok(secret) = std::env::var(name) { if !secret.is_empty() { message = message.replace(&secret, "[hidden]"); } }
             }
-            println!("{}", json!({"event":"error","message":message}));
+            let mut event = json!({"event":"error","message":message});
+            if let Some(diagnostics) = posle_core::chatgpt::error_diagnostics(&error) {
+                event["chatGPTDiagnostics"] = json!(diagnostics);
+            }
+            println!("{}", event);
             std::process::exit(1);
         }
     }

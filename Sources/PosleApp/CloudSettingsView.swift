@@ -22,7 +22,7 @@ struct CloudSettingsView: View {
     private var keyIsDirty: Bool { key.trimmingCharacters(in: .whitespacesAndNewlines) != savedKey }
     private var keyBinding: Binding<String> {
         Binding(get: { key }, set: { value in
-            if let account { drafts[account] = value; keyMessage = ""; store.cloudConnectionStatus = nil }
+            if let account { drafts[account] = value; keyMessage = ""; store.clearCloudConnectionResult() }
         })
     }
     private var configuration: String {
@@ -50,7 +50,7 @@ struct CloudSettingsView: View {
         }
         .onAppear { loadAccount() }
         .onChange(of: account) { _, _ in keyMessage = ""; keyError = false; loadAccount() }
-        .onChange(of: configuration) { _, _ in store.cloudConnectionStatus = nil }
+        .onChange(of: configuration) { _, _ in store.clearCloudConnectionResult() }
     }
 
     private var apiSettings: some View {
@@ -137,7 +137,7 @@ struct CloudSettingsView: View {
             try Keychain.save(value, account: account)
             drafts[account] = value; savedKeys[account] = value
             keyError = false; keyMessage = value.isEmpty ? "Ключ удалён" : "Сохранён в Связке ключей"
-            store.cloudConnectionStatus = nil
+            store.clearCloudConnectionResult()
         } catch {
             keyError = true; keyMessage = error.localizedDescription
         }

@@ -64,6 +64,7 @@ enum ChatGPTUINativeChecks {
               root.lastPathComponent.hasPrefix("posle-native-check-") else {
             throw AppError.message("ChatGPT UI checks require /private/tmp/posle-native-check-*")
         }
+        let fixtureDiagnostic = try await verifyDiagnostics(root: root)
         let screenshots = root.appendingPathComponent("chatgpt-screenshots")
         try FileManager.default.createDirectory(at: screenshots, withIntermediateDirectories: true)
         let profile = ChatGPTProfile(id: "fixture-personal", displayName: "Мария Петрова", email: "maria@example.org", planEnabled: true)
@@ -122,6 +123,16 @@ enum ChatGPTUINativeChecks {
                     }
                 }
             }
+            let failedStore = AppStore(preview: true)
+            failedStore.settings.mode = "cloud"; failedStore.settings.cloudProvider = "chatgpt"
+            failedStore.settings.chatGPTAccountID = profile.id; failedStore.settings.cloudModel = compact.id
+            failedStore.settings.cloudReasoning = "none"
+            failedStore.recordCloudConnectionFailure(WorkerFailure(message: "ChatGPT завершил запрос без текста ответа.", chatGPTDiagnostics: fixtureDiagnostic), configuration: failedStore.settings)
+            try await render(name: "failed-probe", account: .fixture(profile: profile, savedProfiles: [profile], models: [compact]),
+                             store: failedStore, appearance: appearance, screenshots: screenshots) {
+                try require("connection.copy-diagnostics")
+                try expect(enabled["chatgpt.connection.copy-diagnostics"] == true, "Failed probe must offer diagnostic copying")
+            }
             let long = ChatGPTProfile(id: "fixture-long", displayName: "Александра Константинопольская — личный аккаунт", email: "alexandra.konstantinopolskaya.personal.account@example.org", planEnabled: true)
             let longModel = ChatGPTModel(id: "fixture-long-model", name: "Модель для подробных конспектов, решений, карточек и важных деталей встречи", supportedReasoning: ["none", "medium"])
             let longStore = AppStore(preview: true)
@@ -132,8 +143,98 @@ enum ChatGPTUINativeChecks {
                 try require("account.picker"); try require("account.plan"); try require("model.picker")
             }
         }
-        print("PASS: 24 native ChatGPT settings renders cover sign-in, account identity, permission loss, catalog loading/empty, reasoning, and long content in light/dark")
+        print("PASS: 26 native ChatGPT settings renders cover sign-in, account identity, permission loss, catalog loading/empty, reasoning, and long content in light/dark")
         print("ChatGPT settings screenshots: \(screenshots.path)")
+    }
+
+    /// The actual process/event/error boundary runs against one disposable script.
+    /// It contains only synthetic canaries and never invokes an API or Keychain.
+    private static func verifyDiagnostics(root: URL) async throws -> ChatGPTDiagnostics {
+        let canary = "PRIVATE_CANARY_NEVER_COPY"
+        var fields: [String: Any] = [
+            "http_status": 200, "content_type": "missing", "wire": "sse", "response_bytes": 480,
+            "events": 4, "output_text_delta": 0, "output_text_done": 1, "content_part_done": 1,
+            "output_item_done": 1, "completed": 1, "other_events": 0,
+            "terminal_status": "completed", "terminal_output": "array", "terminal_output_items": 0,
+            "terminal_text_parts": 0, "terminal_refusal_parts": 0, "terminal_other_parts": 0,
+            "accumulated_text_bytes": 11,
+            "raw_body": canary, "request_id": canary, "account_id": canary, "model": canary,
+            "arbitrary_event_type": canary, "headers": ["Authorization": canary]
+        ]
+        func event(_ diagnostic: Any) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["event": "error", "message": canary, "chatGPTDiagnostics": diagnostic], options: [.sortedKeys])
+        }
+        let validEvent = try event(fields)
+        let script = root.appendingPathComponent("chatgpt-diagnostic-error.sh")
+        let encoded = String(decoding: validEvent, as: UTF8.self).replacingOccurrences(of: "'", with: "'\\''")
+        try Data("printf '%s\\n' '\(encoded)'\nexit 1\n".utf8).write(to: script)
+        let failure: WorkerFailure
+        do {
+            _ = try await ProcessRunner().run(URL(fileURLWithPath: "/bin/sh"), arguments: [script.path], event: { _ in })
+            throw AppError.message("Synthetic error process unexpectedly succeeded")
+        } catch let error as WorkerFailure { failure = error }
+        try expect(failure.localizedDescription == canary, "Typed worker error changed the human message")
+        guard let diagnostic = failure.chatGPTDiagnostics else { throw AppError.message("Typed worker diagnostics lost across the actual process boundary") }
+        var settings = AppSettings()
+        settings.mode = "cloud"; settings.cloudProvider = "chatgpt"; settings.chatGPTAccountID = canary
+        settings.cloudModel = canary; settings.cloudEndpoint = "https://" + canary + ".example.org"
+        settings.cloudOutput = "schema"; settings.cloudReasoning = "none"
+        let report = ChatGPTDiagnosticReport(diagnostics: diagnostic, settings: settings, appVersion: "0.12.2", appBuild: "17")
+        let expectedFields = ["app_version=0.12.2", "app_build=17", "content_type=missing", "wire=sse", "output_text_done=1", "terminal_output_items=0"]
+        for field in expectedFields { try expect(report.text.contains(field), "Missing safe diagnostic field: " + field) }
+        try expect(!report.text.contains(canary), "Report copied an unallowlisted body/header/identity/model value")
+        settings.cloudOutput = canary; settings.cloudReasoning = canary
+        let hostileReport = ChatGPTDiagnosticReport(diagnostics: diagnostic, settings: settings, appVersion: canary, appBuild: canary)
+        try expect(!hostileReport.text.contains(canary) && hostileReport.text.contains("reasoning=other") && hostileReport.text.contains("app_version=unknown"), "Report did not constrain settings/version metadata")
+        let pasteboard = NSPasteboard(name: .init("app.posle.chatgpt-diagnostic-check.\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        try expect(report.copy(to: pasteboard) && pasteboard.string(forType: .string) == report.text,
+                   "Diagnostic copy failed on an isolated pasteboard")
+        let store = AppStore(preview: true)
+        store.settings = settings
+        store.recordCloudConnectionFailure(failure, configuration: settings)
+        try expect(store.cloudConnectionError && store.cloudConnectionDiagnostic != nil && store.copyCloudConnectionDiagnostic(to: pasteboard),
+                   "Failed subscription check did not retain an explicitly copyable safe report")
+        let mutations: [(inout AppSettings) -> Void] = [
+            { $0.cloudModel += "changed" }, { $0.chatGPTAccountID += "changed" },
+            { $0.cloudReasoning = "low" }, { $0.cloudOutput = "json" }, { $0.cloudAPI = "chat" },
+            { $0.mode = "local" }, { $0.switchCloudProvider("openai") }
+        ]
+        for mutate in mutations {
+            store.settings = settings
+            store.recordCloudConnectionFailure(failure, configuration: settings)
+            mutate(&store.settings)
+            try expect(store.cloudConnectionDiagnostic == nil && store.cloudConnectionStatus == nil && !store.copyCloudConnectionDiagnostic(to: pasteboard),
+                       "Changed connection retained a stale diagnostic report")
+        }
+        store.settings = settings
+        store.recordCloudConnectionFailure(failure, configuration: settings)
+        store.clearCloudConnectionResult()
+        try expect(store.cloudConnectionDiagnostic == nil && !store.cloudConnectionError, "Starting a fresh check retained prior diagnostic state")
+        store.recordCloudConnectionFailure(AppError.message(canary), configuration: settings)
+        try expect(store.cloudConnectionDiagnostic == nil && !store.copyCloudConnectionDiagnostic(to: pasteboard), "Untyped error was exported as a diagnostic report")
+        for key in fields.keys.filter({ !["raw_body", "request_id", "account_id", "model", "arbitrary_event_type", "headers"].contains($0) }) {
+            var incomplete = fields; incomplete.removeValue(forKey: key)
+            let decoded = try JSONDecoder().decode(WorkerEvent.self, from: event(incomplete))
+            try expect(decoded.chatGPTDiagnostics == nil && decoded.message == canary, "Missing diagnostic field must fail closed without losing human error")
+        }
+        for responseBytes in [8 * 1024 * 1024 + 1, 8 * 1024 * 1024 + 16 * 1024] {
+            var overrun = fields; overrun["response_bytes"] = responseBytes
+            let decoded = try JSONDecoder().decode(WorkerEvent.self, from: event(overrun))
+            try expect(decoded.chatGPTDiagnostics?.responseBytes == UInt64(responseBytes), "Rust bounded read overrun lost its diagnostic report")
+        }
+        let invalidValues: [(String, Any)] = [("content_type", canary), ("wire", canary), ("terminal_status", canary),
+                                              ("terminal_output", canary), ("events", -1), ("events", 8 * 1024 * 1024 + 1),
+                                              ("response_bytes", 8 * 1024 * 1024 + 16 * 1024 + 1),
+                                              ("http_status", 99), ("http_status", 600)]
+        for (key, value) in invalidValues {
+            var invalid = fields; invalid[key] = value
+            let decoded = try JSONDecoder().decode(WorkerEvent.self, from: event(invalid))
+            try expect(decoded.chatGPTDiagnostics == nil, "Unsafe diagnostic field was accepted: " + key)
+        }
+        fields.removeAll()
+        print("PASS: real worker failure preserves typed diagnostics; private clipboard excludes body/header/model/account canaries; settings changes clear stale reports; malformed metadata fails closed")
+        return diagnostic
     }
 
     private static func render(name: String, account: ChatGPTAccount, store: AppStore, appearance: ColorScheme,

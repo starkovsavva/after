@@ -1547,6 +1547,10 @@ mod tests {
         model_server_with_hook(replies,None)
     }
     fn model_server_with_hook(replies:Vec<(u16,Value)>,hook:Option<Box<dyn Fn(&CapturedRequest)+Send>>) -> (String,std::thread::JoinHandle<Vec<CapturedRequest>>) {
+        let replies=replies.into_iter().map(|(status,value)|(status,"application/json",serde_json::to_vec(&value).unwrap())).collect();
+        wire_model_server(replies,hook,false)
+    }
+    fn wire_model_server(replies:Vec<(u16,&'static str,Vec<u8>)>,hook:Option<Box<dyn Fn(&CapturedRequest)+Send>>,reject_extra:bool) -> (String,std::thread::JoinHandle<Vec<CapturedRequest>>) {
         use std::io::{Read,Write};
         fn read_fixture_bytes(stream:&mut std::net::TcpStream,bytes:&mut Vec<u8>,deadline:std::time::Instant) {
             let mut buffer=[0u8;4096];
@@ -1565,7 +1569,7 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let handle=std::thread::spawn(move|| {
             let mut requests=Vec::new();
-            for (status,response) in replies {
+            for (status,mime,wire_body) in replies {
                 let deadline=std::time::Instant::now()+Duration::from_secs(8);
                 let mut stream=loop {
                     match listener.accept() {
@@ -1602,15 +1606,164 @@ mod tests {
                 let body=if content_length==0 {Value::Null} else {serde_json::from_slice(&bytes[header_end..header_end+content_length]).unwrap()};
                 requests.push((headers.lines().next().unwrap().to_owned(),body,headers));
                 if let Some(hook)=&hook {hook(requests.last().unwrap());}
-                let body=serde_json::to_vec(&response).unwrap();
+                let content_type=if mime.is_empty() {String::new()} else {format!("Content-Type: {mime}\r\n")};
                 let redirect=if status==302 {"Location: http://203.0.113.1:1234/forbidden\r\n"} else {""};
-                write!(stream,"HTTP/1.1 {} fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",status,body.len(),redirect).unwrap();
-                stream.write_all(&body).unwrap();
+                write!(stream,"HTTP/1.1 {} fixture\r\n{}Content-Length: {}\r\n{}Connection: close\r\n\r\n",status,content_type,wire_body.len(),redirect).unwrap();
+                stream.write_all(&wire_body).unwrap();
+            }
+            if reject_extra {
+                let deadline=std::time::Instant::now()+Duration::from_millis(200);
+                while std::time::Instant::now()<deadline {
+                    match listener.accept() {
+                        Ok(_)=>panic!("unexpected automatic subscription HTTP retry/fallback"),
+                        Err(error) if error.kind()==std::io::ErrorKind::WouldBlock=>std::thread::sleep(Duration::from_millis(5)),
+                        Err(error)=>panic!("unexpected fixture listener error: {error}"),
+                    }
+                }
             }
             requests
         });
         (endpoint,handle)
     }
+    fn subscription_fixture_settings(root: &Path) {
+        save_settings_fixture(root, &Settings {
+            mode: "cloud".into(), cloud_provider: "chatgpt".into(), cloud_model: "gpt-6-luna".into(),
+            cloud_api: "responses".into(), cloud_output: "schema".into(), cloud_reasoning: "none".into(),
+            chat_gpt_account_id: "synthetic-subscription-account".into(),
+            cloud_endpoint: "https://unused.invalid/not-a-subscription-route".into(),
+            language: "en".into(), ..Settings::default()
+        });
+    }
+    fn subscription_event(value: Value) -> Vec<u8> {
+        format!("event: {}\ndata: {}\n\n", value["type"].as_str().unwrap(), value).into_bytes()
+    }
+    fn subscription_stream(answer: &Value, done_kind: &str) -> Vec<u8> {
+        let text = answer.to_string();
+        let mut stream = subscription_event(json!({"type":"response.created","response":{"id":"response-fixture","status":"in_progress","output":[]}}));
+        if done_kind == "delta" {
+            stream.extend(subscription_event(json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"message-fixture","delta":text})));
+        } else if done_kind == "text" {
+            stream.extend(subscription_event(json!({"type":"response.output_text.done","output_index":0,"content_index":0,"item_id":"message-fixture","text":text})));
+        } else if done_kind == "part" {
+            stream.extend(subscription_event(json!({"type":"response.content_part.done","output_index":0,"content_index":0,"item_id":"message-fixture","part":{"type":"output_text","text":text,"annotations":[]}})));
+        } else {
+            stream.extend(subscription_event(json!({"type":"response.output_item.done","output_index":0,"item":{"id":"message-fixture","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":text,"annotations":[]}]}})));
+        }
+        stream.extend(subscription_event(json!({"type":"response.completed","response":{"id":"response-fixture","status":"completed","error":null,"incomplete_details":null,"output":[]}})));
+        stream
+    }
+    fn with_subscription_fixture<T>(endpoint: &str, operation: impl FnOnce() -> T) -> T {
+        let client = Client::builder().no_proxy().redirect(Policy::none()).timeout(Duration::from_secs(3)).build().unwrap();
+        crate::chatgpt::with_test_transport(client, Url::parse(&format!("{endpoint}/v1/responses")).unwrap(), operation)
+    }
+    fn assert_subscription_requests(requests: &[CapturedRequest], expected: usize) {
+        assert_eq!(requests.len(), expected, "one HTTP attempt per logical generation, without automatic fallback/replay");
+        for (route, body, headers) in requests {
+            assert_eq!(route, "POST /v1/responses HTTP/1.1");
+            assert!(headers.to_lowercase().contains("accept: text/event-stream"));
+            assert!(headers.to_lowercase().contains(&format!("authorization: bearer {}", crate::chatgpt::TEST_BEARER)));
+            assert_eq!(body["model"], "gpt-6-luna"); assert_eq!(body["store"], false); assert_eq!(body["stream"], true);
+            assert_eq!(body["reasoning"]["effort"], "none");
+            assert!(body["input"].is_array()); assert!(body["instructions"].is_string());
+            assert_eq!(body["text"]["format"]["type"], "json_schema");
+            for field in ["max_output_tokens", "temperature", "previous_response_id", "tools"] { assert!(body.get(field).is_none()); }
+        }
+    }
+    #[test]
+    fn subscription_connection_check_consumes_compact_completed_stream_once() {
+        let root = tempfile::tempdir().unwrap(); subscription_fixture_settings(root.path());
+        let (endpoint, server) = wire_model_server(vec![(200, "", subscription_stream(&json!({"ok":true}), "text"))], None, true);
+        let result = with_subscription_fixture(&endpoint, || check_cloud(root.path())).unwrap();
+        assert_eq!(result["ok"], true); assert_eq!(result["provider"], "chatgpt");
+        assert_eq!(result["endpoint"], crate::chatgpt::RESPONSES_ENDPOINT);
+        let requests = server.join().unwrap(); assert_subscription_requests(&requests, 1);
+        assert_eq!(requests[0].1["input"][0]["content"], "Return exactly {\"ok\":true}.");
+        assert_eq!(requests[0].1["text"]["format"]["schema"]["properties"]["ok"]["enum"], json!([true]));
+        assert!(!fs::read_to_string(root.path().join("settings.json")).unwrap().contains(crate::chatgpt::TEST_BEARER));
+    }
+    #[test]
+    fn subscription_summary_stream_persists_grounded_notes_cards_and_linked_overview() {
+        let root = tempfile::tempdir().unwrap(); subscription_fixture_settings(root.path());
+        let meeting = root.path().join("meetings/subscription-meeting"); fs::create_dir_all(&meeting).unwrap();
+        atomic_json(&meeting.join("meta.json"), &json!({"id":"subscription-meeting","title":"Pilot planning"})).unwrap();
+        atomic_json(&meeting.join("transcript.json"), &json!({"segments":[segment(7,"We will follow up tomorrow. The pilot budget is 42000 rubles.")]})).unwrap();
+        let transcript = fs::read(meeting.join("transcript.json")).unwrap();
+        let previous = json!({"overview":"Previous notes","items":[],"cards":[]});
+        atomic_json(&meeting.join("summary.json"), &previous).unwrap();
+        let source = json!({"facts":[{"kind":"detail","text":"The pilot budget is 42000 rubles.","owner":"","due":"","segmentIDs":[7]}],"overview":"Unused source overview","studyCards":[{"kind":"phrase","front":"follow up","back":"Уточнить результат","context":"We will follow up tomorrow.","segmentIDs":[7]}]});
+        let overview = json!({"claims":[{"text":"The pilot budget is 42000 rubles.","itemIndices":[0]}]});
+        let (endpoint, server) = wire_model_server(vec![(200, "", subscription_stream(&source, "delta")), (200, "text/event-stream", subscription_stream(&overview, "item"))], None, true);
+        with_subscription_fixture(&endpoint, || summarize(root.path(), &meeting)).unwrap();
+        let result = read(&meeting.join("summary.json")).unwrap();
+        assert_eq!(result["items"][0]["segmentIDs"], json!([7]));
+        assert_eq!(result["cards"][0]["front"], "follow up"); assert_eq!(result["cards"][0]["segmentIDs"], json!([7]));
+        assert_eq!(result["overviewClaims"][0]["itemIndices"], json!([0]));
+        assert_eq!(result["overview"], overview["claims"][0]["text"]);
+        assert_eq!(result["warnings"], json!([])); assert_eq!(result["model"], "gpt-6-luna");
+        assert!(!meeting.join("summary-progress.json").exists()); assert_eq!(fs::read(meeting.join("transcript.json")).unwrap(), transcript);
+        let archives = fs::read_dir(meeting.join("summary-history")).unwrap().map(|entry| entry.unwrap().path()).collect::<Vec<_>>();
+        assert_eq!(archives.len(), 1); assert_eq!(read(&archives[0]).unwrap(), previous);
+        assert!(!result.to_string().contains(crate::chatgpt::TEST_BEARER));
+        let requests = server.join().unwrap(); assert_subscription_requests(&requests, 2);
+        assert_eq!(requests[0].1["text"]["format"]["schema"]["properties"]["facts"]["items"]["properties"]["segmentIDs"]["items"]["enum"], json!([7]));
+        let linked_prompt: Value = serde_json::from_str(requests[1].1["input"][0]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(linked_prompt["factual_notes"][0]["itemIndex"], 0); assert_eq!(linked_prompt["factual_notes"][0]["segmentIDs"], json!([7]));
+    }
+    fn subscription_note_proposal() -> Value {
+        json!({"action":"createNote","query":"","title":"Pilot follow-up","text":"Clarify the pilot budget tomorrow.","due":"","owner":"","setDue":false,"setOwner":false,"setCompleted":false,"completed":false,"cards":[]})
+    }
+    #[test]
+    fn subscription_voice_plan_stream_stores_one_proposal_without_applying_it() {
+        let root = tempfile::tempdir().unwrap(); subscription_fixture_settings(root.path());
+        let proposal = subscription_note_proposal();
+        let (endpoint, server) = wire_model_server(vec![(200, "", subscription_stream(&proposal, "part"))], None, true);
+        let plan = with_subscription_fixture(&endpoint, || crate::voice::plan(root.path(), &json!({"text":"Create a note to clarify the pilot budget tomorrow."}))).unwrap();
+        assert_eq!(plan["status"], "ready"); assert_eq!(plan["action"], "createNote");
+        let workspace = crate::notes::list(root.path()).unwrap();
+        assert!(workspace.notes.is_empty(), "the model proposes; only explicit apply may create a note");
+        assert_eq!(workspace.voice_plans.len(), 1); assert_eq!(workspace.voice_plans[0]["proposal"], proposal);
+        assert_eq!(workspace.voice_plans[0]["planID"], plan["planID"]);
+        assert!(!serde_json::to_string(&workspace).unwrap().contains(crate::chatgpt::TEST_BEARER));
+        let requests = server.join().unwrap(); assert_subscription_requests(&requests, 1);
+        let prompt: Value = serde_json::from_str(requests[0].1["input"][0]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(prompt["user_command"], "Create a note to clarify the pilot budget tomorrow.");
+        assert!(requests[0].1["text"]["format"]["schema"]["properties"]["action"]["enum"].as_array().unwrap().contains(&json!("createNote")));
+    }
+    #[test]
+    fn subscription_failed_stream_preserves_summary_and_voice_workspace_without_retry() {
+        for terminal in [None, Some("response.failed"), Some("response.incomplete")] {
+            for voice in [false, true] {
+                let root = tempfile::tempdir().unwrap(); subscription_fixture_settings(root.path());
+                let meeting = root.path().join("meetings/subscription-meeting"); fs::create_dir_all(&meeting).unwrap();
+                atomic_json(&meeting.join("meta.json"), &json!({"id":"subscription-meeting","title":"Existing meeting"})).unwrap();
+                atomic_json(&meeting.join("transcript.json"), &json!({"segments":[segment(7,"Existing source.")]})).unwrap();
+                atomic_json(&meeting.join("summary.json"), &json!({"overview":"Existing summary","items":[],"cards":[]})).unwrap();
+                let summary = fs::read(meeting.join("summary.json")).unwrap();
+                let transcript = fs::read(meeting.join("transcript.json")).unwrap();
+                let mut workspace = crate::notes::list(root.path()).unwrap();
+                workspace.voice_plans.push(json!({"planID":"existing-plan","status":"ready","createdAt":1}));
+                crate::notes::persist(&crate::notes::directory(root.path()).unwrap(), &workspace).unwrap();
+                let workspace_path = root.path().join("notes/workspace.json"); let saved_workspace = fs::read(&workspace_path).unwrap();
+                let answer = if voice { subscription_note_proposal() } else { json!({"facts":[],"overview":"Incomplete result","studyCards":[]}) };
+                let mut stream = subscription_event(json!({"type":"response.output_text.done","output_index":0,"content_index":0,"item_id":"message-fixture","text":answer.to_string()}));
+                if let Some(kind) = terminal {
+                    stream.extend(subscription_event(json!({"type":kind,"response":{"status":if kind=="response.failed" {"failed"} else {"incomplete"},"error":{"code":"subscription_sharing_usage_unavailable"}}})));
+                }
+                let (endpoint, server) = wire_model_server(vec![(200, "", stream)], None, true);
+                let result = with_subscription_fixture(&endpoint, || {
+                    if voice { crate::voice::plan(root.path(), &json!({"text":"Create a note to clarify the pilot budget."})).map(|_| ()) }
+                    else { summarize(root.path(), &meeting) }
+                });
+                assert!(result.is_err(), "finished text without successful completed terminal must fail: {terminal:?}");
+                assert_eq!(fs::read(meeting.join("summary.json")).unwrap(), summary);
+                assert_eq!(fs::read(meeting.join("transcript.json")).unwrap(), transcript);
+                assert_eq!(fs::read(&workspace_path).unwrap(), saved_workspace);
+                assert!(!meeting.join("summary-history").exists()); assert!(!meeting.join("summary-progress.json").exists());
+                let requests = server.join().unwrap(); assert_subscription_requests(&requests, 1);
+            }
+        }
+    }
+
     fn cloud_fixture_settings(endpoint:&str,api:&str,output:&str)->Settings {
         Settings{mode:"cloud".into(),cloud_provider:"custom".into(),cloud_endpoint:format!("{endpoint}/gateway/v1"),
             cloud_model:"provider/test-model".into(),cloud_api:api.into(),cloud_output:output.into(),..Settings::default()}

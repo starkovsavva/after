@@ -26,7 +26,11 @@ final class AppStore: ObservableObject {
     @Published var summary: Summary?
     @Published var examples: [String: CardExample] = [:]
     @Published var reviews: [String: ReviewState] = [:]
-    @Published var settings = AppSettings()
+    @Published var settings = AppSettings() {
+        didSet {
+            if !Self.sameCloudCheckConfiguration(settings, oldValue) { clearCloudConnectionResult() }
+        }
+    }
     @Published var busy = false
     @Published var canCancelJob = false
     @Published var processingID: String?
@@ -78,6 +82,7 @@ final class AppStore: ObservableObject {
     @Published var playbackDuration = 1.0
     @Published var cloudConnectionStatus: String?
     @Published var cloudConnectionError = false
+    @Published private(set) var cloudConnectionDiagnostic: ChatGPTDiagnosticReport?
     var cloudCheckAccountID: String?
     @Published var disconnectingChatGPTAccounts: Set<String> = []
     @Published var localStatus = ""
@@ -423,33 +428,47 @@ final class AppStore: ObservableObject {
     func checkCloudConnection() {
         guard !busy, !isRecording else { return }
         beginJob(id: nil); progressText = "Проверяю подключение…"
-        cloudConnectionStatus = nil; cloudConnectionError = false
+        clearCloudConnectionResult()
         let configuration = settings
         cloudCheckAccountID = configuration.cloudProvider == "chatgpt" ? configuration.chatGPTAccountID : nil
         Task {
             defer { cloudCheckAccountID = nil; endJob() }
             do {
                 try await worker("check-cloud")
-                guard settings.cloudProvider == configuration.cloudProvider,
-                      settings.resolvedCloudEndpoint == configuration.resolvedCloudEndpoint,
-                      settings.cloudModel == configuration.cloudModel,
-                      settings.cloudAPI == configuration.cloudAPI,
-                      settings.cloudOutput == configuration.cloudOutput,
-                      settings.cloudReasoning == configuration.cloudReasoning,
-                      settings.chatGPTAccountID == configuration.chatGPTAccountID else { return }
+                guard Self.sameCloudCheckConfiguration(settings, configuration) else { return }
                 cloudConnectionStatus = "Подключение работает"
             } catch {
-                guard settings.cloudProvider == configuration.cloudProvider,
-                      settings.resolvedCloudEndpoint == configuration.resolvedCloudEndpoint,
-                      settings.cloudModel == configuration.cloudModel,
-                      settings.cloudAPI == configuration.cloudAPI,
-                      settings.cloudOutput == configuration.cloudOutput,
-                      settings.cloudReasoning == configuration.cloudReasoning,
-                      settings.chatGPTAccountID == configuration.chatGPTAccountID else { return }
-                cloudConnectionError = true; cloudConnectionStatus = error.localizedDescription
+                guard Self.sameCloudCheckConfiguration(settings, configuration) else { return }
+                recordCloudConnectionFailure(error, configuration: configuration)
             }
         }
     }
+    func clearCloudConnectionResult() {
+        cloudConnectionStatus = nil; cloudConnectionError = false; cloudConnectionDiagnostic = nil
+    }
+
+    func recordCloudConnectionFailure(_ error: Error, configuration: AppSettings) {
+        guard Self.sameCloudCheckConfiguration(settings, configuration) else { return }
+        cloudConnectionError = true; cloudConnectionStatus = error.localizedDescription
+        cloudConnectionDiagnostic = nil
+        if configuration.cloudProvider == "chatgpt", let diagnostic = (error as? WorkerFailure)?.chatGPTDiagnostics {
+            cloudConnectionDiagnostic = ChatGPTDiagnosticReport(diagnostics: diagnostic, settings: configuration)
+        }
+    }
+
+    @discardableResult
+    func copyCloudConnectionDiagnostic(to pasteboard: NSPasteboard = .general) -> Bool {
+        guard cloudConnectionError, settings.cloudProvider == "chatgpt", let report = cloudConnectionDiagnostic else { return false }
+        return report.copy(to: pasteboard)
+    }
+
+    private static func sameCloudCheckConfiguration(_ lhs: AppSettings, _ rhs: AppSettings) -> Bool {
+        lhs.mode == rhs.mode && lhs.cloudProvider == rhs.cloudProvider &&
+        lhs.resolvedCloudEndpoint == rhs.resolvedCloudEndpoint && lhs.cloudModel == rhs.cloudModel &&
+        lhs.cloudAPI == rhs.cloudAPI && lhs.cloudOutput == rhs.cloudOutput &&
+        lhs.cloudReasoning == rhs.cloudReasoning && lhs.chatGPTAccountID == rhs.chatGPTAccountID
+    }
+
     func beginJob(id: String?) {
         jobGeneration = UUID()
         cancellationRequested = false; runner.resetCancellation()

@@ -36,6 +36,12 @@ struct InstalledGGUFModel: Decodable, Identifiable, Hashable {
     var sizeLabel: String { ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file) }
 }
 
+struct WorkerFailure: LocalizedError {
+    let message: String
+    let chatGPTDiagnostics: ChatGPTDiagnostics?
+    var errorDescription: String? { message }
+}
+
 struct WorkerEvent: Decodable {
     var event: String
     var message: String?
@@ -48,12 +54,13 @@ struct WorkerEvent: Decodable {
     var notes: [String]?
     var voicePlan: VoicePlan?
     var dictation: DictationResult?
+    var chatGPTDiagnostics: ChatGPTDiagnostics?
 
     init(event: String, message: String? = nil) {
         self.event = event; self.message = message
     }
 
-    private enum CodingKeys: String, CodingKey { case event, message, fraction, models, model, ggufModels, asrModels, notes, voicePlan, dictation }
+    private enum CodingKeys: String, CodingKey { case event, message, fraction, models, model, ggufModels, asrModels, notes, voicePlan, dictation, chatGPTDiagnostics }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         event = try values.decode(String.self, forKey: .event)
@@ -67,6 +74,7 @@ struct WorkerEvent: Decodable {
         notes = try values.decodeIfPresent([String].self, forKey: .notes)
         voicePlan = try values.decodeIfPresent(VoicePlan.self, forKey: .voicePlan)
         dictation = try values.decodeIfPresent(DictationResult.self, forKey: .dictation)
+        chatGPTDiagnostics = try? values.decodeIfPresent(ChatGPTDiagnostics.self, forKey: .chatGPTDiagnostics)
     }
 }
 
@@ -134,10 +142,12 @@ final class ProcessRunner: @unchecked Sendable {
                     group.leave()
                 }
                 var pending = Data()
-                var lastError: String?
+                var lastFailure: WorkerFailure?
                 func deliver(_ data: Data) {
                     if let decoded = try? JSONDecoder().decode(WorkerEvent.self, from: data) {
-                        if decoded.event == "error" { lastError = decoded.message }
+                        if decoded.event == "error", let message = decoded.message {
+                            lastFailure = WorkerFailure(message: message, chatGPTDiagnostics: decoded.chatGPTDiagnostics)
+                        }
                         completion.record(decoded)
                         event(decoded)
                     } else if let line = String(data: data, encoding: .utf8), !line.isEmpty {
@@ -161,7 +171,7 @@ final class ProcessRunner: @unchecked Sendable {
                     let fallback = process.terminationReason == .uncaughtSignal
                         ? "Обработка остановлена. Исходная запись сохранена."
                         : "Не удалось завершить обработку. \(diagnostic.text)"
-                    continuation.resume(throwing: AppError.message(lastError ?? fallback))
+                    continuation.resume(throwing: lastFailure ?? WorkerFailure(message: fallback, chatGPTDiagnostics: nil))
                 }
             }
         }

@@ -3,14 +3,121 @@
 use anyhow::{bail, Result};
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::StatusCode;
+use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
 pub(crate) const RESPONSES_ENDPOINT: &str = "https://api.openai.com/v1/responses";
 const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
 const MAX_ANSWER_BYTES: usize = 4 * 1024 * 1024;
+
+/// Payload-free failure details for support and regression checks. Every string
+/// is a fixed vocabulary; provider text, IDs, headers and credentials never
+/// enter this structure.
+#[derive(Clone, Debug, Serialize)]
+pub struct ChatGPTDiagnostics {
+    pub wire: &'static str,
+    pub http_status: u16,
+    pub content_type: &'static str,
+    pub response_bytes: usize,
+    pub events: usize,
+    pub output_text_delta: usize,
+    pub output_text_done: usize,
+    pub content_part_done: usize,
+    pub output_item_done: usize,
+    pub completed: usize,
+    pub other_events: usize,
+    pub terminal_status: &'static str,
+    pub terminal_output: &'static str,
+    pub terminal_output_items: usize,
+    pub terminal_text_parts: usize,
+    pub terminal_refusal_parts: usize,
+    pub terminal_other_parts: usize,
+    pub accumulated_text_bytes: usize,
+}
+impl ChatGPTDiagnostics {
+    fn new(wire: &'static str) -> Self {
+        Self {
+            wire,
+            http_status: 0,
+            content_type: "missing",
+            response_bytes: 0,
+            events: 0,
+            output_text_delta: 0,
+            output_text_done: 0,
+            content_part_done: 0,
+            output_item_done: 0,
+            completed: 0,
+            other_events: 0,
+            terminal_status: "missing",
+            terminal_output: "missing",
+            terminal_output_items: 0,
+            terminal_text_parts: 0,
+            terminal_refusal_parts: 0,
+            terminal_other_parts: 0,
+            accumulated_text_bytes: 0,
+        }
+    }
+    fn terminal(&mut self, response: &Value) {
+        self.terminal_status = match response.get("status").and_then(Value::as_str) {
+            Some("completed") => "completed",
+            Some("incomplete") => "incomplete",
+            Some("failed") => "failed",
+            Some("cancelled") => "cancelled",
+            Some("queued") => "queued",
+            Some("in_progress") => "in_progress",
+            None if response.get("status").is_none() => "missing",
+            _ => "other",
+        };
+        self.terminal_output = match response.get("output") {
+            Some(Value::Array(items)) => {
+                self.terminal_output_items = items.len();
+                for part in items
+                    .iter()
+                    .flat_map(|item| item["content"].as_array().into_iter().flatten())
+                {
+                    match part["type"].as_str() {
+                        Some("output_text") => self.terminal_text_parts += 1,
+                        Some("refusal") => self.terminal_refusal_parts += 1,
+                        _ => self.terminal_other_parts += 1,
+                    }
+                }
+                "array"
+            }
+            None => "missing",
+            _ => "invalid",
+        };
+    }
+}
+
+#[derive(Debug)]
+struct ResponseFailure {
+    error: anyhow::Error,
+    diagnostics: ChatGPTDiagnostics,
+}
+impl std::fmt::Display for ResponseFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, formatter)
+    }
+}
+impl std::error::Error for ResponseFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.error.as_ref())
+    }
+}
+fn with_diagnostics(error: anyhow::Error, diagnostics: ChatGPTDiagnostics) -> anyhow::Error {
+    anyhow::Error::new(ResponseFailure { error, diagnostics })
+}
+
+/// Callers may save these fixed fields separately from the user-facing error.
+pub fn error_diagnostics(error: &anyhow::Error) -> Option<&ChatGPTDiagnostics> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<ResponseFailure>())
+        .map(|failure| &failure.diagnostics)
+}
 
 pub(crate) fn validate_reasoning(effort: &str) -> Result<()> {
     if ![
@@ -126,13 +233,59 @@ fn inference_request(builder: RequestBuilder, access_token: &str, body: &Value) 
         .json(body)
 }
 
+#[cfg(test)]
+pub(crate) const TEST_BEARER: &str = "posle-loopback-subscription-fixture";
+#[cfg(test)]
+std::thread_local! {
+    static TEST_TRANSPORT: std::cell::RefCell<Option<(Client, reqwest::Url)>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Unit tests can exercise the complete AI pipeline through loopback HTTP. This
+/// scoped hook is absent from release builds and never reads a real credential.
+#[cfg(test)]
+pub(crate) fn with_test_transport<T>(
+    client: Client,
+    endpoint: reqwest::Url,
+    operation: impl FnOnce() -> T,
+) -> T {
+    assert_eq!(endpoint.scheme(), "http");
+    assert_eq!(endpoint.host_str(), Some("127.0.0.1"));
+    assert!(endpoint.port().is_some_and(|port| port > 0));
+    assert_eq!(endpoint.path(), "/v1/responses");
+    assert!(endpoint.username().is_empty() && endpoint.password().is_none());
+    assert!(endpoint.query().is_none() && endpoint.fragment().is_none());
+    struct Restore(Option<(Client, reqwest::Url)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_TRANSPORT.with(|transport| *transport.borrow_mut() = self.0.take());
+        }
+    }
+    let previous =
+        TEST_TRANSPORT.with(|transport| transport.borrow_mut().replace((client, endpoint)));
+    let _restore = Restore(previous);
+    operation()
+}
+
 pub(crate) fn generate(client: &Client, access_token: &str, body: &Value) -> Result<Value> {
+    let endpoint = RESPONSES_ENDPOINT;
+    #[cfg(test)]
+    let fixture = TEST_TRANSPORT.with(|transport| transport.borrow().clone());
+    #[cfg(test)]
+    let (client, endpoint, access_token) = match fixture.as_ref() {
+        Some((client, url)) => {
+            assert_eq!(endpoint, "https://api.openai.com/v1/responses");
+            (client, url.as_str(), TEST_BEARER)
+        }
+        None => (client, endpoint, access_token),
+    };
     if access_token.trim().is_empty() {
         bail!("Войдите через ChatGPT в настройках конспекта и карточек.");
     }
     // The client disables redirects; no endpoint override or alternate billing
     // path is accepted here. A failed inference is never automatically retried.
-    let response = inference_request(client.post(RESPONSES_ENDPOINT), access_token, body)
+    let response = inference_request(client.post(endpoint), access_token, body)
         .send()
         .map_err(|_| {
             anyhow::anyhow!("Нет ответа от ChatGPT. Проверьте соединение; подключение сохранено.")
@@ -140,10 +293,10 @@ pub(crate) fn generate(client: &Client, access_token: &str, body: &Value) -> Res
     consume_response(response)
 }
 
-fn response_metadata(status: StatusCode, media_type: &str) -> String {
+fn safe_media_type(media_type: &str) -> &'static str {
     // A response header is untrusted too: expose only a small fixed vocabulary,
     // never raw header values that could include credentials or user text.
-    let safe_type = match media_type {
+    match media_type {
         "text/event-stream" => "text/event-stream",
         "application/json" => "application/json",
         "application/problem+json" => "application/problem+json",
@@ -152,11 +305,14 @@ fn response_metadata(status: StatusCode, media_type: &str) -> String {
         "application/octet-stream" => "application/octet-stream",
         "" => "missing",
         _ => "other",
-    };
+    }
+}
+
+fn response_metadata(status: StatusCode, media_type: &str) -> String {
     format!(
         "ChatGPT: HTTP {} · Content-Type {}.",
         status.as_u16(),
-        safe_type
+        safe_media_type(media_type)
     )
 }
 
@@ -177,8 +333,64 @@ fn parse_answer(answer: &str) -> Result<Value> {
     Ok(value)
 }
 
-/// Common terminal validation for both response.completed and a fully buffered
-/// Responses object. Text deltas alone never establish a successful inference.
+/// Extract finalized message parts without treating an omitted text snapshot as
+/// an empty answer. Refusals and malformed/nonfinal messages remain failures.
+fn validate_output_item_type(item: &Value) -> Result<()> {
+    if !item.is_object() || !item["type"].is_string() {
+        bail!("ChatGPT вернул некорректную часть результата Responses.");
+    }
+    if !["message", "reasoning"].contains(&item["type"].as_str().unwrap()) {
+        bail!(
+            "ChatGPT вернул неподдерживаемый тип результата Responses. Исходные данные сохранены."
+        );
+    }
+    Ok(())
+}
+
+fn output_text_parts(item: &Value) -> Result<Vec<(usize, &str)>> {
+    validate_output_item_type(item)?;
+    if item
+        .get("status")
+        .is_some_and(|status| !status.is_null() && status != "completed")
+    {
+        bail!("ChatGPT не закончил часть ответа. Исходные данные сохранены.");
+    }
+    if item["type"] == "message"
+        && (item["role"] != "assistant"
+            || item["status"] != "completed"
+            || !item["content"].is_array())
+    {
+        bail!("ChatGPT вернул некорректное сообщение Responses. Исходные данные сохранены.");
+    }
+    let content = match item.get("content") {
+        Some(Value::Array(content)) => content,
+        None | Some(Value::Null) if item["type"] != "message" => return Ok(Vec::new()),
+        _ => bail!("ChatGPT вернул некорректное содержимое результата Responses."),
+    };
+    let mut parts = Vec::new();
+    for (index, part) in content.iter().enumerate() {
+        match part["type"].as_str() {
+            Some("refusal") => {
+                bail!("ChatGPT отказался обработать запрос. Исходные данные сохранены.")
+            }
+            Some("output_text") => {
+                if item["type"] != "message" {
+                    bail!("ChatGPT вернул некорректное сообщение Responses. Исходные данные сохранены.");
+                }
+                let text = part["text"].as_str().ok_or_else(|| {
+                    anyhow::anyhow!("ChatGPT вернул некорректный текст результата.")
+                })?;
+                parts.push((index, text));
+            }
+            Some(_) => {}
+            None => bail!("ChatGPT вернул некорректную часть содержимого Responses."),
+        }
+    }
+    Ok(parts)
+}
+
+/// Common terminal validation for response.completed and buffered Responses
+/// JSON. Only an SSE stream can supply text omitted from the terminal snapshot.
 fn completed_text(
     response: &Value,
     status: StatusCode,
@@ -201,41 +413,19 @@ fn completed_text(
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("ChatGPT вернул некорректный результат Responses."))?;
     let mut text = String::new();
+    let mut text_seen = false;
     for item in output {
-        if item
-            .get("status")
-            .is_some_and(|status| !status.is_null() && status != "completed")
-        {
-            bail!("ChatGPT не закончил часть ответа. Исходные данные сохранены.");
-        }
-        for part in item["content"].as_array().into_iter().flatten() {
-            match part["type"].as_str() {
-                Some("refusal") => {
-                    bail!("ChatGPT отказался обработать запрос. Исходные данные сохранены.")
-                }
-                Some("output_text") => {
-                    if item["type"] != "message"
-                        || item["role"] != "assistant"
-                        || item["status"] != "completed"
-                    {
-                        bail!("ChatGPT вернул некорректное сообщение Responses. Исходные данные сохранены.");
-                    }
-                    let part = part["text"].as_str().ok_or_else(|| {
-                        anyhow::anyhow!("ChatGPT вернул некорректный текст результата.")
-                    })?;
-                    if part.len() > max_answer.saturating_sub(text.len()) {
-                        bail!("Ответ ChatGPT превышает допустимый размер.");
-                    }
-                    text.push_str(part);
-                }
-                _ => {}
+        for (_, part) in output_text_parts(item)? {
+            text_seen = true;
+            if part.len() > max_answer.saturating_sub(text.len()) {
+                bail!("Ответ ChatGPT превышает допустимый размер.");
             }
+            text.push_str(part);
         }
     }
-    if text.trim().is_empty() {
-        bail!("ChatGPT завершил запрос без текста ответа.");
-    }
-    Ok(Some(text))
+    // An explicit output_text:"" is authoritative and must not resurrect a
+    // previous delta. No output_text part means a compact terminal snapshot.
+    Ok(text_seen.then_some(text))
 }
 
 fn consume_response(mut response: Response) -> Result<Value> {
@@ -265,7 +455,7 @@ fn consume_response(mut response: Response) -> Result<Value> {
         .trim()
         .to_ascii_lowercase();
     let result = if media_type == "text/event-stream" {
-        read_stream(&mut response, status).and_then(|answer| parse_answer(&answer))
+        read_stream_value(&mut response, status)
     } else {
         // An intermediary may omit or mislabel the MIME type. Inspect at most
         // 4 KiB and then keep reading the same response, without a second call.
@@ -273,9 +463,7 @@ fn consume_response(mut response: Response) -> Result<Value> {
             .map_err(|_| response_format_error(status, &media_type))?;
         let mut reader = std::io::Cursor::new(prefix).chain(&mut response);
         match format {
-            WireFormat::Events => {
-                read_stream(&mut reader, status).and_then(|answer| parse_answer(&answer))
-            }
+            WireFormat::Events => read_stream_value(&mut reader, status),
             WireFormat::Json => read_json_response(&mut reader, status, &media_type),
             WireFormat::Unknown => Err(response_format_error(status, &media_type)),
         }
@@ -283,10 +471,19 @@ fn consume_response(mut response: Response) -> Result<Value> {
     result.map_err(|error| {
         // Exact allowlisted error codes remain first so quota admission can
         // recognize them. Other failures expose only sanitized wire metadata.
-        if error.to_string().starts_with("ChatGPT: HTTP ") {
+        let diagnostics = error_diagnostics(&error).cloned().map(|mut diagnostics| {
+            diagnostics.http_status = status.as_u16();
+            diagnostics.content_type = safe_media_type(&media_type);
+            diagnostics
+        });
+        let error = if error.to_string().starts_with("ChatGPT: HTTP ") {
             error
         } else {
             anyhow::anyhow!("{} {}", response_metadata(status, &media_type), error)
+        };
+        match diagnostics {
+            Some(diagnostics) => with_diagnostics(error, diagnostics),
+            None => error,
         }
     })
 }
@@ -341,42 +538,74 @@ fn read_json_response(
 ) -> Result<Value> {
     // A complete Responses object may be buffered by a gateway. Plain generated
     // JSON, admission errors, partial responses and HTML are never success.
-    let mut bytes = Vec::new();
-    reader
-        .take((MAX_STREAM_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| {
+    let mut diagnostics = ChatGPTDiagnostics::new("json");
+    let result = (|| {
+        let mut bytes = Vec::new();
+        let read = reader
+            .take((MAX_STREAM_BYTES + 1) as u64)
+            .read_to_end(&mut bytes);
+        diagnostics.response_bytes = bytes.len();
+        read.map_err(|_| {
             anyhow::anyhow!("Ответ ChatGPT прервался. Исходные данные сохранены; повторите позже.")
         })?;
-    if bytes.len() > MAX_STREAM_BYTES {
-        bail!("Ответ ChatGPT превышает допустимый размер.");
-    }
-    let value: Value =
-        serde_json::from_slice(&bytes).map_err(|_| response_format_error(status, media_type))?;
-    if value.get("error").is_some_and(|error| !error.is_null()) {
-        return Err(request_error(status, value["error"]["code"].as_str()));
-    }
-    if value["object"] != "response" {
-        return Err(response_format_error(status, media_type));
-    }
-    let answer = completed_text(&value, status, MAX_ANSWER_BYTES)?
-        .ok_or_else(|| response_format_error(status, media_type))?;
-    parse_answer(&answer)
+        if bytes.len() > MAX_STREAM_BYTES {
+            bail!("Ответ ChatGPT превышает допустимый размер.");
+        }
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| response_format_error(status, media_type))?;
+        diagnostics.terminal(&value);
+        if value.get("error").is_some_and(|error| !error.is_null()) {
+            return Err(request_error(status, value["error"]["code"].as_str()));
+        }
+        if value["object"] != "response" {
+            return Err(response_format_error(status, media_type));
+        }
+        let answer = completed_text(&value, status, MAX_ANSWER_BYTES)?
+            .ok_or_else(|| anyhow::anyhow!("ChatGPT завершил запрос без текста ответа."))?;
+        diagnostics.accumulated_text_bytes = answer.len();
+        parse_answer(&answer)
+    })();
+    result.map_err(|error| with_diagnostics(error, diagnostics))
 }
 
+fn read_stream_value(reader: &mut impl Read, http_status: StatusCode) -> Result<Value> {
+    let (answer, diagnostics) = read_stream_with_diagnostics(reader, http_status)?;
+    parse_answer(&answer).map_err(|error| with_diagnostics(error, diagnostics))
+}
+
+#[cfg(test)]
 fn read_stream(reader: &mut impl Read, http_status: StatusCode) -> Result<String> {
+    read_stream_with_diagnostics(reader, http_status).map(|(answer, _)| answer)
+}
+
+fn read_stream_with_diagnostics(
+    reader: &mut impl Read,
+    http_status: StatusCode,
+) -> Result<(String, ChatGPTDiagnostics)> {
     let mut parser = EventStream::new(MAX_STREAM_BYTES, MAX_EVENT_BYTES, MAX_ANSWER_BYTES);
     parser.http_status = http_status;
     let mut buffer = [0_u8; 16 * 1024];
     loop {
-        let count = reader.read(&mut buffer).map_err(|_| {
-            anyhow::anyhow!("Ответ ChatGPT прервался. Исходные данные сохранены; повторите позже.")
-        })?;
-        if count == 0 {
-            return parser.finish();
-        }
-        if let Some(answer) = parser.feed(&buffer[..count])? {
-            return Ok(answer);
+        let count = match reader.read(&mut buffer) {
+            Ok(count) => count,
+            Err(_) => {
+                return Err(with_diagnostics(
+                    anyhow::anyhow!(
+                        "Ответ ChatGPT прервался. Исходные данные сохранены; повторите позже."
+                    ),
+                    parser.diagnostics(),
+                ))
+            }
+        };
+        let result = if count == 0 {
+            parser.finish().map(Some)
+        } else {
+            parser.feed(&buffer[..count])
+        };
+        match result {
+            Ok(Some(answer)) => return Ok((answer, parser.diagnostics())),
+            Ok(None) => {}
+            Err(error) => return Err(with_diagnostics(error, parser.diagnostics())),
         }
     }
 }
@@ -384,6 +613,11 @@ fn read_stream(reader: &mut impl Read, http_status: StatusCode) -> Result<String
 /// Incremental SSE framing stores bytes until complete lines/events, so UTF-8
 /// characters may safely cross arbitrary network boundaries. All allocations
 /// are bounded independently of a server's newline or terminal-event behavior.
+struct StreamText {
+    text: String,
+    finalized: bool,
+}
+
 struct EventStream {
     http_status: StatusCode,
     total: usize,
@@ -396,8 +630,11 @@ struct EventStream {
     event_name: Vec<u8>,
     data_seen: bool,
     skip_lf: bool,
-    deltas: BTreeMap<(u64, u64), String>,
-    delta_bytes: usize,
+    text_parts: BTreeMap<(u64, u64), StreamText>,
+    item_ids: BTreeMap<u64, String>,
+    id_indices: BTreeMap<String, u64>,
+    text_bytes: usize,
+    diagnostics: ChatGPTDiagnostics,
 }
 impl EventStream {
     fn new(max_total: usize, max_event: usize, max_answer: usize) -> Self {
@@ -413,8 +650,11 @@ impl EventStream {
             event_name: Vec::new(),
             data_seen: false,
             skip_lf: false,
-            deltas: BTreeMap::new(),
-            delta_bytes: 0,
+            text_parts: BTreeMap::new(),
+            item_ids: BTreeMap::new(),
+            id_indices: BTreeMap::new(),
+            text_bytes: 0,
+            diagnostics: ChatGPTDiagnostics::new("sse"),
         }
     }
     fn feed(&mut self, bytes: &[u8]) -> Result<Option<String>> {
@@ -516,23 +756,79 @@ impl EventStream {
         if !self.event_name.is_empty() && self.event_name != kind.as_bytes() {
             bail!("ChatGPT вернул противоречивое событие Responses.");
         }
+        self.diagnostics.events += 1;
         match kind {
-            "response.output_text.delta" => {
-                let delta = event["delta"]
+            "response.output_text.delta" => self.diagnostics.output_text_delta += 1,
+            "response.output_text.done" => self.diagnostics.output_text_done += 1,
+            "response.content_part.done" => self.diagnostics.content_part_done += 1,
+            "response.output_item.done" => self.diagnostics.output_item_done += 1,
+            "response.completed" => {
+                self.diagnostics.completed += 1;
+                self.diagnostics.terminal(&event["response"]);
+            }
+            "response.failed" | "response.incomplete" | "response.cancelled" => {
+                self.diagnostics.other_events += 1;
+                self.diagnostics.terminal(&event["response"]);
+            }
+            _ => self.diagnostics.other_events += 1,
+        }
+        match kind {
+            "response.output_text.delta" | "response.output_text.done" => {
+                let finalized = kind == "response.output_text.done";
+                let text = event[if finalized { "text" } else { "delta" }]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("ChatGPT вернул некорректную часть текста."))?;
-                self.delta_bytes = self
-                    .delta_bytes
-                    .checked_add(delta.len())
-                    .ok_or_else(|| anyhow::anyhow!("Ответ ChatGPT превышает допустимый размер."))?;
-                if self.delta_bytes > self.max_answer {
-                    bail!("Ответ ChatGPT превышает допустимый размер.");
+                let index = text_index(&event)?;
+                self.record_identity(index.0, optional_id(event.get("item_id"))?)?;
+                self.record_text(index, text, finalized)?;
+            }
+            "response.content_part.done" => match event["part"]["type"].as_str() {
+                Some("output_text") => {
+                    let text = event["part"]["text"].as_str().ok_or_else(|| {
+                        anyhow::anyhow!("ChatGPT вернул некорректный текст результата.")
+                    })?;
+                    let index = text_index(&event)?;
+                    self.record_identity(index.0, optional_id(event.get("item_id"))?)?;
+                    self.record_text(index, text, true)?;
                 }
-                let index = (
-                    event["output_index"].as_u64().unwrap_or(0),
-                    event["content_index"].as_u64().unwrap_or(0),
-                );
-                self.deltas.entry(index).or_default().push_str(delta);
+                Some("refusal") => {
+                    bail!("ChatGPT отказался обработать запрос. Исходные данные сохранены.")
+                }
+                Some(_) => {}
+                None => bail!("ChatGPT вернул некорректную часть содержимого Responses."),
+            },
+            "response.output_item.added" => {
+                let item = &event["item"];
+                validate_output_item_type(item)?;
+                if item["type"] == "message"
+                    && (item["role"] != "assistant" || !item["content"].is_array())
+                {
+                    bail!("ChatGPT вернул некорректное сообщение Responses. Исходные данные сохранены.");
+                }
+                if item["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|part| part["type"] == "refusal")
+                {
+                    bail!("ChatGPT отказался обработать запрос. Исходные данные сохранены.");
+                }
+                let output_index = event["output_index"].as_u64().ok_or_else(|| {
+                    anyhow::anyhow!("ChatGPT вернул некорректный индекс результата.")
+                })?;
+                self.record_identity(output_index, optional_id(item.get("id"))?)?;
+            }
+            "response.output_item.done" => {
+                let output_index = event["output_index"].as_u64().ok_or_else(|| {
+                    anyhow::anyhow!("ChatGPT вернул некорректный индекс результата.")
+                })?;
+                self.record_identity(output_index, optional_id(event["item"].get("id"))?)?;
+                for (content_index, text) in output_text_parts(&event["item"])? {
+                    self.record_text((output_index, content_index as u64), text, true)?;
+                }
+            }
+            "response.content_part.added" if event["part"]["type"] == "refusal" => {
+                bail!("ChatGPT отказался обработать запрос. Исходные данные сохранены.")
             }
             "response.refusal.delta" | "response.refusal.done" => {
                 bail!("ChatGPT отказался обработать запрос. Исходные данные сохранены.")
@@ -555,13 +851,18 @@ impl EventStream {
                 bail!("ChatGPT не закончил ответ. Исходные данные сохранены; повторите позже.")
             }
             "response.completed" => {
-                let text =
-                    match completed_text(&event["response"], self.http_status, self.max_answer)? {
-                        Some(text) => text,
-                        // A compact terminal may omit the full output, but an
-                        // explicitly empty/malformed final output is authoritative.
-                        None => std::mem::take(&mut self.deltas).into_values().collect(),
-                    };
+                let text = completed_text(&event["response"], self.http_status, self.max_answer)?;
+                self.validate_terminal_text(&event["response"], text.is_some())?;
+                let text = match text {
+                    Some(text) => text,
+                    // The completion event confirms success; finalized text
+                    // events/deltas may carry the only text snapshot.
+                    None => self
+                        .text_parts
+                        .values()
+                        .map(|part| part.text.as_str())
+                        .collect(),
+                };
                 if text.trim().is_empty() {
                     bail!("ChatGPT завершил запрос без текста ответа.");
                 }
@@ -571,8 +872,112 @@ impl EventStream {
         }
         Ok(None)
     }
-    fn finish(self) -> Result<String> {
+    fn record_text(&mut self, index: (u64, u64), text: &str, replace: bool) -> Result<()> {
+        let previous = self.text_parts.get(&index);
+        if let Some(previous) = previous.filter(|part| part.finalized) {
+            if !replace || previous.text != text {
+                bail!("ChatGPT вернул противоречивые части ответа Responses. Исходные данные сохранены.");
+            }
+            return Ok(());
+        }
+        let previous = previous.map_or(0, |part| part.text.len());
+        let base = if replace {
+            self.text_bytes - previous
+        } else {
+            self.text_bytes
+        };
+        let total = base
+            .checked_add(text.len())
+            .ok_or_else(|| anyhow::anyhow!("Ответ ChatGPT превышает допустимый размер."))?;
+        if total > self.max_answer {
+            bail!("Ответ ChatGPT превышает допустимый размер.");
+        }
+        let part = self.text_parts.entry(index).or_insert_with(|| StreamText {
+            text: String::new(),
+            finalized: false,
+        });
+        if replace {
+            part.text.clear();
+        }
+        part.text.push_str(text);
+        part.finalized = replace;
+        self.text_bytes = total;
+        Ok(())
+    }
+    fn record_identity(&mut self, index: u64, id: Option<&str>) -> Result<()> {
+        let Some(id) = id else {
+            return Ok(());
+        };
+        if self.item_ids.get(&index).is_some_and(|known| known != id)
+            || self.id_indices.get(id).is_some_and(|known| *known != index)
+        {
+            bail!("ChatGPT вернул противоречивый индекс результата Responses. Исходные данные сохранены.");
+        }
+        self.item_ids.entry(index).or_insert_with(|| id.to_owned());
+        self.id_indices.entry(id.to_owned()).or_insert(index);
+        Ok(())
+    }
+    fn validate_terminal_text(&mut self, response: &Value, authoritative: bool) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        for (output_index, item) in response["output"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let output_index = output_index as u64;
+            self.record_identity(output_index, optional_id(item.get("id"))?)?;
+            for (content_index, text) in output_text_parts(item)? {
+                let index = (output_index, content_index as u64);
+                seen.insert(index);
+                if self
+                    .text_parts
+                    .get(&index)
+                    .is_some_and(|previous| previous.finalized && previous.text != text)
+                {
+                    bail!("ChatGPT вернул противоречивые части ответа Responses. Исходные данные сохранены.");
+                }
+            }
+        }
+        if authoritative
+            && self
+                .text_parts
+                .iter()
+                .any(|(index, part)| part.finalized && !seen.contains(index))
+        {
+            bail!(
+                "ChatGPT вернул противоречивые части ответа Responses. Исходные данные сохранены."
+            );
+        }
+        Ok(())
+    }
+    fn diagnostics(&self) -> ChatGPTDiagnostics {
+        let mut diagnostics = self.diagnostics.clone();
+        diagnostics.http_status = self.http_status.as_u16();
+        diagnostics.response_bytes = self.total;
+        diagnostics.accumulated_text_bytes = self.text_bytes;
+        diagnostics
+    }
+    fn finish(&self) -> Result<String> {
         bail!("Ответ ChatGPT прервался без response.completed. Исходные данные сохранены; повторите позже.")
+    }
+}
+
+fn optional_id(value: Option<&Value>) -> Result<Option<&str>> {
+    match value {
+        None => Ok(None),
+        Some(Value::String(id)) if !id.is_empty() => Ok(Some(id)),
+        _ => bail!("ChatGPT вернул некорректный идентификатор части результата."),
+    }
+}
+
+fn text_index(event: &Value) -> Result<(u64, u64)> {
+    match (
+        event["output_index"].as_u64(),
+        event["content_index"].as_u64(),
+    ) {
+        (Some(output), Some(content)) => Ok((output, content)),
+        _ => bail!("ChatGPT вернул некорректный индекс части текста."),
     }
 }
 
@@ -744,11 +1149,289 @@ mod tests {
         stream.extend(event(
             json!({"type":"response.completed","response":{"status":"completed","output":[]}}),
         ));
+        assert_eq!(
+            read_stream(&mut Cursor::new(stream), StatusCode::OK).unwrap(),
+            "{}",
+            "the completed event confirms previously streamed text"
+        );
+        let mut stream = delta("{}");
+        stream.extend(completed(""));
         assert!(
             read_stream(&mut Cursor::new(stream), StatusCode::OK).is_err(),
-            "explicitly empty final output must not publish earlier deltas"
+            "an explicit empty output_text is authoritative"
         );
     }
+    fn finalized_text_events(text: &str) -> Vec<Vec<u8>> {
+        vec![
+            event(
+                json!({"type":"response.output_text.done","output_index":0,"content_index":0,"text":text}),
+            ),
+            event(
+                json!({"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"output_text","text":text}}),
+            ),
+            event(
+                json!({"type":"response.output_item.done","output_index":0,"item":response_value(text)["output"][0]}),
+            ),
+        ]
+    }
+    fn compact_terminal(output: Option<Value>) -> Vec<u8> {
+        let mut response = json!({"status":"completed"});
+        if let Some(output) = output {
+            response["output"] = output;
+        }
+        event(json!({"type":"response.completed","response":response}))
+    }
+    #[test]
+    fn finalized_lifecycle_text_is_retained_until_compact_completion_without_duplication() {
+        let text = r#"{"overview":"Обсудили café и 日本語","items":[],"cards":[]}"#;
+        for output in [
+            None,
+            Some(json!([])),
+            Some(json!([{"type":"reasoning","summary":[]}])),
+        ] {
+            for snapshot in finalized_text_events(text) {
+                let mut stream = delta("partial");
+                stream.extend(snapshot);
+                stream.extend(compact_terminal(output.clone()));
+                for chunk_size in 1..=37 {
+                    let mut parser =
+                        EventStream::new(MAX_STREAM_BYTES, MAX_EVENT_BYTES, MAX_ANSWER_BYTES);
+                    let mut answer = None;
+                    for chunk in stream.chunks(chunk_size) {
+                        if let Some(value) = parser.feed(chunk).unwrap() {
+                            answer = Some(value);
+                            break;
+                        }
+                    }
+                    assert_eq!(answer.as_deref(), Some(text), "chunk size {chunk_size}");
+                }
+            }
+        }
+        let mut stream = delta("partial");
+        for snapshot in finalized_text_events(text) {
+            stream.extend(snapshot);
+        }
+        stream.extend(compact_terminal(Some(json!([]))));
+        assert_eq!(
+            read_stream(&mut Cursor::new(stream), StatusCode::OK).unwrap(),
+            text,
+            "nested done snapshots replace the same indexed text part"
+        );
+    }
+    #[test]
+    fn compact_completion_keeps_indexed_parts_in_order() {
+        let mut stream = event(
+            json!({"type":"response.output_text.done","output_index":1,"content_index":1,"text":"}"}),
+        );
+        stream.extend(event(json!({"type":"response.content_part.done","output_index":1,"content_index":0,"part":{"type":"output_text","text":"{"}})));
+        stream.extend(compact_terminal(Some(
+            json!([{"type":"reasoning","summary":[]}]),
+        )));
+        assert_eq!(
+            read_stream(&mut Cursor::new(stream), StatusCode::OK).unwrap(),
+            "{}"
+        );
+    }
+    #[test]
+    fn finalized_parts_never_publish_before_completion_or_rescue_invalid_terminals() {
+        for snapshot in finalized_text_events("{}") {
+            let error = read_stream(&mut Cursor::new(snapshot), StatusCode::OK).unwrap_err();
+            assert!(error.to_string().contains("response.completed"));
+        }
+        let mut terminals = vec![
+            compact_terminal(Some(Value::Null)),
+            compact_terminal(Some(json!({"PRIVATE":"not an array"}))),
+            compact_terminal(Some(json!(["PRIVATE"]))),
+            compact_terminal(Some(
+                json!([{"type":"message","role":"assistant","status":"completed","content":{}}]),
+            )),
+            compact_terminal(Some(
+                json!([{"type":"message","role":"user","status":"completed","content":[]}]),
+            )),
+            compact_terminal(Some(
+                json!([{"type":"message","role":"assistant","status":"in_progress","content":[]}]),
+            )),
+            completed(""),
+            completed(" "),
+            event(
+                json!({"type":"response.completed","response":{"status":"completed","incomplete_details":{"reason":"PRIVATE"},"output":[]}}),
+            ),
+            event(
+                json!({"type":"response.completed","response":{"status":"incomplete","output":[]}}),
+            ),
+            event(
+                json!({"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"PRIVATE"}}}),
+            ),
+            event(json!({"type":"response.incomplete","response":{"status":"incomplete"}})),
+            event(json!({"type":"response.cancelled","response":{"status":"cancelled"}})),
+            event(json!({"type":"response.refusal.done","refusal":"PRIVATE"})),
+            event(
+                json!({"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"refusal","refusal":"PRIVATE"}}),
+            ),
+        ];
+        let mut refused = response_value("{}");
+        refused["output"][0]["content"] = json!([{"type":"refusal","refusal":"PRIVATE"}]);
+        terminals.push(event(json!({"type":"response.output_item.done","output_index":0,"item":refused["output"][0]})));
+        for terminal in terminals {
+            let mut stream = finalized_text_events("{}").remove(0);
+            stream.extend(terminal);
+            let error = read_stream(&mut Cursor::new(stream), StatusCode::OK)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("PRIVATE"));
+        }
+        for malformed in [
+            json!({"type":"response.output_text.done","output_index":0,"content_index":0,"text":null}),
+            json!({"type":"response.output_text.done","output_index":"PRIVATE","content_index":0,"text":"{}"}),
+            json!({"type":"response.output_text.delta","output_index":0,"delta":"{}"}),
+            json!({"type":"response.content_part.done","output_index":0,"content_index":0,"part":{"type":"output_text","text":42}}),
+            json!({"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","status":"in_progress","content":[]}}),
+        ] {
+            let mut stream = delta("{}");
+            stream.extend(event(malformed));
+            stream.extend(compact_terminal(Some(json!([]))));
+            assert!(read_stream(&mut Cursor::new(stream), StatusCode::OK).is_err());
+        }
+    }
+    #[test]
+    fn contradictory_finalized_text_indices_and_ids_never_succeed() {
+        let done = finalized_text_events("{}").remove(0);
+        let mut contradictions = finalized_text_events(r#"{"other":true}"#);
+        contradictions.extend([
+            delta(""),
+            completed(r#"{"other":true}"#),
+            compact_terminal(Some(json!([{"type":"function_call","status":"completed","name":"PRIVATE","arguments":"{}"}]))),
+            compact_terminal(Some(json!([
+                {"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{}"}]},
+                {"type":"function_call","status":"completed","name":"PRIVATE","arguments":"{}"}
+            ]))),
+            event(json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","status":"completed","name":"PRIVATE","arguments":"{}"}})),
+            event(json!({"type":"response.content_part.added","part":{"type":"refusal","refusal":"PRIVATE"}})),
+        ]);
+        for contradiction in contradictions {
+            let mut stream = done.clone();
+            stream.extend(contradiction);
+            stream.extend(compact_terminal(Some(json!([]))));
+            let error = read_stream(&mut Cursor::new(stream), StatusCode::OK)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("PRIVATE"));
+        }
+        let identified = event(
+            json!({"type":"response.output_text.done","item_id":"msg_first","output_index":0,"content_index":0,"text":"{}"}),
+        );
+        let mut changed_terminal = response_value("{}");
+        changed_terminal["output"][0]["id"] = json!("msg_changed");
+        for contradiction in [
+            event(
+                json!({"type":"response.output_text.done","item_id":"msg_changed","output_index":0,"content_index":0,"text":"{}"}),
+            ),
+            event(
+                json!({"type":"response.content_part.done","item_id":"msg_first","output_index":1,"content_index":0,"part":{"type":"output_text","text":"{}"}}),
+            ),
+            event(
+                json!({"type":"response.output_item.done","output_index":0,"item":{"id":"msg_changed","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{}"}]}}),
+            ),
+            event(json!({"type":"response.completed","response":changed_terminal})),
+            compact_terminal(Some(
+                json!([{"id":"reasoning_changed","type":"reasoning","summary":[]}]),
+            )),
+        ] {
+            let mut stream = identified.clone();
+            stream.extend(contradiction);
+            stream.extend(compact_terminal(Some(json!([]))));
+            assert!(read_stream(&mut Cursor::new(stream), StatusCode::OK)
+                .unwrap_err()
+                .to_string()
+                .contains("противоречив"));
+        }
+        let mut stream = identified;
+        let mut matching = response_value("{}");
+        matching["output"][0]["id"] = json!("msg_first");
+        stream.extend(event(
+            json!({"type":"response.completed","response":matching}),
+        ));
+        assert_eq!(
+            read_stream(&mut Cursor::new(stream), StatusCode::OK).unwrap(),
+            "{}"
+        );
+        let mut stream = done;
+        stream.extend(event(json!({"type":"response.output_text.done","output_index":1,"content_index":0,"text":" "})));
+        stream.extend(completed("{}"));
+        assert!(
+            read_stream(&mut Cursor::new(stream), StatusCode::OK).is_err(),
+            "nonempty terminal output must account for all finalized parts"
+        );
+    }
+
+    #[test]
+    fn added_items_cannot_hide_tools_refusals_or_changed_message_identity() {
+        for item in [
+            json!({"type":"function_call","name":"PRIVATE","arguments":"{}"}),
+            json!({"type":"message","role":"user","status":"in_progress","content":[]}),
+            json!({"type":"message","role":"assistant","status":"in_progress","content":{"PRIVATE":true}}),
+            json!({"type":"message","role":"assistant","status":"in_progress","content":[{"type":"refusal","refusal":"PRIVATE"}]}),
+            json!({"type":42}),
+        ] {
+            let mut stream =
+                event(json!({"type":"response.output_item.added","output_index":0,"item":item}));
+            stream.extend(finalized_text_events("{}").remove(0));
+            stream.extend(compact_terminal(Some(json!([]))));
+            let error = read_stream(&mut Cursor::new(stream), StatusCode::OK)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("PRIVATE"));
+        }
+        let added = event(
+            json!({"type":"response.output_item.added","output_index":0,"item":{"id":"msg_first","type":"message","role":"assistant","status":"in_progress","content":[]}}),
+        );
+        let mut changed = added.clone();
+        changed.extend(event(json!({"type":"response.output_text.done","item_id":"msg_other","output_index":0,"content_index":0,"text":"{}"})));
+        changed.extend(compact_terminal(Some(json!([]))));
+        assert!(read_stream(&mut Cursor::new(changed), StatusCode::OK)
+            .unwrap_err()
+            .to_string()
+            .contains("противоречив"));
+        let mut matching = added;
+        matching.extend(event(json!({"type":"response.output_text.done","item_id":"msg_first","output_index":0,"content_index":0,"text":"{}"})));
+        matching.extend(compact_terminal(Some(json!([]))));
+        assert_eq!(
+            read_stream(&mut Cursor::new(matching), StatusCode::OK).unwrap(),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn finalized_text_replacement_keeps_aggregate_answer_bounds() {
+        let mut parser = EventStream::new(8192, 4096, 2);
+        assert!(parser.feed(&delta("{")).unwrap().is_none());
+        for snapshot in finalized_text_events("{}") {
+            assert!(parser.feed(&snapshot).unwrap().is_none());
+        }
+        assert_eq!(parser.text_bytes, 2);
+        assert_eq!(
+            parser
+                .feed(&compact_terminal(Some(json!([]))))
+                .unwrap()
+                .as_deref(),
+            Some("{}")
+        );
+        for snapshot in finalized_text_events("abc") {
+            let mut parser = EventStream::new(8192, 4096, 2);
+            assert!(parser
+                .feed(&snapshot)
+                .unwrap_err()
+                .to_string()
+                .contains("размер"));
+        }
+        let mut parser = EventStream::new(8192, 4096, 2);
+        parser.feed(&finalized_text_events("{}").remove(0)).unwrap();
+        let other = event(
+            json!({"type":"response.output_text.done","output_index":1,"content_index":0,"text":"x"}),
+        );
+        assert!(parser.feed(&other).is_err());
+    }
+
     #[test]
     fn interrupted_incomplete_refused_and_failed_outputs_never_succeed() {
         let cases = vec![
@@ -1123,6 +1806,146 @@ mod tests {
                 .contains("отказался"));
         }
     }
+    #[test]
+    fn actual_http_missing_mime_keeps_done_text_until_compact_response_completed() {
+        let client = fixture_client();
+        for output in [
+            None,
+            Some(json!([])),
+            Some(json!([{"type":"reasoning","summary":[]}])),
+        ] {
+            for snapshot in finalized_text_events(r#"{"ok":true}"#) {
+                let mut stream = delta("partial");
+                stream.extend(snapshot);
+                stream.extend(compact_terminal(output.clone()));
+                assert_eq!(
+                    http_result(&client, "", stream).unwrap(),
+                    json!({"ok":true})
+                );
+            }
+        }
+        let mut stream = delta(r#"{"ok":true}"#);
+        stream.extend(compact_terminal(Some(json!([]))));
+        assert_eq!(
+            http_result(&client, "", stream).unwrap(),
+            json!({"ok":true})
+        );
+        for bytes in [
+            finalized_text_events(r#"{"ok":true}"#).remove(0),
+            compact_terminal(Some(json!([]))),
+            serde_json::to_vec(&json!({"object":"response","status":"completed","output":[]}))
+                .unwrap(),
+        ] {
+            assert!(http_result(&client, "", bytes).is_err());
+        }
+        let mut malformed_answer = finalized_text_events("[]").remove(0);
+        malformed_answer.extend(compact_terminal(Some(json!([]))));
+        assert!(http_result(&client, "", malformed_answer)
+            .unwrap_err()
+            .to_string()
+            .contains("объекта"));
+    }
+    #[test]
+    fn typed_failure_diagnostics_contain_only_fixed_shapes_and_counters() {
+        let client = fixture_client();
+        const CANARY: &str = "PRIVATE_MEETING_fixture-secret_ACCESS_TOKEN";
+        let mut stream = event(json!({"type":CANARY,"private":CANARY}));
+        stream.extend(delta(CANARY));
+        for snapshot in finalized_text_events(CANARY) {
+            stream.extend(snapshot);
+        }
+        stream.extend(compact_terminal(Some(json!([]))));
+        let error = http_result(&client, "", stream.clone()).unwrap_err();
+        assert!(!error.to_string().contains(CANARY));
+        let diagnostics = error_diagnostics(&error).unwrap();
+        let serialized = serde_json::to_string(diagnostics).unwrap();
+        assert!(!serialized.contains(CANARY));
+        assert!(!serialized.contains("fixture-secret"));
+        assert_eq!(diagnostics.http_status, 200);
+        assert_eq!(diagnostics.content_type, "missing");
+        assert_eq!(diagnostics.wire, "sse");
+        assert_eq!(diagnostics.response_bytes, stream.len());
+        assert_eq!(diagnostics.events, 6);
+        assert_eq!(diagnostics.output_text_delta, 1);
+        assert_eq!(diagnostics.output_text_done, 1);
+        assert_eq!(diagnostics.content_part_done, 1);
+        assert_eq!(diagnostics.output_item_done, 1);
+        assert_eq!(diagnostics.completed, 1);
+        assert_eq!(diagnostics.other_events, 1);
+        assert_eq!(diagnostics.terminal_status, "completed");
+        assert_eq!(diagnostics.terminal_output, "array");
+        assert_eq!(diagnostics.terminal_output_items, 0);
+        assert_eq!(diagnostics.accumulated_text_bytes, CANARY.len());
+        let mut value = response_value(CANARY);
+        value["output"][0]["content"]
+            .as_array_mut()
+            .unwrap()
+            .extend([
+                json!({"type":"refusal","refusal":CANARY}),
+                json!({"type":CANARY,"text":CANARY}),
+            ]);
+        value["status"] = json!(CANARY);
+        let error = http_result(
+            &client,
+            "application/PRIVATE_TOKEN",
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap_err();
+        let diagnostics = error_diagnostics(&error).unwrap();
+        assert_eq!(diagnostics.content_type, "other");
+        assert_eq!(diagnostics.wire, "json");
+        assert_eq!(diagnostics.terminal_status, "other");
+        assert_eq!(diagnostics.terminal_output_items, 1);
+        assert_eq!(diagnostics.terminal_text_parts, 1);
+        assert_eq!(diagnostics.terminal_refusal_parts, 1);
+        assert_eq!(diagnostics.terminal_other_parts, 1);
+        assert!(!serde_json::to_string(diagnostics)
+            .unwrap()
+            .contains("PRIVATE"));
+        assert!(!error.to_string().contains("PRIVATE"));
+        let mut failed = delta("{}");
+        failed.extend(event(json!({"type":"response.failed","response":{"status":"failed","error":{"code":"subscription_sharing_usage_limit_exceeded","message":CANARY}}})));
+        let error = http_result(&client, "", failed).unwrap_err();
+        assert!(error
+            .to_string()
+            .starts_with("ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded."));
+        assert_eq!(error_diagnostics(&error).unwrap().terminal_status, "failed");
+        assert!(!serde_json::to_string(error_diagnostics(&error).unwrap())
+            .unwrap()
+            .contains("PRIVATE"));
+    }
+    #[test]
+    fn test_transport_scope_is_loopback_only_and_restored_after_panic() {
+        assert!(TEST_TRANSPORT.with(|transport| transport.borrow().is_none()));
+        let result = std::panic::catch_unwind(|| {
+            with_test_transport(
+                fixture_client(),
+                "http://127.0.0.1:49152/v1/responses".parse().unwrap(),
+                || {
+                    assert!(TEST_TRANSPORT.with(|transport| transport.borrow().is_some()));
+                    panic!("fixture cancellation");
+                },
+            );
+        });
+        assert!(result.is_err());
+        assert!(TEST_TRANSPORT.with(|transport| transport.borrow().is_none()));
+        for endpoint in [
+            "https://api.openai.com/v1/responses",
+            "http://example.com:49152/v1/responses",
+            "http://127.0.0.1:49152/other",
+            "http://token@127.0.0.1:49152/v1/responses",
+            "http://127.0.0.1:49152/v1/responses?token=PRIVATE",
+        ] {
+            assert!(std::panic::catch_unwind(|| {
+                with_test_transport(fixture_client(), endpoint.parse().unwrap(), || {
+                    panic!("must not run")
+                });
+            })
+            .is_err());
+        }
+        assert!(TEST_TRANSPORT.with(|transport| transport.borrow().is_none()));
+    }
+
     #[test]
     fn sniffing_is_bounded_and_handles_fragmented_bom_and_field_names() {
         struct OneByte(Cursor<Vec<u8>>);

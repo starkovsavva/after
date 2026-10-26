@@ -36,7 +36,7 @@ struct ChatGPTSettingsView: View {
             guard id != store.settings.chatGPTAccountID else { return }
             store.settings.chatGPTAccountID = id
             store.settings.cloudModel = ""
-            store.cloudConnectionStatus = nil
+            store.clearCloudConnectionResult()
             startSignIn(accountID: id)
         })
     }
@@ -68,6 +68,15 @@ struct ChatGPTSettingsView: View {
                         Text(status).font(AppTypography.caption)
                             .foregroundStyle(store.cloudConnectionError ? Ink.warning : Ink.green)
                             .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    }
+                    if store.cloudConnectionError, store.cloudConnectionDiagnostic != nil {
+                        Button { store.copyCloudConnectionDiagnostic() } label: {
+                            Image(systemName: "doc.on.doc").frame(width: 24, height: 24)
+                        }.buttonStyle(.plain)
+                            .help("Скопировать диагностику подключения без текста встреч и данных аккаунта")
+                            .accessibilityLabel("Скопировать диагностику")
+                            .accessibilityIdentifier("chatgpt.connection.copy-diagnostics")
+                            .chatGPTUIAnchor("chatgpt.connection.copy-diagnostics")
                     }
                 }
                 Text("Для конспекта и карточек OpenAI получает текст встречи.")
@@ -252,7 +261,7 @@ struct ChatGPTSettingsView: View {
         guard !store.isPreview, !isDisconnecting, !account.isSigningOut else { return }
         signInTask?.cancel()
         let generation = UUID(); signInGeneration = generation
-        store.cloudConnectionStatus = nil
+        store.clearCloudConnectionResult()
         signInTask = Task {
             defer {
                 if signInGeneration == generation { signInTask = nil }
@@ -276,7 +285,7 @@ struct ChatGPTSettingsView: View {
         Task {
             defer { isDisconnecting = false }
             await store.disconnectChatGPTAccount(account)
-            store.cloudConnectionStatus = nil
+            store.clearCloudConnectionResult()
         }
     }
 
@@ -285,7 +294,7 @@ struct ChatGPTSettingsView: View {
         if store.settings.chatGPTAccountID != profile.id {
             store.settings.chatGPTAccountID = profile.id
             store.settings.cloudModel = ""
-            store.cloudConnectionStatus = nil
+            store.clearCloudConnectionResult()
         }
         validateModelSelection()
     }
