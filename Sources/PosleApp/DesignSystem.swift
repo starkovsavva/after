@@ -11,6 +11,7 @@ enum Ink {
     static let paper = Color(nsColor: .windowBackgroundColor)
     static let soft = Color.primary.opacity(0.045)
     static let field = Color(nsColor: .textBackgroundColor)
+    static let secondaryText = Color(nsColor: adaptive("secondaryText", light: (0.4314, 0.4314, 0.4314), dark: (0.62, 0.62, 0.62)))
     static let line = Color.primary.opacity(0.08)
     static let selection = Color.primary.opacity(0.075)
     static let sidebar = Color(nsColor: NSColor(name: "posle.sidebar") { appearance in

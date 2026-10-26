@@ -35,7 +35,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     private var flushLibraryDrafts: () -> Bool = { NoteDraftPersistence.flushAll() }
 
     var currentVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.9.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.9.1"
     }
     private var workInProgress: Bool {
         guard let store else { return false }

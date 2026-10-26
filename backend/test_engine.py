@@ -115,6 +115,55 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(source.read_bytes(), b"original capture")
         self.assertEqual(engine.load(self.root / "meta.json"), metadata)
         self.assertTrue((self.root / "recording.mp3").exists())
+        self.assertEqual(list(self.root.glob(".posle-finalize-*")), [])
+
+
+    def test_full_rate_intermediates_removed_when_finalize_is_cancelled_or_commit_fails(self):
+        source = self.root / "recording.mov"
+        source.write_bytes(b"original capture")
+        metadata = {"source": source.name, "recordingTracks": True, "hasVideo": True,
+                    "recordingAudioQuality": "high"}
+        engine.atomic(self.root / "meta.json", metadata)
+
+        def wave_copy(_source, target, *_args, **_kwargs):
+            Path(target).write_bytes(b"synthetic wave")
+
+        for failure in (KeyboardInterrupt(), OSError("metadata disk full")):
+            def convert(*arguments):
+                target = Path(arguments[-1])
+                if isinstance(failure, KeyboardInterrupt) and target.name == "recording.mp3":
+                    raise failure
+                target.write_bytes(b"synthetic encoded audio")
+            original_atomic = engine.atomic
+            def commit(path, data):
+                if isinstance(failure, OSError):
+                    raise failure
+                return original_atomic(path, data)
+            with patch.object(engine, "audio_wave", side_effect=wave_copy), \
+                    patch.object(engine, "ffmpeg", side_effect=convert), \
+                    patch.object(engine, "atomic", side_effect=commit), self.assertRaises(type(failure)):
+                engine.finalize_recording(self.root)
+            self.assertEqual(source.read_bytes(), b"original capture")
+            self.assertEqual(engine.load(self.root / "meta.json"), metadata)
+            self.assertEqual(list(self.root.glob(".posle-finalize-*")), [])
+
+    def test_unknown_recording_quality_does_not_break_recoverable_recording(self):
+        source = self.root / "recording.mov"
+        for quality in ("future-quality", {"invalid": True}):
+            source.write_bytes(b"original capture")
+            metadata = {"source": source.name, "recordingTracks": False, "recordingAudioQuality": quality}
+            engine.atomic(self.root / "meta.json", metadata)
+            conversions = []
+            def convert(*arguments):
+                conversions.append(arguments)
+                Path(arguments[-1]).write_bytes(b"synthetic encoded audio")
+            with patch.object(engine, "audio_wave"), patch.object(engine, "ffmpeg", side_effect=convert):
+                engine.finalize_recording(self.root)
+            mp3 = next(args for args in conversions if Path(args[-1]).name == "recording.mp3")
+            self.assertEqual(mp3[mp3.index("-b:a") + 1], "128k")
+            self.assertEqual(engine.load(self.root / "meta.json")["source"], "recording.mp3")
+            self.assertFalse(source.exists())
+            self.assertEqual(list(self.root.glob(".posle-finalize-*")), [])
 
 
 class DiarizationTests(unittest.TestCase):

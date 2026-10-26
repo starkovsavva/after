@@ -8,6 +8,7 @@ struct SettingsView: View {
     @ObservedObject private var theme = ThemeController.shared
     @State private var editingCustomLocalModel = false
     @State private var customLocalModel = ""
+    @State private var recordingDisplays: [RecordingDisplay] = []
 
     private var localModelPreset: Binding<String> {
         Binding {
@@ -110,9 +111,13 @@ struct SettingsView: View {
             }
             .onAppear {
                 theme.configure(root: store.root)
+                recordingDisplays = RecordingDisplay.choices(preview: store.isPreview)
                 if !store.settings.defaultTemplateID.isEmpty && !store.notes.templates.contains(where: { $0.id == store.settings.defaultTemplateID }) { store.settings.defaultTemplateID = "" }
                 editingCustomLocalModel = !isPresetModel(store.settings.localModel)
                 customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+                recordingDisplays = RecordingDisplay.choices(preview: store.isPreview)
             }
             .onChange(of: store.settings.localProvider) { _, _ in
                 editingCustomLocalModel = !isPresetModel(store.settings.localModel)
@@ -131,7 +136,7 @@ struct SettingsView: View {
         case "appearance": ThemeSettingsView(theme: theme)
         case "speech": SpeechSettingsView().disabled(store.busy || store.isRecording)
         case "ai": aiSettings.disabled(store.busy || store.isRecording)
-        case "record": recordSettings.disabled(store.isRecording)
+        case "record": recordSettings.disabled(store.busy || store.isRecording)
         case "notes": notesSettings
         case "keys": shortcutSettings
         case "data": dataSettings
@@ -151,8 +156,9 @@ struct SettingsView: View {
         settingsSection("Запись", "record.circle") {
             Toggle("Записывать звук Mac", isOn: $store.settings.recordSystemAudio)
                 .help("Вместе с микрофоном. Для разделения голосов в звонке используйте наушники.")
-            Toggle("Сохранять видео экрана", isOn: $store.settings.recordVideo)
-                .help("MP4, H.264, до 720p, 30 кадров/с. Эти параметры можно изменить перед каждой встречей.")
+            RecordingOptionsView(audioQuality: $store.settings.recordAudioQuality,
+                                 video: $store.settings.recordVideo, videoQuality: $store.settings.recordVideoQuality,
+                                 displayUUID: $store.settings.recordDisplayUUID, displays: recordingDisplays)
             LabeledContent("Формат аудио", value: "MP3")
         }
     }
@@ -350,31 +356,32 @@ struct RecordView: View {
     @State private var title = ""
     @State private var systemAudio = true
     @State private var video = false
+    @State private var audioQuality: RecordingAudioQuality = .standard
+    @State private var videoQuality: RecordingVideoQuality = .compact
+    @State private var displayUUID = ""
+    @State private var displays: [RecordingDisplay] = []
     @State private var recordingError: String?
+    private var displayIsAvailable: Bool { !video || RecordingDisplay.selectionIsAvailable(displayUUID, in: displays) }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 18) {
             Text("Запись встречи").font(AppTypography.modalTitle)
             TextField("Название встречи", text: $title).textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Название новой встречи")
+                .accessibilityLabel("Название новой встречи").disabled(store.busy)
             Picker("Звук", selection: $systemAudio) {
                 Text("Микрофон и звук Mac").tag(true)
                 Text("Только микрофон").tag(false)
-            }.pickerStyle(.radioGroup)
+            }.pickerStyle(.radioGroup).disabled(store.busy)
                 .help("Для звонков выберите звук Mac и используйте наушники. Для встречи в комнате — только микрофон.")
-            Toggle("Записывать видео экрана", isOn: $video)
-            if video {
-                Text("Будет виден весь основной экран, включая другие окна.")
-                    .font(AppTypography.caption).foregroundStyle(.secondary)
-                    .help("MP4 · H.264 · до 720p · 30 кадров/с · около 0,5 ГБ в час")
-            }
+            RecordingOptionsView(audioQuality: $audioQuality, video: $video,
+                                 videoQuality: $videoQuality, displayUUID: $displayUUID, displays: displays).disabled(store.busy)
             HStack {
-                Text(video ? "MP3 + MP4" : "MP3").font(AppTypography.captionStrong).foregroundStyle(.secondary)
+                Text(video ? "MP3 + MP4" : "MP3").font(AppTypography.captionStrong).foregroundStyle(Ink.secondaryText)
                 Spacer()
                 if systemAudio {
-                    Label("Используйте наушники", systemImage: "headphones").font(AppTypography.caption).foregroundStyle(.secondary)
+                    Label("Используйте наушники", systemImage: "headphones").font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                 }
             }
-            Text("Участники должны знать о записи.").font(AppTypography.caption).foregroundStyle(.secondary)
             if let recordingError {
                 Label(recordingError, systemImage: "exclamationmark.triangle")
                     .font(AppTypography.control).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true)
@@ -392,21 +399,30 @@ struct RecordView: View {
                 Button(store.runtimeReady ? "Начать запись" : "Подготовить распознавание") {
                     if store.runtimeReady {
                         recordingError = nil
+                        store.settings.recordSystemAudio = systemAudio; store.settings.recordVideo = video
+                        store.settings.recordAudioQuality = audioQuality; store.settings.recordVideoQuality = videoQuality
+                        store.settings.recordDisplayUUID = displayUUID; store.saveSettings()
                         Task {
-                            store.settings.recordSystemAudio = systemAudio; store.settings.recordVideo = video; store.saveSettings()
                             await store.startRecording(systemAudio: systemAudio, video: video, title: title)
                             if !store.isRecording { recordingError = store.error }
                         }
                     } else { dismiss(); store.openSettings("speech") }
                 }.buttonStyle(.borderedProminent).tint(store.runtimeReady ? Ink.recordFill : Ink.actionFill)
-                    .disabled(store.busy).keyboardShortcut(.defaultAction)
+                    .disabled(store.busy || (store.runtimeReady && !displayIsAvailable)).keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("record.start")
             }
-        }.padding(AppLayout.contentInset).frame(width: 520).appControlDefaults().tint(Ink.accent)
+        }.padding(AppLayout.contentInset).frame(width: 560).appControlDefaults().tint(Ink.accent)
             .onAppear {
                 systemAudio = store.settings.recordSystemAudio; video = store.settings.recordVideo
+                audioQuality = store.settings.recordAudioQuality; videoQuality = store.settings.recordVideoQuality
+                displayUUID = store.settings.recordDisplayUUID
+                displays = RecordingDisplay.choices(preview: store.isPreview)
                 if ProcessInfo.processInfo.arguments.contains("--preview") && ProcessInfo.processInfo.arguments.contains("--preview-error") {
                     recordingError = "Нет доступа к микрофону. Разрешите его в настройках macOS и повторите запись."
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+                displays = RecordingDisplay.choices(preview: store.isPreview)
             }
     }
 }

@@ -85,6 +85,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-recording") {
+            Task {
+                do { try await RecordingNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native recording check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-tasks") {
             Task {
                 do { try await TasksNativeChecks.run(); NSApp.terminate(nil) }
@@ -224,8 +231,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let provider = option("--cloud-provider") { previewStore.settings.mode = "cloud"; previewStore.settings.switchCloudProvider(provider) }
             if let speechMode = option("--speech-mode") { previewStore.settings.speechMode = speechMode }
             let dark = option("--appearance") == "dark"
-            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : screen == "record" ? 520 : screen == "speakers" ? 560 : screen.hasPrefix("sources") ? 470 : 1260
-            let defaultHeight: Double = screen == "note-editor" ? 650 : screen == "quick-note" ? 280 : screen == "search" ? 650 : screen == "settings" ? 690 : screen == "record" ? 460 : screen == "speakers" ? 430 : screen.hasPrefix("sources") ? 460 : 820
+            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : screen == "record" ? 560 : screen == "speakers" ? 560 : screen.hasPrefix("sources") ? 470 : 1260
+            let defaultHeight: Double = screen == "note-editor" ? 650 : screen == "quick-note" ? 280 : screen == "search" ? 650 : screen == "settings" ? 690 : screen == "record" ? 560 : screen == "speakers" ? 430 : screen.hasPrefix("sources") ? 460 : 820
             let width = option("--width").flatMap(Double.init) ?? defaultWidth
             let height = option("--height").flatMap(Double.init) ?? defaultHeight
             let view = NSHostingView(rootView: content

@@ -21,8 +21,13 @@ struct CoreChecks {
         var meeting = Meeting(title: "Встреча / Meeting", source: "source.mov")
         meeting.speakerNames["speaker_1"] = "Аня"
         meeting.completedTasks = ["commitment-1"]; meeting.recordingTracks = true; meeting.hasVideo = true
+        meeting.recordingAudioQuality = "high"; meeting.recordingVideoQuality = "native"; meeting.recordingDisplayUUID = "display-fixture"
         let copy = try JSONDecoder().decode(Meeting.self, from: JSONEncoder().encode(meeting))
         expect(copy == meeting, "metadata round trip")
+        var legacyMeetingObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(meeting)) as! [String: Any]
+        for key in ["recordingAudioQuality", "recordingVideoQuality", "recordingDisplayUUID"] { legacyMeetingObject.removeValue(forKey: key) }
+        let legacyMeeting = try JSONDecoder().decode(Meeting.self, from: JSONSerialization.data(withJSONObject: legacyMeetingObject))
+        expect(legacyMeeting.recordingAudioQuality == nil && legacyMeeting.recordingVideoQuality == nil && legacyMeeting.recordingDisplayUUID == nil, "old recordings do not fabricate quality or monitor metadata")
         expect(copy.speakerName("speaker_1") == "Аня", "speaker rename")
         expect(copy.speakerName("speaker_2") == "Участник 2", "speaker fallback")
         expect(copy.speakerName("unknown") == "Голос не определён", "unknown speaker")
@@ -66,6 +71,12 @@ struct CoreChecks {
         expect(!restored.autoSummary && restored.focus == "Keep precise details", "unrelated settings preserved")
         let minimal = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
         expect(minimal.localModel == AppSettings.qualityLocalModel && minimal.diarization, "minimal settings defaults")
+        expect(minimal.recordAudioQuality == .standard && minimal.recordVideoQuality == .compact && minimal.recordDisplayUUID.isEmpty, "new recording defaults migrate independently")
+        settings.recordAudioQuality = .high; settings.recordVideoQuality = .native; settings.recordDisplayUUID = "stable-display-uuid"
+        let recordingSettings = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        expect(recordingSettings.recordAudioQuality == .high && recordingSettings.recordVideoQuality == .native && recordingSettings.recordDisplayUUID == "stable-display-uuid", "recording profiles and stable monitor selection survive reopen")
+        let futureSettings = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"recordAudioQuality":"future-profile","recordVideoQuality":"8k","localModel":"keep-model","focus":"Keep details"}"#.utf8))
+        expect(futureSettings.recordAudioQuality == .standard && futureSettings.recordVideoQuality == .compact && futureSettings.localModel == "keep-model" && futureSettings.focus == "Keep details", "unknown future profiles fall back without resetting unrelated settings")
         print("PASS: settings migration and external model selection")
         var linked = summary
         linked.overviewClaims = [OverviewClaim(text: "Обсудили поставку.", itemIndices: [0])]
@@ -98,6 +109,34 @@ struct CoreChecks {
         cloud.cloudEndpoint = "https://user:password@example.com/v1"; expect(cloud.validatedCloudEndpoint() == nil, "URL credentials are refused")
         cloud.cloudEndpoint = "http://example.com/v1"; expect(cloud.validatedCloudEndpoint() == nil, "Remote plaintext HTTP is refused")
         print("PASS: cloud provider migration, independent profiles, exact API format and endpoint validation")
-        print("8 Swift checks passed")
+        let compact = RecordingVideoQuality.compact.dimensions(width: 1440, height: 900, scale: 2)
+        expect(compact == RecordingVideoDimensions(width: 1152, height: 720), "Retina 16:10 stays full-display 16:10 at 720p")
+        let clear = RecordingVideoQuality.clear.dimensions(width: 1440, height: 900, scale: 2)
+        expect(clear == RecordingVideoDimensions(width: 1728, height: 1080), "1080p preserves the whole 16:10 display")
+        expect(RecordingVideoQuality.native.dimensions(width: 1728, height: 1117, scale: 2)
+            == RecordingVideoDimensions(width: 3456, height: 2234), "native uses backing pixels instead of Retina points")
+        expect(RecordingVideoQuality.compact.dimensions(width: 900, height: 1440, scale: 2)
+            == RecordingVideoDimensions(width: 720, height: 1152), "portrait displays keep orientation and aspect")
+        expect(RecordingVideoQuality.compact.dimensions(width: 3440, height: 1440)
+            == RecordingVideoDimensions(width: 1280, height: 534), "ultrawide display fits without center crop")
+        expect(RecordingVideoQuality.clear.dimensions(width: 640, height: 480)
+            == RecordingVideoDimensions(width: 640, height: 480), "small displays are not upscaled")
+        expect(RecordingVideoQuality.native.dimensions(width: 1513, height: 983)
+            == RecordingVideoDimensions(width: 1512, height: 982), "odd source sizes round down to H.264 even output bounds")
+        for invalid in [Double.nan, .infinity, -.infinity, 0, -1, Double.greatestFiniteMagnitude] {
+            expect(RecordingVideoQuality.native.dimensions(width: invalid, height: 900) == nil, "invalid display width is rejected")
+            expect(RecordingVideoQuality.native.dimensions(width: 1440, height: 900, scale: invalid) == nil, "invalid pixel scale is rejected")
+        }
+        expect(RecordingDisplaySelection.resolve(requested: 2, available: [1, 2], main: 1) == 2, "explicit selected monitor wins over main")
+        expect(RecordingDisplaySelection.resolve(requested: 9, available: [1, 2], main: 1) == nil, "disconnected monitor never silently switches")
+        expect(RecordingDisplaySelection.resolve(requested: nil, available: [1, 2], main: 2) == 2, "default captures current main display")
+        expect(RecordingDisplaySelection.resolve(requested: nil, available: [2], main: 1) == nil, "missing main never selects an unrelated monitor")
+        expect(RecordingAudioQuality.allCases.map(\.bitRate) == [64_000, 128_000, 192_000], "audio quality controls source encoding bitrate")
+        expect(RecordingVideoQuality.compact.bitRate(for: compact!) < RecordingVideoQuality.clear.bitRate(for: clear!), "higher resolution has enough encoding bitrate")
+        expect(RecordingVideoQuality.native.bitRate(for: .init(width: Int.max, height: Int.max)) == 40_000_000, "bitrate arithmetic cannot overflow")
+        let qualityCopy = try JSONDecoder().decode(RecordingVideoQuality.self, from: JSONEncoder().encode(RecordingVideoQuality.native))
+        expect(qualityCopy == .native && RecordingVideoQuality.allCases.allSatisfy { $0.frameRate == 30 }, "quality persists and every preset keeps 30 fps")
+        print("PASS: full-display recording profiles, Retina geometry, aspect ratio, audio bitrates and disconnected-display safety")
+        print("9 Swift checks passed")
     }
 }

@@ -1007,6 +1007,19 @@ final class AppStore: ObservableObject {
     }
     func startRecording(systemAudio: Bool, video: Bool = false, title: String) async {
         guard !busy, !isRecording else { return }
+        // Snapshot before any permission prompt. Finalization must use this meeting's
+        // quality even if the default settings change before an interrupted job resumes.
+        let audioQuality = settings.recordAudioQuality
+        let videoQuality = settings.recordVideoQuality
+        let requestedDisplay = settings.recordDisplayUUID
+        let displays = video ? RecordingDisplay.choices(preview: isPreview) : []
+        let selectedDisplay = requestedDisplay.isEmpty
+            ? displays.first(where: \.isMain)
+            : displays.first(where: { $0.persistentID == requestedDisplay })
+        if video && selectedDisplay == nil {
+            error = "Выбранный экран недоступен. Выберите подключённый экран перед записью."
+            return
+        }
         pause(); error = nil
         cancellationRequested = false; runner.resetCancellation(); embeddedSpeech.resetCancellation()
         processAfterRecording = true
@@ -1015,12 +1028,17 @@ final class AppStore: ObservableObject {
                               source: systemAudio || video ? "recording.mov" : "recording.m4a", status: "recording", focus: settings.focus)
         meeting.recordingTracks = systemAudio; meeting.speakerNames["self"] = "Вы"
         meeting.hasVideo = video
+        meeting.recordingAudioQuality = audioQuality.rawValue
+        meeting.recordingVideoQuality = video ? videoQuality.rawValue : nil
+        meeting.recordingDisplayUUID = selectedDisplay?.persistentID
         let directory = meetingDirectory(meeting.id)
         busy = true; progressText = "Проверяю доступ к записи…"
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                    attributes: [.posixPermissions: 0o700])
-            try await recorder.start(url: directory.appendingPathComponent(meeting.source), systemAudio: systemAudio, video: video)
+            try await recorder.start(url: directory.appendingPathComponent(meeting.source), systemAudio: systemAudio, video: video,
+                                     videoQuality: videoQuality, audioQuality: audioQuality,
+                                     displayID: selectedDisplay?.id, expectedDisplayUUID: selectedDisplay?.persistentID)
             try write(meeting, directory.appendingPathComponent("meta.json"))
             isRecording = true; recordingID = meeting.id; recordingDate = Date()
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,

@@ -212,9 +212,11 @@ def ffmpeg(*arguments):
         raise RuntimeError("Не удалось прочитать аудио: " + result.stderr[-1800:])
 
 
-def audio_wave(source: Path, target: Path, track: int = 0):
+def audio_wave(source: Path, target: Path, track: int = 0, sample_rate: int = 16000, channels: int | None = 1):
+    channel_options = ("-ac", channels) if channels is not None else ()
     ffmpeg("-copyts", "-start_at_zero", "-i", source, "-map", f"0:a:{track}", "-vn",
-           "-af", "aresample=async=1:first_pts=0", "-ac", 1, "-ar", 16000, "-c:a", "pcm_s16le", target)
+           "-af", "aresample=async=1:first_pts=0", *channel_options,
+           "-ar", sample_rate, "-c:a", "pcm_s16le", target)
 
 
 def finalize_recording(directory: Path):
@@ -224,34 +226,49 @@ def finalize_recording(directory: Path):
         return
     progress("Сохраняю встречу в MP3…")
     output = directory / "recording.mp3"
+    # Capture settings belong to this recording, even if preferences changed
+    # while it was being saved. Old recordings retain their original defaults.
+    quality = meta.get("recordingAudioQuality")
+    if not isinstance(quality, str):
+        quality = None
+    bitrate = {"compact": "64k", "standard": "128k", "high": "192k"}.get(quality, "128k")
+    isolated_bitrate = bitrate if quality in ("compact", "standard", "high") else "96k"
     dual = meta.get("recordingTracks", False)
-    # Keep common-timeline, lossless intermediates until both aligned tracks are saved.
-    system_wave = directory / "audio.wav"
-    audio_wave(source, system_wave)
-    mic_wave = directory / "microphone.wav"
-    if dual:
-        try:
-            audio_wave(source, mic_wave, 1)
-        except RuntimeError:
-            dual = False
-    if dual:
-        ffmpeg("-i", system_wave, "-c:a", "aac", "-b:a", "96k", directory / "system.m4a")
-        ffmpeg("-i", mic_wave, "-c:a", "aac", "-b:a", "96k", directory / "microphone.m4a")
-        ffmpeg("-i", system_wave, "-i", mic_wave, "-filter_complex",
-               "[0:a][1:a]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95:latency=1[a]",
-               "-map", "[a]", "-c:a", "libmp3lame", "-b:a", "128k", output)
-    else:
-        ffmpeg("-i", source, "-vn", "-c:a", "libmp3lame", "-b:a", "128k", output)
-    if meta.get("hasVideo", False):
-        progress("Сохраняю лёгкое видео MP4…")
-        ffmpeg("-i", source, "-i", output, "-map", "0:v:0", "-map", "1:a:0",
-               "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", directory / "video.mp4")
-    meta["source"] = "recording.mp3"
-    meta["recordingTracks"] = dual
-    with publication():
-        atomic(directory / "meta.json", meta)
-        # Both final outputs are saved; the temporary capture container can be removed.
-        source.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".posle-finalize-", dir=directory) as temporary:
+        temporary = Path(temporary)
+        system_wave = temporary / "system-full.wav"
+        mic_wave = temporary / "microphone-full.wav"
+        # Full-rate tracks share the capture container's zero origin. The 16 kHz
+        # ASR copies must never become the source of the saved listening audio.
+        audio_wave(source, system_wave, sample_rate=48000, channels=None)
+        audio_wave(system_wave, directory / "audio.wav")
+        if dual:
+            try:
+                audio_wave(source, mic_wave, 1, sample_rate=48000, channels=None)
+            except RuntimeError:
+                dual = False
+        playback_wave = system_wave
+        if dual:
+            audio_wave(mic_wave, directory / "microphone.wav")
+            ffmpeg("-i", system_wave, "-c:a", "aac", "-b:a", isolated_bitrate, directory / "system.m4a")
+            ffmpeg("-i", mic_wave, "-c:a", "aac", "-b:a", isolated_bitrate, directory / "microphone.m4a")
+            playback_wave = temporary / "mix-full.wav"
+            ffmpeg("-i", system_wave, "-i", mic_wave, "-filter_complex",
+                   "[0:a][1:a]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.95:latency=1[a]",
+                   "-map", "[a]", "-ar", 48000, "-c:a", "pcm_s16le", playback_wave)
+        ffmpeg("-i", playback_wave, "-c:a", "libmp3lame", "-b:a", bitrate, output)
+        if meta.get("hasVideo", False):
+            progress("Сохраняю видео MP4…")
+            # Resolution, frame rate, aspect ratio and H264 packets are already
+            # chosen by the recorder. Save those packets without another encode.
+            ffmpeg("-i", source, "-i", playback_wave, "-map", "0:v:0", "-map", "1:a:0",
+                   "-c:v", "copy", "-c:a", "aac", "-b:a", bitrate, "-movflags", "+faststart", directory / "video.mp4")
+        meta["source"] = "recording.mp3"
+        meta["recordingTracks"] = dual
+        with publication():
+            atomic(directory / "meta.json", meta)
+            # Both final outputs are saved; the temporary capture container can be removed.
+            source.unlink(missing_ok=True)
 
 
 def read_pcm_frames(source, count):

@@ -12,6 +12,9 @@ public struct Meeting: Codable, Identifiable, Hashable {
     public var focus: String
     public var recordingTracks: Bool = false
     public var hasVideo: Bool = false
+    public var recordingAudioQuality: String?
+    public var recordingVideoQuality: String?
+    public var recordingDisplayUUID: String?
     public var error: String?
     public var libraryKind: String? = nil
 
@@ -176,6 +179,10 @@ public struct AppSettings: Codable {
     public var startSection = "meetings"
     public var recordSystemAudio = true
     public var recordVideo = false
+    public var recordAudioQuality: RecordingAudioQuality = .standard
+    public var recordVideoQuality: RecordingVideoQuality = .compact
+    /// Empty follows the current primary screen; explicit choices use stable display UUIDs.
+    public var recordDisplayUUID = ""
     public var quickCaptureEnabled = true
     public var bookmarkShortcutEnabled = true
     public var voiceShortcutEnabled = true
@@ -269,6 +276,7 @@ public struct AppSettings: Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case recordAudioQuality, recordVideoQuality, recordDisplayUUID
         case startSection, recordSystemAudio, recordVideo, quickCaptureEnabled, bookmarkShortcutEnabled, voiceShortcutEnabled, quickCaptureShortcut, notesAutoTimestamp, notesSaveToActiveMeeting, defaultTemplateID
         case mode, localModel, localProvider, localEndpoint, asrModelPath, asrModelFormat
         case speechMode, speechLocalModel, speechCloudProvider, speechCloudEndpoint, speechCloudModel, speechResponseFormat, speechLanguage
@@ -282,6 +290,9 @@ public struct AppSettings: Codable {
         startSection = try values.decodeIfPresent(String.self, forKey: .startSection) ?? startSection
         recordSystemAudio = try values.decodeIfPresent(Bool.self, forKey: .recordSystemAudio) ?? recordSystemAudio
         recordVideo = try values.decodeIfPresent(Bool.self, forKey: .recordVideo) ?? recordVideo
+        recordAudioQuality = RecordingAudioQuality(rawValue: try values.decodeIfPresent(String.self, forKey: .recordAudioQuality) ?? "") ?? .standard
+        recordVideoQuality = RecordingVideoQuality(rawValue: try values.decodeIfPresent(String.self, forKey: .recordVideoQuality) ?? "") ?? .compact
+        recordDisplayUUID = try values.decodeIfPresent(String.self, forKey: .recordDisplayUUID) ?? ""
         quickCaptureEnabled = try values.decodeIfPresent(Bool.self, forKey: .quickCaptureEnabled) ?? quickCaptureEnabled
         bookmarkShortcutEnabled = try values.decodeIfPresent(Bool.self, forKey: .bookmarkShortcutEnabled) ?? bookmarkShortcutEnabled
         voiceShortcutEnabled = try values.decodeIfPresent(Bool.self, forKey: .voiceShortcutEnabled) ?? voiceShortcutEnabled
