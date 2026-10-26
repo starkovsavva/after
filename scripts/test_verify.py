@@ -100,7 +100,7 @@ class VerifyIsolationTests(unittest.TestCase):
         controller.integration()
         called = {str(command[1]) for command in commands}
         self.assertEqual(called, {'scripts/e2e.py', 'scripts/e2e_media.py', 'scripts/check_media.py', 'scripts/check_search.py', 'scripts/check_managed_identity.py'})
-        self.assertFalse(any('smoke_audio' in str(command) for command in commands))
+        self.assertFalse(any('check_audio' in str(command) for command in commands))
         self.assertEqual(environments['scripts/check_media.py']['PYTHONPATH'], str(verify.PROJECT / 'backend'))
 
 
