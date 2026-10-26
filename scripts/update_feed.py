@@ -240,7 +240,8 @@ class GitHub:
         self.executable = executable
 
     def api(self, route: str, method: str = "GET", body: dict | None = None, missing_ok=False):
-        command = [self.executable, "api", "--method", method, f"repos/{self.repo}/{route}"]
+        endpoint = f"repos/{self.repo}" + ("/" + route if route else "")
+        command = [self.executable, "api", "--method", method, endpoint]
         if body is not None:
             command += ["--input", "-"]
         result = subprocess.run(command, input=json.dumps(body) if body is not None else None, text=True, capture_output=True)

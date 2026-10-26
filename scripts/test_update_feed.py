@@ -110,6 +110,12 @@ class FeedTests(unittest.TestCase):
         identity = u.identity(info(build=8), REPO)
         return signed(u.make_appcast(identity, REPO, SIGNATURE, self.fixture.files, "Old notes"))
 
+    def test_repository_metadata_endpoint_has_no_trailing_slash(self):
+        response = subprocess.CompletedProcess([], 0, '{"private": false}', "")
+        with mock.patch.object(u.subprocess, "run", return_value=response) as command:
+            u.GitHub(REPO, "gh").guard_visibility()
+        self.assertEqual(command.call_args.args[0], ["gh", "api", "--method", "GET", "repos/" + REPO])
+
     def test_identity_requires_signed_head_provenance(self):
         self.assertEqual(u.identity(info(), REPO, REVISION).build, 9)
         for changes in ({"PosleSourceRevision": "b" * 40}, {"SURequireSignedFeed": False}, {"SUPublicEDKey": "missing"},
