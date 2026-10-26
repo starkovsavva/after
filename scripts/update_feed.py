@@ -339,7 +339,8 @@ def verify_checksums(directory: Path):
 
 
 def verify_zip(path: Path, expected: Identity, repo: str):
-    with zipfile.ZipFile(path) as archive:
+    # macOS ditto stores UTF-8 names even when the ZIP UTF-8 flag is absent.
+    with zipfile.ZipFile(path, metadata_encoding="utf-8") as archive:
         names = archive.namelist()
         if len(set(names)) != len(names) or archive.testzip() is not None:
             raise RuntimeError("Damaged or ambiguous update ZIP")

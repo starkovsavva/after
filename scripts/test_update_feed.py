@@ -11,6 +11,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import stat
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -224,6 +225,33 @@ class FeedTests(unittest.TestCase):
             with mock.patch.object(u, "anonymous_download") as download, self.assertRaises(RuntimeError):
                 u.verify_public_release(GitHubFixture(), dict(self.fixture.release, **change), PUBLIC, self.verifier)
             download.assert_not_called()
+
+    def test_ditto_utf8_names_without_utf8_flag_pass_identity_and_path_checks(self):
+        path = self.fixture.files[u.ZIP]
+        data = bytearray(path.read_bytes())
+        end = data.rfind(b"PK\x05\x06")
+        self.assertGreaterEqual(end, 0)
+        count = struct.unpack_from("<H", data, end + 10)[0]
+        central = struct.unpack_from("<I", data, end + 16)[0]
+        for _ in range(count):
+            self.assertEqual(data[central:central + 4], b"PK\x01\x02")
+            flags = struct.unpack_from("<H", data, central + 8)[0]
+            local = struct.unpack_from("<I", data, central + 42)[0]
+            self.assertEqual(data[local:local + 4], b"PK\x03\x04")
+            struct.pack_into("<H", data, central + 8, flags & ~0x800)
+            local_flags = struct.unpack_from("<H", data, local + 6)[0]
+            struct.pack_into("<H", data, local + 6, local_flags & ~0x800)
+            name_length, extra_length, comment_length = struct.unpack_from("<HHH", data, central + 28)
+            central += 46 + name_length + extra_length + comment_length
+        path.write_bytes(data)
+        with zipfile.ZipFile(path) as default_decoder:
+            self.assertNotEqual(default_decoder.namelist()[0], u.APP + "/Contents/Info.plist")
+        with mock.patch.object(u.subprocess, "run") as command:
+            u.verify_zip(path, self.fixture.identity, REPO)
+        self.assertEqual(command.call_count, 2)
+        self.assertEqual(command.call_args_list[0].args[0][:3], ["/usr/bin/ditto", "-x", "-k"])
+        self.assertEqual(command.call_args_list[1].args[0][:4], ["/usr/bin/codesign", "--verify", "--deep", "--strict"])
+        self.assertTrue(command.call_args_list[1].args[0][-1].endswith("/" + u.APP))
 
     def test_source_mismatch_and_zip_path_escape_are_rejected(self):
         with zipfile.ZipFile(self.fixture.files[u.SOURCE], "w") as z:
