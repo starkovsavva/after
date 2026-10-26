@@ -39,7 +39,10 @@ def _json(path: Path):
     if not path.is_file() or path.stat().st_size > MAX_JSON:
         raise ValueError("JSON модели отсутствует или слишком большой")
     with path.open(encoding="utf-8") as stream:
-        return json.load(stream)
+        result = json.load(stream)
+    if not isinstance(result, dict):
+        raise ValueError("JSON модели должен содержать объект")
+    return result
 
 
 def _files(directory: Path):
@@ -71,13 +74,18 @@ def _safetensors(path: Path):
         if not 2 <= header_size <= MAX_HEADER:
             raise ValueError(f"Повреждён заголовок {path.name}")
         header = json.loads(stream.read(header_size))
+    if not isinstance(header, dict):
+        raise ValueError(f"Повреждён заголовок {path.name}")
     tensors = [v for k, v in header.items() if k != "__metadata__"]
     if not tensors:
         raise ValueError(f"В {path.name} нет тензоров")
     payload_size = path.stat().st_size - 8 - header_size
     for tensor in tensors:
+        if not isinstance(tensor, dict):
+            raise ValueError(f"Повреждён заголовок {path.name}")
         offsets = tensor.get("data_offsets", [])
-        if len(offsets) != 2 or not 0 <= offsets[0] <= offsets[1] <= payload_size:
+        if (not isinstance(offsets, list) or len(offsets) != 2 or any(type(value) is not int for value in offsets)
+                or not 0 <= offsets[0] <= offsets[1] <= payload_size):
             raise ValueError(f"Веса {path.name} скачаны не полностью")
 
 
@@ -125,18 +133,22 @@ def inspect_model(directory: Path, source: str = "Выбранная папка"
                         names = archive.namelist()
                         if not names or any(not name.endswith(".npy") or Path(name).name != name for name in names):
                             raise ValueError("Whisper MLX: повреждён архив весов")
-                result.update(compatible=True, layout="whisper-mlx", files={"model": str(weights)}, reason="Whisper MLX · русский и английский")
                 if requested_format == "onnx":
                     raise ValueError("Выбран ONNX, а папка содержит Whisper MLX")
+                result.update(compatible=True, layout="whisper-mlx", files={"model": str(weights)}, reason="Whisper MLX · русский и английский")
                 return result
             if not isinstance(config, dict) or not isinstance(config.get("encoder"), dict) or not isinstance(config.get("joint"), dict):
                 raise ValueError("Это не MLX-конвертация Parakeet TDT")
-            if not config["joint"].get("vocabulary") or not config.get("model_defaults", {}).get("tdt_durations"):
+            defaults = config.get("model_defaults", {})
+            if not config["joint"].get("vocabulary") or not isinstance(defaults, dict) or not defaults.get("tdt_durations"):
                 raise ValueError("MLX Parakeet TDT: не найден словарь или TDT-конфигурация")
             weights = sorted(name for name in files if name.endswith(".safetensors"))
             if "model.safetensors.index.json" in files:
                 index = _json(files["model.safetensors.index.json"])
-                required = set(index.get("weight_map", {}).values())
+                weight_map = index.get("weight_map")
+                if not isinstance(weight_map, dict) or not all(isinstance(value, str) for value in weight_map.values()):
+                    raise ValueError("Повреждён индекс MLX-модели")
+                required = set(weight_map.values())
                 if not required or any(Path(name).name != name or name not in files for name in required):
                     raise ValueError("Отсутствуют части MLX-модели")
                 weights = sorted(required)
@@ -186,7 +198,7 @@ def inspect_model(directory: Path, source: str = "Выбранная папка"
         version_path = str(directory).lower()
         result["reason"] = ("Parakeet v2: только английский" if "v2" in version_path
                             else "Локальные файлы готовы; проверка графа при запуске")
-    except (OSError, ValueError, TypeError, KeyError, struct.error) as exc:
+    except (OSError, ValueError, TypeError, KeyError, RecursionError, struct.error) as exc:
         result["reason"] = str(exc)
     return result
 

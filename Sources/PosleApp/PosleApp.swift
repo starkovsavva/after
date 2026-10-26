@@ -104,6 +104,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-overview") {
+            Task {
+                do { try await OverviewNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native overview check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-jobs") {
+            Task {
+                do { try await JobNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native job check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-navigation") {
             Task {
                 do { try await NativeNavigationChecks.run(); NSApp.terminate(nil) }
@@ -214,6 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.notice = "Завершите работу и сохраните правки перед обновлением"
             return .terminateCancel
         }
+        if store?.flushOverviewDrafts() == false { return .terminateCancel }
         if !NoteDraftPersistence.flushAll() {
             sender.activate(ignoringOtherApps: true)
             let alert = NSAlert()

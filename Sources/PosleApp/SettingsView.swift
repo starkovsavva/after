@@ -184,11 +184,11 @@ struct SettingsView: View {
             Picker("Обработка", selection: $store.settings.mode) {
                 Label("На Mac", systemImage: "laptopcomputer").tag("local")
                 Label("Облако", systemImage: "cloud").tag("cloud")
-            }.pickerStyle(.segmented)
+            }.pickerStyle(.segmented).tint(Ink.actionFill)
             if store.settings.mode == "local" {
                 Picker("Источник", selection: Binding(get: { store.settings.localProvider }, set: { store.changeLocalProvider($0) })) {
                     Text("После").tag("managed"); Text("Ollama").tag("ollama"); Text("LM Studio").tag("lmstudio")
-                }.pickerStyle(.segmented)
+                }.pickerStyle(.segmented).tint(Ink.actionFill)
                     .help("После хранит свою модель отдельно. Ollama и LM Studio используют свои установленные модели.")
                 if store.settings.localProvider == "managed" {
                     Picker("Модель", selection: localModelPreset) {

@@ -10,7 +10,7 @@ struct CardsView: View {
     @State private var ratingPending = false
     private var cards: [Flashcard] { store.summary?.cards ?? [] }
     private var current: Flashcard? {
-        if mode == "all", let picked { return cards.first { $0.id == picked } }
+        if mode == "all", let picked { return cards.first { $0.id == picked } ?? cards.first }
         return mode == "study" ? store.dueCards.first : cards.first
     }
     var body: some View {
@@ -41,7 +41,7 @@ struct CardsView: View {
                                          makingExample: exampleCardID == card.id,
                                          sourceMeetingID: store.selection) {
                             guard exampleCardID == nil, !store.busy, !store.isRecording else { return }
-                            exampleCardID = card.id; store.progressText = "Придумываю пример…"; store.makeExample(card)
+                            exampleCardID = card.id; store.makeExample(card)
                         }
                     } else { empty }
                 }.appContentLayout()
@@ -51,9 +51,9 @@ struct CardsView: View {
                                review: store.reviews[card.id]) { value in
                     guard flipped, !ratingPending, !store.busy, !store.isRecording,
                           store.selection != nil, current?.id == card.id else { return }
-                    // Set synchronously: AppStore starts its async task on the
-                    // next turn, so a second key press must already be blocked.
-                    ratingPending = true; store.progressText = "Сохраняю повторение…"; store.rate(card, value)
+                    // Reserve the answer locally while the shared job state and
+                    // refreshed review queue propagate through SwiftUI.
+                    ratingPending = true; store.rate(card, value)
                 }
             }
         }.onChange(of: mode) { _, _ in

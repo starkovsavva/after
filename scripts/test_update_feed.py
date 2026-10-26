@@ -4,7 +4,7 @@ No GitHub writes, production Keychain reads, microphone or personal files.
 """
 import argparse
 import base64
-import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -81,6 +81,11 @@ class GitHubFixture:
     def api(self, route, method="GET", body=None, missing_ok=False):
         self.calls.append((route, method, body))
         if route == "git/ref/heads/updates": return {"object": {"sha": self.head}} if self.head else None
+        if route == "git/commits/" + REVISION: return {"tree": {"sha": "1" * 40}}
+        if route == "git/trees/" + "1" * 40 + "?recursive=1":
+            content = plistlib.dumps(info())
+            sha = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+            return {"tree": [{"path": "packaging/Info.plist", "mode": "100644", "type": "blob", "sha": sha}]}
         if route == "git/commits/old": return {"tree": {"sha": "oldtree"}}
         if route == "git/trees/oldtree": return {"tree": [{"path": u.FEED, "mode": "100644", "type": "blob", "sha": "oldblob"}]}
         if route == "git/blobs/oldblob": return {"encoding": "base64", "size": len(self.previous), "content": base64.b64encode(self.previous).decode()}
@@ -257,7 +262,7 @@ class FeedTests(unittest.TestCase):
         with zipfile.ZipFile(self.fixture.files[u.SOURCE], "w") as z:
             z.writestr("posle/packaging/Info.plist", plistlib.dumps(dict(info(), CFBundleVersion="8")))
         with self.assertRaisesRegex(RuntimeError, "source archive differs"):
-            u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO)
+            u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree={})
         for filename, target in (("../outside", None), (u.APP + "/Contents/evil", "../../../../outside")):
             with zipfile.ZipFile(self.fixture.files[u.ZIP], "w") as z:
                 z.writestr(u.APP + "/Contents/Info.plist", plistlib.dumps(info()))
@@ -267,6 +272,91 @@ class FeedTests(unittest.TestCase):
             with mock.patch.object(u.subprocess, "run") as command, self.assertRaises(RuntimeError):
                 u.verify_zip(self.fixture.files[u.ZIP], self.fixture.identity, REPO)
             command.assert_not_called()
+
+    def test_zip_aliases_and_symlink_ancestors_fail_before_extraction(self):
+        for entries in (
+            [(u.APP + "/alias", "."), (u.APP + "/alias/link", "../outside")],
+            [(u.APP + "/Contents/Info.PLIST", "ordinary")],
+            [(u.APP + "/Contents/Ресурсы/cafe\u0301.txt", "ordinary"),
+             (u.APP + "/Contents/Ресурсы/café.txt", "ordinary")],
+            [(u.APP + "/Contents//duplicate", "ordinary")],
+        ):
+            path = self.fixture.files[u.ZIP]
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr(u.APP + "/Contents/Info.plist", plistlib.dumps(info()))
+                for name, value in entries:
+                    entry = zipfile.ZipInfo(name)
+                    if value in (".", "../outside"):
+                        entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+                    archive.writestr(entry, value)
+            with self.subTest(entries=entries), mock.patch.object(u.subprocess, "run") as command:
+                with self.assertRaises(RuntimeError):
+                    u.verify_zip(path, self.fixture.identity, REPO)
+                command.assert_not_called()
+
+    def test_authenticated_source_metadata_cannot_substitute_for_the_exact_commit(self):
+        with zipfile.ZipFile(self.fixture.files[u.SOURCE], "a") as archive:
+            archive.writestr("posle/untracked.txt", "Extra unpublished code")
+        feed = signed(u.make_appcast(self.fixture.identity, REPO, SIGNATURE, self.fixture.files, "Fixture"))
+        self.fixture.files[u.FEED].write_bytes(feed)
+        self.fixture.files["SHA256SUMS"].write_text("".join(u.digest(self.fixture.files[name]) + "  " + name + "\n" for name in u.CHECKSUMMED))
+        release = dict(self.fixture.release, assets=[dict(asset, size=self.fixture.files[asset["name"]].stat().st_size,
+                      digest="sha256:" + u.digest(self.fixture.files[asset["name"]])) for asset in self.fixture.release["assets"]])
+        github = GitHubFixture()
+        with mock.patch.object(u, "anonymous_download", side_effect=self.fixture.download), mock.patch.object(u, "verify_zip"):
+            with self.assertRaisesRegex(RuntimeError, "exact source commit"):
+                u.verify_public_release(github, release, PUBLIC, self.verifier)
+        self.assertFalse(any(method != "GET" for _, method, _ in github.calls))
+
+    def test_source_archive_matches_every_blob_and_executable_mode(self):
+        content = plistlib.dumps(info())
+        sha = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+        tree = {"packaging/Info.plist": ("100644", sha)}
+        u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree=tree)
+        for changed in ({"packaging/Info.plist": ("100755", sha)},
+                        {"packaging/Info.plist": ("100644", "b" * 40)},
+                        dict(tree, **{"unexpected.txt": ("100644", sha)})):
+            with self.assertRaisesRegex(RuntimeError, "exact source commit"):
+                u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree=changed)
+        with zipfile.ZipFile(self.fixture.files[u.SOURCE], "a") as archive:
+            archive.writestr("posle/untracked.txt", "must never ship")
+        with self.assertRaisesRegex(RuntimeError, "exact source commit"):
+            u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree=tree)
+
+    def test_dirty_build_rejected_even_when_source_head_matches(self):
+        app = Path(self.temporary.name) / u.APP
+        (app / "Contents").mkdir(parents=True)
+        for value in (False, None):
+            metadata = dict(info(), PosleSourceClean=value)
+            (app / "Contents/Info.plist").write_bytes(plistlib.dumps(metadata) if value is not None else plistlib.dumps(info()))
+            with mock.patch.object(u, "verify_zip") as unpack, self.assertRaisesRegex(RuntimeError, "uncommitted"):
+                u.verify_local_artifacts(app, self.fixture.files[u.SOURCE], self.fixture.identity, REPO)
+            unpack.assert_not_called()
+
+    def test_invalid_local_archive_never_reaches_signing_or_publication(self):
+        root = Path(self.temporary.name)
+        (root / "packaging").mkdir(); (root / "dist").mkdir()
+        app = root / "dist" / u.APP; (app / "Contents").mkdir(parents=True)
+        (root / "packaging/Info.plist").write_bytes(plistlib.dumps(info()))
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps(dict(info(), PosleSourceClean=True)))
+        for name in (u.ZIP, u.SOURCE): shutil.copy2(self.fixture.files[name], root / "dist" / name)
+        notes = root / "notes.txt"; notes.write_text("Fixture")
+        github = mock.Mock(repo=REPO, executable="fixture-gh")
+        github.api.return_value = {"sha": REVISION}; github.release.return_value = None; github.tag_revision.return_value = None
+        commands = []
+        def run(arguments, capture=False):
+            commands.append(arguments)
+            if arguments[:3] == ["git", "rev-parse", "HEAD"]: return REVISION
+            return "" if capture else None
+        with mock.patch.object(publisher, "PROJECT", root), mock.patch.object(publisher, "run", side_effect=run), \
+             mock.patch.object(u, "GitHub", return_value=github), mock.patch.object(u, "find_gh", return_value="fixture-gh"), \
+             mock.patch.object(u, "verify_local_artifacts", side_effect=RuntimeError("invalid fixture archive")), \
+             mock.patch.object(publisher, "sparkle_tool") as signing_tool, \
+             mock.patch("sys.argv", ["publish_release.py", "--repo", REPO, "--skip-build", "--notes-file", str(notes)]):
+            with self.assertRaisesRegex(RuntimeError, "invalid fixture archive"): publisher.main()
+        signing_tool.assert_not_called()
+        self.assertFalse(any(command[0] == "fixture-gh" for command in commands))
+        self.assertTrue(all(call.args[0] == "commits/main" for call in github.api.call_args_list))
 
     def test_resume_only_verifies_and_promotes_never_signs_or_edits_release(self):
         github = mock.Mock(repo=REPO)

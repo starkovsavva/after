@@ -28,9 +28,14 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     private var sparkleCanCheck = false
     private var promptedQuickDraft = false
     private var promptedCaptureKey: String?
+    private var failedLibraryFlush = false
+    private var failedOverviewFlush = false
+    private var promptedOverviewDraft = false
+    private var promptedLibraryDraft = false
+    private var flushLibraryDrafts: () -> Bool = { NoteDraftPersistence.flushAll() }
 
     var currentVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.8.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.8.1"
     }
     private var workInProgress: Bool {
         guard let store else { return false }
@@ -41,7 +46,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         return store.editingOverview || store.notes.editingNewTask || store.showingCaptureDrafts || store.showingSettings || store.showingRecord || store.showingSearch || NSApp.modalWindow != nil ||
             NSApp.windows.contains { $0.attachedSheet != nil || ($0 is NSPanel && $0.isVisible && $0.title == "Быстрая заметка") }
     }
-    var canSafelyRelaunch: Bool { !workInProgress && !editorOpen && !hasQuickDraft() && store?.notes.hasUnsavedCaptureDrafts != true }
+    var canSafelyRelaunch: Bool { !workInProgress && !editorOpen && !hasQuickDraft() && store?.notes.hasUnsavedCaptureDrafts != true && !failedLibraryFlush && !failedOverviewFlush }
 
     func start(store: AppStore, hasQuickDraft: @escaping () -> Bool, showQuickDraft: @escaping () -> Void) {
         guard controller == nil, Bundle.main.bundleIdentifier == "app.posle.meetings",
@@ -90,7 +95,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         }
     }
     private func refreshAvailability() {
-        let deferred = installHandler != nil && (hasQuickDraft() || store?.notes.hasUnsavedCaptureDrafts == true)
+        let deferred = installHandler != nil && (hasQuickDraft() || store?.notes.hasUnsavedCaptureDrafts == true || failedLibraryFlush || failedOverviewFlush)
         let reveal = deferred && !workInProgress && !editorOpen
         let check = isAvailable && sparkleCanCheck && !workInProgress && installHandler == nil && !relaunchRequested
         if hasDeferredDraft != deferred { hasDeferredDraft = deferred }
@@ -114,7 +119,16 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
                 return
             }
             if revealCaptureDraftIfNeeded() { return }
-            guard NoteDraftPersistence.flushAll() else { return }
+            guard store?.flushOverviewDrafts() != false else {
+                failedOverviewFlush = true
+                revealOverviewDraftIfNeeded(); refreshAvailability(); return
+            }
+            failedOverviewFlush = false
+            guard flushLibraryDrafts() else {
+                failedLibraryFlush = true
+                revealLibraryDraftIfNeeded(); refreshAvailability(); return
+            }
+            failedLibraryFlush = false
             installHandler = nil; relaunchRequested = true
             status = "Устанавливаю обновление…"; refreshAvailability()
             handler()
@@ -131,16 +145,36 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     }
     func revealPendingDraft() {
         guard installHandler != nil, !workInProgress, !editorOpen else { return }
-        promptedQuickDraft = false; promptedCaptureKey = nil
+        promptedQuickDraft = false; promptedCaptureKey = nil; promptedLibraryDraft = false; promptedOverviewDraft = false
         if hasQuickDraft() { promptedQuickDraft = true; showQuickDraft() }
-        else { revealCaptureDraftIfNeeded() }
+        else if !revealCaptureDraftIfNeeded() {
+            if failedOverviewFlush { revealOverviewDraftIfNeeded() }
+            else { revealLibraryDraftIfNeeded() }
+        }
         refreshAvailability()
     }
     private func clearDeferredInstallation() {
         installHandler = nil; promptedQuickDraft = false; promptedCaptureKey = nil
+        failedLibraryFlush = false; promptedLibraryDraft = false
+        failedOverviewFlush = false; promptedOverviewDraft = false
         relaunchRequested = false
         if !pendingCheck && !pendingPresentation { retryTimer?.invalidate(); retryTimer = nil }
         refreshAvailability()
+    }
+    private func revealOverviewDraftIfNeeded() {
+        guard failedOverviewFlush, !promptedOverviewDraft, let store,
+              let id = store.overviewDrafts.keys.sorted().first else { return }
+        promptedOverviewDraft = true
+        store.openMeeting(id, tab: "summary")
+        status = "Сохраните черновик конспекта перед обновлением"
+        store.notice = status
+    }
+    private func revealLibraryDraftIfNeeded() {
+        guard failedLibraryFlush, !promptedLibraryDraft, let store else { return }
+        promptedLibraryDraft = true
+        store.librarySection = "inbox"
+        status = "Сохраните черновик заметки перед обновлением"
+        store.notice = status
     }
     @discardableResult private func revealCaptureDraftIfNeeded() -> Bool {
         guard let store, let key = store.notes.firstPendingCaptureDraftKey else { return false }
@@ -193,15 +227,23 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         refreshAvailability()
     }
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem, untilInvokingBlock handler: @escaping () -> Void) -> Bool {
-        if canSafelyRelaunch && NoteDraftPersistence.flushAll() {
+        let safe = canSafelyRelaunch
+        let overviewFlushed = safe && store?.flushOverviewDrafts() != false
+        let flushed = overviewFlushed && flushLibraryDrafts()
+        if flushed {
             relaunchRequested = true; refreshAvailability(); return false
         }
+        failedOverviewFlush = safe && !overviewFlushed
+        failedLibraryFlush = overviewFlushed && !flushed
         installHandler = handler
         status = workInProgress ? "Установлю после завершения обработки" : "Сохраните правки и закройте редакторы для установки"
         store?.notice = status
         if !workInProgress && !editorOpen {
             if hasQuickDraft() { promptedQuickDraft = true; showQuickDraft() }
-            else { revealCaptureDraftIfNeeded() }
+            else if !revealCaptureDraftIfNeeded() {
+                if failedOverviewFlush { revealOverviewDraftIfNeeded() }
+                else { revealLibraryDraftIfNeeded() }
+            }
         }
         deferUntilIdle(); refreshAvailability()
         return true
@@ -230,8 +272,10 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
 
     #if DEBUG
     /// Dependency-free test entry: no framework controller, preferences or network.
-    func configureForChecks(store: AppStore, hasQuickDraft: @escaping () -> Bool = { false }) {
+    func configureForChecks(store: AppStore, hasQuickDraft: @escaping () -> Bool = { false },
+                            flushLibraryDrafts: (() -> Bool)? = nil) {
         self.store = store; self.hasQuickDraft = hasQuickDraft
+        self.flushLibraryDrafts = flushLibraryDrafts ?? { NoteDraftPersistence.flushAll() }
     }
     func postponeForChecks(_ handler: @escaping () -> Void) { installHandler = handler }
     func resumeForChecks() { resumeWhenIdle() }

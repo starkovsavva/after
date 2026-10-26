@@ -218,6 +218,35 @@ fn initialize(connection: &Connection) -> Result<()> {
     connection.pragma_update(None, "user_version", INDEX_VERSION)?;
     Ok(())
 }
+/// This database is disposable; source JSON is never part of recovery.
+fn open_index(database:&Path) -> Result<(Connection,bool)> {
+    let open=|| -> Result<Connection> {
+        let connection=Connection::open(database).context("Не удалось открыть локальный индекс поиска")?;
+        initialize(&connection)?;
+        Ok(connection)
+    };
+    match open() {
+        Ok(connection)=>Ok((connection,false)),
+        Err(error) if error.chain().any(|cause| cause.downcast_ref::<rusqlite::Error>().is_some_and(|error| {
+            matches!(error,rusqlite::Error::SqliteFailure(failure,_) if matches!(failure.code,rusqlite::ErrorCode::DatabaseCorrupt|rusqlite::ErrorCode::NotADatabase))
+        }))=> {
+            // The caller holds the index lock and already rejects symlinked
+            // database sidecars. Re-check ownership before removing only cache.
+            for suffix in ["","-journal","-wal","-shm"] {
+                let path=database.with_file_name(format!("{}{}",database.file_name().unwrap().to_string_lossy(),suffix));
+                match fs::symlink_metadata(&path) {
+                    Ok(info)=> { ensure!(info.is_file()&&!info.file_type().is_symlink(),"Некорректный файл индекса поиска"); fs::remove_file(path)?; },
+                    Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+                    Err(error)=>return Err(error.into()),
+                }
+            }
+            drop(regular_private(database)?);
+            Ok((open()?,true))
+        },
+        Err(error)=>Err(error),
+    }
+}
+
 fn remove_meeting(connection: &Connection, id: &str) -> Result<()> {
     connection.execute("DELETE FROM documents_fts WHERE rowid IN (SELECT rowid FROM documents WHERE meeting_id=?1)", [id])?;
     connection.execute("DELETE FROM documents WHERE meeting_id=?1", [id])?;
@@ -329,9 +358,9 @@ pub fn search(root: &Path, query: &str, scope: &str, limit: usize) -> Result<Val
         let sidecar = folder.join(format!("index.sqlite{suffix}"));
         if fs::symlink_metadata(&sidecar).is_ok() { drop(regular_private(&sidecar)?); }
     }
-    let mut connection = Connection::open(&database).context("Не удалось открыть локальный индекс поиска")?;
-    initialize(&connection)?;
+    let (mut connection,rebuilt) = open_index(&database)?;
     let mut warnings = sync(&mut connection,root,&lexicon)?;
+    if rebuilt { warnings.push("Повреждённый индекс поиска восстановлен по исходным заметкам и встречам.".into()); }
     let filter = match scope {
         "notes" => "d.kind IN ('overview','item')", "transcript" => "d.kind='transcript'",
         "cards" => "d.kind='card'", "meetings" => "d.kind='title'", _=>"1=1",
@@ -387,6 +416,18 @@ mod tests {
     }
     fn transcript(dir:&Path, content:&str) {
         atomic_json(&dir.join("transcript.json"),&json!({"segments":[{"id":7,"start":12.5,"end":19.0,"text":content}]})).unwrap();
+    }
+    #[test] fn corrupt_derived_index_is_rebuilt_without_touching_source_notes() {
+        let root=tempfile::tempdir().unwrap(); let directory=meeting(root.path(),"one","Поставка");
+        transcript(&directory,"Поставка контрольногоМаркер завтра");
+        assert_eq!(search(root.path(),"контрольногоМаркер","all",20).unwrap()["total"],1);
+        let original=fs::read(directory.join("transcript.json")).unwrap();
+        let index=root.path().join("cache/search/index.sqlite");
+        fs::write(&index,b"truncated or damaged SQLite cache").unwrap();
+        let result=search(root.path(),"контрольногоМаркер","all",20).unwrap();
+        assert_eq!(result["total"],1,"derived cache damage must not permanently disable library search");
+        assert_eq!(fs::read(directory.join("transcript.json")).unwrap(),original);
+        assert_eq!(fs::metadata(index).unwrap().permissions().mode()&0o777,0o600);
     }
     #[test] fn russian_english_numbers_prefix_and_scope() {
         let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one","Бюджеты команды");

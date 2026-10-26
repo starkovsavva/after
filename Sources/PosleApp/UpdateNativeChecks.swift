@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import Foundation
+import PosleCore
 
 /// Real AppStore state and native sheets, isolated from production updater/feed.
 @MainActor
@@ -72,8 +73,47 @@ enum UpdateNativeChecks {
         try expect(resumed == 1 && !updates.relaunchRequested && !updates.hasDeferredDraft,
                    "Ending an aborted Sparkle session must release the old handler and allow retry")
         print("PASS: ending an update session discards a stale install callback without touching the draft")
+        var canFlushLibrary = false
+        updates.configureForChecks(store: app, flushLibraryDrafts: { canFlushLibrary })
+        app.librarySection = "meetings"
+        updates.postponeForChecks { resumed += 1 }
+        updates.resumeForChecks()
+        try expect(resumed == 1 && updates.hasDeferredDraft && updates.canRevealDraft && app.librarySection == "inbox",
+                   "A conflicting hidden library note must be revealed and remain reachable")
+        app.librarySection = "meetings"
+        updates.revealPendingDraft()
+        try expect(app.librarySection == "inbox", "A dismissed library draft must reopen through update recovery")
+        canFlushLibrary = true
+        updates.resumeForChecks(); updates.resumeForChecks()
+        try expect(resumed == 2 && !updates.hasDeferredDraft && updates.relaunchRequested,
+                   "Library draft recovery must resume installation exactly once")
+        updates.standardUserDriverWillFinishUpdateSession()
+        print("PASS: failed hidden library saves remain reachable and successful recovery resumes installation once")
+        let meeting = Meeting(title: "Правка перед обновлением", source: "fixture.wav")
+        try FileManager.default.createDirectory(at: app.meetingDirectory(meeting.id), withIntermediateDirectories: true)
+        try app.write(meeting, app.meetingDirectory(meeting.id).appendingPathComponent("meta.json"))
+        app.reloadLibrary()
+        app.rememberOverviewDraft("Первый черновик", meetingID: meeting.id, original: "Конспект", generatedAt: 1)
+        let draftURL = app.root.appendingPathComponent("overview-drafts.json")
+        try FileManager.default.removeItem(at: draftURL)
+        try FileManager.default.createDirectory(at: draftURL, withIntermediateDirectories: false)
+        app.rememberOverviewDraft("Правка при сбое диска", meetingID: meeting.id, original: "Конспект", generatedAt: 1)
+        updates.postponeForChecks { resumed += 1 }
+        updates.resumeForChecks()
+        try expect(resumed == 2 && updates.hasDeferredDraft && app.selection == meeting.id && app.tab == "summary",
+                   "Failed overview save must defer update and reveal its own meeting")
+        app.librarySection = "inbox"; updates.revealPendingDraft()
+        try expect(app.librarySection == "meetings" && app.overviewDrafts[meeting.id]?.text == "Правка при сбое диска",
+                   "Dismissed overview recovery must stay reachable and retain the text")
+        try FileManager.default.removeItem(at: draftURL)
+        try expect(app.flushOverviewDrafts(), "Overview destination recovery must allow saving")
+        updates.resumeForChecks(); updates.resumeForChecks()
+        try expect(resumed == 3 && !updates.hasDeferredDraft && updates.relaunchRequested,
+                   "Persisting the durable overview resumes installation exactly once")
+        updates.standardUserDriverWillFinishUpdateSession()
+        print("PASS: failed overview persistence defers update, reveals its meeting and safely resumes after retry")
         try QuickCaptureController.verifyDraftPreservation(store: app)
-        print("5 native updater checks passed (no production feed, preferences or installation)")
+        print("7 native updater checks passed (no production feed, preferences or installation)")
     }
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         if !condition() { throw AppError.message(message) }

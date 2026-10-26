@@ -91,11 +91,16 @@ enum UIConsistencyChecks {
               isDisposableRoot(path) else {
             throw AppError.message("UI consistency checks require --preview and an explicit /private/tmp/posle-ui-check-* fixture")
         }
-        if arguments.contains("--check-cloud-audio-setup") {
+        if arguments.contains("--check-cloud-audio-setup") || arguments.contains("--check-card-selection") {
             scope = UUID().uuidString; frames = [:]; enabledStates = [:]; owners = [:]
             defer { scope = ""; frames = [:]; enabledStates = [:]; owners = [:] }
-            try await checkCloudAudioSetup()
-            print("1 native cloud audio setup check passed")
+            if arguments.contains("--check-card-selection") {
+                try await checkReplacedCardSelection()
+                print("1 native card selection check passed")
+            } else {
+                try await checkCloudAudioSetup()
+                print("1 native cloud audio setup check passed")
+            }
             return
         }
         let store = AppStore(preview: true)
@@ -203,8 +208,9 @@ enum UIConsistencyChecks {
         print("PASS: library sections and note success/error preserve chrome and anchored composer geometry")
         try await checkCloudAudioSetup()
         try await checkReviewBar()
+        try await checkReplacedCardSelection()
         try await checkTimedQueues()
-        print("9 native UI consistency checks passed")
+        print("10 native UI consistency checks passed")
     }
 
     /// Rendering and the control's actual isEnabled environment only. Never activate the button: the
@@ -271,6 +277,49 @@ enum UIConsistencyChecks {
         _ = try await measure(view, window)
         guard state.ratings.isEmpty else { throw AppError.message("Changing review state must not grade a card") }
         print("PASS: shared card answer/grade controls keep the same 56 pt footer without auto-grading")
+    }
+
+    /// Choose a card using the real native controls, then simulate a completed
+    /// summary replacing that card while its view remains open.
+    private static func checkReplacedCardSelection() async throws {
+        let store = AppStore(preview: true)
+        guard let meeting = store.meetings.first(where: { meeting in
+            let summary: Summary? = store.read(store.meetingDirectory(meeting.id).appendingPathComponent("summary.json"))
+            return (summary?.cards.count ?? 0) >= 2
+        }) else { throw AppError.message("Two-card fixture required") }
+        store.selection = meeting.id; store.loadSelection(); store.tab = "cards"
+        scope = UUID().uuidString; frames = [:]; enabledStates = [:]; owners = [:]
+        let host = NSHostingView(rootView: MainView().environmentObject(store)
+            .environment(\.appLayoutCheckScope, scope).frame(width: 1040, height: 700))
+        host.sizingOptions = []
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 700),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        _ = try await measure(host, window)
+        func descendants<T: NSView>(_ view: NSView, as type: T.Type) -> [T] {
+            (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants($0, as: type) }
+        }
+        guard let mode = descendants(host, as: NSSegmentedControl.self).first(where: { $0.segmentCount == 2 }) else {
+            throw AppError.message("Native card mode control missing")
+        }
+        mode.selectedSegment = 1; mode.sendAction(mode.action, to: mode.target)
+        _ = try await measure(host, window)
+        guard let picker = descendants(host, as: NSPopUpButton.self).first(where: { $0.numberOfItems >= 2 }) else {
+            throw AppError.message("Native all-cards picker missing")
+        }
+        picker.selectItem(at: 1); picker.sendAction(picker.action, to: picker.target)
+        _ = try await measure(host, window)
+        guard frames["cards.review"] != nil else { throw AppError.message("Selected card did not show its answer controls") }
+        store.summary?.cards = store.summary?.cards.map { card in
+            var replaced = card; replaced.id = "refreshed-" + card.id; return replaced
+        } ?? []
+        _ = try await measure(host, window)
+        guard frames["cards.review"] != nil else {
+            throw AppError.message("Replacing summary card IDs stranded the all-cards view in an empty state")
+        }
+        try expectNear(frames["cards.review"]!.height, 56, "Refreshed cards retain their answer controls")
+        print("PASS: native all-cards selection falls back to a real card after summary IDs are replaced")
     }
 
     /// Advance real wall-clock time without publishing any app state: a due

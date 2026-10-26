@@ -638,9 +638,7 @@ fn linked_overview(settings:&Settings,language:&str,context:&Value,items:&[Item]
 
 pub fn summarize(root:&Path,directory:&Path) -> Result<()> {
     let settings=settings(root)?; let meta=read(&directory.join("meta.json"))?;
-    let transcript=read(&directory.join("transcript.json"))?;
-    let segments:Vec<Segment>=serde_json::from_value(transcript["segments"].clone()).context("Сначала распознайте встречу")?;
-    if segments.is_empty() { bail!("В записи не обнаружена речь."); }
+    let (segments,source_fingerprint)=transcript_snapshot(directory)?;
     let language=if settings.language=="en" {"English"} else {"Russian"};
     let system=format!("{SYSTEM}\nMANDATORY OUTPUT LANGUAGE: {language}. Write overview and every item.text in this language even if the entire source is English. Keep source quotes and English phrase fronts verbatim. Card explanations are in Russian. Use speaker_names for owners; never guess commitments.");
     let mut names=meta["speakerNames"].as_object().cloned().unwrap_or_default();
@@ -699,6 +697,11 @@ pub fn summarize(root:&Path,directory:&Path) -> Result<()> {
     let result=json!({"overview":overview,"overviewClaims":overview_claims,"items":items,"cards":cards,"provider":settings.mode,
         "model":if settings.mode=="cloud" {&settings.cloud_model} else {&settings.local_model},
         "generatedAt":Utc::now().timestamp_millis() as f64/1000.0,"warnings":warnings});
+    // ASR can reuse segment IDs for different speech. Compare the actual bytes
+    // under the same short meeting lock as transcript/metadata publication.
+    let _lock=crate::storage::meeting_lock(directory)?;
+    let (_,current_fingerprint)=transcript_snapshot(directory)?;
+    if current_fingerprint!=source_fingerprint { bail!("Транскрипция изменилась во время создания конспекта. Повторите создание; предыдущий конспект сохранён."); }
     atomic_json(&directory.join("summary.json"),&result)?;
     let _=fs::remove_file(directory.join("summary-progress.json"));
     progress("Конспект и карточки сохранены",1.0);
@@ -880,13 +883,13 @@ fn validated_note_expansion(value:Value,segments:&[Segment])->Result<(Vec<Value>
     }
     Ok((statements,questions,removed))
 }
-fn note_transcript(directory:&Path)->Result<(Vec<Segment>,String)> {
+fn transcript_snapshot(directory:&Path)->Result<(Vec<Segment>,String)> {
     let path=directory.join("transcript.json");
-    let info=fs::symlink_metadata(&path).context("Сначала распознайте встречу: дополнению нужны исходные реплики.")?;
+    let info=fs::symlink_metadata(&path).context("Сначала распознайте встречу: нужны исходные реплики.")?;
     if !info.is_file() || info.file_type().is_symlink() || info.len()>64*1024*1024 {bail!("Транскрипция должна быть обычным файлом до 64 МБ.");}
     let mut file=fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path)?;
     let mut bytes=Vec::new(); Read::by_ref(&mut file).take(64*1024*1024+1).read_to_end(&mut bytes)?;
-    if bytes.len()>64*1024*1024 {bail!("Транскрипция слишком большая для дополнения заметки.");}
+    if bytes.len()>64*1024*1024 {bail!("Транскрипция слишком большая для обработки.");}
     let transcript:Value=serde_json::from_slice(&bytes).context("Не удалось прочитать транскрипцию встречи.")?;
     let segments:Vec<Segment>=serde_json::from_value(transcript["segments"].clone()).context("Сначала распознайте встречу.")?;
     let mut ids=HashSet::new();
@@ -905,7 +908,7 @@ pub fn expand_note(root:&Path,note_id:&str)->Result<()> {
     let note=crate::notes::load_note_snapshot(root,note_id)?;
     let meeting_id=note.meeting_id.as_deref().context("Прикрепите заметку к распознанной встрече, чтобы дополнить её по записи.")?;
     let directory=crate::storage::meeting_directory(root,meeting_id)?;
-    let (segments,fingerprint)=note_transcript(&directory)?;
+    let (segments,fingerprint)=transcript_snapshot(&directory)?;
     if note.text.trim().is_empty() && note.timestamp.is_none() {bail!("Добавьте короткую мысль или отметку с таймкодом.");}
     let meta=read(&directory.join("meta.json"))?;
     let settings=settings(root)?;
@@ -1259,6 +1262,40 @@ mod tests {
         assert_eq!(request["messages"][1]["content"].as_str().map(|text|serde_json::from_str::<Value>(text).unwrap()["manual_note"].clone()),Some(json!(note.text)));
         assert!(request["messages"][0]["content"].as_str().unwrap().contains("NOT evidence"));
         assert!(requests.iter().all(|request|!request.0.contains("pull")&&!request.2.to_lowercase().contains("authorization:")));
+    }
+    #[test]
+    fn summary_cannot_publish_against_a_regenerated_transcript() {
+        let root=tempfile::tempdir().unwrap();
+        manual_note_fixture(root.path(),"Скидка?",None,&[segment(0,"Скидку утвердили.")]);
+        let directory=root.path().join("meetings/manual-meeting");
+        let summary=directory.join("summary.json");
+        fs::write(&summary,b"previous summary bytes must survive").unwrap();
+        let replaced=directory.join("transcript.json");
+        let replacement=json!({"segments":[segment(0,"Скидку не утвердили.")]});
+        let expected_replacement=replacement.clone();
+        let (endpoint,server)=model_server_with_hook(vec![lm_tags(),lm_answer(json!({
+            "facts":[{"kind":"detail","text":"Скидку утвердили.","owner":"","due":"","segmentIDs":[0]}],
+            "overview":"Скидку утвердили.","studyCards":[]
+        })),lm_tags(),lm_answer(json!({"claims":[{"text":"Скидку утвердили.","itemIndices":[0]}]}))],Some(Box::new(move|request| {
+            if request.0.starts_with("POST ") && request.1["messages"][1]["content"].as_str().is_some_and(|text|text.contains("source_segments")) {
+                atomic_json(&replaced,&replacement).unwrap();
+            }
+        })));
+        save_settings_fixture(root.path(),&provider_settings("lmstudio",&endpoint));
+        let result=summarize(root.path(),&directory); server.join().unwrap();
+        assert!(result.is_err(),"source regeneration must reject an obsolete summary even when IDs are reused");
+        assert_eq!(fs::read(&summary).unwrap(),b"previous summary bytes must survive");
+        assert_eq!(read(&directory.join("transcript.json")).unwrap(),expected_replacement);
+    }
+    #[test]
+    fn summary_rejects_duplicate_source_ids_before_contacting_a_model() {
+        let root=tempfile::tempdir().unwrap();
+        manual_note_fixture(root.path(),"Источник",None,&[segment(0,"Скидку утвердили."),segment(0,"Скидку не утвердили.")]);
+        save_settings_fixture(root.path(),&provider_settings("lmstudio","http://127.0.0.1:9"));
+        let directory=root.path().join("meetings/manual-meeting");
+        let error=summarize(root.path(),&directory).unwrap_err().to_string();
+        assert!(error.contains("некорректные реплики"),"ambiguous source IDs must be rejected locally: {error}");
+        assert!(!directory.join("summary.json").exists());
     }
     #[test]
     fn manual_expansion_cannot_publish_after_user_edit_or_source_regeneration() {

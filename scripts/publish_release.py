@@ -142,6 +142,9 @@ def main():
         with zipfile.ZipFile(PROJECT / "dist" / name) as archive:
             if archive.testzip() is not None:
                 raise RuntimeError("Damaged archive: " + name)
+    # Validate extraction and every source blob while everything is still local.
+    # A malformed archive must never become a published-but-uninstallable release.
+    updates.verify_local_artifacts(app, PROJECT / "dist" / updates.SOURCE, actual, args.repo)
     verifier = updates.PublicVerifier()
     published = False
     try:

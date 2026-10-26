@@ -1,4 +1,5 @@
 """Control-path checks; all inference/media is replaced by synthetic fixtures."""
+import contextlib
 import ctypes
 import json
 import os
@@ -29,7 +30,8 @@ class EmbeddedBridgeTests(unittest.TestCase):
                         "eventCallback": ctypes.cast(self.callback, ctypes.c_void_p).value,
                         "cancelCallback": ctypes.cast(self.cancel, ctypes.c_void_p).value}
         self.engine = SimpleNamespace(ffmpeg=lambda *a: None, emit=lambda *a, **kw: None,
-            contextlib=object(), atomic=lambda path, data: path.write_text(json.dumps(data)),
+            contextlib=object(), publication=contextlib.nullcontext,
+            atomic=lambda path, data: path.write_text(json.dumps(data)),
             resolve_asr=lambda root, allow_download=False: {"layout": "onnx"},
             speaker_models=lambda root: (), speaker_models_installed=lambda root: True,
             load=lambda path, default: {})
@@ -44,16 +46,19 @@ class EmbeddedBridgeTests(unittest.TestCase):
     def test_repeated_calls_restore_app_stdio_environment_and_subprocess(self):
         stdout, stderr, popen, environment = sys.stdout, sys.stderr, subprocess.Popen, dict(os.environ)
         original_emit, original_context = self.engine.emit, self.engine.contextlib
+        original_publication, original_atomic = self.engine.publication, self.engine.atomic
         def transcribe(meeting, root, speakers, diarization):
             self.engine.emit("progress", message="synthetic", fraction=0.5)
-            self.engine.atomic(meeting / "transcript.json", {"synthetic": True})
-            self.engine.emit("done", count=1)
+            with self.engine.publication():
+                self.engine.atomic(meeting / "transcript.json", {"synthetic": True})
+                self.engine.emit("done", count=1)
         self.engine.transcribe = transcribe
         for _ in range(3):
             self.assertTrue(self.run_bridge()["ok"])
             self.assertIs(sys.stdout, stdout); self.assertIs(sys.stderr, stderr)
             self.assertIs(subprocess.Popen, popen)
             self.assertIs(self.engine.emit, original_emit); self.assertIs(self.engine.contextlib, original_context)
+            self.assertIs(self.engine.publication, original_publication); self.assertIs(self.engine.atomic, original_atomic)
             self.assertEqual(dict(os.environ), environment)
         self.assertEqual(len(self.events), 6)
 
@@ -63,7 +68,8 @@ class EmbeddedBridgeTests(unittest.TestCase):
         def transcribe(meeting, root, speakers, diarization):
             self.engine.emit("progress", message="synthetic", fraction=0.2)
             self.stop = True
-            self.engine.atomic(path, {"must-not-commit": True})
+            with self.engine.publication():
+                self.engine.atomic(path, {"must-not-commit": True})
         self.engine.transcribe = transcribe
         result = self.run_bridge()
         self.assertFalse(result["ok"]); self.assertTrue(result["cancelled"])
@@ -73,14 +79,82 @@ class EmbeddedBridgeTests(unittest.TestCase):
     def test_cancel_during_publication_does_not_split_metadata_transaction(self):
         self.request["command"] = "diarize"
         def rediarize(meeting, root, speakers):
-            self.engine.atomic(meeting / "meta.json", {"source": "synthetic.wav", "speakerNames": {}})
-            self.stop = True
-            self.engine.atomic(meeting / "transcript.json", {"revised": True})
-            self.engine.emit("done", count=1)
+            with self.engine.publication():
+                self.engine.atomic(meeting / "meta.json", {"source": "synthetic.wav", "speakerNames": {}})
+                self.stop = True
+                self.engine.atomic(meeting / "transcript.json", {"revised": True})
+                self.engine.emit("done", count=1)
         self.engine.rediarize = rediarize
         result = self.run_bridge()
         self.assertTrue(result["ok"])
         self.assertTrue(json.loads((self.meeting / "transcript.json").read_text())["revised"])
+
+    def test_cancel_after_completed_publication_retains_success(self):
+        def transcribe(meeting, root, speakers, diarization):
+            with self.engine.publication():
+                self.engine.atomic(meeting / "transcript.json", {"saved": True})
+                self.engine.emit("done", count=1)
+            self.stop = True
+        self.engine.transcribe = transcribe
+        result = self.run_bridge()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["value"]["event"], "done")
+
+    def test_finalize_confirms_commit_even_when_cancel_arrives_during_source_cleanup(self):
+        self.request["command"] = "finalize"
+        def finalize(meeting):
+            with self.engine.publication():
+                self.engine.atomic(meeting / "meta.json", {"source": "recording.mp3"})
+                self.stop = True
+                (meeting / "synthetic.wav").unlink()
+        self.engine.finalize_recording = finalize
+        result = self.run_bridge()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["value"]["event"], "done")
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(json.loads((self.meeting / "meta.json").read_text())["source"], "recording.mp3")
+        self.assertFalse((self.meeting / "synthetic.wav").exists())
+
+    def test_already_finalized_recording_is_an_idempotent_success(self):
+        self.request["command"] = "finalize"
+        path = self.meeting / "meta.json"; original = path.read_bytes()
+        self.engine.finalize_recording = lambda meeting: None
+        result = self.run_bridge()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["value"]["event"], "done")
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(len(self.events), 1)
+
+    def test_failed_publication_rolls_back_metadata_despite_pending_cancel_and_retry_works(self):
+        self.request["command"] = "diarize"
+        path = self.meeting / "meta.json"; original = path.read_bytes()
+        transcript = self.meeting / "transcript.json"; transcript.write_bytes(b'{"previous":true}')
+        original_publication, original_atomic = self.engine.publication, self.engine.atomic
+        def rediarize(meeting, root, speakers):
+            with self.engine.publication():
+                self.engine.atomic(path, {"source": "synthetic.wav", "speakerNames": {}})
+                try:
+                    self.stop = True
+                    raise OSError("synthetic write failure")
+                except BaseException:
+                    path.write_bytes(original)
+                    raise
+        self.engine.rediarize = rediarize
+        result = self.run_bridge()
+        self.assertFalse(result["ok"])
+        self.assertNotIn("cancelled", result)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(transcript.read_bytes(), b'{"previous":true}')
+        self.assertIs(self.engine.publication, original_publication)
+        self.assertIs(self.engine.atomic, original_atomic)
+        self.stop = False
+        def retry(meeting, root, speakers):
+            with self.engine.publication():
+                self.engine.atomic(transcript, {"retry": True})
+                self.engine.emit("done", count=1)
+        self.engine.rediarize = retry
+        self.assertTrue(self.run_bridge()["ok"])
+        self.assertTrue(json.loads(transcript.read_text())["retry"])
 
     def test_local_errors_do_not_echo_ambient_keys(self):
         def transcribe(*args):

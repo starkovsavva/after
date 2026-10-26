@@ -316,8 +316,9 @@ public struct AppSettings: Codable {
 
 public enum Exporter {
     public static func timestamp(_ seconds: Double) -> String {
-        let s = max(0, Int(seconds))
-        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+        guard seconds.isFinite, seconds > 0, seconds < Double(Int.max) else { return "00:00" }
+        let s = Int(seconds)
+        return s >= 3600 ? "\(s / 3600):" + String(format: "%02d:%02d", s / 60 % 60, s % 60)
             : String(format: "%02d:%02d", s / 60, s % 60)
     }
 

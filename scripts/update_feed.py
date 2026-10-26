@@ -19,10 +19,10 @@ import plistlib
 import re
 import shutil
 import stat
+import unicodedata
 import subprocess
 import tempfile
 from urllib.parse import quote, urljoin, urlsplit
-import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
@@ -338,21 +338,52 @@ def verify_checksums(directory: Path):
             raise RuntimeError("Public release checksum mismatch: " + name)
 
 
+def validate_archive_paths(archive: zipfile.ZipFile, roots: tuple[str, ...]):
+    """Reject paths which extract differently on case-insensitive macOS volumes."""
+    members = archive.infolist()
+    if len(members) > 50_000 or sum(entry.file_size for entry in members) > 2 * 1024**3:
+        raise RuntimeError("Archive exceeds the release extraction budget")
+    paths = {}
+    links = set()
+    for entry in members:
+        raw = entry.orig_filename
+        components = raw.rstrip("/").split("/")
+        if (raw != entry.filename or not components or components[0] not in roots
+                or any(part in ("", ".", "..") for part in components) or "\\" in raw):
+            raise RuntimeError("Archive contains a path outside its root or an ambiguous path")
+        key = unicodedata.normalize("NFC", "/".join(components)).casefold()
+        if key in paths:
+            raise RuntimeError("Archive contains duplicate or Unicode/case-colliding paths")
+        mode = entry.external_attr >> 16
+        kind = stat.S_IFMT(mode)
+        if kind not in (0, stat.S_IFREG, stat.S_IFDIR, stat.S_IFLNK):
+            raise RuntimeError("Archive contains an unsupported special file")
+        paths[key] = entry
+        if stat.S_ISLNK(mode):
+            links.add(key)
+            target = archive.read(entry).decode("utf-8")
+            normalized = os.path.normpath(str(PurePosixPath(*components).parent / target))
+            if (not target or "\x00" in target or "\\" in target or target.startswith("/")
+                    or not (normalized == components[0] or normalized.startswith(components[0] + "/"))
+                    or components[0] == "__MACOSX"):
+                raise RuntimeError("Archive contains an escaping symbolic link")
+    # A lexical '..' check alone is insufficient: app/a -> '.' followed by
+    # app/a/link -> '../outside' resolves outside app. Never extract children
+    # through a symlink, even if the symlink itself is an allowed framework link.
+    for key in paths:
+        parts = key.split("/")
+        for length in range(1, len(parts)):
+            ancestor = "/".join(parts[:length])
+            if ancestor in links or ancestor in paths and not paths[ancestor].is_dir():
+                raise RuntimeError("Archive contains an entry below a symbolic link or file")
+    if archive.testzip() is not None:
+        raise RuntimeError("Damaged release archive")
+
+
 def verify_zip(path: Path, expected: Identity, repo: str):
     # macOS ditto stores UTF-8 names even when the ZIP UTF-8 flag is absent.
     with zipfile.ZipFile(path, metadata_encoding="utf-8") as archive:
-        names = archive.namelist()
-        if len(set(names)) != len(names) or archive.testzip() is not None:
-            raise RuntimeError("Damaged or ambiguous update ZIP")
-        for entry in archive.infolist():
-            name = PurePosixPath(entry.filename)
-            if name.is_absolute() or ".." in name.parts or not name.parts or name.parts[0] not in (APP, "__MACOSX"):
-                raise RuntimeError("Update ZIP contains paths outside the app")
-            if stat.S_ISLNK(entry.external_attr >> 16):
-                target = archive.read(entry).decode("utf-8")
-                normalized = os.path.normpath(str(name.parent / target))
-                if target.startswith("/") or not (normalized == APP or normalized.startswith(APP + "/")):
-                    raise RuntimeError("Update ZIP contains an escaping symbolic link")
+        validate_archive_paths(archive, (APP, "__MACOSX"))
         actual = identity(plistlib.loads(archive.read(APP + "/Contents/Info.plist")), repo, expected.revision)
         if actual != expected:
             raise RuntimeError("Downloaded app identity differs from the signed update")
@@ -361,15 +392,61 @@ def verify_zip(path: Path, expected: Identity, repo: str):
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(Path(temporary) / APP)], check=True, capture_output=True)
 
 
-def verify_source(path: Path, expected: Identity, repo: str):
-    with zipfile.ZipFile(path) as archive:
-        if archive.testzip() is not None:
-            raise RuntimeError("Damaged public source archive")
+def git_source_tree(revision: str, github=None) -> dict[str, tuple[str, str]]:
+    if github is None:
+        output = subprocess.check_output(["git", "ls-tree", "-rz", "--full-tree", revision], cwd=PROJECT)
+        entries = []
+        for record in output.split(b"\0"):
+            if not record:
+                continue
+            header, path = record.split(b"\t", 1)
+            mode, kind, sha = header.decode("ascii").split()
+            entries.append({"path": path.decode("utf-8"), "mode": mode, "type": kind, "sha": sha})
+    else:
+        commit = github.api("git/commits/" + revision)
+        tree = github.api("git/trees/" + commit["tree"]["sha"] + "?recursive=1")
+        if tree.get("truncated"):
+            raise RuntimeError("Cannot verify a truncated source tree")
+        entries = [entry for entry in tree["tree"] if entry.get("type") != "tree"]
+    result = {}
+    for entry in entries:
+        path, mode, sha = entry["path"], entry["mode"], entry["sha"]
+        if entry["type"] != "blob" or mode not in ("100644", "100755", "120000") or not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise RuntimeError("Unsupported source tree entry")
+        if path in result:
+            raise RuntimeError("Duplicate source tree entry")
+        result[path] = (mode, sha)
+    return result
+
+
+def verify_source(path: Path, expected: Identity, repo: str, *, tree: dict[str, tuple[str, str]]):
+    with zipfile.ZipFile(path, metadata_encoding="utf-8") as archive:
+        validate_archive_paths(archive, ("posle",))
         info = plistlib.loads(archive.read("posle/packaging/Info.plist"))
         for field, value in (("CFBundleShortVersionString", expected.version), ("CFBundleVersion", str(expected.build)),
                              ("SUPublicEDKey", expected.public_key), ("SUFeedURL", feed_url(repo))):
             if info.get(field) != value:
                 raise RuntimeError("Published source archive differs from the app: " + field)
+        actual = {}
+        for entry in archive.infolist():
+            if entry.is_dir():
+                continue
+            name = str(PurePosixPath(entry.filename).relative_to("posle"))
+            mode = entry.external_attr >> 16
+            git_mode = "120000" if stat.S_ISLNK(mode) else "100755" if mode & 0o111 else "100644"
+            content = archive.read(entry)
+            blob = hashlib.sha1(b"blob " + str(len(content)).encode("ascii") + b"\0" + content).hexdigest()
+            actual[name] = (git_mode, blob)
+        if actual != tree:
+            raise RuntimeError("Published source archive does not match the exact source commit")
+
+
+def verify_local_artifacts(app: Path, source: Path, expected: Identity, repo: str):
+    with (app / "Contents/Info.plist").open("rb") as stream:
+        if plistlib.load(stream).get("PosleSourceClean") is not True:
+            raise RuntimeError("This app was built from uncommitted sources; rebuild the clean release commit")
+    verify_zip(app.parent / ZIP, expected, repo)
+    verify_source(source, expected, repo, tree=git_source_tree(expected.revision))
 
 
 @dataclass(frozen=True)
@@ -413,7 +490,7 @@ def verify_public_release(github: GitHub, release: dict, public_key: str, verifi
             raise RuntimeError("Authenticated update archive length mismatch")
         verifier.verify(directory / ZIP, parsed["signature"], public_key)
         verify_zip(directory / ZIP, expected, github.repo)
-        verify_source(directory / SOURCE, expected, github.repo)
+        verify_source(directory / SOURCE, expected, github.repo, tree=git_source_tree(expected.revision, github))
         return VerifiedRelease(expected, appcast)
 
 

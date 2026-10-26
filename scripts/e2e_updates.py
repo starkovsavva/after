@@ -29,6 +29,8 @@ import uuid
 from xml.sax.saxutils import escape
 
 PROJECT = Path(__file__).resolve().parent.parent
+SUCCESS_SCENARIOS = ("valid", "deferred", "late-busy")
+SCENARIOS = (*SUCCESS_SCENARIOS, "bad-archive-signature", "tampered-archive", "bad-feed-signature")
 
 
 def run(command, *, env=None):
@@ -117,7 +119,7 @@ def make_app(destination, binary, framework, *, identifier, build, scenario, fee
         "CFBundleVersion": str(build), "CFBundleShortVersionString": f"0.0.{build}",
         "LSMinimumSystemVersion": "15.0", "LSUIElement": True,
         "NSAppTransportSecurity": {"NSAllowsArbitraryLoads": True},
-        "FixtureRoot": str(scenario.parent), "FixtureLog": str(scenario / "events.jsonl"),
+        "FixtureRoot": str(scenario.parent), "FixtureLog": str(scenario / "events.jsonl"), "FixtureScenario": scenario.name,
         "SUFeedURL": feed, "SUPublicEDKey": public,
         "SUEnableAutomaticChecks": False, "SUAutomaticallyUpdate": False,
         "SUAllowsAutomaticUpdates": False, "SUVerifyUpdateBeforeExtraction": True,
@@ -193,9 +195,9 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
             observed = []
             while time.monotonic() < deadline:
                 observed = events(log_path)
-                if name == "valid" and any(e["event"] == "relaunched" for e in observed):
+                if name in SUCCESS_SCENARIOS and any(e["event"] == "relaunched" for e in observed):
                     break
-                if name != "valid" and any(e["event"] == "error" for e in observed) and process.poll() is not None:
+                if name not in SUCCESS_SCENARIOS and any(e["event"] == "error" for e in observed) and process.poll() is not None:
                     time.sleep(0.5)
                     break
                 if any(e["event"] in ("timeout", "configuration-error", "not-found") for e in observed):
@@ -208,13 +210,21 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
         observed = events(log_path)
         with (old / "Contents/Info.plist").open("rb") as stream:
             actual_version = plistlib.load(stream)["CFBundleVersion"]
-        if name == "valid":
+        if name in SUCCESS_SCENARIOS:
             assert actual_version == "2", "Sparkle did not replace build 1"
             assert any(e["event"] == "ready" for e in observed), "Installer was never ready"
             assert any(e["event"] == "relaunched" and e["build"] == "2" for e in observed), "Build 2 was not actually relaunched"
             assert not (old / "Contents/Resources/obsolete.txt").exists(), "Obsolete bundled files survived replacement"
             assert (old / "Contents/Resources/new.txt").read_text() == "build 2"
             run(["codesign", "--verify", "--deep", "--strict", str(old)])
+            if name == "deferred":
+                assert len([e for e in observed if e["event"] == "deferred"]) == 1
+                held = [e for e in observed if e["event"] == "deferred-held"]
+                assert len(held) == 1 and held[0]["buildOnDisk"] == "1", "Postponement did not preserve the old installed bundle"
+            if name == "late-busy":
+                sequence = [e["event"] for e in observed]
+                assert sequence.count("termination-blocked") == 1 and sequence.count("termination-retried") == 1
+                assert sequence.index("termination-blocked") < sequence.index("termination-retried") < sequence.index("terminate"), "Late-busy termination was not safely retried"
         else:
             assert actual_version == "1" and files(old) == before, "Rejected update modified the installed fixture"
             assert not any(e["event"] in ("ready", "relaunched") for e in observed), "Invalid update reached installation"
@@ -277,7 +287,7 @@ def main():
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         results = []
-        for name in ("valid", "bad-archive-signature", "tampered-archive", "bad-feed-signature"):
+        for name in SCENARIOS:
             result = exercise(root, web, framework, binary, sign_update, private, public,
                               server.server_address[1], name, requests)
             results.append(result)
@@ -285,7 +295,7 @@ def main():
         receipt = {"framework": "2.10.0", "fixtureRoot": str(root), "results": results,
                    "requests": requests, "productionResourcesUsed": False}
         (root / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
-        print("4 real Sparkle E2E scenarios passed")
+        print(f"{len(SCENARIOS)} real Sparkle E2E scenarios passed")
         if options.keep:
             print("Fixture receipt:", root / "receipt.json")
         succeeded = True

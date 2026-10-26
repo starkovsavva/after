@@ -158,7 +158,7 @@ pub fn import_meeting(root: &Path, source: &Path, focus: &str) -> Result<Value> 
 
 /// File locks serialize all read/modify/write operations across worker processes.
 /// Requires Rust 1.89+ (the standard-library file locking API).
-fn meeting_lock(directory: &Path) -> Result<File> {
+pub(crate) fn meeting_lock(directory: &Path) -> Result<File> {
     let path = directory.join(".posle-storage.lock");
     if let Ok(info) = fs::symlink_metadata(&path) {
         ensure!(info.is_file() && !info.file_type().is_symlink(), "Некорректный файл блокировки");
@@ -198,6 +198,34 @@ pub fn update_meta(root: &Path, id: &str, patch: &Value) -> Result<Value> {
     object.extend(patch.iter().map(|(key, value)| (key.clone(), value.clone())));
     atomic_json(&directory.join("meta.json"), &meta)?;
     Ok(meta)
+}
+
+/// Save only a user's overview edit against the summary they actually opened.
+/// The meeting lock covers the comparison and commit, never model inference.
+pub fn save_summary_overview(root: &Path, id: &str, text: &str, expected_overview: &str, expected_generated_at: f64) -> Result<Value> {
+    let text = text.trim();
+    ensure!(!text.is_empty(), "Краткий конспект не должен быть пустым.");
+    ensure!(expected_generated_at.is_finite(), "Некорректная дата исходного конспекта.");
+    const MAX_SUMMARY: u64 = 8 * 1_048_576;
+    ensure!(text.len() as u64 <= MAX_SUMMARY, "Краткий конспект слишком большой.");
+    let directory = meeting_directory(root, id)?;
+    let _lock = meeting_lock(&directory)?;
+    let path = directory.join("summary.json");
+    let info = fs::symlink_metadata(&path).context("Конспект недоступен. Откройте его заново.")?;
+    ensure!(info.is_file() && !info.file_type().is_symlink() && info.len() <= MAX_SUMMARY, "Некорректный файл конспекта.");
+    let mut file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path)?;
+    let mut bytes = Vec::new(); Read::by_ref(&mut file).take(MAX_SUMMARY + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() as u64 <= MAX_SUMMARY, "Файл конспекта слишком большой.");
+    let mut summary: Value = serde_json::from_slice(&bytes).context("Не удалось прочитать конспект. Исходный файл сохранён.")?;
+    let object = summary.as_object_mut().context("Конспект должен содержать объект.")?;
+    ensure!(object.get("overview").and_then(Value::as_str) == Some(expected_overview)
+        && object.get("generatedAt").and_then(Value::as_f64) == Some(expected_generated_at),
+        "Конспект изменился. Откройте правку заново, чтобы сохранить актуальную версию.");
+    object.insert("overview".into(), json!(text));
+    object.insert("overviewClaims".into(), json!([]));
+    ensure!(serde_json::to_vec(&summary)?.len() as u64 <= MAX_SUMMARY, "Файл конспекта слишком большой.");
+    atomic_json(&path, &summary)?;
+    Ok(summary)
 }
 
 fn parse_time(value: &Value, field: &str) -> Result<DateTime<Utc>> {
@@ -405,6 +433,69 @@ mod tests {
         assert_eq!(changed["title"], meta["title"]);
         assert_eq!(changed["speakerNames"]["speaker_0"], "Мария");
         assert_eq!(changed["futureMetadata"], json!({"preserve": true}));
+    }
+
+    #[test]
+    fn overview_cas_preserves_cards_evidence_unknown_fields_and_review_history() {
+        let temp = TestDirectory::new(); let meta = temp.meeting(); let root = temp.0.join("data");
+        let id = meta["id"].as_str().unwrap(); let directory = meeting_directory(&root, id).unwrap();
+        let original = json!({"overview":"Исходный конспект", "generatedAt":1234.5,
+            "overviewClaims":[{"text":"Исходный конспект","segmentIDs":[0]}],
+            "items":[{"kind":"action","text":"Проверить договор","segmentIDs":[0]}],
+            "cards":[{"id":"card-1","front":"Check the contract"}], "futureSummary":{"keep":[1,2,3]}});
+        atomic_json(&directory.join("summary.json"), &original).unwrap();
+        let review = b"review history must remain unchanged";
+        fs::write(directory.join("review-state.json"), review).unwrap();
+        let result = save_summary_overview(&root, id, "  Моя правка.  ", "Исходный конспект", 1234.5).unwrap();
+        assert_eq!(result["overview"], "Моя правка."); assert_eq!(result["overviewClaims"], json!([]));
+        for field in ["generatedAt", "items", "cards", "futureSummary"] { assert_eq!(result[field], original[field]); }
+        assert_eq!(regular_json(&directory.join("summary.json")).unwrap(), result);
+        assert_eq!(fs::read(directory.join("review-state.json")).unwrap(), review);
+        let committed = fs::read(directory.join("summary.json")).unwrap();
+        for (text, overview, generated_at) in [("Новая", "Исходный конспект", 1234.5), ("Новая", "Моя правка.", 1235.0),
+            (" \n\t", "Моя правка.", 1234.5), ("Новая", "Моя правка.", f64::NAN), ("Новая", "Моя правка.", f64::INFINITY)] {
+            assert!(save_summary_overview(&root, id, text, overview, generated_at).is_err());
+            assert_eq!(fs::read(directory.join("summary.json")).unwrap(), committed);
+        }
+    }
+
+    #[test]
+    fn overview_cas_allows_one_concurrent_editor_and_preserves_the_winner() {
+        let temp = TestDirectory::new(); let meta = temp.meeting(); let root = temp.0.join("data");
+        let id = meta["id"].as_str().unwrap().to_owned(); let directory = meeting_directory(&root, &id).unwrap();
+        atomic_json(&directory.join("summary.json"), &json!({"overview":"Общий оригинал","generatedAt":1,"cards":[{"id":"keep"}]})).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2)); let mut threads = Vec::new();
+        for text in ["Правка первая", "Правка вторая"] {
+            let root = root.clone(); let id = id.clone(); let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || { barrier.wait(); save_summary_overview(&root, &id, text, "Общий оригинал", 1.0) }));
+        }
+        let results = threads.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let winner = results.into_iter().find_map(Result::ok).unwrap();
+        assert_eq!(regular_json(&directory.join("summary.json")).unwrap(), winner);
+        assert_eq!(winner["cards"], json!([{"id":"keep"}]));
+    }
+
+    #[test]
+    fn overview_cas_waits_for_summary_generation_then_rechecks_the_latest_source() {
+        let temp = TestDirectory::new(); let meta = temp.meeting(); let root = temp.0.join("data");
+        let id = meta["id"].as_str().unwrap().to_owned(); let directory = meeting_directory(&root, &id).unwrap();
+        atomic_json(&directory.join("summary.json"), &json!({"overview":"Конспект","generatedAt":1})).unwrap();
+        let lock = meeting_lock(&directory).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel(); let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            tx.send(save_summary_overview(&root, &id, "Старая правка", "Конспект", 1.0)).unwrap();
+        });
+        started_rx.recv().unwrap();
+        let early = rx.recv_timeout(std::time::Duration::from_millis(250));
+        let waited = matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+        let regenerated = json!({"overview":"Конспект","generatedAt":2,"cards":[{"id":"new"}],"futureField":true});
+        atomic_json(&directory.join("summary.json"), &regenerated).unwrap(); drop(lock);
+        let result = match early { Ok(value) => value, Err(_) => rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap() };
+        thread.join().unwrap();
+        assert!(waited); assert!(result.is_err());
+        assert_eq!(regular_json(&directory.join("summary.json")).unwrap(), regenerated);
     }
 
     #[test]

@@ -10,7 +10,13 @@ struct CoreChecks {
         expect(Exporter.timestamp(-2) == "00:00", "negative timestamp")
         expect(Exporter.timestamp(65.8) == "01:05", "minute timestamp")
         expect(Exporter.timestamp(3725) == "1:02:05", "hour timestamp")
-        print("PASS: timestamps")
+        for invalid in [Double.nan, .infinity, -.infinity, Double.greatestFiniteMagnitude, Double(Int.max)] {
+            expect(Exporter.timestamp(invalid) == "00:00", "invalid timestamp cannot trap")
+        }
+        expect(Exporter.timestamp(3_600_000_000_000) == "1000000000:00:00", "large valid hour value keeps full precision")
+        let malformedTiming = try JSONDecoder().decode(Transcript.self, from: Data(#"{"duration":1e100,"segments":[{"id":0,"start":1e100,"end":1e100,"speaker":"speaker_1","text":"Повреждённое время","overlap":false}],"warnings":[],"model":"fixture"}"#.utf8))
+        expect(Exporter.timestamp(malformedTiming.segments[0].start) == "00:00", "oversized JSON timestamp cannot crash rendering")
+        print("PASS: timestamps, oversized JSON values and non-finite input")
 
         var meeting = Meeting(title: "Встреча / Meeting", source: "source.mov")
         meeting.speakerNames["speaker_1"] = "Аня"

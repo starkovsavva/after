@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import signal
 import subprocess
 import sys
 import tarfile
@@ -34,6 +35,27 @@ EMBEDDING_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker
 PROTOCOL = sys.stdout
 DIARIZATION_THRESHOLD = 0.65
 DIARIZATION_WARNING = "Собеседники: "
+_PUBLISHING = False
+
+
+@contextlib.contextmanager
+def publication():
+    """A worker signal must not split a short metadata/result transaction.
+
+    Only worker_main installs the signal handler. Importing this module inside
+    the native host never changes the app's process-global signal handlers.
+    """
+    global _PUBLISHING
+    previous, _PUBLISHING = _PUBLISHING, True
+    try:
+        yield
+    finally:
+        _PUBLISHING = previous
+
+
+def _cancel_worker(_signal, _frame):
+    if not _PUBLISHING:
+        raise KeyboardInterrupt()
 
 
 def emit(event: str, **values):
@@ -226,17 +248,25 @@ def finalize_recording(directory: Path):
                "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", directory / "video.mp4")
     meta["source"] = "recording.mp3"
     meta["recordingTracks"] = dual
-    atomic(directory / "meta.json", meta)
-    # Both final outputs are saved; the temporary capture container can be removed.
-    source.unlink(missing_ok=True)
+    with publication():
+        atomic(directory / "meta.json", meta)
+        # Both final outputs are saved; the temporary capture container can be removed.
+        source.unlink(missing_ok=True)
+
+
+def read_pcm_frames(source, count):
+    pcm = source.readframes(count)
+    if len(pcm) != count * source.getnchannels() * source.getsampwidth():
+        raise RuntimeError("Звуковая дорожка повреждена или обрезана. Предыдущая транскрипция сохранена.")
+    return pcm
 
 
 def read_wave(path: Path):
     import numpy as np
     with wave.open(str(path)) as f:
-        if f.getframerate() != 16000 or f.getnchannels() != 1:
-            raise ValueError("Ожидается монофайл 16 кГц")
-        return np.frombuffer(f.readframes(f.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        if f.getframerate() != 16000 or f.getnchannels() != 1 or f.getsampwidth() != 2 or f.getcomptype() != "NONE":
+            raise RuntimeError("Ожидается PCM 16 бит, моно 16 кГц")
+        return np.frombuffer(read_pcm_frames(f, f.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
 
 
 def diarize(path: Path, root: Path, count: int):
@@ -439,16 +469,17 @@ def rediarize(directory: Path, root: Path, count: int):
         os.chmod(backup.parent, 0o700)
         revised_meta = dict(current_meta)
         revised_meta["speakerNames"] = {key: value for key, value in current_meta.get("speakerNames", {}).items() if key == "self"}
-        # Clear old names first: interruption can leave anonymous old labels,
-        # but can never falsely attach an old person's name to a new identity.
-        atomic(meta_path, revised_meta)
-        try:
-            atomic(transcript_path, updated)
-        except BaseException:
-            atomic(meta_path, current_meta)
-            raise
-    progress("Собеседники обновлены", 1)
-    emit("done", speakerCount=diagnostics["detectedCount"], requestedSpeakerCount=count, backup=str(backup))
+        with publication():
+            # Clear old names first: interruption can leave anonymous old labels,
+            # but can never falsely attach an old person's name to a new identity.
+            atomic(meta_path, revised_meta)
+            try:
+                atomic(transcript_path, updated)
+            except BaseException:
+                atomic(meta_path, current_meta)
+                raise
+            progress("Собеседники обновлены", 1)
+            emit("done", speakerCount=diagnostics["detectedCount"], requestedSpeakerCount=count, backup=str(backup))
 
 
 def assign_speaker(start: float, end: float, turns: list[dict]):
@@ -636,7 +667,7 @@ class ASRAdapter:
                     # cancellation requested by the preceding progress event.
                     callback(index, len(windows))
                     source.setpos(round(start * rate))
-                    audio = np.frombuffer(source.readframes(round((end - start) * rate)), dtype=np.int16).astype(np.float32) / 32768.0
+                    audio = np.frombuffer(read_pcm_frames(source, round((end - start) * rate)), dtype=np.int16).astype(np.float32) / 32768.0
                     result = self.model.transcribe(audio, path_or_hf_repo=self.selected["path"], word_timestamps=True,
                                                    verbose=None, condition_on_previous_text=False)
                     tokens = []
@@ -668,7 +699,7 @@ class ASRAdapter:
             windows = chunk_windows(duration)
             for index, (start, end, left, right) in enumerate(windows):
                 source.setpos(round(start * rate))
-                audio = np.frombuffer(source.readframes(round((end - start) * rate)), dtype=np.int16).astype(np.float32) / 32768.0
+                audio = np.frombuffer(read_pcm_frames(source, round((end - start) * rate)), dtype=np.int16).astype(np.float32) / 32768.0
                 if self.selected["layout"] == "sherpa-onnx":
                     stream = self.model.create_stream()
                     stream.accept_waveform(rate, audio)
@@ -814,11 +845,17 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
     warnings.extend(speaker_warnings)
     transcript = {"duration": duration, "segments": segments, "warnings": warnings, "diarization": diagnostics, "model": selected["name"],
                   "modelFormat": selected["format"], "modelPath": selected["path"]}
-    atomic(directory / "transcript.json", transcript)
-    # A re-transcription invalidates old evidence IDs; preserve existing review history.
-    (directory / "summary.json").unlink(missing_ok=True)
-    progress("Транскрипция сохранена", 1)
-    emit("done", count=len(segments), duration=duration)
+    # Match Rust's meeting lock so a concurrently generated summary either
+    # observes this transcript or is invalidated by this replacement.
+    descriptor = os.open(directory / ".posle-storage.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "r+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with publication():
+            atomic(directory / "transcript.json", transcript)
+            # A re-transcription invalidates old evidence IDs; preserve existing review history.
+            (directory / "summary.json").unlink(missing_ok=True)
+            progress("Транскрипция сохранена", 1)
+            emit("done", count=len(segments), duration=duration)
 
 
 WORKER_COMMANDS = ("prepare", "install-local", "finalize", "transcribe", "diarize", "discover-models")
@@ -867,13 +904,22 @@ def main():
         emit("done", asrModels=[local_models.public_model(model) for model in found], notes=notes)
 
 
-if __name__ == "__main__":
+def worker_main():
+    # SIGTERM is how the app cancels this separate worker. Unwind Python's
+    # finally blocks so private cloud-upload WAVs do not remain on disk.
+    signal.signal(signal.SIGTERM, _cancel_worker)
+    signal.signal(signal.SIGINT, _cancel_worker)
     try:
         main()
+        return 0
     except KeyboardInterrupt:
         emit("error", message="Обработка остановлена. Исходная запись сохранена.")
-        sys.exit(130)
+        return 130
     except Exception as exc:
         message = str(exc)
         emit("error", message=message[:2000])
-        sys.exit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(worker_main())

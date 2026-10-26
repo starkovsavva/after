@@ -18,7 +18,7 @@ struct SpeechSettingsView: View {
             Picker("Обработка", selection: $store.settings.speechMode) {
                 Label("На Mac", systemImage: "laptopcomputer").tag("local")
                 Label("Облако", systemImage: "cloud").tag("cloud")
-            }.pickerStyle(.segmented)
+            }.pickerStyle(.segmented).tint(Ink.actionFill)
             if store.settings.speechMode == "local" { localSettings } else { cloudSettings }
             Divider()
             Toggle("Разделять собеседников", isOn: $store.settings.diarization)

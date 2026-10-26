@@ -4,6 +4,7 @@ PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${POSLE_BUILD_DIR:-$PROJECT/.build}"
 cd "$PROJECT"
 SOURCE_REVISION="$(git rev-parse --verify HEAD)"
+SOURCE_STATUS="$(git status --porcelain)"
 mkdir -p "$PROJECT/dist"
 STAGING="$(mktemp -d "$PROJECT/dist/.posle-build.XXXXXX")"
 APP="$STAGING/После.app"
@@ -71,7 +72,7 @@ PYHELPERS
 cp "$RUST_RELEASE/libposle_core.dylib" "$APP/Contents/Frameworks/libposle_core.dylib"
 # The checkout identity is embedded in the signed app, so release tooling can
 # reject a stale bundle built from another commit.
-python3 - "$PROJECT/packaging/Info.plist" "$APP/Contents/Info.plist" "$SOURCE_REVISION" <<'PYINFO'
+python3 - "$PROJECT/packaging/Info.plist" "$APP/Contents/Info.plist" "$SOURCE_REVISION" "$SOURCE_STATUS" <<'PYINFO'
 import plistlib, re, sys
 from pathlib import Path
 source, destination = map(Path, sys.argv[1:3])
@@ -81,6 +82,7 @@ if not re.fullmatch(r"[0-9a-f]{40}", revision):
 with source.open("rb") as stream:
     info = plistlib.load(stream)
 info["PosleSourceRevision"] = revision
+info["PosleSourceClean"] = not sys.argv[4]
 with destination.open("wb") as stream:
     plistlib.dump(info, stream, sort_keys=False)
 PYINFO
@@ -105,7 +107,7 @@ codesign --force --sign - "$APP/Contents/Helpers/После Распознава
 codesign --force --sign - "$APP/Contents/Helpers/После Обработка.app"
 codesign --force --sign - --entitlements "$PROJECT/packaging/entitlements.plist" "$APP"
 codesign --verify --deep --strict "$APP"
-if [[ "$(git rev-parse --verify HEAD)" != "$SOURCE_REVISION" ]]; then
+if [[ "$(git rev-parse --verify HEAD)" != "$SOURCE_REVISION" || "$(git status --porcelain)" != "$SOURCE_STATUS" ]]; then
     echo "Исходный коммит изменился во время сборки; повторите сборку." >&2
     exit 1
 fi

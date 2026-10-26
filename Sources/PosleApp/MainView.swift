@@ -306,7 +306,7 @@ struct MeetingView: View {
                 Spacer()
             }.padding(.horizontal, AppLayout.contentInset).appLayoutAnchor("meeting.tabs").overlay(alignment: .bottom) { Rectangle().fill(Ink.line).frame(height: 1) }
             if store.tab == "notes" { NotesWorkspaceView(notes: store.notes, meeting: meeting) }
-            else if store.transcript == nil && store.tab != "cards" { unprocessed }
+            else if store.transcript == nil && store.tab != "cards" && !(store.tab == "summary" && store.overviewDrafts[meeting.id] != nil) { unprocessed }
             else if store.tab == "transcript" { TranscriptView() }
             else if store.tab == "cards" { CardsView().id(meeting.id) }
             else { SummaryView() }
@@ -373,10 +373,10 @@ struct SummaryView: View {
                             Text("На Mac").tag("local"); Text("Облако").tag("cloud")
                         }
                     } label: { Label(store.settings.mode == "cloud" ? "Облако" : "На Mac", systemImage: store.settings.mode == "cloud" ? "cloud" : "laptopcomputer") }
-                        .menuStyle(.borderlessButton).frame(width: 110).disabled(overviewLocked)
+                        .menuStyle(.borderlessButton).frame(width: 110).disabled(overviewLocked || overviewEditing)
                         .onChange(of: store.settings.mode) { _, _ in store.saveSettings() }
                     Button { showingFocus = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).foregroundStyle(.secondary).disabled(overviewLocked).accessibilityLabel("Фокус конспекта")
+                        .buttonStyle(.plain).foregroundStyle(.secondary).disabled(overviewLocked || overviewEditing).accessibilityLabel("Фокус конспекта")
                         .help("Что важно выписать из встречи")
                         .popover(isPresented: $showingFocus) {
                             VStack(alignment: .leading, spacing: 12) {
@@ -393,13 +393,19 @@ struct SummaryView: View {
                     Spacer()
                     Button { store.summarizeSelected() } label: {
                         Label(store.summary == nil ? "Создать конспект" : "Обновить", systemImage: "sparkles").frame(minWidth: 120)
-                    }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(overviewLocked)
+                    }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(overviewLocked || overviewEditing)
                 }
                 if store.settings.mode == "cloud" {
                     Text("\(store.settings.cloudProviderTitle) получит текст встречи. Запрос оплачивается через API.")
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }
 
+                if store.summary == nil && overviewEditing {
+                    VStack(alignment: .leading, spacing: 13) {
+                        Text("Черновик конспекта").font(AppTypography.heading)
+                        overviewEditor
+                    }
+                }
                 if let summary = store.summary {
                     VStack(alignment: .leading, spacing: 13) {
                         HStack {
@@ -411,32 +417,7 @@ struct SummaryView: View {
                             }
                         }
                         if overviewEditing {
-                            TextEditor(text: $overviewDraft)
-                                .font(AppTypography.body).lineSpacing(7)
-                                .scrollContentBackground(.hidden)
-                                .frame(minHeight: 150, maxHeight: 280).padding(10)
-                                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-                                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Ink.line))
-                                .accessibilityLabel("Редактирование краткого конспекта")
-                                .focused($overviewFocused)
-                                .disabled(overviewLocked)
-                            HStack(spacing: 10) {
-                                if overviewDraft != originalOverview {
-                                    Text("Есть несохранённые изменения").font(AppTypography.control).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Button("Отмена") { cancelOverviewEdit() }
-                                    .buttonStyle(.bordered).disabled(overviewLocked)
-                                Button("Сохранить") {
-                                    guard let id = overviewMeetingID else { return }
-                                    if store.saveOverview(overviewDraft, meetingID: id, expectedOverview: originalOverview,
-                                                          expectedGeneratedAt: originalGeneratedAt) {
-                                        cancelOverviewEdit()
-                                    }
-                                }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
-                                    .disabled(overviewLocked || overviewDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                              || overviewDraft == originalOverview)
-                            }
+                            overviewEditor
                         } else {
                             if summary.hasVerifiedOverviewClaims(transcript: store.transcript) {
                                 VStack(alignment: .leading, spacing: 12) {
@@ -475,7 +456,7 @@ struct SummaryView: View {
                         if !items.isEmpty { section(kind, items) }
                     }
                     ForEach(summary.warnings, id: \.self) { Text($0).font(AppTypography.caption).foregroundStyle(Ink.warning) }
-                } else {
+                } else if !overviewEditing {
                     VStack(alignment: .leading, spacing: 15) {
                         Image(systemName: "text.badge.star").font(.system(size: 35)).foregroundStyle(Ink.accent)
                         Text("Конспект не создан").font(AppTypography.emptyTitle)
@@ -486,9 +467,60 @@ struct SummaryView: View {
         }
         .onAppear { scrollToTarget(proxy) }
         .onChange(of: store.navigationTarget?.id) { _, _ in scrollToTarget(proxy) }
-        .onChange(of: store.selection) { _, _ in cancelOverviewEdit() }
-        .onChange(of: store.summary?.generatedAt) { _, _ in cancelOverviewEdit() }
-        .onDisappear { cancelOverviewEdit() }
+        .onAppear { restoreOverviewDraft() }
+        .onChange(of: store.selection) { _, _ in restoreOverviewDraft() }
+        .onChange(of: store.summary?.generatedAt) { _, _ in
+            if !overviewEditing { restoreOverviewDraft() }
+        }
+        .onDisappear { endOverviewEdit() }
+        }
+    }
+    private var overviewEditor: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextEditor(text: Binding(get: { overviewDraft }, set: { text in
+                overviewDraft = text
+                if let id = overviewMeetingID {
+                    store.rememberOverviewDraft(text, meetingID: id, original: originalOverview, generatedAt: originalGeneratedAt)
+                }
+            }))
+                .font(AppTypography.body).lineSpacing(7)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 150, maxHeight: 280).padding(10)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Ink.line))
+                .accessibilityLabel("Редактирование краткого конспекта")
+                .focused($overviewFocused)
+                .disabled(overviewLocked)
+            if overviewConflict {
+                HStack {
+                    Text("Исходный конспект изменился. Правку можно сохранить в заметки.")
+                        .font(AppTypography.control).foregroundStyle(Ink.warning)
+                    Spacer()
+                    Button("В заметки") {
+                        guard let id = overviewMeetingID,
+                              store.notes.capture(text: overviewDraft, meetingID: id) != nil else { return }
+                        cancelOverviewEdit()
+                        store.notice = "Правка сохранена в заметки встречи"
+                    }.buttonStyle(.bordered)
+                }
+            }
+            HStack(spacing: 10) {
+                if overviewDraft != originalOverview {
+                    Text("Есть несохранённые изменения").font(AppTypography.control).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Отмена") { cancelOverviewEdit() }
+                    .buttonStyle(.bordered).disabled(overviewLocked)
+                Button("Сохранить") {
+                    guard let id = overviewMeetingID else { return }
+                    if store.saveOverview(overviewDraft, meetingID: id, expectedOverview: originalOverview,
+                                          expectedGeneratedAt: originalGeneratedAt) {
+                        cancelOverviewEdit()
+                    }
+                }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    .disabled(overviewLocked || overviewConflict || overviewDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || overviewDraft == originalOverview)
+            }
         }
     }
     private var overviewTargeted: Bool {
@@ -500,6 +532,18 @@ struct SummaryView: View {
         let id = target.kind == "item" ? "summary-item-\(target.itemIndex ?? -1)" : "summary-overview"
         DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) } }
     }
+    private var overviewConflict: Bool {
+        guard overviewEditing else { return false }
+        guard let summary = store.summary else { return true }
+        return summary.generatedAt != originalGeneratedAt || summary.overview != originalOverview
+    }
+    private func restoreOverviewDraft() {
+        endOverviewEdit()
+        guard let id = store.selection, let draft = store.overviewDrafts[id] else { return }
+        overviewMeetingID = id; overviewDraft = draft.text
+        originalOverview = draft.original; originalGeneratedAt = draft.generatedAt
+        store.editingOverview = true
+    }
     private func beginOverviewEdit(_ summary: Summary) {
         guard let id = store.selection, !overviewLocked else { return }
         overviewMeetingID = id; store.editingOverview = true
@@ -509,6 +553,10 @@ struct SummaryView: View {
         DispatchQueue.main.async { overviewFocused = true }
     }
     private func cancelOverviewEdit() {
+        if let id = overviewMeetingID { store.discardOverviewDraft(id) }
+        endOverviewEdit()
+    }
+    private func endOverviewEdit() {
         overviewMeetingID = nil; store.editingOverview = false
         overviewDraft = ""
         originalOverview = ""
@@ -647,6 +695,6 @@ struct TranscriptView: View {
         if key == "self" { return Ink.green }
         if key == "unknown" { return .gray }
         let value = Int(key.replacingOccurrences(of: "speaker_", with: "")) ?? 0
-        return [Ink.accent, Ink.green, .orange, .pink, .cyan][abs(value) % 5]
+        return [Ink.accent, Ink.green, .orange, .pink, .cyan][abs(value % 5)]
     }
 }

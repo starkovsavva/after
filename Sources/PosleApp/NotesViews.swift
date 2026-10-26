@@ -536,7 +536,7 @@ struct NotesContextsView: View {
                     Text("Проекты и люди").font(AppTypography.sectionTitle).accessibilityAddTraits(.isHeader)
                     Spacer()
                     Picker("Группировать", selection: $mode) { Text("Проекты").tag("project"); Text("Люди").tag("person") }
-                        .pickerStyle(.segmented).labelsHidden().frame(width: 200).accessibilityLabel("Проекты или люди")
+                        .pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 200).accessibilityLabel("Проекты или люди")
                 }
                 HStack(spacing: 12) {
                     Picker(mode == "project" ? "Проект" : "Человек", selection: $selected) {
@@ -630,7 +630,7 @@ struct NotesTasksView: View {
                 }
                 HStack(spacing: 16) {
                     Picker("Статус задач", selection: $filter) { Text("В работе").tag("open"); Text("Завершённые").tag("done"); Text("Все").tag("all") }
-                        .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 320).accessibilityLabel("Статус задач")
+                        .pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(maxWidth: 320).accessibilityLabel("Статус задач")
                     Spacer(minLength: 0)
                     TextField("Поиск в задачах", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
                 }

@@ -6,6 +6,7 @@ import Sparkle
 
 @MainActor
 final class FixtureDriver: NSObject, SPUUserDriver {
+    var retryTermination: (() -> Void)?
     let emit: (String, [String: Any]) -> Void
     init(emit: @escaping (String, [String: Any]) -> Void) { self.emit = emit }
     func show(_ request: SPUUpdatePermissionRequest, reply: @escaping (SUUpdatePermissionResponse) -> Void) {
@@ -34,6 +35,7 @@ final class FixtureDriver: NSObject, SPUUserDriver {
         emit("ready", [:]); reply(.install)
     }
     func showInstallingUpdate(withApplicationTerminated applicationTerminated: Bool, retryTerminatingApplication: @escaping () -> Void) {
+        retryTermination = retryTerminatingApplication
         emit("installing", ["applicationTerminated": applicationTerminated])
     }
     func showUpdateInstalledAndRelaunched(_ relaunched: Bool, acknowledgement: @escaping () -> Void) {
@@ -62,6 +64,8 @@ final class FixtureApp: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
     var updater: SPUUpdater?
     var driver: FixtureDriver?
     let version: String
+    private var blockedTerminationOnce = false
+    private var scenario: String { Bundle.main.object(forInfoDictionaryKey: "FixtureScenario") as? String ?? "valid" }
     init(root: URL, log: URL, version: String) { self.root = root; self.log = log; self.version = version }
     func emit(_ event: String, _ fields: [String: Any] = [:]) {
         var value = fields
@@ -92,7 +96,28 @@ final class FixtureApp: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
             self?.emit("timeout"); NSApp.terminate(nil)
         }
     }
+    func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem, untilInvokingBlock handler: @escaping () -> Void) -> Bool {
+        guard scenario == "deferred" else { return false }
+        emit("deferred")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            let data = try? Data(contentsOf: Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist"))
+            let info = data.flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] }
+            self.emit("deferred-held", ["buildOnDisk": info?["CFBundleVersion"] as? String ?? "missing"])
+            handler()
+        }
+        return true
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if scenario == "late-busy" && !blockedTerminationOnce {
+            blockedTerminationOnce = true
+            emit("termination-blocked")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, let retry = self.driver?.retryTermination else { return }
+                self.emit("termination-retried"); retry()
+            }
+            return .terminateCancel
+        }
         emit("terminate"); return .terminateNow
     }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) { emit("aborted", errorFields(error)) }

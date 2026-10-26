@@ -47,10 +47,11 @@ def _media(root: Path):
 
 def _pcm_numpy_audio(path, sample_rate=16000, **_):
     import numpy as np
+    from engine import read_pcm_frames
     with wave.open(str(path)) as audio:
         if audio.getnchannels() != 1 or audio.getsampwidth() != 2 or audio.getframerate() != sample_rate:
             raise RuntimeError("Для распознавания нужна подготовленная дорожка PCM 16 бит, моно 16 кГц.")
-        return np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+        return np.frombuffer(read_pcm_frames(audio, audio.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
 
 
 def _pcm_mlx_audio(path, sampling_rate, dtype=None):
@@ -182,16 +183,22 @@ def run(raw: str) -> str:
         # engine's subprocess protocol redirects stdout around MLX. Embedded
         # callbacks do not need it; leave the app's Python stdio untouched.
         replace(engine, "contextlib", SimpleNamespace(redirect_stdout=lambda _: contextlib.nullcontext()))
-        original_atomic = engine.atomic
-        def atomic(path, data):
+        original_publication = engine.publication
+        @contextlib.contextmanager
+        def publication():
             nonlocal committing
             check()
-            if command in ("diarize", "finalize") and Path(path).name == "meta.json":
-                committing = True
-            original_atomic(path, data)
-            if Path(path).name == "transcript.json":
-                committing = True
-        replace(engine, "atomic", atomic)
+            previous, committing = committing, True
+            try:
+                with original_publication():
+                    yield
+                # Finalization has no subprocess event of its own. Confirm its
+                # committed metadata before cancellation becomes observable.
+                if command == "finalize":
+                    emit("done")
+            finally:
+                committing = previous
+        replace(engine, "publication", publication)
         original_resolve = engine.resolve_asr
         def resolve(root, allow_download=False):
             check()
@@ -212,7 +219,10 @@ def run(raw: str) -> str:
             engine.rediarize(meeting, root, request.get("speakers", 0))
         else:
             engine.finalize_recording(meeting)
-            emit("done")
+            # Already finalized/imported media is an idempotent no-op and has
+            # no publication context; still acknowledge the successful run.
+            if last_done is None:
+                emit("done")
         if last_done is None:
             raise RuntimeError("Модуль не подтвердил сохранение результата.")
         return json.dumps({"ok": True, "value": last_done}, ensure_ascii=False)

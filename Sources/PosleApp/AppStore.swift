@@ -29,6 +29,13 @@ final class AppStore: ObservableObject {
     @Published var error: String?
     @Published var notice: String?
     @Published var editingOverview = false
+    struct OverviewDraft: Codable, Equatable {
+        var text: String
+        var original: String
+        var generatedAt: Double
+    }
+    @Published private(set) var overviewDrafts: [String: OverviewDraft] = [:]
+    private var overviewDraftsDirty = false
     @Published var showingSettings = false
     @Published var settingsSection = "general"
     @Published var showingRecord = false
@@ -92,8 +99,8 @@ final class AppStore: ObservableObject {
     private var playerObserver: Any?
     private var recordingID: String?
     private var assertions: IOPMAssertionID = 0
-    private var recentReviewIDs: Set<String> = []
     private var cancellationRequested = false
+    private var jobGeneration = UUID()
     private var confirmingCloudSpeech = false
     private static let stoppedProcessingMessage = "Обработка остановлена. Запись сохранена."
     private var preview: Bool
@@ -135,6 +142,7 @@ final class AppStore: ObservableObject {
             try FileManager.default.createDirectory(at: root.appendingPathComponent("meetings"), withIntermediateDirectories: true,
                                                    attributes: [.posixPermissions: 0o700])
             if let saved: AppSettings = read(root.appendingPathComponent("settings.json")) { settings = saved }
+            overviewDrafts = read(root.appendingPathComponent("overview-drafts.json")) ?? [:]
             librarySection = ["meetings", "inbox", "tasks", "cards"].contains(settings.startSection) ? settings.startSection : "meetings"
             runtimeReady = FileManager.default.isExecutableFile(atPath: python.path)
                 && FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime/ready-v2").path)
@@ -191,7 +199,7 @@ final class AppStore: ObservableObject {
         navigationTarget = nil
         pause()
         if let observer = playerObserver { player?.removeTimeObserver(observer) }; playerObserver = nil
-        player = nil; playbackTime = 0; recentReviewIDs = []
+        player = nil; playbackTime = 0
         transcriptSearch = ""
         guard let directory = selectedDirectory else { transcript = nil; summary = nil; return }
         transcript = read(directory.appendingPathComponent("transcript.json"))
@@ -231,10 +239,25 @@ final class AppStore: ObservableObject {
             error = "Не удалось прочитать данные встречи. Откройте её заново."
             return
         }
+        let original = current
         change(&current)
-        do { try write(current, url); meetings[index] = current }
-        catch { self.error = error.localizedDescription }
+        do {
+            let encoder = JSONEncoder()
+            guard let before = try JSONSerialization.jsonObject(with: encoder.encode(original)) as? [String: Any],
+                  let after = try JSONSerialization.jsonObject(with: encoder.encode(current)) as? [String: Any] else {
+                throw AppError.message("Не удалось подготовить изменения встречи.")
+            }
+            var patch: [String: Any] = [:]
+            for key in Set(before.keys).union(after.keys) {
+                let previous = (before[key] as? NSObject) ?? NSNull()
+                let next = (after[key] as? NSObject) ?? NSNull()
+                if !previous.isEqual(next) { patch[key] = next }
+            }
+            let data = try RustBridge.shared.get().request(root: root, command: "update", arguments: ["id": id, "patch": patch])
+            meetings[index] = try JSONDecoder().decode(Meeting.self, from: data)
+        } catch { self.error = error.localizedDescription }
     }
+
     func renameSpeaker(_ key: String, name: String) {
         guard let id = selection else { return }
         updateMeeting(id) { $0.speakerNames[key] = name.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -307,10 +330,12 @@ final class AppStore: ObservableObject {
         if settings.speechMode == "cloud" && command == "transcribe" {
             environment["POSLE_SPEECH_API_KEY"] = preview ? "" : Keychain.read(account: Keychain.speechAccount(for: settings))
         }
+        let generation = jobGeneration
         let receive: @Sendable (WorkerEvent) -> Void = { [weak self] event in
             Task { @MainActor in
-                if let message = event.message { self?.progressText = message }
-                if let fraction = event.fraction { self?.progress = fraction }
+                guard let self, self.busy, self.jobGeneration == generation, !self.cancellationRequested else { return }
+                if let message = event.message { self.progressText = message }
+                if let fraction = event.fraction { self.progress = fraction }
             }
         }
         let result: WorkerEvent?
@@ -357,13 +382,15 @@ final class AppStore: ObservableObject {
         }
     }
     func beginJob(id: String?) {
+        jobGeneration = UUID()
         cancellationRequested = false; runner.resetCancellation(); embeddedSpeech.resetCancellation()
         canCancelJob = true
-        busy = true; processingID = id; progress = -1; error = nil; notice = nil
+        busy = true; processingID = id; progress = -1; progressText = "Начинаю обработку…"; error = nil; notice = nil
         IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
                                    IOPMAssertionLevel(kIOPMAssertionLevelOn), "После обрабатывает встречу" as CFString, &assertions)
     }
     func endJob() {
+        jobGeneration = UUID()
         cancellationRequested = false
         canCancelJob = false
         busy = false; processingID = nil; progress = -1
@@ -417,6 +444,10 @@ final class AppStore: ObservableObject {
     }
     private func processingWasCancelled(_ error: Error) -> Bool {
         error is CancellationError || cancellationRequested
+    }
+    private func reportJobFailure(_ error: Error) {
+        if processingWasCancelled(error) { self.error = nil; notice = Self.stoppedProcessingMessage }
+        else { self.error = error.localizedDescription }
     }
     func processMeeting(_ id: String) async {
         guard !busy, !isRecording, !confirmingCloudSpeech else { return }
@@ -479,13 +510,36 @@ final class AppStore: ObservableObject {
     }
     func summarizeSelected() {
         guard let id = selection, !busy, !isRecording else { return }
+        beginJob(id: id); progressText = "Создаю конспект…"
         Task {
-            beginJob(id: id); defer { endJob() }
+            defer { endJob() }
             do {
                 try await worker("summarize", id: id)
                 updateMeeting(id) { $0.status = "ready"; $0.error = nil }
-                refreshResults(id); tab = "summary"
-            } catch { self.error = error.localizedDescription }
+                refreshResults(id)
+                if selection == id { tab = "summary" }
+            } catch { reportJobFailure(error) }
+        }
+    }
+    func rememberOverviewDraft(_ text: String, meetingID: String, original: String, generatedAt: Double) {
+        if text == original { overviewDrafts.removeValue(forKey: meetingID) }
+        else { overviewDrafts[meetingID] = OverviewDraft(text: text, original: original, generatedAt: generatedAt) }
+        overviewDraftsDirty = true
+        _ = flushOverviewDrafts()
+    }
+    func discardOverviewDraft(_ meetingID: String) {
+        overviewDrafts.removeValue(forKey: meetingID); overviewDraftsDirty = true
+        _ = flushOverviewDrafts()
+    }
+    @discardableResult func flushOverviewDrafts() -> Bool {
+        guard overviewDraftsDirty else { return true }
+        do {
+            try write(overviewDrafts, root.appendingPathComponent("overview-drafts.json"))
+            overviewDraftsDirty = false
+            return true
+        } catch {
+            self.error = "Не удалось сохранить черновик конспекта. Ваш текст остался в редакторе. \(error.localizedDescription)"
+            return false
         }
     }
     @discardableResult
@@ -500,19 +554,12 @@ final class AppStore: ObservableObject {
         }
         let overview = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !overview.isEmpty else { error = "Краткий конспект не должен быть пустым."; return false }
-        let url = meetingDirectory(meetingID).appendingPathComponent("summary.json")
-        guard var saved: Summary = read(url), saved.generatedAt == expectedGeneratedAt,
-              saved.overview == expectedOverview else {
-            error = "Конспект изменился. Откройте правку заново, чтобы сохранить актуальную версию."
-            return false
-        }
-        // Read the current complete summary, then change only its overview.
-        // Cards, evidence and review history retain their existing values.
-        saved.overview = overview
-        saved.overviewClaims = []
         do {
-            try write(saved, url)
-            summary = saved
+            let data = try RustBridge.shared.get().request(root: root, command: "summary-overview-save", arguments: [
+                "meetingID": meetingID, "text": overview, "expectedOverview": expectedOverview,
+                "expectedGeneratedAt": expectedGeneratedAt
+            ])
+            summary = try JSONDecoder().decode(Summary.self, from: data)
             notice = "Краткий конспект сохранён."
             error = nil
             return true
@@ -523,44 +570,51 @@ final class AppStore: ObservableObject {
     }
     func makeExample(_ card: Flashcard) {
         guard let id = selection, !busy, !isRecording else { return }
+        beginJob(id: id); progressText = "Придумываю пример…"
         Task {
-            beginJob(id: id); defer { endJob() }
+            defer { endJob() }
             do { try await worker("example", id: id, extra: ["--card", card.id]); refreshResults(id) }
-            catch { self.error = error.localizedDescription }
+            catch { reportJobFailure(error) }
         }
     }
     func rate(_ card: Flashcard, _ value: Int) {
         guard let id = selection, !busy, !isRecording else { return }
+        beginJob(id: id); progressText = "Сохраняю повторение…"
         Task {
-            beginJob(id: id); defer { endJob() }
+            defer { endJob() }
             do {
                 try await worker("review", id: id, extra: ["--card", card.id, "--rating", String(value)])
-                recentReviewIDs.insert(card.id); refreshResults(id)
-            } catch { self.error = error.localizedDescription }
+                refreshResults(id)
+            } catch { reportJobFailure(error) }
         }
     }
     func installRuntime() {
         guard !busy, !isRecording else { return }
+        let requestedASR = settings.speechMode == "local" ? asrSelectionIdentity : nil
+        beginJob(id: nil); progressText = "Подготавливаю распознавание и проверяю скачанные модели…"
+        let generation = jobGeneration
         Task {
-            let requestedASR = settings.speechMode == "local" ? asrSelectionIdentity : nil
-            beginJob(id: nil); progressText = "Подготавливаю распознавание и проверяю скачанные модели…"
             defer { endJob() }
             do {
                 try write(settings, root.appendingPathComponent("settings.json"))
                 try await runner.run(rustEngine,
                                      arguments: ["install-runtime", "--root", root.path, "--backend", backend.path]) { [weak self] event in
-                    Task { @MainActor in if let message = event.message { self?.progressText = message } }
+                    Task { @MainActor in
+                        guard let self, self.busy, self.jobGeneration == generation, !self.cancellationRequested else { return }
+                        if let message = event.message { self.progressText = message }
+                    }
                 }
                 runtimeReady = true
                 if let requestedASR { verifiedASRSelection = requestedASR }
                 notice = "Распознавание готово. Добавьте или выберите запись."
-            } catch { self.error = error.localizedDescription }
+            } catch { reportJobFailure(error) }
         }
     }
     func ollama(_ command: String) {
         guard !busy, !isRecording else { return }
+        beginJob(id: nil)
         Task {
-            beginJob(id: nil); defer { endJob() }
+            defer { endJob() }
             do {
                 let result = try await worker(command)
                 localStatus = command == "pull" ? "Модель \(settings.localModel) готова" : (result?.message ?? "Локальный сервер доступен.")
@@ -570,8 +624,9 @@ final class AppStore: ObservableObject {
     }
     func prepareLocal() {
         guard !busy, !isRecording, runtimeReady, settings.localProvider == "managed" else { return }
+        beginJob(id: nil)
         Task {
-            beginJob(id: nil); defer { endJob() }
+            defer { endJob() }
             do {
                 try await worker("install-local")
                 try await localService.ensure(root: root, settings: settings, cancelled: { self.cancellationRequested })
@@ -593,9 +648,9 @@ final class AppStore: ObservableObject {
     }
     func discoverLocalModels() {
         guard !busy, !isRecording else { return }
+        beginJob(id: nil); progressText = "Ищу установленные модели…"
+        installedLocalModels = []
         Task {
-            beginJob(id: nil); progressText = "Ищу установленные модели…"
-            installedLocalModels = []
             defer { endJob() }
             do {
                 let result = try await worker("discover-local")
@@ -610,9 +665,9 @@ final class AppStore: ObservableObject {
     }
     func discoverGGUFModels() {
         guard !busy, !isRecording else { return }
+        beginJob(id: nil); progressText = "Ищу скачанные модели GGUF…"
+        installedGGUFModels = []; ggufNotes = []
         Task {
-            beginJob(id: nil); progressText = "Ищу скачанные модели GGUF…"
-            installedGGUFModels = []; ggufNotes = []
             defer { endJob() }
             do {
                 let result = try await worker("discover-gguf")
@@ -637,8 +692,8 @@ final class AppStore: ObservableObject {
             error = "Сначала подготовьте распознавание в настройках: эта среда нужна для локального движка. Затем подключите файл модели."
             return
         }
+        beginJob(id: nil); progressText = "Подключаю скачанную модель…"
         Task {
-            beginJob(id: nil); progressText = "Подключаю скачанную модель…"
             defer { endJob() }
             do {
                 // Installs the owned inference engine, without pulling model weights.
@@ -656,9 +711,9 @@ final class AppStore: ObservableObject {
     }
     func discoverASRModels(path: URL? = nil) {
         guard !busy, !isRecording else { return }
+        beginJob(id: nil); progressText = "Ищу модели распознавания…"
+        installedASRModels = []; asrNotes = []
         Task {
-            beginJob(id: nil); progressText = "Ищу модели распознавания…"
-            installedASRModels = []; asrNotes = []
             defer { endJob() }
             do {
                 let result = try await worker("discover-models", extra: path.map { ["--path", $0.path] } ?? [])

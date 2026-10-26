@@ -418,6 +418,9 @@ pub fn save_expansion_checked(root:&Path,id:&str,revision:u64,expected_transcrip
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
     let note=expected(&mut data,id,revision)?;
     let meeting_id=note.meeting_id.as_deref().context("Привяжите заметку к встрече перед дополнением")?;
+    // Serialize the source check and note commit with transcription publication.
+    let meeting_dir=crate::storage::meeting_directory(root,meeting_id)?;
+    let _source_lock=crate::storage::meeting_lock(&meeting_dir)?;
     let (transcript,current)=transcript_snapshot(root,meeting_id)?;
     ensure!(current==expected_transcript_fingerprint,"Транскрипт изменился. Повторите дополнение заметки.");
     validate_expansion(&expansion,&transcript,&current)?;
@@ -617,6 +620,31 @@ mod tests {
         crate::storage::atomic_json(&dir.join("transcript.json"),&json!({"segments":[{"id":1,"text":"Цена изменилась"}]})).unwrap();
         assert!(!expansion_valid(root.path(),&saved.id).unwrap()); assert!(save_expansion_checked(root.path(),&saved.id,expanded.revision,&fingerprint,generated).is_err());
         let mut edited=expanded.clone(); edited.text="Моя ручная правка".into(); assert!(save_note(root.path(),edited).unwrap().expansion.is_none());
+    }
+    #[test] fn grounded_expansion_waits_for_transcript_publication_and_rechecks_source() {
+        let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one");
+        let mut draft=note("Какая цена?"); draft.meeting_id=Some("one".into());
+        let saved=save_note(root.path(),draft).unwrap(); let generated=expansion(root.path(),"one");
+        let fingerprint=generated["sourceFingerprint"].as_str().unwrap().to_owned();
+        let lock=crate::storage::meeting_lock(&dir).unwrap();
+        let (started_tx,started_rx)=std::sync::mpsc::channel();
+        let (finished_tx,finished_rx)=std::sync::mpsc::channel();
+        let thread_root=root.path().to_owned(); let id=saved.id.clone(); let revision=saved.revision;
+        let thread=std::thread::spawn(move|| {
+            started_tx.send(()).unwrap();
+            finished_tx.send(save_expansion_checked(&thread_root,&id,revision,&fingerprint,generated)).unwrap();
+        });
+        started_rx.recv().unwrap();
+        let early=finished_rx.recv_timeout(std::time::Duration::from_millis(250));
+        let waited=matches!(early,Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+        crate::storage::atomic_json(&dir.join("transcript.json"),&json!({"segments":[{"id":1,"start":0.0,"end":5.0,"text":"Цена теперь 20 процентов"}]})).unwrap();
+        drop(lock);
+        let result=match early { Ok(value)=>value,Err(_)=>finished_rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap() };
+        thread.join().unwrap();
+        assert!(waited,"grounded note was published while the source writer held its lock");
+        assert!(result.is_err());
+        let current=load_note_snapshot(root.path(),&saved.id).unwrap();
+        assert_eq!(current.revision,saved.revision); assert!(current.expansion.is_none());
     }
     #[test] fn context_and_template_revisions_preserve_meeting_data() {
         let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one"); let original=fs::read(dir.join("meta.json")).unwrap();

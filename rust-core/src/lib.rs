@@ -19,11 +19,11 @@ fn data_path(root: &Path, relative: &str) -> Result<PathBuf> {
     if relative.components().any(|p| !matches!(p, Component::Normal(_))) {
         bail!("Недопустимый путь библиотеки");
     }
-    let allowed = ["settings.json", "meta.json", "transcript.json", "summary.json", "examples.json", "review-state.json"];
+    let allowed = ["settings.json", "overview-drafts.json", "meta.json", "transcript.json", "summary.json", "examples.json", "review-state.json"];
     let name = relative.file_name().and_then(|s| s.to_str()).context("Нет имени файла")?;
     if !allowed.contains(&name) { bail!("Этот файл не относится к библиотеке"); }
     let components: Vec<_> = relative.components().collect();
-    if name == "settings.json" {
+    if ["settings.json", "overview-drafts.json"].contains(&name) {
         if components.len() != 1 { bail!("Недопустимый путь настроек"); }
     } else {
         if components.len() != 3 || components[0].as_os_str() != "meetings" { bail!("Недопустимый путь встречи"); }
@@ -61,6 +61,11 @@ pub fn request(value: &Value) -> Result<Value> {
         }
         "import" => storage::import_meeting(&root, Path::new(value["source"].as_str().context("Нет файла")?),
                                             value["focus"].as_str().unwrap_or("")),
+        "summary-overview-save" => storage::save_summary_overview(&root,
+            value["meetingID"].as_str().context("Нет ID встречи")?,
+            value["text"].as_str().context("Нет текста конспекта")?,
+            value["expectedOverview"].as_str().context("Нет исходного конспекта")?,
+            value["expectedGeneratedAt"].as_f64().context("Нет даты исходного конспекта")?),
         "update" => storage::update_meta(&root, value["id"].as_str().context("Нет ID")?, value.get("patch").context("Нет изменений")?),
         _ => Err(anyhow!("Неизвестная команда ядра")),
     }
@@ -91,6 +96,33 @@ pub unsafe extern "C" fn posle_free_string(value: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn overview_drafts_are_private_root_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let draft = json!({"meeting-1": {"text": "Моя правка", "original": "Конспект", "generatedAt": 1}});
+        request(&json!({"root": directory.path(), "command": "write", "path": "overview-drafts.json", "value": draft})).unwrap();
+        assert_eq!(request(&json!({"root": directory.path(), "command": "read", "path": "overview-drafts.json"})).unwrap(), draft);
+        assert!(request(&json!({"root": directory.path(), "command": "write", "path": "meetings/meeting-1/overview-drafts.json", "value": draft})).is_err());
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(directory.path().join("overview-drafts.json")).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn overview_save_domain_request_returns_latest_summary_and_requires_cas_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let meeting = storage::meeting_directory(directory.path(), "synthetic").unwrap();
+        let path = meeting.join("summary.json");
+        storage::atomic_json(&path, &json!({"overview":"Old","generatedAt":1,"cards":[],"future":true})).unwrap();
+        let mut input = json!({"root":directory.path(),"command":"summary-overview-save","meetingID":"synthetic",
+            "text":"Edited", "expectedOverview":"Old", "expectedGeneratedAt":1});
+        let result = request(&input).unwrap();
+        assert_eq!(result, json!({"overview":"Edited","overviewClaims":[],"generatedAt":1,"cards":[],"future":true}));
+        let committed = std::fs::read(&path).unwrap();
+        input.as_object_mut().unwrap().remove("expectedGeneratedAt");
+        assert!(request(&input).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), committed);
+    }
+
     #[test]
     fn library_paths_cannot_escape_or_write_secrets() {
         let dir = tempfile::tempdir().unwrap();
