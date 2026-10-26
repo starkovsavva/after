@@ -35,28 +35,59 @@ final class ChatGPTAccount: ObservableObject {
     @Published private(set) var isSigningOut = false
     @Published private(set) var message: String?
     @Published private(set) var isError = false
-    private let engine = ChatGPTSessionStore()
+    private let engine: ChatGPTSessionStore
     private let disabled: Bool
     private var loginTask: Task<ChatGPTSessionStore.Snapshot, Error>?
+    private var initialRestoreTask: Task<ChatGPTSessionStore.Snapshot, Error>?
+    private var initialRestoreFailure: Error?
+    private var initialRestoreRevision: UUID?
     private var revision = UUID()
     private var catalogRevision = UUID()
     private var refreshCount = 0
 
-    init(preview: Bool = false) {
+    convenience init(preview: Bool = false) {
         let arguments = ProcessInfo.processInfo.arguments
-        disabled = preview || arguments.contains("--preview") || arguments.contains("--snapshot") || arguments.contains { $0.hasPrefix("--check-") }
-        if !disabled {
-            let initialRevision = revision
-            Task {
-                do { let snapshot = try await engine.snapshot(); if revision == initialRevision { apply(snapshot) } }
-                catch { if revision == initialRevision { report(error) } }
+        let disabled = preview || arguments.contains("--preview") || arguments.contains("--snapshot") || arguments.contains { $0.hasPrefix("--check-") }
+        let engine = ChatGPTSessionStore()
+        let restore: Task<ChatGPTSessionStore.Snapshot, Error>? = disabled ? nil : Task { try await engine.snapshot() }
+        self.init(engine: engine, disabled: disabled, restore: restore)
+    }
+    private init(engine: ChatGPTSessionStore, disabled: Bool, restore: Task<ChatGPTSessionStore.Snapshot, Error>?) {
+        self.engine = engine; self.disabled = disabled; initialRestoreTask = restore
+        initialRestoreRevision = revision
+        if restore != nil { Task { [weak self] in try? await self?.restoreInitialSession() } }
+    }
+    /// Every startup caller awaits the same read. A cancelled job does not cancel
+    /// restoration for the UI or other jobs; an explicit sign-in/out supersedes it.
+    private func restoreInitialSession() async throws {
+        guard revision == initialRestoreRevision else { return }
+        guard let pending = initialRestoreTask else {
+            if let initialRestoreFailure { throw initialRestoreFailure }
+            return
+        }
+        do {
+            let snapshot = try await pending.value
+            try Task.checkCancellation()
+            guard initialRestoreTask != nil else { return }
+            initialRestoreTask = nil
+            if revision == initialRestoreRevision { apply(snapshot) }
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            if initialRestoreTask != nil {
+                initialRestoreTask = nil; initialRestoreFailure = error
+                if revision == initialRestoreRevision { report(error) }
             }
+            throw error
         }
     }
     func signIn(useDifferentAccount: Bool = false) async {
+        do { try await restoreInitialSession() } catch is CancellationError { return } catch {}
         await connect(accountID: useDifferentAccount ? nil : profile?.id)
     }
-    func signIn(accountID: String) async { await connect(accountID: accountID) }
+    func signIn(accountID: String) async {
+        do { try await restoreInitialSession() } catch is CancellationError { return } catch {}
+        await connect(accountID: accountID)
+    }
     private func connect(accountID: String?) async {
         guard !disabled, !isConnecting, !isSigningOut else { return }
         let operationID = UUID(); revision = operationID
@@ -92,7 +123,9 @@ final class ChatGPTAccount: ObservableObject {
         } catch { report(error) }
     }
     func refreshModels() async {
-        guard !disabled, let accountID = profile?.id, profile?.planEnabled == true else { models = []; return }
+        guard !disabled else { return }
+        do { try await restoreInitialSession() } catch { return }
+        guard !isSigningOut, let accountID = profile?.id, profile?.planEnabled == true else { models = []; return }
         let operationID = UUID(); catalogRevision = operationID
         isLoadingModels = true; message = nil; isError = false
         defer { if catalogRevision == operationID { isLoadingModels = false } }
@@ -109,7 +142,9 @@ final class ChatGPTAccount: ObservableObject {
         }
     }
     func accessToken(expectedAccountID: String) async throws -> String {
-        guard !disabled, !isSigningOut, profile?.id == expectedAccountID else { throw ChatGPTSignInError.accountChanged }
+        guard !disabled else { throw ChatGPTSignInError.accountChanged }
+        try await restoreInitialSession()
+        guard !isSigningOut, profile?.id == expectedAccountID else { throw ChatGPTSignInError.accountChanged }
         refreshCount += 1; isRefreshing = true
         defer { refreshCount -= 1; isRefreshing = refreshCount > 0 }
         do {
@@ -131,6 +166,14 @@ final class ChatGPTAccount: ObservableObject {
         message = (error as? ChatGPTSignInError)?.errorDescription ?? "Не удалось подключиться к ChatGPT. Проверь сеть и попробуй ещё раз."
     }
     #if DEBUG
+    static func restoringFixture() throws -> (account: ChatGPTAccount, id: String) {
+        let fixture = try ChatGPTSessionStore.startupFixture()
+        let restore = Task {
+            try await Task.sleep(for: .milliseconds(35))
+            return try await fixture.engine.snapshot()
+        }
+        return (ChatGPTAccount(engine: fixture.engine, disabled: false, restore: restore), fixture.id)
+    }
     static func fixture(profile: ChatGPTProfile? = nil, savedProfiles: [ChatGPTProfile] = [], models: [ChatGPTModel] = [], connecting: Bool = false, loading: Bool = false, message: String? = nil, isError: Bool = false) -> ChatGPTAccount {
         let result = ChatGPTAccount(preview: true)
         result.profile = profile; result.savedProfiles = savedProfiles; result.models = models
@@ -724,6 +767,18 @@ extension ChatGPTSecurity {
     }
 }
 private extension ChatGPTSessionStore {
+    static func startupFixture() throws -> (engine: ChatGPTSessionStore, id: String) {
+        let id = ChatGPTSecurity.accountID(subject: "offline-startup", clientID: "oaiapp_startup")
+        let tokens = Tokens(access: "offline-startup-access", refresh: "offline-startup-refresh", idToken: "offline-startup-id",
+                            expiresAt: Date().addingTimeInterval(3600), earliestRefreshAt: nil, scopes: ChatGPTSecurity.scopes.components(separatedBy: " "))
+        let record = Registration(id: id, subject: "offline-startup", clientID: "oaiapp_startup", displayName: "Offline startup", email: nil, tokens: tokens)
+        let body = try JSONSerialization.data(withJSONObject: ["models": [["slug": "offline-model", "display_name": "Offline model", "visibility": "list"]]])
+        let hooks = TestHooks(save: { _ in throw ChatGPTSignInError.identity }, request: { request in
+            guard request.url?.absoluteString == "https://api.openai.com/v1/models", request.value(forHTTPHeaderField: "Authorization") == "Bearer offline-startup-access" else { throw ChatGPTSignInError.identity }
+            return (body, 200)
+        })
+        return (ChatGPTSessionStore(vault: Vault(registrations: [record], activeID: id), hooks: hooks), id)
+    }
     static func verifySessionLifecycle() async throws {
         let id = ChatGPTSecurity.accountID(subject: "offline-subject", clientID: "oaiapp_offline")
         let old = Tokens(access: "offline-old-access", refresh: "offline-old-refresh", idToken: "offline-id-token",

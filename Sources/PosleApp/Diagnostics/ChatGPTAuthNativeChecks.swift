@@ -67,7 +67,27 @@ enum ChatGPTAuthNativeChecks {
         print("PASS: concurrent refresh serializes one rotation, atomic replacement, account mismatch, temporary and terminal failures")
         try await ChatGPTSecurity.verifyLoopback()
         print("PASS: actual loopback ephemeral listener, bad-state rejection, valid callback and cancellation")
-        print("5 native ChatGPT auth checks passed (synthetic credentials only)")
+        let startup = try ChatGPTAccount.restoringFixture()
+        try expect(startup.account.profile == nil, "The fixture must begin before asynchronous restoration")
+        let restoredToken = try await startup.account.accessToken(expectedAccountID: startup.id)
+        try expect(restoredToken == "offline-startup-access" && startup.account.profile?.id == startup.id, "An immediate queued request must wait for the saved account")
+        do { _ = try await startup.account.accessToken(expectedAccountID: "other-account"); throw CheckFailure.failed("Startup restoration changed the queued account") } catch ChatGPTSignInError.accountChanged {}
+        let catalogStartup = try ChatGPTAccount.restoringFixture()
+        await catalogStartup.account.refreshModels()
+        try expect(catalogStartup.account.models.map(\.id) == ["offline-model"], "Catalog loading must wait for initial restoration")
+        let cancelledStartup = try ChatGPTAccount.restoringFixture()
+        let cancelledJob = Task { try await cancelledStartup.account.accessToken(expectedAccountID: cancelledStartup.id) }
+        cancelledJob.cancel()
+        do { _ = try await cancelledJob.value; throw CheckFailure.failed("A cancelled startup job returned credentials") } catch is CancellationError {}
+        let nextToken = try await cancelledStartup.account.accessToken(expectedAccountID: cancelledStartup.id)
+        try expect(nextToken == "offline-startup-access", "One cancelled job must not cancel shared restoration")
+        let superseded = try ChatGPTAccount.restoringFixture()
+        superseded.account.cancelSignIn()
+        do { _ = try await superseded.account.accessToken(expectedAccountID: superseded.id); throw CheckFailure.failed("A superseded snapshot restored an account") } catch ChatGPTSignInError.accountChanged {}
+        try await Task.sleep(for: .milliseconds(50))
+        try expect(superseded.account.profile == nil, "An old initial snapshot cannot resurrect a superseded session")
+        print("PASS: startup token/catalog calls await one restore, cancellation is isolated and stale restore cannot replace account state")
+        print("6 native ChatGPT auth checks passed (synthetic credentials only)")
     }
     private enum CheckFailure: Error { case failed(String) }
     private static func expect(_ value: @autoclosure () throws -> Bool, _ message: String) throws { guard try value() else { throw CheckFailure.failed(message) } }
