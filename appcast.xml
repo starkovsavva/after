@@ -6,26 +6,27 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.12.2</title>
-      <sparkle:version>17</sparkle:version>
-      <sparkle:shortVersionString>0.12.2</sparkle:shortVersionString>
+      <title>После 0.12.3</title>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>0.12.3</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Mon, 26 Oct 2026 21:39:44 GMT</pubDate>
-      <description sparkle:format="markdown"># 0.12.2
+      <pubDate>Mon, 26 Oct 2026 22:13:47 GMT</pubDate>
+      <description sparkle:format="markdown"># 0.12.3
 
-- **ChatGPT.** Исправлена сборка текста из событий Responses, когда завершающее событие не повторяет полный ответ.
-- **Проверка подключения.** Добавлена иконка копирования диагностики ошибки. Отчёт содержит версию приложения и структуру ответа без текста встреч, ключей и данных аккаунта.
+- **Видео.** Исправлено раннее завершение видеодорожки при неподвижном экране: последний кадр сохраняется до конца звука.
+- **Запись.** Отсутствие видеокадров больше не считается успешной записью видео. Исходный звук сохраняется.
+- **Доступ macOS.** Сообщения различают отказ в разрешении, недоступный экран и сбой ScreenCaptureKit. Добавлена поддержка сборок с постоянной личной подписью Apple.
 </description>
-      <posle:sourceRevision>69d0a221f0788be56bce4ca9fa869b4edbdcc3c5</posle:sourceRevision>
-      <posle:archiveSHA256>cc45eeb87b41279990d58cb55d8bcf6b7fe6d6943bcd9d12368f60f18e559da6</posle:archiveSHA256>
-      <posle:sourceSHA256>e40b36e72c2ee50caa0130628e1903b00ba6fe34a7a00b30e058e5fe7b83ef9c</posle:sourceSHA256>
-      <posle:packageSHA256>9961b5315aa59c1fd75aeaf609388d44a290e6c508fbd94776366a71cd78539c</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.12.2/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="M+SUODYBYwPMA7v52GPB8DNd5XMVRTFkpM6RLamFmzS0WgtFuN+NHCWBVJNYhJIKdLSQsIlGkOpwLo/sARKkCw==" length="15240688" type="application/octet-stream" />
+      <posle:sourceRevision>f4d1c88795219da4b01dac007eb74d3f7c0a7f0e</posle:sourceRevision>
+      <posle:archiveSHA256>d500c832d9282f6b17ce7d4d325022a7cca78aeab17abf73667111ddd6dbf347</posle:archiveSHA256>
+      <posle:sourceSHA256>fe117fa5692210bc4121112018f94895d8de3aa8a1abd74fd760faba1ec68290</posle:sourceSHA256>
+      <posle:packageSHA256>9c3de2a3cf545a23e9c9519f16bc58edb6c9c69ae926229e2e4d849353cf724f</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.12.3/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="WcFfbKPpVqWG2Hmxo+CcIEqz8E3WnJurrbADnF5PVEAKSRcTDi84nZHs6c/zDtBemGnnF6r94Yqr5yNe572RDw==" length="15251757" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: vDswgKlqzUrvSGRHOca+Zf8tfhEJg6VAtrqMLwgSSqSbWG5nHsnNf0MvHSRLQmHDTw7EqS9kCJosnz3MI3HvAA==
-length: 2076
+edSignature: 4H6Uci1z5RG+xfRIi1fybVcCVYzxFfC0LUom79P5pekFNXXDqZoardRo8xYpSX13mwnLadgsPOMkd04maMdhAA==
+length: 2260
 -->
