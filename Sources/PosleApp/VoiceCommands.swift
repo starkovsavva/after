@@ -132,6 +132,9 @@ final class VoiceCommandController: ObservableObject {
     private var interruptedPlanID: String?
     private var interruptedOperationID: String?
     private var generation = UUID()
+    #if DEBUG
+    private var dictationStopFailureForChecks: Error?
+    #endif
     var isWorking: Bool { [.authorizing, .capturing, .transcribing, .planning, .applying].contains(phase) }
     var hasDraft: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && phase != .result }
     var blocksRelaunch: Bool { isWorking || hasDraft }
@@ -202,9 +205,11 @@ final class VoiceCommandController: ObservableObject {
     }
     func startDictation() {
         guard let store, !isWorking else { return }
-        guard !store.busy, !store.isRecording else {
-            message = store.isRecording ? "Во время записи встречи введите поручение текстом. Микрофон занят записью." : "Дождитесь текущей обработки."; return
+        guard !store.isTerminating else { message = "Приложение завершает работу."; return }
+        guard !store.startingRecording, !store.isRecording, !store.stoppingRecording else {
+            message = "Во время записи встречи введите поручение текстом. Микрофон занят записью."; return
         }
+        guard !store.busy else { message = "Дождитесь текущей обработки."; return }
         guard !store.isPreview else { message = "В режиме просмотра введите поручение текстом."; return }
         guard store.runtimeReady else { message = "Подготовьте распознавание в настройках."; return }
         if store.settings.speechMode == "cloud", !store.confirmVoiceUpload() { return }
@@ -226,6 +231,9 @@ final class VoiceCommandController: ObservableObject {
         guard let store, phase == .capturing else { return }
         let current = generation
         do {
+            #if DEBUG
+            if let failure = dictationStopFailureForChecks { dictationStopFailureForChecks = nil; throw failure }
+            #endif
             let audio = try capture.stop()
             phase = .transcribing; store.progressText = "Распознаю поручение…"
             task = Task {
@@ -245,8 +253,21 @@ final class VoiceCommandController: ObservableObject {
                     phase = .editing; message = error is CancellationError ? "Диктовка остановлена." : error.localizedDescription
                 }
             }
-        } catch { capture.discard(); phase = .editing; message = error.localizedDescription }
+        } catch {
+            capture.discard(); phase = .editing
+            message = error is CancellationError ? "Диктовка остановлена." : error.localizedDescription
+            store.endJob()
+        }
     }
+    #if DEBUG
+    /// Seeds only the controller's reservation, never a microphone or audio file.
+    func beginSyntheticDictationForChecks(stopFailure: Error) {
+        precondition(store?.isPreview == true)
+        generation = UUID(); task?.cancel(); task = nil
+        dictationStopFailureForChecks = stopFailure
+        store?.beginJob(id: nil); phase = .capturing
+    }
+    #endif
     func perform() {
         guard let store, !isWorking, !store.busy, !store.stoppingRecording else { return }
         let command = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -346,6 +367,9 @@ final class VoiceCommandController: ObservableObject {
         // Applying is a short atomic mutation. Do not announce cancellation
         // while a committed operation may already exist; it remains undoable.
         guard phase != .applying else { return }
+        #if DEBUG
+        dictationStopFailureForChecks = nil
+        #endif
         let previousPhase = phase
         generation = UUID(); task?.cancel(); phase = .editing
         if [.authorizing, .capturing].contains(previousPhase) { store.cancelJob() }

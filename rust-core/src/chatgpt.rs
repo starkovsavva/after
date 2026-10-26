@@ -1,7 +1,7 @@
 //! ChatGPT plan usage is a distinct credential and billing route. Keep its
 //! public endpoint and streaming contract separate from API-key providers.
 use anyhow::{bail, Result};
-use reqwest::blocking::{Client, Response};
+use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -119,21 +119,123 @@ fn request_error(status: StatusCode, code: Option<&str>) -> anyhow::Error {
     )
 }
 
+fn inference_request(builder: RequestBuilder, access_token: &str, body: &Value) -> RequestBuilder {
+    builder
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .bearer_auth(access_token.trim())
+        .json(body)
+}
+
 pub(crate) fn generate(client: &Client, access_token: &str, body: &Value) -> Result<Value> {
     if access_token.trim().is_empty() {
         bail!("Войдите через ChatGPT в настройках конспекта и карточек.");
     }
     // The client disables redirects; no endpoint override or alternate billing
     // path is accepted here. A failed inference is never automatically retried.
-    let response = client
-        .post(RESPONSES_ENDPOINT)
-        .bearer_auth(access_token.trim())
-        .json(body)
+    let response = inference_request(client.post(RESPONSES_ENDPOINT), access_token, body)
         .send()
         .map_err(|_| {
             anyhow::anyhow!("Нет ответа от ChatGPT. Проверьте соединение; подключение сохранено.")
         })?;
     consume_response(response)
+}
+
+fn response_metadata(status: StatusCode, media_type: &str) -> String {
+    // A response header is untrusted too: expose only a small fixed vocabulary,
+    // never raw header values that could include credentials or user text.
+    let safe_type = match media_type {
+        "text/event-stream" => "text/event-stream",
+        "application/json" => "application/json",
+        "application/problem+json" => "application/problem+json",
+        "text/html" => "text/html",
+        "text/plain" => "text/plain",
+        "application/octet-stream" => "application/octet-stream",
+        "" => "missing",
+        _ => "other",
+    };
+    format!(
+        "ChatGPT: HTTP {} · Content-Type {}.",
+        status.as_u16(),
+        safe_type
+    )
+}
+
+fn response_format_error(status: StatusCode, media_type: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{} Неподходящий формат ответа Responses; исходные данные сохранены.",
+        response_metadata(status, media_type)
+    )
+}
+
+fn parse_answer(answer: &str) -> Result<Value> {
+    let value: Value = serde_json::from_str(answer).map_err(|_| {
+        anyhow::anyhow!("ChatGPT вернул ответ неподходящего формата JSON. Проверьте формат ответа; исходные данные сохранены.")
+    })?;
+    if !value.is_object() {
+        bail!("ChatGPT вернул JSON без ожидаемого объекта. Исходные данные сохранены.");
+    }
+    Ok(value)
+}
+
+/// Common terminal validation for both response.completed and a fully buffered
+/// Responses object. Text deltas alone never establish a successful inference.
+fn completed_text(
+    response: &Value,
+    status: StatusCode,
+    max_answer: usize,
+) -> Result<Option<String>> {
+    if response.get("error").is_some_and(|error| !error.is_null()) {
+        return Err(request_error(status, response["error"]["code"].as_str()));
+    }
+    if response["status"] != "completed"
+        || response
+            .get("incomplete_details")
+            .is_some_and(|details| !details.is_null())
+    {
+        bail!("ChatGPT не подтвердил завершение ответа. Исходные данные сохранены.");
+    }
+    let Some(output) = response.get("output") else {
+        return Ok(None);
+    };
+    let output = output
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("ChatGPT вернул некорректный результат Responses."))?;
+    let mut text = String::new();
+    for item in output {
+        if item
+            .get("status")
+            .is_some_and(|status| !status.is_null() && status != "completed")
+        {
+            bail!("ChatGPT не закончил часть ответа. Исходные данные сохранены.");
+        }
+        for part in item["content"].as_array().into_iter().flatten() {
+            match part["type"].as_str() {
+                Some("refusal") => {
+                    bail!("ChatGPT отказался обработать запрос. Исходные данные сохранены.")
+                }
+                Some("output_text") => {
+                    if item["type"] != "message"
+                        || item["role"] != "assistant"
+                        || item["status"] != "completed"
+                    {
+                        bail!("ChatGPT вернул некорректное сообщение Responses. Исходные данные сохранены.");
+                    }
+                    let part = part["text"].as_str().ok_or_else(|| {
+                        anyhow::anyhow!("ChatGPT вернул некорректный текст результата.")
+                    })?;
+                    if part.len() > max_answer.saturating_sub(text.len()) {
+                        bail!("Ответ ChatGPT превышает допустимый размер.");
+                    }
+                    text.push_str(part);
+                }
+                _ => {}
+            }
+        }
+    }
+    if text.trim().is_empty() {
+        bail!("ChatGPT завершил запрос без текста ответа.");
+    }
+    Ok(Some(text))
 }
 
 fn consume_response(mut response: Response) -> Result<Value> {
@@ -159,13 +261,107 @@ fn consume_response(mut response: Response) -> Result<Value> {
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|header| header.to_str().ok())
         .and_then(|header| header.split(';').next())
-        .unwrap_or("");
-    if !media_type.trim().eq_ignore_ascii_case("text/event-stream") {
-        bail!("ChatGPT вернул неожиданный формат ответа. Ожидался поток Responses; исходные данные сохранены.");
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let result = if media_type == "text/event-stream" {
+        read_stream(&mut response, status).and_then(|answer| parse_answer(&answer))
+    } else {
+        // An intermediary may omit or mislabel the MIME type. Inspect at most
+        // 4 KiB and then keep reading the same response, without a second call.
+        let (prefix, format) = sniff_response(&mut response)
+            .map_err(|_| response_format_error(status, &media_type))?;
+        let mut reader = std::io::Cursor::new(prefix).chain(&mut response);
+        match format {
+            WireFormat::Events => {
+                read_stream(&mut reader, status).and_then(|answer| parse_answer(&answer))
+            }
+            WireFormat::Json => read_json_response(&mut reader, status, &media_type),
+            WireFormat::Unknown => Err(response_format_error(status, &media_type)),
+        }
+    };
+    result.map_err(|error| {
+        // Exact allowlisted error codes remain first so quota admission can
+        // recognize them. Other failures expose only sanitized wire metadata.
+        if error.to_string().starts_with("ChatGPT: HTTP ") {
+            error
+        } else {
+            anyhow::anyhow!("{} {}", response_metadata(status, &media_type), error)
+        }
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WireFormat {
+    Events,
+    Json,
+    Unknown,
+}
+
+fn sniff_response(reader: &mut impl Read) -> Result<(Vec<u8>, WireFormat)> {
+    const PREFIX_LIMIT: usize = 4096;
+    let mut prefix = Vec::new();
+    let mut buffer = [0_u8; 64];
+    loop {
+        let mut content = prefix.as_slice();
+        // A split UTF-8 BOM needs more bytes before a format decision.
+        let partial_bom = content.len() < 3 && [0xef, 0xbb, 0xbf].starts_with(content);
+        if content.starts_with(&[0xef, 0xbb, 0xbf]) {
+            content = &content[3..];
+        }
+        content = content.trim_ascii_start();
+        if !content.is_empty() && !partial_bom {
+            if content.starts_with(b"{") || content.starts_with(b"[") {
+                return Ok((content.to_vec(), WireFormat::Json));
+            }
+            let fields: [&[u8]; 5] = [b"data:", b"event:", b":", b"id:", b"retry:"];
+            if fields.iter().any(|field| content.starts_with(field)) {
+                return Ok((content.to_vec(), WireFormat::Events));
+            }
+            if !fields.iter().any(|field| field.starts_with(content)) {
+                return Ok((prefix, WireFormat::Unknown));
+            }
+        }
+        if prefix.len() >= PREFIX_LIMIT {
+            return Ok((prefix, WireFormat::Unknown));
+        }
+        let limit = (PREFIX_LIMIT - prefix.len()).min(buffer.len());
+        let count = reader.read(&mut buffer[..limit])?;
+        if count == 0 {
+            return Ok((prefix, WireFormat::Unknown));
+        }
+        prefix.extend_from_slice(&buffer[..count]);
     }
-    let answer = read_stream(&mut response, status)?;
-    serde_json::from_str(&answer)
-        .map_err(|_| anyhow::anyhow!("ChatGPT вернул ответ неподходящего формата JSON. Проверьте формат ответа; исходные данные сохранены."))
+}
+
+fn read_json_response(
+    reader: &mut impl Read,
+    status: StatusCode,
+    media_type: &str,
+) -> Result<Value> {
+    // A complete Responses object may be buffered by a gateway. Plain generated
+    // JSON, admission errors, partial responses and HTML are never success.
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_STREAM_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| {
+            anyhow::anyhow!("Ответ ChatGPT прервался. Исходные данные сохранены; повторите позже.")
+        })?;
+    if bytes.len() > MAX_STREAM_BYTES {
+        bail!("Ответ ChatGPT превышает допустимый размер.");
+    }
+    let value: Value =
+        serde_json::from_slice(&bytes).map_err(|_| response_format_error(status, media_type))?;
+    if value.get("error").is_some_and(|error| !error.is_null()) {
+        return Err(request_error(status, value["error"]["code"].as_str()));
+    }
+    if value["object"] != "response" {
+        return Err(response_format_error(status, media_type));
+    }
+    let answer = completed_text(&value, status, MAX_ANSWER_BYTES)?
+        .ok_or_else(|| response_format_error(status, media_type))?;
+    parse_answer(&answer)
 }
 
 fn read_stream(reader: &mut impl Read, http_status: StatusCode) -> Result<String> {
@@ -195,6 +391,7 @@ struct EventStream {
     max_event: usize,
     max_answer: usize,
     line: Vec<u8>,
+    first_line: bool,
     event_data: Vec<u8>,
     event_name: Vec<u8>,
     data_seen: bool,
@@ -211,6 +408,7 @@ impl EventStream {
             max_event,
             max_answer,
             line: Vec::new(),
+            first_line: true,
             event_data: Vec::new(),
             event_name: Vec::new(),
             data_seen: false,
@@ -250,7 +448,13 @@ impl EventStream {
         Ok(None)
     }
     fn consume_line(&mut self) -> Result<Option<String>> {
-        let line = std::mem::take(&mut self.line);
+        let mut line = std::mem::take(&mut self.line);
+        if self.first_line {
+            self.first_line = false;
+            if line.starts_with(&[0xef, 0xbb, 0xbf]) {
+                line.drain(..3);
+            }
+        }
         if line.is_empty() {
             if !self.data_seen {
                 self.event_name.clear();
@@ -351,42 +555,13 @@ impl EventStream {
                 bail!("ChatGPT не закончил ответ. Исходные данные сохранены; повторите позже.")
             }
             "response.completed" => {
-                let response = &event["response"];
-                if response["status"] != "completed"
-                    || response.get("error").is_some_and(|error| !error.is_null())
-                {
-                    bail!("ChatGPT не подтвердил завершение ответа. Исходные данные сохранены.");
-                }
-                let mut text = String::new();
-                if let Some(output) = response.get("output") {
-                    let output = output.as_array().ok_or_else(|| {
-                        anyhow::anyhow!("ChatGPT вернул некорректный результат Responses.")
-                    })?;
-                    for item in output {
-                        if item
-                            .get("status")
-                            .is_some_and(|status| status != "completed")
-                        {
-                            bail!("ChatGPT не закончил часть ответа. Исходные данные сохранены.");
-                        }
-                        for part in item["content"].as_array().into_iter().flatten() {
-                            match part["type"].as_str() {
-                                Some("refusal") => bail!("ChatGPT отказался обработать запрос. Исходные данные сохранены."),
-                                Some("output_text") => {
-                                    let part = part["text"].as_str().ok_or_else(|| anyhow::anyhow!("ChatGPT вернул некорректный текст результата."))?;
-                                    if text.len() + part.len() > self.max_answer { bail!("Ответ ChatGPT превышает допустимый размер."); }
-                                    text.push_str(part);
-                                },
-                                _ => {},
-                            }
-                        }
-                    }
-                }
-                if response.get("output").is_none() {
-                    // A compact terminal may omit the full output, but an
-                    // explicitly empty/malformed final output is authoritative.
-                    text = std::mem::take(&mut self.deltas).into_values().collect();
-                }
+                let text =
+                    match completed_text(&event["response"], self.http_status, self.max_answer)? {
+                        Some(text) => text,
+                        // A compact terminal may omit the full output, but an
+                        // explicitly empty/malformed final output is authoritative.
+                        None => std::mem::take(&mut self.deltas).into_values().collect(),
+                    };
                 if text.trim().is_empty() {
                     bail!("ChatGPT завершил запрос без текста ответа.");
                 }
@@ -414,10 +589,11 @@ mod tests {
         )
         .into_bytes()
     }
+    fn response_value(text: &str) -> Value {
+        json!({"object":"response","status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":text}]}]})
+    }
     fn completed(text: &str) -> Vec<u8> {
-        event(
-            json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message","status":"completed","content":[{"type":"output_text","text":text}]}]}}),
-        )
+        event(json!({"type":"response.completed","response":response_value(text)}))
     }
     fn delta(text: &str) -> Vec<u8> {
         event(
@@ -539,7 +715,7 @@ mod tests {
     }
     #[test]
     fn multiline_data_and_lone_cr_are_valid_sse() {
-        let bytes = b"event: response.completed\rdata: {\"type\":\"response.completed\",\rdata: \"response\":{\"status\":\"completed\",\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"{}\"}]}]}}\r\r";
+        let bytes = b"event: response.completed\rdata: {\"type\":\"response.completed\",\rdata: \"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"{}\"}]}]}}\r\r";
         assert_eq!(
             read_stream(&mut Cursor::new(bytes), StatusCode::OK).unwrap(),
             "{}"
@@ -663,10 +839,16 @@ mod tests {
             } else {
                 ""
             };
-            write!(stream, "HTTP/1.1 {status} fixture\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\n{redirect}Connection: close\r\n\r\n", body.len()).unwrap();
+            let content_type = if media_type.is_empty() {
+                String::new()
+            } else {
+                format!("Content-Type: {media_type}\r\n")
+            };
+            write!(stream, "HTTP/1.1 {status} fixture\r\n{content_type}Content-Length: {}\r\n{redirect}Connection: close\r\n\r\n", body.len()).unwrap();
             // Small writes also exercise HTTP buffering without relying on
             // the operating system preserving packet boundaries.
-            for chunk in body.chunks(97) {
+            let chunk_size = if body.len() > 64 * 1024 { 8192 } else { 97 };
+            for chunk in body.chunks(chunk_size) {
                 if stream.write_all(chunk).is_err() {
                     break;
                 }
@@ -677,21 +859,13 @@ mod tests {
     }
     #[test]
     fn actual_http_stream_transport_accepts_only_completed_json_and_rejects_late_failure() {
-        let client = Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(3))
-            .build()
-            .unwrap();
+        let client = fixture_client();
         let body =
             request_body("gpt-6-luna", "none", "prompt", "S", "PRIVATE", &json!({})).unwrap();
         let mut successful = delta(r#"{"ok":true}"#);
         successful.extend(completed(r#"{"ok":true}"#));
         let (url, server) = http_fixture(200, "text/event-stream; charset=utf-8", successful);
-        let response = client
-            .post(url)
-            .bearer_auth("fixture-secret")
-            .json(&body)
+        let response = inference_request(client.post(url), "fixture-secret", &body)
             .send()
             .unwrap();
         assert_eq!(consume_response(response).unwrap(), json!({"ok":true}));
@@ -699,6 +873,7 @@ mod tests {
         assert!(headers
             .to_lowercase()
             .contains("authorization: bearer fixture-secret"));
+        assert!(headers.to_lowercase().contains("accept: text/event-stream"));
         assert_eq!(request, body);
         let mut failed = delta(r#"{"ok":true}"#);
         failed.extend(event(json!({"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"fixture-secret PRIVATE"}}})));
@@ -714,12 +889,7 @@ mod tests {
     }
     #[test]
     fn actual_http_admission_errors_do_not_redirect_retry_or_echo_private_body() {
-        let client = Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(3))
-            .build()
-            .unwrap();
+        let client = fixture_client();
         let body = request_body("gpt-6-luna", "auto", "prompt", "S", "P", &json!({})).unwrap();
         for (status, bytes, expected) in [
             (401, br#"{"detail":"PRIVATE_MEETING_AND_TOKEN"}"#.to_vec(), "Войдите"),
@@ -741,6 +911,258 @@ mod tests {
                 .contains("формат")
         );
         server.join().unwrap();
+    }
+    fn fixture_client() -> Client {
+        Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap()
+    }
+    fn http_result(client: &Client, mime: &str, bytes: Vec<u8>) -> Result<Value> {
+        let (url, server) = http_fixture(200, mime, bytes);
+        let body = request_body(
+            "gpt-6-luna",
+            "none",
+            "schema",
+            "S",
+            "PRIVATE_MEETING",
+            &json!({}),
+        )
+        .unwrap();
+        let response = inference_request(client.post(url), "fixture-secret", &body)
+            .send()
+            .unwrap();
+        let result = consume_response(response);
+        let (headers, request) = server.join().unwrap();
+        assert!(headers.to_lowercase().contains("accept: text/event-stream"));
+        assert_eq!(request["model"], "gpt-6-luna");
+        assert_eq!(request["stream"], true);
+        assert_eq!(request["store"], false);
+        assert_eq!(request["reasoning"]["effort"], "none");
+        assert!(request["input"].is_array());
+        assert!(request.get("max_output_tokens").is_none());
+        result
+    }
+    #[test]
+    fn actual_http_completed_responses_json_is_compatible_without_a_second_request() {
+        let client = fixture_client();
+        let value = response_value(r#"{"overview":"Обсудили пилот","items":[],"cards":[]}"#);
+        for mime in [
+            "application/json",
+            "Application/JSON; charset=utf-8",
+            "application/octet-stream",
+            "",
+        ] {
+            let result = http_result(&client, mime, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(
+                result,
+                json!({"overview":"Обсудили пилот","items":[],"cards":[]})
+            );
+        }
+    }
+    #[test]
+    fn actual_http_json_rejects_partial_refused_malformed_and_bare_generated_objects() {
+        let client = fixture_client();
+        let mut cases = vec![
+            json!({"ok":true}),
+            json!({"object":"response","status":"completed"}),
+            response_value("PRIVATE_NOT_JSON"),
+            response_value("[]"),
+        ];
+        for status in ["queued", "in_progress", "incomplete", "failed", "cancelled"] {
+            let mut value = response_value(r#"{"ok":true}"#);
+            value["status"] = json!(status);
+            cases.push(value);
+        }
+        let mut value = response_value(r#"{"ok":true}"#);
+        value["incomplete_details"] = json!({"reason":"PRIVATE"});
+        cases.push(value);
+        let mut value = response_value(r#"{"ok":true}"#);
+        value["output"][0]["status"] = json!("incomplete");
+        cases.push(value);
+        let mut value = response_value(r#"{"ok":true}"#);
+        value["output"][0]["role"] = json!("user");
+        cases.push(value);
+        let mut value = response_value(r#"{"ok":true}"#);
+        value["output"][0]["type"] = json!("function_call");
+        cases.push(value);
+        let mut value = response_value("{}");
+        value["output"] = json!([]);
+        cases.push(value);
+        let mut value = response_value("{}");
+        value["output"] = json!({"PRIVATE":"not an array"});
+        cases.push(value);
+        let mut value = response_value("{}");
+        value["output"][0]["content"] = json!([{"type":"refusal","refusal":"PRIVATE"}]);
+        cases.push(value);
+        let mut value = response_value("{}");
+        value["output"][0]["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"refusal","refusal":"PRIVATE"}));
+        cases.push(value);
+        let mut value = response_value("{}");
+        value["output"][0].as_object_mut().unwrap().remove("status");
+        cases.push(value);
+        for value in cases {
+            let error = http_result(
+                &client,
+                "application/json",
+                serde_json::to_vec(&value).unwrap(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("HTTP 200"), "{error}");
+            assert!(!error.contains("PRIVATE"));
+            assert!(!error.contains("fixture-secret"));
+        }
+    }
+    #[test]
+    fn actual_http_json_200_preserves_allowlisted_errors_and_redacts_diagnostics() {
+        let client = fixture_client();
+        for code in [
+            "subscription_sharing_usage_limit_exceeded",
+            "subscription_sharing_user_not_eligible",
+            "subscription_sharing_usage_unavailable",
+        ] {
+            for mime in ["application/json", "application/problem+json"] {
+                let value =
+                    json!({"error":{"code":code,"message":"PRIVATE_MEETING fixture-secret"}});
+                let error = http_result(&client, mime, serde_json::to_vec(&value).unwrap())
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.starts_with("ChatGPT: HTTP 200 · "));
+                assert!(error.contains(code));
+                assert!(!error.contains("PRIVATE"));
+                assert!(!error.contains("fixture-secret"));
+            }
+        }
+        let mut value = response_value("{}");
+        value["error"] = json!({"code":"PRIVATE_TOKEN","message":"PRIVATE_MEETING"});
+        let error = http_result(
+            &client,
+            "application/json",
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("request_failed"));
+        assert!(!error.contains("PRIVATE"));
+    }
+    #[test]
+    fn actual_http_html_and_unknown_bodies_expose_only_safe_wire_metadata() {
+        let client = fixture_client();
+        for (mime, bytes, category) in [
+            (
+                "application/json",
+                b"{PRIVATE invalid JSON".to_vec(),
+                "application/json",
+            ),
+            (
+                "application/json",
+                b"<!doctype html><html>PRIVATE fixture-secret</html>".to_vec(),
+                "application/json",
+            ),
+            (
+                "text/html",
+                b"<!doctype html><html>PRIVATE fixture-secret</html>".to_vec(),
+                "text/html",
+            ),
+            (
+                "text/plain",
+                b"PRIVATE fixture-secret".to_vec(),
+                "text/plain",
+            ),
+            (
+                "application/PRIVATE_TOKEN",
+                b"PRIVATE fixture-secret".to_vec(),
+                "other",
+            ),
+            ("", Vec::new(), "missing"),
+        ] {
+            let error = http_result(&client, mime, bytes).unwrap_err().to_string();
+            assert!(error.contains("HTTP 200"));
+            assert!(error.contains(&format!("Content-Type {category}")));
+            assert!(!error.contains("PRIVATE"));
+            assert!(!error.contains("fixture-secret"));
+        }
+    }
+    #[test]
+    fn actual_http_mislabeled_or_missing_sse_mime_preserves_the_terminal_contract() {
+        let client = fixture_client();
+        for mime in [
+            "text/plain",
+            "application/octet-stream",
+            "application/json",
+            "",
+            "TEXT/EVENT-STREAM; charset=UTF-8",
+        ] {
+            let mut stream = b"\xef\xbb\xbf\n \r\n: keepalive\n\n".to_vec();
+            stream.extend(delta(r#"{"ok":true}"#));
+            stream.extend(completed(r#"{"ok":true}"#));
+            assert_eq!(
+                http_result(&client, mime, stream).unwrap(),
+                json!({"ok":true})
+            );
+            let error = http_result(&client, mime, delta(r#"{"ok":true}"#))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("response.completed"));
+            assert!(error.contains("HTTP 200"));
+            let mut failed = delta(r#"{"ok":true}"#);
+            failed.extend(event(json!({"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"PRIVATE"}}})));
+            let error = http_result(&client, mime, failed).unwrap_err().to_string();
+            assert!(error.contains("subscription_sharing_usage_limit_exceeded"));
+            assert!(!error.contains("PRIVATE"));
+            let refusal = event(json!({"type":"response.refusal.delta","delta":"PRIVATE"}));
+            assert!(http_result(&client, mime, refusal)
+                .unwrap_err()
+                .to_string()
+                .contains("отказался"));
+        }
+    }
+    #[test]
+    fn sniffing_is_bounded_and_handles_fragmented_bom_and_field_names() {
+        struct OneByte(Cursor<Vec<u8>>);
+        impl Read for OneByte {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.0.read(&mut buffer[..1])
+            }
+        }
+        for bytes in [
+            b"\xef\xbb\xbf  \n event: response.completed\n".to_vec(),
+            b"data: {}\n".to_vec(),
+            b": comment\n".to_vec(),
+            b"id: 123\n".to_vec(),
+            b"retry: 100\n".to_vec(),
+        ] {
+            let (_, format) = sniff_response(&mut OneByte(Cursor::new(bytes))).unwrap();
+            assert_eq!(format, WireFormat::Events);
+        }
+        let mut source = Cursor::new(vec![b' '; 5000]);
+        assert_eq!(sniff_response(&mut source).unwrap().1, WireFormat::Unknown);
+        assert_eq!(source.position(), 4096);
+    }
+    #[test]
+    fn actual_http_complete_json_and_answer_size_limits_remain_bounded() {
+        let client = fixture_client();
+        let value = response_value(&"x".repeat(MAX_ANSWER_BYTES + 1));
+        assert!(http_result(
+            &client,
+            "application/json",
+            serde_json::to_vec(&value).unwrap()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("размер"));
+        let mut bytes = b"{".to_vec();
+        bytes.resize(MAX_STREAM_BYTES + 1, b' ');
+        assert!(http_result(&client, "application/json", bytes)
+            .unwrap_err()
+            .to_string()
+            .contains("размер"));
     }
     #[test]
     fn subscription_errors_have_specific_recovery_and_never_leak_body() {

@@ -753,7 +753,24 @@ class ASRAdapter:
             self.wrapper = None
 
 
+@contextlib.contextmanager
+def _meeting_result_lock(directory: Path):
+    descriptor = os.open(directory / ".posle-storage.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "r+b") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def _transcription_result_snapshot(directory: Path):
+    # Absence is part of the snapshot: a new result created while ASR runs is
+    # just as important as an edit to an existing one. Never follow a link.
+    return tuple(_regular_bytes(path) if path.exists() or path.is_symlink() else None
+                 for path in (directory / "transcript.json", directory / "summary.json"))
+
+
 def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
+    with _meeting_result_lock(directory):
+        baseline = _transcription_result_snapshot(directory)
     finalize_recording(directory)
     meta = load(directory / "meta.json")
     source = directory / meta["source"]
@@ -872,9 +889,9 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
                   "modelFormat": selected["format"], "modelPath": selected["path"]}
     # Match Rust's meeting lock so a concurrently generated summary either
     # observes this transcript or is invalidated by this replacement.
-    descriptor = os.open(directory / ".posle-storage.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, "r+b") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with _meeting_result_lock(directory):
+        if _transcription_result_snapshot(directory) != baseline:
+            raise RuntimeError("Транскрипция или конспект изменились во время распознавания. Ваши правки сохранены; запустите распознавание заново.")
         with publication():
             atomic(directory / "transcript.json", transcript)
             # A re-transcription invalidates old evidence IDs; preserve existing review history.

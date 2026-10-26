@@ -143,7 +143,88 @@ enum CorrectionsNativeChecks {
         await cards.reload(root: root, meetingID: meeting.id)
         try expect(cards.entries.first(where: { $0.card.id == originalCard.id })?.card == originalCard, "Discard changed a persisted card")
         print("PASS: actual card front/back Save and explicit Cancel/discard preserve Rust data and release the exit/update gate")
-        print("5 native correction editor workflows passed")
+        discardedCard.close()
+        try await noteModalDrafts(app: app, meeting: meeting)
+        print("8 native correction editor workflows passed")
+    }
+    private static func noteModalDrafts(app: AppStore, meeting: Meeting) async throws {
+        let notes = app.notes
+        guard let original = notes.capture(text: "Черновик заметки", meetingID: meeting.id) else { throw AppError.message(notes.error ?? "Note fixture failed") }
+        let note = present(NoteEditorView(notes: notes, note: original).environmentObject(app))
+        defer { note.close() }
+        try await wait(note) { !textViews(note.root).isEmpty }
+        try expect(!UnsavedEditorRegistry.hasUnsaved, "Opening an unchanged note must not block exit")
+        replace(textViews(note.root)[0], with: "Сохранённая правка заметки")
+        try await wait(note) { UnsavedEditorRegistry.hasUnsaved }
+        try press("notes.edit.save")
+        try await wait(note) { note.window.attachedSheet == nil && !UnsavedEditorRegistry.hasUnsaved }
+        guard let saved = notes.notes.first(where: { $0.id == original.id }) else { throw AppError.message("Saved note missing") }
+        try expect(saved.text == "Сохранённая правка заметки", "Real note editor did not persist its draft")
+        note.close()
+        let discarded = present(NoteEditorView(notes: notes, note: saved).environmentObject(app))
+        defer { discarded.close() }
+        try await wait(discarded) { !textViews(discarded.root).isEmpty }
+        replace(textViews(discarded.root)[0], with: "Этот черновик заметки отменён")
+        try await wait(discarded) { UnsavedEditorRegistry.hasUnsaved }
+        try press("notes.edit.cancel")
+        try await wait(discarded) { nodes().contains { $0.identifier == "notes.edit.discard" && $0.ready } }
+        try press("notes.edit.discard")
+        try await wait(discarded) { discarded.window.attachedSheet == nil && !UnsavedEditorRegistry.hasUnsaved }
+        try expect(notes.notes.first(where: { $0.id == saved.id }) == saved, "Explicit note discard changed persisted content")
+        discarded.close()
+        print("PASS: actual note editor protects dirty drafts from exit, Save releases the gate, explicit discard preserves storage")
+
+        let template = NoteTemplate(name: "Проверка черновика шаблона", body: "Исходная структура", focus: "")
+        try expect(notes.saveTemplate(template), "Template fixture save failed")
+        guard let templateOriginal = notes.templates.first(where: { $0.id == template.id }) else { throw AppError.message("Template fixture missing") }
+        let editor = present(NotesEditorCheckViews.template(notes: notes, template: templateOriginal).environmentObject(app))
+        defer { editor.close() }
+        try await wait(editor) { textViews(editor.root).count == 2 }
+        try expect(!UnsavedEditorRegistry.hasUnsaved, "Opening an unchanged template must not block exit")
+        replace(textViews(editor.root)[0], with: "Сохранённая структура шаблона")
+        try await wait(editor) { UnsavedEditorRegistry.hasUnsaved }
+        try press("notes.template.save")
+        try await wait(editor) { editor.window.attachedSheet == nil && !UnsavedEditorRegistry.hasUnsaved }
+        guard let savedTemplate = notes.templates.first(where: { $0.id == template.id }) else { throw AppError.message("Saved template missing") }
+        try expect(savedTemplate.body == "Сохранённая структура шаблона", "Native template Save did not persist")
+        editor.close()
+        let discardedTemplate = present(NotesEditorCheckViews.template(notes: notes, template: savedTemplate).environmentObject(app))
+        defer { discardedTemplate.close() }
+        try await wait(discardedTemplate) { textViews(discardedTemplate.root).count == 2 }
+        replace(textViews(discardedTemplate.root)[0], with: "Отменённая структура")
+        try await wait(discardedTemplate) { UnsavedEditorRegistry.hasUnsaved }
+        try press("notes.template.cancel")
+        try await wait(discardedTemplate) { discardedTemplate.window.attachedSheet == nil && !UnsavedEditorRegistry.hasUnsaved }
+        try expect(notes.templates.first(where: { $0.id == template.id }) == savedTemplate, "Template Cancel changed persisted content")
+        discardedTemplate.close()
+        print("PASS: actual template draft blocks exit until Save or explicit Cancel and leaves no stale dirty registration")
+
+        let context = present(NotesEditorCheckViews.context(notes: notes, meeting: meeting).environmentObject(app))
+        defer { context.close() }
+        try await wait(context) { descendants(context.root, as: NSTextField.self).contains { $0.placeholderString == "Проект" } }
+        try expect(!UnsavedEditorRegistry.hasUnsaved, "Opening an unchanged context must not block exit")
+        try editField("Проект", in: context, text: "Проект сметы")
+        try await wait(context) { UnsavedEditorRegistry.hasUnsaved }
+        try press("notes.context.save")
+        try await wait(context) { context.window.attachedSheet == nil && !UnsavedEditorRegistry.hasUnsaved }
+        let savedContext = notes.context(for: meeting.id)
+        try expect(savedContext.project == "Проект сметы", "Native context Save did not persist")
+        context.close()
+        let discardedContext = present(NotesEditorCheckViews.context(notes: notes, meeting: meeting).environmentObject(app))
+        defer { discardedContext.close() }
+        try await wait(discardedContext) { descendants(discardedContext.root, as: NSTextField.self).contains { $0.placeholderString == "Проект" } }
+        try editField("Проект", in: discardedContext, text: "Отменённый проект")
+        try await wait(discardedContext) { UnsavedEditorRegistry.hasUnsaved }
+        try press("notes.context.cancel")
+        try await wait(discardedContext) { discardedContext.window.attachedSheet == nil && !UnsavedEditorRegistry.hasUnsaved }
+        try expect(notes.context(for: meeting.id) == savedContext, "Context Cancel changed persisted content")
+        print("PASS: actual meeting context draft blocks exit until Save or explicit Cancel, unchanged sheets stay clean")
+    }
+    private static func editField(_ placeholder: String, in session: Session, text: String) throws {
+        guard let field = descendants(session.root, as: NSTextField.self).first(where: { $0.placeholderString == placeholder }) else { throw AppError.message("Native field missing: \(placeholder)") }
+        session.window.attachedSheet?.makeFirstResponder(field)
+        guard let editor = field.currentEditor() as? NSTextView else { throw AppError.message("Native field editor missing: \(placeholder)") }
+        replace(editor, with: text)
     }
     @MainActor private struct Session {
         let window: NSWindow

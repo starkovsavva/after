@@ -80,6 +80,19 @@ enum NotesNativeChecks {
         try expect(copiedDraft.id != externalSaved.id && copiedDraft.text == editingSession.draft.text && copiedDraft.attachments.isEmpty, "Conflicting draft can be saved as a new text note without stealing attachment references")
         try expect(notes.notes.first(where: { $0.id == externalSaved.id })?.text == externalSaved.text, "Saving a new note preserves the other window's text")
         print("PASS: typing during attachment/OCR remains saveable, external edits stay protected and save-as-new preserves both texts")
+        guard let deletionOriginal = notes.capture(text: "Проверка повторного удаления") else { throw AppError.message("Deletion fixture failed") }
+        var deletionEdit = deletionOriginal; deletionEdit.text = "Актуальная версия"
+        guard let deletionCurrent = notes.save(deletionEdit) else { throw AppError.message("Deletion revision fixture failed") }
+        notes.delete(deletionOriginal)
+        try expect(notes.error != nil && notes.notes.contains(where: { $0.id == deletionCurrent.id }), "Stale delete must report a conflict and preserve the current note")
+        notes.delete(deletionCurrent)
+        try expect(notes.error == nil && !notes.notes.contains(where: { $0.id == deletionCurrent.id }), "Successful delete retry must clear the obsolete error")
+        guard let trashed = notes.workspace.notes.first(where: { $0.id == deletionCurrent.id }) else { throw AppError.message("Trashed deletion fixture missing") }
+        notes.purge(deletionCurrent)
+        try expect(notes.error != nil && notes.workspace.notes.contains(where: { $0.id == trashed.id }), "Stale purge must preserve the trashed note")
+        notes.purge(trashed)
+        try expect(notes.error == nil && !notes.workspace.notes.contains(where: { $0.id == trashed.id }), "Successful purge retry must clear the obsolete error")
+        print("PASS: stale delete/purge preserve data; successful retries clear their old error messages")
         notes.delete(notes.notes.first(where: { $0.id == task.id }) ?? task)
         notes.reload(); notes.loadTasks()
         try expect(!notes.notes.contains(where: { $0.id == task.id }) && !notes.tasks.contains(where: { $0.noteID == task.id }), "Deleted notes disappear from task index")
@@ -161,7 +174,7 @@ enum NotesNativeChecks {
         print("PASS: immediate quit flushes debounce, failed CAS retains both versions and the draft recovers as a copy")
         try RichNoteNativeChecks.run()
         print("PASS: native formatting Undo/Redo preserves typed text, heading size and table RTF")
-        print("10 native notes checks passed")
+        print("11 native notes checks passed")
     }
     private static func syntheticImage() throws -> Data {
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 800, pixelsHigh: 160, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0), let context = NSGraphicsContext(bitmapImageRep: bitmap) else { throw AppError.message("Cannot create synthetic image") }

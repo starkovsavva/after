@@ -218,6 +218,7 @@ struct NoteEditorView: View {
     @State private var dropping = false
     @State private var dismissConfirmation = false
     @State private var showingSource = false
+    @State private var editorID = UUID()
     @StateObject private var richCommands = RichNoteCommands()
     init(notes: NotesStore, note: CapturedNote) { self.notes = notes; _session = State(initialValue: NoteEditingSession(note: note)) }
     private var persisted: CapturedNote? { notes.workspace.notes.first { $0.id == session.baseline.id } }
@@ -228,8 +229,8 @@ struct NoteEditorView: View {
             HStack {
                 Text("Заметка").font(AppTypography.modalTitle)
                 Spacer()
-                Button("Закрыть") { if dirty { dismissConfirmation = true } else { dismiss() } }.keyboardShortcut(.cancelAction)
-                Button("Сохранить") { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command])
+                Button("Закрыть") { if dirty { dismissConfirmation = true } else { dismiss() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("notes.edit.cancel")
+                Button("Сохранить") { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command]).accessibilityIdentifier("notes.edit.save")
             }.padding(22)
             Divider()
             if session.conflicted {
@@ -304,9 +305,12 @@ struct NoteEditorView: View {
         }.frame(width: 700, height: 650).background(Ink.paper)
             .overlay(alignment: .bottomTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
             .interactiveDismissDisabled(dirty)
+            .onAppear { registerDraft() }
+            .onChange(of: dirty) { _, _ in registerDraft() }
+            .onDisappear { UnsavedEditorRegistry.remove(id: editorID) }
             .confirmationDialog("Сохранить изменения в заметке?", isPresented: $dismissConfirmation) {
                 Button("Сохранить") { save() }
-                Button("Не сохранять", role: .destructive) { dismiss() }
+                Button("Не сохранять", role: .destructive) { UnsavedEditorRegistry.remove(id: editorID); dismiss() }.accessibilityIdentifier("notes.edit.discard")
                 Button("Продолжить редактирование", role: .cancel) {}
             }
             .onDrop(of: [.fileURL, .url, .plainText, .image], isTargeted: $dropping) { providers in
@@ -317,8 +321,11 @@ struct NoteEditorView: View {
             .overlay { if dropping { RoundedRectangle(cornerRadius: 8).strokeBorder(Ink.accent, style: StrokeStyle(lineWidth: 2, dash: [7])).padding(5).allowsHitTesting(false) } }
             .onChange(of: persisted) { _, value in session.receive(value) }
     }
+    private func registerDraft() {
+        UnsavedEditorRegistry.set(id: editorID, title: "Заметка «\(session.draft.displayTitle.prefix(60))»", dirty: dirty)
+    }
     private func save() {
-        if let saved = notes.save(session.draft) { session.didPersist(saved); dismiss() }
+        if let saved = notes.save(session.draft) { session.didPersist(saved); UnsavedEditorRegistry.remove(id: editorID); dismiss() }
         else { refreshConflict() }
     }
     private func persistBeforeAttachment(_ action: (CapturedNote) -> Void) {
@@ -330,7 +337,7 @@ struct NoteEditorView: View {
         let preserveMeeting = session.draft.meetingID.map { id in app.noteMeetings.contains { $0.id == id } } ?? true
         if let saved = notes.save(session.asNewNote(preserveMeeting: preserveMeeting)) {
             notes.notice = "Ваш текст сохранён новой заметкой. Вложения остались в исходной."
-            session.didPersist(saved); dismiss()
+            session.didPersist(saved); UnsavedEditorRegistry.remove(id: editorID); dismiss()
         }
     }
 }
@@ -356,16 +363,30 @@ private struct TemplateEditor: View {
     @ObservedObject var notes: NotesStore
     @Environment(\.dismiss) private var dismiss
     @State var template: NoteTemplate
+    @State private var editorID = UUID()
+    private let baseline: NoteTemplate
+    init(notes: NotesStore, template: NoteTemplate) {
+        self.notes = notes; baseline = template; _template = State(initialValue: template)
+    }
+    private var dirty: Bool { template != baseline }
+    private func close() { UnsavedEditorRegistry.remove(id: editorID); dismiss() }
+    private func registerDraft() {
+        UnsavedEditorRegistry.set(id: editorID, title: "Шаблон «\(template.name.prefix(60))»", dirty: dirty)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("Шаблон заметки").font(AppTypography.modalTitle); Spacer(); Button("Отмена") { dismiss() }; Button("Сохранить") { if notes.saveTemplate(template) { dismiss() } }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(template.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            HStack { Text("Шаблон заметки").font(AppTypography.modalTitle); Spacer(); Button("Отмена") { close() }.accessibilityIdentifier("notes.template.cancel"); Button("Сохранить") { if notes.saveTemplate(template) { close() } }.accessibilityIdentifier("notes.template.save").buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(template.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             TextField("Название", text: $template.name).textFieldStyle(.roundedBorder)
             Text("Структура заметки").font(AppTypography.control).foregroundStyle(.secondary)
             TextEditor(text: $template.body).font(AppTypography.body).frame(height: 180).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 8))
             Text("Что выписать из встречи").font(AppTypography.control).foregroundStyle(.secondary)
             TextEditor(text: $template.focus).font(AppTypography.body).frame(height: 90).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 8))
-            HStack { Button("Удалить шаблон", role: .destructive) { if notes.deleteTemplate(template) { dismiss() } }; Spacer() }
+            HStack { Button("Удалить шаблон", role: .destructive) { if notes.deleteTemplate(template) { close() } }; Spacer() }
         }.padding(24).frame(width: 620)
+            .interactiveDismissDisabled(dirty)
+            .onAppear { registerDraft() }
+            .onChange(of: dirty) { _, _ in registerDraft() }
+            .onDisappear { UnsavedEditorRegistry.remove(id: editorID) }
             .overlay(alignment: .topTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
     }
 }
@@ -378,9 +399,19 @@ private struct MeetingContextEditor: View {
     @State private var context: MeetingContext
     @State private var selectedTemplate = ""
     @State private var insertTemplate = false
+    @State private var editorID = UUID()
+    @State private var baselineTemplate = ""
+    private let baseline: MeetingContext
+    private var dirty: Bool { context.project != baseline.project || context.person != baseline.person || selectedTemplate != baselineTemplate || insertTemplate }
+    private func close() { UnsavedEditorRegistry.remove(id: editorID); dismiss() }
+    private func registerDraft() {
+        UnsavedEditorRegistry.set(id: editorID, title: "Контекст встречи «\(meeting.title.prefix(60))»", dirty: dirty)
+    }
     init(notes: NotesStore, meeting: Meeting) {
         self.notes = notes; self.meeting = meeting
-        let value = notes.context(for: meeting.id); _context = State(initialValue: value); _selectedTemplate = State(initialValue: value.templateID ?? "")
+        let value = notes.context(for: meeting.id); baseline = value
+        _context = State(initialValue: value); _selectedTemplate = State(initialValue: value.templateID ?? "")
+        _baselineTemplate = State(initialValue: value.templateID ?? "")
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -391,7 +422,7 @@ private struct MeetingContextEditor: View {
                 Text("Без шаблона").tag(""); ForEach(notes.templates) { Text($0.name).tag($0.id) }
             }
             if !selectedTemplate.isEmpty { Toggle("Создать заметку по шаблону", isOn: $insertTemplate) }
-            HStack { Spacer(); Button("Отмена") { dismiss() }; Button("Сохранить") {
+            HStack { Spacer(); Button("Отмена") { close() }.accessibilityIdentifier("notes.context.cancel"); Button("Сохранить") {
                 context.templateID = selectedTemplate.isEmpty ? nil : selectedTemplate
                 context.project = context.project.trimmingCharacters(in: .whitespacesAndNewlines); context.person = context.person.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard notes.saveContext(context) else { return }
@@ -399,11 +430,19 @@ private struct MeetingContextEditor: View {
                     if insertTemplate { _ = notes.capture(text: template.body, meetingID: meeting.id) }
                     if app.selection == meeting.id && !template.focus.isEmpty { app.updateMeeting(meeting.id) { $0.focus = template.focus } }
                 }
-                if notes.error == nil { dismiss() }
-            }.buttonStyle(.borderedProminent).tint(Ink.actionFill) }
+                if notes.error == nil { close() }
+            }.accessibilityIdentifier("notes.context.save").buttonStyle(.borderedProminent).tint(Ink.actionFill) }
         }.padding(24).frame(width: 570)
             .overlay(alignment: .topTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
-            .onAppear { if context.revision == 0 && selectedTemplate.isEmpty { selectedTemplate = app.settings.defaultTemplateID } }
+            .interactiveDismissDisabled(dirty)
+            .onAppear {
+                if context.revision == 0 && selectedTemplate.isEmpty {
+                    selectedTemplate = app.settings.defaultTemplateID; baselineTemplate = selectedTemplate
+                }
+                registerDraft()
+            }
+            .onChange(of: dirty) { _, _ in registerDraft() }
+            .onDisappear { UnsavedEditorRegistry.remove(id: editorID) }
     }
 }
 
@@ -604,3 +643,12 @@ struct NotesTasksView: View {
     @ObservedObject var notes: NotesStore
     var body: some View { TasksWorkspaceView(notes: notes) }
 }
+
+#if DEBUG
+/// Test-only entry points keep the production editors file-private.
+@MainActor
+enum NotesEditorCheckViews {
+    static func template(notes: NotesStore, template: NoteTemplate) -> some View { TemplateEditor(notes: notes, template: template) }
+    static func context(notes: NotesStore, meeting: Meeting) -> some View { MeetingContextEditor(notes: notes, meeting: meeting) }
+}
+#endif

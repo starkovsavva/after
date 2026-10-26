@@ -1,6 +1,6 @@
 [package]
 name = "posle-engine"
-version = "0.12.0"
+version = "0.12.1"
 edition = "2021"
 description = "Local-first meeting library, grounded notes and spaced repetition for Posle"
 license = "MIT"

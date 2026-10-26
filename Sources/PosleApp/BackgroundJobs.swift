@@ -278,9 +278,18 @@ actor JobCoordinator {
             for job in try snapshot() where job.active && job.config.chatGPTPlanAccountID == accountID { cancel(job.id) }
         } catch { failQueue(error) }
     }
-    func retry(_ id: String, confirmPaid: Bool) throws {
+    func retry(_ id: String, confirmPaid: Bool, requiringLatestGeneration: Bool = false, resumingPausedAccount: String? = nil) throws {
         guard !stopping else { throw CancellationError() }
         if let queueFailure { throw AppError.message(queueFailure) }
+        if requiringLatestGeneration {
+            let current = try snapshot()
+            let quotaRecovery = resumingPausedAccount.map { account in
+                pausedChatGPTFailures[account]?.id == id && current.first(where: { $0.id == id })?.config.chatGPTPlanAccountID == account
+            } == true
+            guard quotaRecovery || BackgroundJobPresentation.latestIDs(in: current).contains(id) else {
+                throw AppError.message("У операции есть более новая попытка. Используйте её в списке фоновых задач.")
+            }
+        }
         struct Response: Decodable { var job: BackgroundJob }
         let response = try JSONDecoder().decode(Response.self, from: request("job-retry", ["jobID": id, "confirmPaid": confirmPaid]))
         // Only a successful explicit retry authorizes new requests for this
@@ -344,7 +353,8 @@ final class BackgroundJobsController: ObservableObject {
     func isPaused(_ job: BackgroundJob) -> Bool {
         job.state == "queued" && job.config.chatGPTPlanAccountID.map { pausedChatGPTAccounts.contains($0) } == true
     }
-    var needsAttention: Bool { jobs.contains { ["failed", "interrupted"].contains($0.state) } }
+    var latestAttemptIDs: Set<String> { BackgroundJobPresentation.latestIDs(in: jobs) }
+    var needsAttention: Bool { !pausedChatGPTAccounts.isEmpty || BackgroundJobPresentation.needsAttention(in: jobs) }
     init(root: URL, activityChanged: ((Bool) -> Void)? = nil) {
         if let activityChanged { self.activityChanged = activityChanged }
         else {
@@ -383,7 +393,14 @@ final class BackgroundJobsController: ObservableObject {
     }
     func cancel(_ id: String) { Task { await coordinator.cancel(id) } }
     func cancelChatGPTAccount(_ accountID: String) async { await coordinator.cancelChatGPTAccount(accountID) }
-    func retry(_ job: BackgroundJob) {
+    func retry(_ job: BackgroundJob, resumingPausedAccount: Bool = false) {
+        let quotaAccount = resumingPausedAccount ? job.config.chatGPTPlanAccountID.flatMap { account in
+            pausedChatGPTFailures.contains(where: { $0.id == job.id && $0.config.chatGPTPlanAccountID == account }) ? account : nil
+        } : nil
+        guard quotaAccount != nil || latestAttemptIDs.contains(job.id) else {
+            error = "У операции есть более новая попытка. Используйте её в списке фоновых задач."
+            return
+        }
         var confirmed = !job.paid
         if job.paid {
             let alert = NSAlert()
@@ -401,7 +418,11 @@ final class BackgroundJobsController: ObservableObject {
         pendingAccounts[subscription] = ""
         Task {
             defer { pendingAccounts.removeValue(forKey: subscription) }
-            do { try await coordinator.retry(job.id, confirmPaid: confirmed); _ = try await coordinator.observe(job.id) }
+            do {
+                try await coordinator.retry(job.id, confirmPaid: confirmed, requiringLatestGeneration: true, resumingPausedAccount: quotaAccount)
+                _ = try await coordinator.observe(job.id)
+                self.error = nil
+            }
             catch is CancellationError {} catch { self.error = error.localizedDescription }
         }
     }
@@ -450,25 +471,26 @@ struct BackgroundJobsButton: View {
 struct BackgroundJobsView: View {
     @ObservedObject var jobs: BackgroundJobsController
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let latest = jobs.latestAttemptIDs
+        return VStack(alignment: .leading, spacing: 16) {
             Text("Фоновые задачи").font(AppTypography.modalTitle)
             if jobs.jobs.isEmpty { Text("Здесь появятся операции обработки встреч и генерации.").foregroundStyle(.secondary) }
             if !jobs.pausedChatGPTAccounts.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Запросы ChatGPT приостановлены", systemImage: "pause.circle")
                         .font(AppTypography.controlStrong)
-                    Text("Проверьте лимиты и нажмите «Повторить» у неудавшейся задачи, чтобы продолжить очередь.")
+                    Text("Проверьте лимиты и нажмите «Продолжить очередь». Неудавшийся запрос будет повторён после подтверждения.")
                         .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                     HStack(spacing: 12) {
                         Link("Использование ChatGPT", destination: URL(string: "https://chatgpt.com/settings/usage")!)
                             .font(AppTypography.caption)
                         if jobs.pausedChatGPTFailures.count == 1, let failed = jobs.pausedChatGPTFailures.first {
-                            Button("Продолжить очередь") { jobs.retry(failed) }.buttonStyle(.borderless)
+                            Button("Продолжить очередь") { jobs.retry(failed, resumingPausedAccount: true) }.buttonStyle(.borderless)
                                 .help("Повторить неудавшийся запрос после подтверждения и продолжить очередь этого аккаунта.")
                         } else if !jobs.pausedChatGPTFailures.isEmpty {
                             Menu("Продолжить очередь") {
                                 ForEach(jobs.pausedChatGPTFailures) { failed in
-                                    Button("Повторить: " + failed.title) { jobs.retry(failed) }
+                                    Button("Повторить: " + failed.title) { jobs.retry(failed, resumingPausedAccount: true) }
                                 }
                             }.menuStyle(.borderlessButton)
                         }
@@ -477,21 +499,22 @@ struct BackgroundJobsView: View {
             }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(Array(jobs.jobs.sorted { left, right in
-                        if left.active != right.active { return left.active }
-                        return left.updatedAt > right.updatedAt
-                    }.prefix(30))) { job in
+                    ForEach(Array(BackgroundJobPresentation.ordered(jobs.jobs).prefix(30))) { job in
+                        let historical = !latest.contains(job.id)
                         VStack(alignment: .leading, spacing: 7) {
                             HStack(alignment: .top) {
                                 Text(job.title).font(AppTypography.controlStrong)
                                 Spacer()
                                 if job.active || job.state == "blocked" {
                                     Button { jobs.cancel(job.id) } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain).accessibilityLabel("Отменить \(job.title)")
-                                } else if job.kind != "dictate" && ["failed", "interrupted", "cancelled"].contains(job.state) {
-                                    Button("Повторить") { jobs.retry(job) }.buttonStyle(.borderless)
+                                } else if !historical && job.kind != "dictate" && ["failed", "interrupted", "cancelled"].contains(job.state) {
+                                    Button("Повторить") { jobs.retry(job) }.buttonStyle(.borderless).accessibilityIdentifier("jobs.retry." + job.id)
                                 }
                             }
-                            Text(jobs.isPaused(job) ? "Ожидает: лимит подписки ChatGPT" : job.stateLabel).font(AppTypography.caption).foregroundStyle(job.state == "failed" ? Ink.warning : Ink.secondaryText).textSelection(.enabled)
+                            let metadata = BackgroundJobPresentation.metadata(job, historical: historical)
+                            Text(metadata).font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                                .lineLimit(1).truncationMode(.middle).help(metadata)
+                            Text(jobs.isPaused(job) ? "Ожидает: лимит подписки ChatGPT" : job.stateLabel).font(AppTypography.caption).foregroundStyle(job.state == "failed" && !historical ? Ink.warning : Ink.secondaryText).textSelection(.enabled)
                             if job.state == "running" { if let fraction = job.progress, fraction >= 0 { ProgressView(value: fraction) } else { ProgressView().controlSize(.small) } }
                         }
                     }

@@ -541,17 +541,18 @@ final class AppStore: ObservableObject {
             }
             if selection == id { loadSelection() }
         } catch {
+            let savedTranscript: Transcript? = read(meetingDirectory(id).appendingPathComponent("transcript.json"))
+            let savedSummary: Summary? = read(meetingDirectory(id).appendingPathComponent("summary.json"))
+            let savedStatus = savedTranscript == nil ? "imported" : savedSummary == nil ? "transcribed" : "ready"
             if error is CancellationError {
-                let savedTranscript: Transcript? = read(meetingDirectory(id).appendingPathComponent("transcript.json"))
-                let savedSummary: Summary? = read(meetingDirectory(id).appendingPathComponent("summary.json"))
                 updateMeeting(id) {
-                    $0.status = savedTranscript == nil ? "imported" : savedSummary == nil ? "transcribed" : "ready"
+                    $0.status = savedStatus
                     $0.error = nil
                 }
                 self.error = nil; notice = Self.stoppedProcessingMessage
             } else {
                 updateMeeting(id) {
-                    $0.status = FileManager.default.fileExists(atPath: meetingDirectory(id).appendingPathComponent("transcript.json").path) ? "transcribed" : "imported"
+                    $0.status = savedStatus
                     $0.error = error.localizedDescription
                 }
                 self.error = error.localizedDescription

@@ -95,7 +95,7 @@ final class NotesStore: ObservableObject {
     func delete(_ note: CapturedNote) {
         do {
             _ = try RustBridge.shared.get().request(root: root, command: "note-trash", arguments: ["id": note.id, "revision": note.revision])
-            reload()
+            error = nil; reload()
             if selectedNoteID == note.id { selectedNoteID = nil }
         } catch { self.error = error.localizedDescription }
     }
@@ -108,6 +108,7 @@ final class NotesStore: ObservableObject {
     func purge(_ note: CapturedNote) {
         do {
             _ = try RustBridge.shared.get().request(root: root, command: "note-delete", arguments: ["id": note.id, "revision": note.revision])
+            error = nil
             workspace.notes.removeAll { $0.id == note.id }
         } catch { self.error = error.localizedDescription }
     }

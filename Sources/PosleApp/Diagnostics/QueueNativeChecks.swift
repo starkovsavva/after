@@ -17,6 +17,7 @@ enum QueueNativeChecks {
         let existing = try RustBridge.shared.get().request(root: root, command: "job-list")
         let existingJSON = try JSONSerialization.jsonObject(with: existing) as? [String: Any]
         try expect((existingJSON?["jobs"] as? [Any])?.isEmpty == true, "Queue checks need an empty library")
+        try BackgroundJobPresentationChecks.run()
         let watchdog = QueueCheckWatchdog(); watchdog.start(); defer { watchdog.finish() }
         try await limits(root.appendingPathComponent("limits"))
         try await subscriptions(root.appendingPathComponent("subscriptions"))
@@ -29,7 +30,37 @@ enum QueueNativeChecks {
         try await failedChain(root.appendingPathComponent("failed-chain"))
         try await chatGPTQuota(root.appendingPathComponent("chatgpt-quota"))
         try await chatGPTSignOut(root.appendingPathComponent("chatgpt-signout"))
-        print("11 native durable queue groups passed"); fflush(stdout)
+        try await historyRetry(root.appendingPathComponent("history-retry"))
+        try await BackgroundJobsUINativeChecks.run(root: root.appendingPathComponent("history-ui"))
+        print("14 native durable queue groups passed"); fflush(stdout)
+    }
+    private static func historyRetry(_ root: URL) async throws {
+        let queue = JobCoordinator(root: root, changed: { _ in })
+        try await queue.start { job, _, _ in
+            if job.config.settings.cloudModel == "quota-model" && job.attempt == 1 {
+                throw AppError.message("ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded. Fixture limit.")
+            }
+            return WorkerEvent(event: "done")
+        }
+        var config = planConfiguration(object: "same-summary", account: "quota-account"); config.command = "summarize"; config.settings.cloudModel = "quota-model"
+        do { _ = try await queue.submit(config, resource: "cloud", revision: "v1", title: "Конспект", paid: true); throw AppError.message("Quota fixture unexpectedly succeeded") }
+        catch { try expect(error.localizedDescription.contains("subscription_sharing_usage_limit_exceeded"), "Quota fixture did not pause") }
+        guard let failure = try await queue.snapshot().first else { throw AppError.message("Quota fixture job missing") }
+        var replacement = config; replacement.settings.cloudProvider = "custom"; replacement.settings.cloudModel = "new-model"
+        _ = try await queue.submit(replacement, resource: "cloud", revision: "v2", title: "Конспект", paid: false)
+        try expect(await queue.chatGPTAdmissionPaused("quota-account"), "Another route's success cannot silently resume the paused account")
+        for account in [nil, "unrelated-account"] as [String?] {
+            do { try await queue.retry(failure.id, confirmPaid: true, requiringLatestGeneration: true, resumingPausedAccount: account); throw AppError.message("Historical retry guard bypassed") }
+            catch { try expect(error.localizedDescription.contains("более новая попытка"), "Historical retry did not reject an unrelated old job") }
+        }
+        do { try await queue.retry(failure.id, confirmPaid: false, requiringLatestGeneration: true, resumingPausedAccount: "quota-account"); throw AppError.message("Unconfirmed quota recovery succeeded") }
+        catch { try expect(error.localizedDescription != "Unconfirmed quota recovery succeeded", "Quota recovery bypassed paid confirmation") }
+        try expect(await queue.chatGPTAdmissionPaused("quota-account"), "Unconfirmed quota recovery cleared the pause")
+        try await queue.retry(failure.id, confirmPaid: true, requiringLatestGeneration: true, resumingPausedAccount: "quota-account")
+        _ = try await queue.observe(failure.id)
+        try expect(!(await queue.chatGPTAdmissionPaused("quota-account")), "Explicit confirmed quota recovery did not resume its exact account")
+        await queue.shutdown()
+        print("PASS: historical Retry is atomically rejected; exact paused-account recovery remains explicit and requires paid confirmation")
     }
     private static func configuration(_ command: String = "example", object: String, autoSummary: Bool = false) -> JobConfiguration {
         var settings = AppSettings(); settings.autoSummary = autoSummary; settings.mode = "local"

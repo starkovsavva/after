@@ -1,0 +1,109 @@
+import CryptoKit
+import Foundation
+
+/// This page acknowledges only the browser handoff. Token verification and the
+/// final sign-in result belong to the native application. No callback value is
+/// interpolated into the document, and all assets are embedded.
+enum ChatGPTCallbackPage {
+    static var contentSecurityPolicy: String {
+        let hash = Data(SHA256.hash(data: Data(styles.utf8))).base64EncodedString()
+        return "default-src 'none'; style-src 'sha256-\(hash)'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    }
+
+    static func body(received: Bool) -> Data {
+        let title = received ? "Возвращаемся в «После»" : "Вернитесь в «После»"
+        let message = received
+            ? "Результат входа появится в приложении."
+            : "Не удалось продолжить вход. Начните подключение заново в приложении."
+        let guidance = received
+            ? "Если окно не появилось, откройте «После» из Dock."
+            : "Откройте «После» из Dock, чтобы попробовать ещё раз."
+        let favicon = Data(replica.utf8).base64EncodedString()
+        return Data("""
+        <!doctype html>
+        <html lang="ru">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta name="color-scheme" content="light dark">
+          <meta name="referrer" content="no-referrer">
+          <title>\(title)</title>
+          <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,\(favicon)">
+          <style>\(styles)</style>
+        </head>
+        <body>
+          <main aria-labelledby="title">
+            <div class="mark" aria-hidden="true">\(replica)</div>
+            <h1 id="title">\(title)</h1>
+            <p class="message">\(message)</p>
+            <div class="guidance">
+              <p>\(guidance)</p>
+              <p>Эту вкладку можно закрыть.</p>
+            </div>
+          </main>
+        </body>
+        </html>
+        """.utf8)
+    }
+
+    // Keep the existing «Реплика» geometry and palette from packaging/Logo.svg.
+    private static let replica = #"""
+    <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" focusable="false">
+      <rect x="8" y="8" width="496" height="496" rx="110" fill="#292B2E"/>
+      <g fill="#F5F5F1">
+        <path d="M132 206 C132 158 170 120 218 120 L350 120 L350 180 L222 180 C205 180 192 193 192 210 L192 264 L132 264 Z"/>
+        <path d="M380 306 C380 354 342 392 294 392 L162 392 L162 332 L290 332 C307 332 320 319 320 302 L320 248 L380 248 Z"/>
+      </g>
+    </svg>
+    """#
+
+    private static let styles = #"""
+    :root {
+      color-scheme: light dark;
+      --background: #f5f5f7;
+      --text: #1d1d1f;
+      --secondary: #5c5c61;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --background: #1c1c1e;
+        --text: #f5f5f7;
+        --secondary: #a1a1a6;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { min-height: 100%; background: var(--background); }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      padding: 40px 24px;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-align: center;
+    }
+    main { width: 100%; max-width: 440px; }
+    .mark { display: flex; justify-content: center; margin-bottom: 26px; }
+    .mark svg { display: block; width: 60px; height: 60px; }
+    h1 {
+      margin: 0;
+      font-size: clamp(25px, 4vw, 30px);
+      font-weight: 600;
+      line-height: 1.2;
+      letter-spacing: -0.025em;
+      text-wrap: balance;
+    }
+    .message { margin: 14px 0 0; font-size: 16px; line-height: 1.5; text-wrap: pretty; }
+    .guidance { margin-top: 30px; color: var(--secondary); font-size: 13px; line-height: 1.5; }
+    .guidance p { margin: 0; }
+    .guidance p + p { margin-top: 6px; }
+    @media (max-height: 400px) {
+      body { padding-block: 24px; }
+      .mark { margin-bottom: 18px; }
+      .guidance { margin-top: 20px; }
+    }
+    """#
+}

@@ -37,6 +37,7 @@ final class ChatGPTAccount: ObservableObject {
     @Published private(set) var isError = false
     private let engine: ChatGPTSessionStore
     private let disabled: Bool
+    private let browserOpener: @MainActor @Sendable (URL) -> Bool
     private var loginTask: Task<ChatGPTSessionStore.Snapshot, Error>?
     private var initialRestoreTask: Task<ChatGPTSessionStore.Snapshot, Error>?
     private var initialRestoreFailure: Error?
@@ -52,14 +53,16 @@ final class ChatGPTAccount: ObservableObject {
         let restore: Task<ChatGPTSessionStore.Snapshot, Error>? = disabled ? nil : Task { try await engine.snapshot() }
         self.init(engine: engine, disabled: disabled, restore: restore)
     }
-    private init(engine: ChatGPTSessionStore, disabled: Bool, restore: Task<ChatGPTSessionStore.Snapshot, Error>?) {
-        self.engine = engine; self.disabled = disabled; initialRestoreTask = restore
+    private init(engine: ChatGPTSessionStore, disabled: Bool, restore: Task<ChatGPTSessionStore.Snapshot, Error>?,
+                 browserOpener: @escaping @MainActor @Sendable (URL) -> Bool = { NSWorkspace.shared.open($0) }) {
+        self.engine = engine; self.disabled = disabled; self.browserOpener = browserOpener; initialRestoreTask = restore
         initialRestoreRevision = revision
         if restore != nil { Task { [weak self] in try? await self?.restoreInitialSession() } }
     }
     /// Every startup caller awaits the same read. A cancelled job does not cancel
     /// restoration for the UI or other jobs; an explicit sign-in/out supersedes it.
     private func restoreInitialSession() async throws {
+        try Task.checkCancellation()
         guard revision == initialRestoreRevision else { return }
         guard let pending = initialRestoreTask else {
             if let initialRestoreFailure { throw initialRestoreFailure }
@@ -89,20 +92,37 @@ final class ChatGPTAccount: ObservableObject {
         await connect(accountID: accountID)
     }
     private func connect(accountID: String?) async {
-        guard !disabled, !isConnecting, !isSigningOut else { return }
+        guard !disabled, !isConnecting, !isSigningOut, !Task.isCancelled else { return }
         let operationID = UUID(); revision = operationID
         isConnecting = true; message = nil; isError = false
-        let engine = self.engine
-        let operation = Task { try await engine.signIn(accountID: accountID) { NSWorkspace.shared.open($0) } }
+        let engine = self.engine, browserOpener = self.browserOpener
+        let originWindow = NSApp.keyWindow ?? NSApp.mainWindow?.attachedSheet ?? NSApp.mainWindow
+        let handoff = ChatGPTLoginHandoff(operationID: operationID, currentOperation: { [weak self] in
+            guard let self, !self.disabled, self.isConnecting, !self.isSigningOut, !Task.isCancelled else { return nil }
+            return self.revision
+        }, activate: { [weak originWindow] in
+            NSApp.unhide(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            guard let originWindow else { return }
+            let parent = originWindow.sheetParent ?? originWindow
+            if parent.isMiniaturized { parent.deminiaturize(nil) }
+            parent.makeKeyAndOrderFront(nil)
+            (parent.attachedSheet ?? originWindow).makeKeyAndOrderFront(nil)
+        })
+        let operation = Task {
+            try await engine.signIn(accountID: accountID, openBrowser: browserOpener,
+                                    callbackReceived: { handoff.receivedCallback() })
+        }
         loginTask = operation
         do {
             let snapshot = try await operation.value
             guard revision == operationID else { return }
             apply(snapshot)
             message = profile?.planEnabled == true ? "ChatGPT подключён" : "Вход выполнен. Разреши приложению использовать подписку ChatGPT."
+            handoff.finished()
         } catch {
             guard revision == operationID else { return }
-            if !(error is CancellationError) { report(error) }
+            if !(error is CancellationError) { report(error); handoff.finished() }
         }
         guard revision == operationID else { return }
         loginTask = nil; isConnecting = false
@@ -131,11 +151,15 @@ final class ChatGPTAccount: ObservableObject {
         defer { if catalogRevision == operationID { isLoadingModels = false } }
         do {
             let catalog = try await engine.models(expectedAccountID: accountID)
+            try Task.checkCancellation()
             guard catalogRevision == operationID, profile?.id == accountID else { return }
             models = catalog
             if catalog.isEmpty { message = "Для этого аккаунта пока нет доступных моделей"; isError = false }
         } catch {
-            guard catalogRevision == operationID, profile?.id == accountID else { return }
+            // Closing settings cancels its catalog task, not the connected account
+            // or the model the user already selected.
+            guard !(error is CancellationError), !Task.isCancelled,
+                  catalogRevision == operationID, profile?.id == accountID else { return }
             models = []
             if let snapshot = try? await engine.snapshot() { apply(snapshot) }
             report(error)
@@ -166,6 +190,69 @@ final class ChatGPTAccount: ObservableObject {
         message = (error as? ChatGPTSignInError)?.errorDescription ?? "Не удалось подключиться к ChatGPT. Проверь сеть и попробуй ещё раз."
     }
     #if DEBUG
+    static func verifyCancelledCatalog() async throws {
+        let previous = [ChatGPTModel(id: "offline-selected", name: "Selected model", supportedReasoning: nil)]
+        for urlSessionCancellation in [false, true] {
+            let fixture = try ChatGPTSessionStore.startupFixture(modelRequest: { _ in
+                // Mimic a request cancelled as settings disappear. No URLSession
+                // or live credentials are reached, including on test failure.
+                withUnsafeCurrentTask { $0?.cancel() }
+                if urlSessionCancellation { throw URLError(.cancelled) }
+                throw CancellationError()
+            })
+            let directRequest = Task { try await fixture.engine.models(expectedAccountID: fixture.id) }
+            do { _ = try await directRequest.value; throw ChatGPTSignInError.identity }
+            catch is CancellationError {}
+            let account = ChatGPTAccount(engine: fixture.engine, disabled: false, restore: nil,
+                                         browserOpener: { _ in false })
+            account.apply(try await fixture.engine.snapshot()); account.models = previous
+            let request = Task { await account.refreshModels() }
+            await request.value
+            guard account.profile?.id == fixture.id, account.models == previous,
+                  !account.isLoadingModels, !account.isError, account.message == nil else {
+                throw ChatGPTSignInError.identity
+            }
+        }
+    }
+    static func verifyCancelledSignIn() async throws {
+        let fixture = try ChatGPTSessionStore.startupFixture()
+        var browserCalls = 0
+        let account = ChatGPTAccount(engine: fixture.engine, disabled: false, restore: nil, browserOpener: { _ in
+            browserCalls += 1
+            return false // Even a regression cannot open a browser or reach an account.
+        })
+        account.apply(try await fixture.engine.snapshot())
+        for newAccount in [false, true] {
+            let cancelled = Task {
+                if newAccount { await account.signIn(useDifferentAccount: true) }
+                else { await account.signIn(accountID: fixture.id) }
+            }
+            cancelled.cancel(); await cancelled.value
+            guard browserCalls == 0, account.profile?.id == fixture.id, !account.isConnecting,
+                  account.message == nil else { throw ChatGPTSignInError.callback }
+        }
+    }
+    static func verifyLoginHandoff() throws {
+        let ownID = UUID()
+        var current: UUID? = ownID
+        var activations = 0
+        let handoff = ChatGPTLoginHandoff(operationID: ownID, currentOperation: { current }, activate: { activations += 1 })
+        handoff.finished()
+        guard activations == 0 else { throw ChatGPTSignInError.callback }
+        handoff.receivedCallback()
+        handoff.finished()
+        guard activations == 2 else { throw ChatGPTSignInError.callback }
+        current = nil // cancellation, preview, sign-out or a closed settings view
+        handoff.receivedCallback(); handoff.finished()
+        guard activations == 2 else { throw ChatGPTSignInError.callback }
+        current = UUID() // a newer login owns the settings window
+        handoff.receivedCallback(); handoff.finished()
+        guard activations == 2 else { throw ChatGPTSignInError.callback }
+        current = ownID
+        let errorHandoff = ChatGPTLoginHandoff(operationID: ownID, currentOperation: { current }, activate: { activations += 1 })
+        errorHandoff.receivedCallback(); errorHandoff.finished()
+        guard activations == 4 else { throw ChatGPTSignInError.callback }
+    }
     static func restoringFixture() throws -> (account: ChatGPTAccount, id: String) {
         let fixture = try ChatGPTSessionStore.startupFixture()
         let restore = Task {
@@ -181,6 +268,25 @@ final class ChatGPTAccount: ObservableObject {
         return result
     }
     #endif
+}
+
+@MainActor
+private final class ChatGPTLoginHandoff {
+    private let operationID: UUID
+    private let currentOperation: () -> UUID?
+    private let activate: () -> Void
+    private var received = false
+    init(operationID: UUID, currentOperation: @escaping () -> UUID?, activate: @escaping () -> Void) {
+        self.operationID = operationID; self.currentOperation = currentOperation; self.activate = activate
+    }
+    func receivedCallback() {
+        guard currentOperation() == operationID else { return }
+        received = true; activate()
+    }
+    func finished() {
+        guard received, currentOperation() == operationID else { return }
+        activate()
+    }
 }
 
 enum ChatGPTSignInError: LocalizedError, Equatable {
@@ -396,11 +502,16 @@ private actor ChatGPTSessionStore {
         return Snapshot(active: value.registrations.first { !signingOut && $0.id == value.activeID && $0.tokens != nil }?.profile, profiles: value.registrations.map(\.profile))
     }
     private func hostID() -> String {
+        #if DEBUG
+        if testHooks != nil { return "urn:uuid:00000000-0000-0000-0000-000000000001" }
+        #endif
         let defaults = UserDefaults.standard, key = "chatgpt.ext_agent_host_id"
         if let value = defaults.string(forKey: key), value.hasPrefix("urn:uuid:"), UUID(uuidString: String(value.dropFirst(9))) != nil { return value }
         let value = "urn:uuid:" + UUID().uuidString.lowercased(); defaults.set(value, forKey: key); return value
     }
-    func signIn(accountID: String?, openBrowser: @MainActor @Sendable (URL) -> Bool) async throws -> Snapshot {
+    func signIn(accountID: String?, openBrowser: @MainActor @Sendable (URL) -> Bool,
+                callbackReceived: @MainActor @Sendable () -> Void) async throws -> Snapshot {
+        try Task.checkCancellation()
         guard !signingOut else { throw ChatGPTSignInError.accountChanged }
         let value = try load(), registration = accountID.flatMap { id in value.registrations.first { $0.id == id } }
         if accountID != nil && registration == nil { throw ChatGPTSignInError.accountChanged }
@@ -425,7 +536,16 @@ private actor ChatGPTSessionStore {
         guard let url = authorization.url else { throw ChatGPTSignInError.registration }
         try Task.checkCancellation()
         guard await openBrowser(url) else { throw ChatGPTSignInError.unavailable }
-        let callback = try await withTaskCancellationHandler(operation: { try await listener.wait() }, onCancel: { listener.cancel() })
+        let callback: ChatGPTLoopbackListener.Callback
+        do {
+            callback = try await withTaskCancellationHandler(operation: { try await listener.wait() }, onCancel: { listener.cancel() })
+        } catch ChatGPTSignInError.oauthDenied {
+            try ensureLogin(operationID)
+            await callbackReceived()
+            throw ChatGPTSignInError.oauthDenied
+        }
+        try ensureLogin(operationID)
+        await callbackReceived()
         try ensureLogin(operationID)
         let response = try await exchange(["grant_type": "authorization_code", "client_id": callback.clientID, "code": callback.code,
                                           "code_verifier": verifier, "redirect_uri": redirectURI, "resource": ChatGPTSecurity.resource])
@@ -600,9 +720,12 @@ private actor ChatGPTSessionStore {
             }
             try Task.checkCancellation()
             return (data, response.statusCode)
-        } catch is CancellationError { throw CancellationError() }
-        catch let error as ChatGPTSignInError { throw error }
-        catch { throw ChatGPTSignInError.network }
+        } catch {
+            // URLSession can report task cancellation as URLError.cancelled.
+            if error is CancellationError || Task.isCancelled { throw CancellationError() }
+            if let error = error as? ChatGPTSignInError { throw error }
+            throw ChatGPTSignInError.network
+        }
     }
     private static func form(_ values: [String: String]) -> Data {
         var allowed = CharacterSet.alphanumerics; allowed.insert(charactersIn: "-._~")
@@ -736,9 +859,8 @@ private final class ChatGPTLoopbackListener: @unchecked Sendable {
         catch { reply(connection, id: id, success: false) }
     }
     private func reply(_ connection: NWConnection, id: UUID, success: Bool, completion: (() -> Void)? = nil) {
-        let text = success ? "Ответ получен. Продолжи в приложении После." : "Не удалось подтвердить вход. Вернись в После и попробуй снова."
-        let body = Data(("<!doctype html><html lang=\"ru\"><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"no-referrer\"><title>После</title><body><p>" + text + "</p></body></html>").utf8)
-        let header = "HTTP/1.1 \(success ? "200 OK" : "400 Bad Request")\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.count)\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n\r\n"
+        let body = ChatGPTCallbackPage.body(received: success)
+        let header = "HTTP/1.1 \(success ? "200 OK" : "400 Bad Request")\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.count)\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Security-Policy: \(ChatGPTCallbackPage.contentSecurityPolicy)\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n\r\n"
         connection.send(content: Data(header.utf8) + body, completion: .contentProcessed { [weak self] _ in connection.cancel(); self?.connections.removeValue(forKey: id); completion?() })
     }
 }
@@ -755,10 +877,18 @@ extension ChatGPTSecurity {
         let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 3
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
-        let (_, rejected) = try await session.data(from: URL(string: redirect + "?state=wrong&code=offline-code")!)
-        guard (rejected as? HTTPURLResponse)?.statusCode == 400 else { throw ChatGPTSignInError.callback }
-        let (_, accepted) = try await session.data(from: URL(string: redirect + "?state=offline-state&code=offline-code")!)
-        guard (accepted as? HTTPURLResponse)?.statusCode == 200 else { throw ChatGPTSignInError.callback }
+        let (rejectedBody, rejected) = try await session.data(from: URL(string: redirect + "?state=wrong&code=offline-code")!)
+        guard (rejected as? HTTPURLResponse)?.statusCode == 400,
+              String(decoding: rejectedBody, as: UTF8.self).contains("Вернитесь в «После»") else { throw ChatGPTSignInError.callback }
+        let (acceptedBody, accepted) = try await session.data(from: URL(string: redirect + "?state=offline-state&code=offline-code")!)
+        let acceptedPage = String(decoding: acceptedBody, as: UTF8.self)
+        guard let accepted = accepted as? HTTPURLResponse, accepted.statusCode == 200,
+              accepted.value(forHTTPHeaderField: "Content-Type") == "text/html; charset=utf-8",
+              accepted.value(forHTTPHeaderField: "Cache-Control") == "no-store",
+              accepted.value(forHTTPHeaderField: "Content-Security-Policy") == ChatGPTCallbackPage.contentSecurityPolicy,
+              acceptedPage.contains("Возвращаемся в «После»"), !acceptedPage.contains("Вход выполнен"),
+              !acceptedPage.contains("offline-code"), !acceptedPage.contains("offline-state"),
+              !acceptedPage.contains("<script") else { throw ChatGPTSignInError.callback }
         let callback = try await listener.wait()
         guard callback.code == "offline-code", callback.clientID == clientID else { throw ChatGPTSignInError.callback }
         let cancelled = ChatGPTLoopbackListener(state: state, issuedClientID: clientID)
@@ -767,7 +897,7 @@ extension ChatGPTSecurity {
     }
 }
 private extension ChatGPTSessionStore {
-    static func startupFixture() throws -> (engine: ChatGPTSessionStore, id: String) {
+    static func startupFixture(modelRequest: (@Sendable (URLRequest) async throws -> (Data, Int))? = nil) throws -> (engine: ChatGPTSessionStore, id: String) {
         let id = ChatGPTSecurity.accountID(subject: "offline-startup", clientID: "oaiapp_startup")
         let tokens = Tokens(access: "offline-startup-access", refresh: "offline-startup-refresh", idToken: "offline-startup-id",
                             expiresAt: Date().addingTimeInterval(3600), earliestRefreshAt: nil, scopes: ChatGPTSecurity.scopes.components(separatedBy: " "))
@@ -775,6 +905,7 @@ private extension ChatGPTSessionStore {
         let body = try JSONSerialization.data(withJSONObject: ["models": [["slug": "offline-model", "display_name": "Offline model", "visibility": "list"]]])
         let hooks = TestHooks(save: { _ in throw ChatGPTSignInError.identity }, request: { request in
             guard request.url?.absoluteString == "https://api.openai.com/v1/models", request.value(forHTTPHeaderField: "Authorization") == "Bearer offline-startup-access" else { throw ChatGPTSignInError.identity }
+            if let modelRequest { return try await modelRequest(request) }
             return (body, 200)
         })
         return (ChatGPTSessionStore(vault: Vault(registrations: [record], activeID: id), hooks: hooks), id)

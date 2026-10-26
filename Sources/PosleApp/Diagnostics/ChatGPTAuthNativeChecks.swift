@@ -87,7 +87,11 @@ enum ChatGPTAuthNativeChecks {
         try await Task.sleep(for: .milliseconds(50))
         try expect(superseded.account.profile == nil, "An old initial snapshot cannot resurrect a superseded session")
         print("PASS: startup token/catalog calls await one restore, cancellation is isolated and stale restore cannot replace account state")
-        print("6 native ChatGPT auth checks passed (synthetic credentials only)")
+        try await ChatGPTAccount.verifyCancelledCatalog()
+        try await ChatGPTAccount.verifyCancelledSignIn()
+        try ChatGPTAccount.verifyLoginHandoff()
+        print("PASS: cancelled catalog requests preserve the selected model and account; cancelled sign-in tasks cannot open a browser; callback/terminal focus intents stay within the current login; cancellation, preview and stale attempts cannot focus")
+        print("7 native ChatGPT auth checks passed (synthetic credentials only)")
     }
     private enum CheckFailure: Error { case failed(String) }
     private static func expect(_ value: @autoclosure () throws -> Bool, _ message: String) throws { guard try value() else { throw CheckFailure.failed(message) } }

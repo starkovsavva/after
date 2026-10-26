@@ -630,6 +630,8 @@ class WhisperChunkTests(unittest.TestCase):
             engine.transcribe(self.directory, self.root, 0, False)
 
     def test_full_pipeline_keeps_word_text_source_ids_and_tail(self):
+        engine.atomic(self.directory / "transcript.json", {"previous-transcript": True})
+        engine.atomic(self.directory / "summary.json", {"previous-summary": True})
         self.pipeline(lambda *_: None)
         transcript = engine.load(self.directory / "transcript.json")
         self.assertEqual(transcript["duration"], 75)
@@ -637,6 +639,61 @@ class WhisperChunkTests(unittest.TestCase):
         self.assertEqual(" ".join(segment["text"] for segment in transcript["segments"]), "first bridge joined owner action tail")
         self.assertAlmostEqual(transcript["segments"][-1]["end"], 74.8)
         self.assertEqual(self.closed, [True])
+        self.assertFalse((self.directory / "summary.json").exists(), "An unchanged old summary must be invalidated after successful ASR")
+
+    def test_transcription_rejects_transcript_edit_during_inference(self):
+        transcript = self.directory / "transcript.json"
+        summary = self.directory / "summary.json"
+        transcript.write_bytes(b'{"previous-transcript":true}')
+        summary.write_bytes(b'{"previous-summary":true}')
+        correction = b'{"manual-transcript-edit":true}'
+        changed = False
+        def progress(message, fraction=-1):
+            nonlocal changed
+            if message == "Распознаю речь · 33%":
+                # A second window uses this same lock. It must be free during
+                # the model work, otherwise editing would block the main app.
+                import fcntl
+                with (self.directory / ".posle-storage.lock").open("r+b") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    transcript.write_bytes(correction)
+                    changed = True
+        with self.assertRaisesRegex(RuntimeError, "правки сохранены"):
+            self.pipeline(progress)
+        self.assertTrue(changed)
+        self.assertEqual(transcript.read_bytes(), correction)
+        self.assertEqual(summary.read_bytes(), b'{"previous-summary":true}')
+        self.assertEqual(self.closed, [True])
+        self.assertNotIn('"event": "done"', engine.PROTOCOL.getvalue())
+
+    def test_transcription_rejects_summary_edit_during_inference(self):
+        transcript = self.directory / "transcript.json"
+        summary = self.directory / "summary.json"
+        transcript.write_bytes(b'{"previous-transcript":true}')
+        summary.write_bytes(b'{"previous-summary":true}')
+        correction = b'{"manual-summary-edit":true}'
+        def progress(message, fraction=-1):
+            if message == "Распознаю речь · 33%": summary.write_bytes(correction)
+        with self.assertRaisesRegex(RuntimeError, "правки сохранены"):
+            self.pipeline(progress)
+        self.assertEqual(transcript.read_bytes(), b'{"previous-transcript":true}')
+        self.assertEqual(summary.read_bytes(), correction)
+        self.assertEqual(self.closed, [True])
+        self.assertNotIn('"event": "done"', engine.PROTOCOL.getvalue())
+
+    def test_transcription_preserves_summary_created_during_inference(self):
+        transcript = self.directory / "transcript.json"
+        summary = self.directory / "summary.json"
+        transcript.write_bytes(b'{"previous-transcript":true}')
+        created = b'{"new-manual-summary":true}'
+        def progress(message, fraction=-1):
+            if message == "Распознаю речь · 33%": summary.write_bytes(created)
+        with self.assertRaisesRegex(RuntimeError, "правки сохранены"):
+            self.pipeline(progress)
+        self.assertEqual(transcript.read_bytes(), b'{"previous-transcript":true}')
+        self.assertEqual(summary.read_bytes(), created)
+        self.assertEqual(self.closed, [True])
+        self.assertNotIn('"event": "done"', engine.PROTOCOL.getvalue())
 
     def test_cancel_after_first_window_prevents_next_decode_and_preserves_previous_results(self):
         class SyntheticStop(BaseException): pass

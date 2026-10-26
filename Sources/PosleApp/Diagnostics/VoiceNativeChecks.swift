@@ -17,6 +17,30 @@ enum VoiceNativeChecks {
         try expect(["/private/tmp", "/tmp"].contains(root.deletingLastPathComponent().path) && root.lastPathComponent.hasPrefix("posle-native-check-"), "Disposable root required")
         let store = AppStore(preview: true)
         try expect(store.meetings.isEmpty && store.notes.notes.isEmpty, "Voice checks require an empty fixture")
+        let lifecycleVoice = store.voice
+        for transition in ["starting", "stopping", "terminating"] {
+            store.startingRecording = transition == "starting"
+            store.stoppingRecording = transition == "stopping"
+            store.isTerminating = transition == "terminating"
+            lifecycleVoice.startDictation()
+            let expected = transition == "terminating" ? "Приложение завершает работу." : "Во время записи встречи введите поручение текстом. Микрофон занят записью."
+            try expect(lifecycleVoice.phase == .editing && !store.busy && lifecycleVoice.message == expected,
+                       "Dictation was admitted while capture or termination was transitioning")
+        }
+        store.startingRecording = false; store.stoppingRecording = false; store.isTerminating = false
+        for failure: Error in [AppError.message("Synthetic capture stop failed"), CancellationError()] {
+            lifecycleVoice.beginSyntheticDictationForChecks(stopFailure: failure)
+            try expect(store.busy && lifecycleVoice.phase == .capturing, "Synthetic dictation did not reserve the actual global job")
+            lifecycleVoice.finishDictation()
+            try expect(!store.busy && store.assertions == 0 && !store.canCancelJob && lifecycleVoice.phase == .editing && lifecycleVoice.message != nil,
+                       "A failed/cancelled capture stop leaked its job or power reservation")
+        }
+        lifecycleVoice.beginSyntheticDictationForChecks(stopFailure: CancellationError())
+        lifecycleVoice.cancelWork()
+        try await waitUntil { !store.busy }
+        try expect(store.assertions == 0 && lifecycleVoice.phase == .editing, "Capture cancellation leaked its job or power reservation")
+        print("PASS: dictation excludes capture/termination transitions and stop failure/cancellation release reservations")
+
         let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("scripts/voice_fixture_server.py")
         let server = Process(); server.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         server.arguments = [script.path, "--root", root.path]; server.standardInput = FileHandle.nullDevice

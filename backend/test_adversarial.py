@@ -172,6 +172,11 @@ def upload(path, settings, key):
         (root / "ready").touch()
     if scenario == "upload":
         time.sleep(60)
+    if scenario == "lock":
+        deadline = time.monotonic() + 10
+        while not (root / "allow-upload").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert (root / "allow-upload").exists(), "parent did not release synthetic uploader"
     return {"text": "Synthetic words", "segments": [{"start": 0.1, "end": 0.9, "text": "Synthetic words"}]}
 cloud_speech.upload = upload
 sys.argv = [engine.__file__, "transcribe", "--root", str(root), "--meeting", str(meeting), "--no-diarization"]
@@ -213,15 +218,15 @@ engine.main()
                 process.kill(); process.communicate(timeout=5)
 
     def test_transcript_commit_waits_for_other_process_holding_meeting_lock(self):
-        process = None
+        process = self.child("lock")
         try:
+            deadline = time.monotonic() + 10
+            while not (self.root / "ready").exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue((self.root / "ready").exists(), "synthetic uploader did not start")
             with (self.meeting / ".posle-storage.lock").open("a+b") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                process = self.child("lock")
-                deadline = time.monotonic() + 10
-                while not (self.root / "ready").exists() and process.poll() is None and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                self.assertTrue((self.root / "ready").exists(), "synthetic uploader did not start")
+                (self.root / "allow-upload").touch()
                 with self.assertRaises(subprocess.TimeoutExpired):
                     process.wait(timeout=0.1)
                 for name, contents in self.previous.items():
