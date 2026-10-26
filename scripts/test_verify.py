@@ -29,7 +29,7 @@ class VerifyIsolationTests(unittest.TestCase):
         self.assertIn('release:', output.getvalue())
 
     def test_child_environment_does_not_inherit_real_data_root_or_provider_keys(self):
-        with mock.patch.dict(os.environ, {'POSLE_DATA_DIR': '/fixture/private-library', 'OPENAI_API_KEY': 'not-a-real-key', 'PROVIDER_SECRET': 'not-a-real-secret', 'POSLE_JOB_SETTINGS': '{"mode":"cloud"}', 'PYTHONPATH': '/fixture/foreign-modules', 'PYTHONHOME': '/fixture/foreign-home'}):
+        with mock.patch.dict(os.environ, {'POSLE_DATA_DIR': '/fixture/private-library', 'OPENAI_API_KEY': 'not-a-real-key', 'PROVIDER_SECRET': 'not-a-real-secret', 'POSLE_JOB_SETTINGS': '{"mode":"cloud"}', 'PYTHONPATH': '/fixture/foreign-modules', 'PYTHONHOME': '/fixture/foreign-home', 'POSLE_RUST_LIBRARY': '/fixture/foreign.dylib', 'POSLE_RUST_ENGINE': '/fixture/foreign-engine', 'POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS': '1'}):
             controller = self.controller()
         self.assertNotIn('POSLE_DATA_DIR', controller.env)
         self.assertNotIn('OPENAI_API_KEY', controller.env)
@@ -37,6 +37,9 @@ class VerifyIsolationTests(unittest.TestCase):
         self.assertNotIn('POSLE_JOB_SETTINGS', controller.env)
         self.assertNotIn('PYTHONPATH', controller.env)
         self.assertNotIn('PYTHONHOME', controller.env)
+        self.assertNotIn('POSLE_RUST_LIBRARY', controller.env)
+        self.assertNotIn('POSLE_RUST_ENGINE', controller.env)
+        self.assertNotIn('POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS', controller.env)
 
     def test_python_venv_symlink_is_not_resolved_to_base_interpreter(self):
         with tempfile.TemporaryDirectory(prefix='posle-verify-python-') as temporary:
@@ -62,6 +65,12 @@ class VerifyIsolationTests(unittest.TestCase):
         def run(label, command, *, env=None, timeout=1200):
             if env is None:
                 return
+            if '--preview' not in command:
+                self.assertEqual(str(command[1]), 'scripts/e2e_media.py')
+                self.assertEqual(env['POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS'], '1')
+                self.assertNotIn('POSLE_DATA_DIR', env)
+                return
+            self.assertEqual(env['POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS'], '1')
             root = Path(env['POSLE_DATA_DIR'])
             self.assertTrue(root.is_dir())
             self.assertIn(root.parent.as_posix(), ['/tmp', '/private/tmp'])
@@ -174,9 +183,11 @@ class VerifyIsolationTests(unittest.TestCase):
         controller.run = record
         controller.integration()
         called = {str(command[1]) for command in commands}
-        self.assertEqual(called, {'scripts/e2e.py', 'scripts/e2e_media.py', 'scripts/check_media.py', 'scripts/check_search.py', 'scripts/check_managed_identity.py'})
+        self.assertEqual(called, {'scripts/e2e.py', 'scripts/e2e_media.py', 'scripts/check_media.py', 'scripts/check_search.py', 'scripts/check_managed_identity.py', 'scripts/check_native_integrity.py'})
         self.assertFalse(any('check_audio' in str(command) for command in commands))
         self.assertEqual(environments['scripts/check_media.py']['PYTHONPATH'], str(verify.PROJECT / 'backend'))
+        self.assertEqual(environments['scripts/e2e_media.py']['POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS'], '1')
+        self.assertTrue(all('POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS' not in env for script, env in environments.items() if script != 'scripts/e2e_media.py'))
 
 
 if __name__ == '__main__':

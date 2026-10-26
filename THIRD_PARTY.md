@@ -15,8 +15,7 @@ Each component retains its original license and notices in the installed runtime
 - Catalog conversions [Whisper Large v3 Turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo) and [Whisper Small MLX](https://huggingface.co/mlx-community/whisper-small-mlx): see the selected model cards and upstream license notices. Catalog weights use pinned repository revisions recorded in `backend/models.py`.
 - [Ollama](https://github.com/ollama/ollama), MIT. Optional local runtime.
 - [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-9B), Apache-2.0; see the selected model's full model card and license.
-- [CPython](https://www.python.org/), Python Software Foundation License. Private speech runtime, installed separately.
-- [uv](https://github.com/astral-sh/uv), Apache-2.0 / MIT.
+- [CPython](https://www.python.org/), Python Software Foundation License. Private speech runtime from [python-build-standalone](https://github.com/astral-sh/python-build-standalone), installed separately from a pinned archive; upstream notices remain in that runtime.
 - [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg), BSD-2-Clause. The separately downloaded FFmpeg binary retains its upstream licensing.
 - [rustup](https://github.com/rust-lang/rustup), Apache-2.0 / MIT. Developer toolchain installer only; the app bundles its compiled Rust worker and does not require Rust on the user's Mac.
 

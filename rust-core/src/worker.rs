@@ -165,7 +165,7 @@ fn setup_spec(root: &Path, backend: &Path) -> Result<WorkerSpec> {
     validate_paths(root, backend)?;
     Ok(WorkerSpec {
         executable: PathBuf::from("/bin/bash"),
-        arguments: vec![backend.join("setup.sh").into_os_string(), root.as_os_str().to_owned(), native_host_path(&std::env::current_exe()?).into_os_string()],
+        arguments: vec![OsString::from("-p"), backend.join("setup.sh").into_os_string(), root.as_os_str().to_owned(), native_host_path(&std::env::current_exe()?).into_os_string()],
         forwards_plain_progress: true,
         accepts_speech_key: false,
     })
@@ -194,7 +194,7 @@ fn cloud_speech_selected(root: &Path) -> bool {
 fn sanitize_environment(command: &mut Command, accepts_speech_key: bool,
                         variables: impl IntoIterator<Item = (OsString, OsString)>) {
     for (name, _) in variables {
-        if sensitive_key(&name.to_string_lossy()) && !(accepts_speech_key && name == "POSLE_SPEECH_API_KEY") {
+        if unsafe_startup_key(&name) || (sensitive_key(&name.to_string_lossy()) && !(accepts_speech_key && name == "POSLE_SPEECH_API_KEY")) {
             command.env_remove(name);
         }
     }
@@ -203,6 +203,14 @@ fn sanitize_environment(command: &mut Command, accepts_speech_key: bool,
     for name in ["__PYVENV_LAUNCHER__", "PYTHONEXECUTABLE", "PYTHONHOME", "PYTHONPATH"] {
         command.env_remove(name);
     }
+}
+
+/// These controls can run code before setup's first statement or before a
+/// spawned native helper reaches its own library-integrity validation.
+fn unsafe_startup_key(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_ascii_uppercase();
+    name.starts_with("DYLD_") || name.starts_with("LD_") || name.starts_with("BASH_FUNC_")
+        || matches!(name.as_str(), "BASH_ENV" | "ENV" | "SHELLOPTS" | "BASHOPTS" | "CDPATH" | "GLOBIGNORE" | "IFS" | "PS4")
 }
 
 extern "C" fn cancel_signal(signal: libc::c_int) {
@@ -516,7 +524,7 @@ mod tests {
         let spec = setup_spec(Path::new("/tmp/a b; literal"), Path::new("/tmp/моё приложение")).unwrap();
         assert_eq!(spec.executable, Path::new("/bin/bash"));
         let expected_host = native_host_path(&std::env::current_exe().unwrap());
-        assert_eq!(strings(&spec), vec!["/tmp/моё приложение/setup.sh", "/tmp/a b; literal", expected_host.to_str().unwrap()]);
+        assert_eq!(strings(&spec), vec!["-p", "/tmp/моё приложение/setup.sh", "/tmp/a b; literal", expected_host.to_str().unwrap()]);
         assert!(spec.forwards_plain_progress);
     }
 
@@ -561,6 +569,9 @@ mod tests {
             ("POSLE_API_KEY", "test-text-key"), ("OPENAI_API_KEY", "other-text-key"),
             ("HF_TOKEN", "test-hf-token"), ("AWS_SECRET_ACCESS_KEY", "test-aws-secret"),
             ("PYTHONPATH", "/untrusted/python"), ("SAFE_SETTING", "retained"),
+            ("BASH_ENV", "/untrusted/startup"), ("ENV", "/untrusted/startup"), ("SHELLOPTS", "xtrace"),
+            ("BASHOPTS", "expand_aliases"), ("BASH_FUNC_echo%%", "() { false; }"),
+            ("DYLD_INSERT_LIBRARIES", "/untrusted/library"), ("LD_PRELOAD", "/untrusted/library"),
         ].into_iter().map(|(key, value)| (key.into(), value.into())).collect();
         for accepts_speech_key in [false, true] {
             let mut child = Command::new("/usr/bin/env");
@@ -571,7 +582,7 @@ mod tests {
             let text = String::from_utf8(output.stdout).unwrap();
             assert_eq!(text.contains("POSLE_SPEECH_API_KEY=test-only-speech-key"), accepts_speech_key);
             assert!(text.contains("SAFE_SETTING=retained"));
-            for forbidden in ["POSLE_API_KEY=", "OPENAI_API_KEY=", "HF_TOKEN=", "AWS_SECRET_ACCESS_KEY=", "PYTHONPATH="] {
+            for forbidden in ["POSLE_API_KEY=", "OPENAI_API_KEY=", "HF_TOKEN=", "AWS_SECRET_ACCESS_KEY=", "PYTHONPATH=", "BASH_ENV=", "ENV=", "SHELLOPTS=", "BASHOPTS=", "BASH_FUNC_", "DYLD_", "LD_PRELOAD="] {
                 assert!(!text.contains(forbidden));
             }
             let redactor = Redactor::from_variables(variables.clone());
@@ -580,6 +591,36 @@ mod tests {
         }
         let short = Redactor::from_variables([(OsString::from("POSLE_SPEECH_API_KEY"), OsString::from("abc"))]);
         assert_eq!(short.clean("key: abc", 100), "key: [hidden]");
+    }
+
+    #[test]
+    fn installer_never_executes_shell_environment_before_its_verifier_guard() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("backend");
+        let startup = temp.path().join("startup.sh");
+        let marker = temp.path().join("startup-executed");
+        std::fs::write(&startup, ": > \"$POSLE_TEST_STARTUP_MARKER\"\nexit 73\n").unwrap();
+        for privileged in [true, false] {
+            let mut spec = setup_spec(temp.path(), &backend).unwrap();
+            *spec.arguments.last_mut().unwrap() = OsString::from("/nonexistent-posle-test-host");
+            if !privileged { assert_eq!(spec.arguments.remove(0), "-p"); }
+            let variables: Vec<(OsString, OsString)> = vec![
+                ("PATH".into(), "/usr/bin:/bin".into()), ("BASH_ENV".into(), startup.as_os_str().to_owned()),
+                ("ENV".into(), startup.as_os_str().to_owned()), ("POSLE_TEST_STARTUP_MARKER".into(), marker.as_os_str().to_owned()),
+                ("BASH_FUNC_echo%%".into(), r#"() { /usr/bin/touch "$POSLE_TEST_STARTUP_MARKER"; }"#.into()),
+            ];
+            let mut command = Command::new(spec.executable);
+            command.args(spec.arguments).env_clear().envs(variables.clone());
+            // Check each protection independently: privileged bash ignores even
+            // an explicitly supplied startup; sanitization also protects bash
+            // without -p if a future caller accidentally drops that argument.
+            if !privileged { sanitize_environment(&mut command, false, variables); }
+            let output = command.output().unwrap();
+            assert!(!output.status.success());
+            assert_ne!(output.status.code(), Some(73));
+            assert!(!marker.exists(), "Shell startup ran before the verifier guard");
+            assert!(!temp.path().join("runtime").exists(), "Setup advanced past its missing-verifier guard");
+        }
     }
 
     // This helper runs only in a separate copy of the test binary: sending

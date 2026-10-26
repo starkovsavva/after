@@ -1,4 +1,5 @@
 import os
+import hashlib
 import re
 from pathlib import Path
 import shutil
@@ -153,6 +154,82 @@ class SigningCommandsTests(unittest.TestCase):
                 self.assertIn('cdhash', requirement)
                 requirements.append(requirement)
             self.assertNotEqual(*requirements)
+
+
+class CoreIntegritySigningTests(unittest.TestCase):
+    def fixture(self, root):
+        app = root / 'После.app'
+        for name in ('Contents/Frameworks/libposle_core.dylib', 'Contents/MacOS/posle-engine', 'Contents/Helpers/После Распознавание.app', 'Contents/Helpers/После Обработка.app'):
+            path = app / name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.mkdir() if name.endswith('.app') else path.write_bytes(b'fixture')
+        entitlement = root / 'entitlements.plist'; entitlement.write_text('fixture')
+        return app, entitlement, app / 'Contents/Frameworks/libposle_core.dylib'
+
+    def test_presign_digest_covers_final_signature_bytes(self):
+        with tempfile.TemporaryDirectory(prefix='posle-core-sign-', dir='/private/tmp') as temporary:
+            library = Path(temporary) / 'core.dylib'; library.write_bytes(b'unsigned')
+            def sign(command, **kwargs):
+                if '--force' in command: library.write_bytes(b'final signed bytes')
+                return subprocess.CompletedProcess(command, 0)
+            with mock.patch.object(signing.subprocess, 'run', side_effect=sign) as run:
+                digest = signing.sign_core_library(library, signing.Identity(FINGERPRINT, True))
+            self.assertEqual(digest, hashlib.sha256(b'final signed bytes').hexdigest())
+            self.assertEqual(run.call_args_list[0].args[0], ['/usr/bin/codesign', '--force', '--sign', FINGERPRINT, '--timestamp', str(library)])
+            self.assertEqual(run.call_args_list[1].args[0], ['/usr/bin/codesign', '--verify', '--strict', '-R', '=anchor apple generic', str(library)])
+
+    def test_final_app_signing_verifies_but_never_resigns_pinned_core(self):
+        with tempfile.TemporaryDirectory(prefix='posle-core-preserve-', dir='/private/tmp') as temporary:
+            app, entitlement, library = self.fixture(Path(temporary))
+            expected = signing.core_digest(library)
+            with mock.patch.object(signing.subprocess, 'run') as run:
+                signing.sign_application(app, entitlement, signing.Identity('-'), presigned_core_sha256=expected)
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertEqual(commands[0], ['/usr/bin/codesign', '--verify', '--strict', str(library)])
+            self.assertEqual(commands[-1], commands[0])
+            self.assertTrue(all(command[-1] != str(library) for command in commands if '--force' in command))
+            self.assertEqual(len([command for command in commands if '--force' in command]), 4)
+            self.assertEqual(signing.core_digest(library), expected)
+
+    def test_bad_pinned_digest_fails_before_any_signing(self):
+        with tempfile.TemporaryDirectory(prefix='posle-core-mismatch-', dir='/private/tmp') as temporary:
+            app, entitlement, _ = self.fixture(Path(temporary))
+            for expected in ('0' * 64, 'A' * 64, 'short'):
+                with self.subTest(expected=expected), mock.patch.object(signing.subprocess, 'run') as run:
+                    with self.assertRaisesRegex(RuntimeError, 'digest does not match'):
+                        signing.sign_application(app, entitlement, signing.Identity('-'), presigned_core_sha256=expected)
+                    run.assert_not_called()
+
+    def test_mutation_during_app_signing_fails_closed(self):
+        with tempfile.TemporaryDirectory(prefix='posle-core-sign-mutation-', dir='/private/tmp') as temporary:
+            app, entitlement, library = self.fixture(Path(temporary))
+            expected = signing.core_digest(library)
+            def mutate(command, **kwargs):
+                if command[-1] == str(app) and '--force' in command: library.write_bytes(b'modified after linking')
+                return subprocess.CompletedProcess(command, 0)
+            with mock.patch.object(signing.subprocess, 'run', side_effect=mutate):
+                with self.assertRaisesRegex(RuntimeError, 'Signing changed'):
+                    signing.sign_application(app, entitlement, signing.Identity('-'), presigned_core_sha256=expected)
+
+    def test_digest_file_has_exact_format_and_rejects_symlinks(self):
+        with tempfile.TemporaryDirectory(prefix='posle-core-digest-', dir='/private/tmp') as temporary:
+            path = Path(temporary) / 'core.sha256'
+            for value in ('a' * 64 + '\n', 'A' * 64, 'a' * 63, 'z' * 64):
+                path.write_text(value)
+                with self.assertRaisesRegex(RuntimeError, '64 lowercase'):
+                    signing.read_core_digest(path)
+            path.write_text('a' * 64); self.assertEqual(signing.read_core_digest(path), 'a' * 64)
+            link = path.with_name('symlink'); link.symlink_to(path)
+            with self.assertRaisesRegex(RuntimeError, 'regular'):
+                signing.read_core_digest(link)
+
+    def test_library_cli_writes_exact_digest_and_never_signs_app(self):
+        with tempfile.TemporaryDirectory(prefix='posle-core-cli-', dir='/private/tmp') as temporary:
+            root = Path(temporary); digest = root / 'core.sha256'; library = root / 'core.dylib'
+            with mock.patch.dict(os.environ, {'POSLE_CODESIGN_IDENTITY': ''}), mock.patch.object(sys, 'argv', ['signing.py', '--library', str(library), '--digest-file', str(digest)]), mock.patch.object(signing, 'sign_core_library', return_value='a' * 64) as sign, mock.patch.object(signing, 'sign_application') as application:
+                signing.main()
+            self.assertEqual(digest.read_bytes(), b'a' * 64)
+            sign.assert_called_once_with(library, signing.Identity('-'))
+            application.assert_not_called()
 
 
 if __name__ == '__main__':

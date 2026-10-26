@@ -102,6 +102,16 @@ fn run(args: Args) -> Result<Value> {
 }
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(posle_core::python_runtime::VERIFY_MODE)) {
+        let args: Vec<_> = std::env::args_os().skip(2).collect();
+        let result = if args.len() == 1 { posle_core::python_runtime::verify_distribution(Path::new(&args[0])) }
+            else { Err(anyhow::anyhow!("Нужен один абсолютный путь компонентов Python.")) };
+        let code = match result {
+            Ok(()) => { println!("Python runtime integrity verified"); 0 },
+            Err(error) => { eprintln!("{error}"); 1 },
+        };
+        std::process::exit(code);
+    }
     // The helper remains the real executable while the selected CPython
     // runtime performs MLX/ONNX/media work inside this native process.
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(python_host::INTERNAL_MODE)) {

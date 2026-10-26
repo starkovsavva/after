@@ -83,7 +83,7 @@ unsafe fn symbol<T:Copy>(handle:*mut c_void,name:&CStr)->Result<T> {
     Ok(std::mem::transmute_copy(&value))
 }
 impl Api {
-    unsafe fn load(library:&Path)->Result<Self> {
+    unsafe fn load(runtime:&crate::python_runtime::VerifiedRuntime)->Result<Self> {
         // CPython 3.12 getpath.c unconditionally consumes this macOS launcher
         // variable even in isolated mode. Refuse that unusual parent instead
         // of changing the running Swift app's environment or restoring it racily.
@@ -91,7 +91,7 @@ impl Api {
         if std::env::var_os("__PYVENV_LAUNCHER__").is_some() {
             bail!("Среда запуска содержит служебные настройки Python. Закройте «После» и откройте его из Finder.");
         }
-        let path=CString::new(library.as_os_str().as_bytes())?;
+        let path=runtime.loader_path()?;
         let handle=libc::dlopen(path.as_ptr(),libc::RTLD_NOW|libc::RTLD_GLOBAL);
         if handle.is_null() {bail!("Не удалось загрузить движок распознавания. Переустановите компоненты.");}
         // Deliberately never dlclose: native extensions retain CPython symbols.
@@ -104,7 +104,8 @@ impl Api {
             import:symbol(handle,c"PyImport_ImportModule")?,attr:symbol(handle,c"PyObject_GetAttrString")?,unicode:symbol(handle,c"PyUnicode_FromStringAndSize")?,
             call:symbol(handle,c"PyObject_CallObject")?,tuple_new:symbol(handle,c"PyTuple_New")?,tuple_set:symbol(handle,c"PyTuple_SetItem")?,
             utf8:symbol(handle,c"PyUnicode_AsUTF8AndSize")?,decref:symbol(handle,c"Py_DecRef")?,clear_error:symbol(handle,c"PyErr_Clear")?};
-        if !CStr::from_ptr((api.get_version)()).to_bytes().starts_with(b"3.12.") {bail!("Нужен совместимый движок Python 3.12. Переустановите компоненты.");}
+        runtime.require_image(api.get_version as *const libc::c_void)?;
+        runtime.require_version(CStr::from_ptr((api.get_version)()).to_bytes())?;
         if (api.initialized)()!=0 {bail!("В приложении уже работает другой Python-движок. Перезапустите «После».");}
         Ok(api)
     }
@@ -172,18 +173,17 @@ impl Api {
 fn status(value:PyStatus)->Result<()> {
     if value.kind!=0 {bail!("Не удалось подготовить встроенное распознавание. Переустановите компоненты и перезапустите приложение.");} Ok(())
 }
-#[derive(PartialEq,Eq)]
-struct Runtime { interpreter:PathBuf, real:PathBuf, base:PathBuf, venv:PathBuf, backend:PathBuf }
+struct Runtime { interpreter:PathBuf, real:PathBuf, base:PathBuf, venv:PathBuf, backend:PathBuf, verified:crate::python_runtime::VerifiedRuntime }
+impl PartialEq for Runtime {
+    fn eq(&self, other:&Self)->bool { self.interpreter==other.interpreter && self.real==other.real && self.base==other.base && self.venv==other.venv && self.backend==other.backend }
+}
 fn runtime(input:&Value)->Result<Runtime> {
     let interpreter=PathBuf::from(input["interpreter"].as_str().context("Не выбраны компоненты распознавания")?);
     let backend=PathBuf::from(input["backend"].as_str().context("В приложении отсутствует модуль распознавания")?);
-    let venv=interpreter.parent().filter(|p|p.file_name()==Some(std::ffi::OsStr::new("bin"))).and_then(Path::parent).context("Некорректная папка компонентов")?.to_owned();
-    if !interpreter.is_absolute() || !backend.is_absolute() || !venv.join("pyvenv.cfg").is_file() || !backend.join("embedded_bridge.py").is_file() {bail!("Подготовьте компоненты распознавания в настройках.");}
-    let real=std::fs::canonicalize(&interpreter)?;
-    if real.file_name()!=Some(std::ffi::OsStr::new("python3.12")) {bail!("Нужен движок распознавания Python 3.12.");}
-    let base=real.parent().and_then(Path::parent).context("Некорректные компоненты распознавания")?.to_owned();
-    if !base.join("lib/libpython3.12.dylib").is_file() || !base.join("lib/python3.12/encodings/__init__.py").is_file() {bail!("Движок распознавания установлен не полностью.");}
-    Ok(Runtime{interpreter,real,base,venv,backend})
+    let root=Path::new(input["root"].as_str().context("Не выбрана папка приложения")?);
+    if !backend.is_absolute() || !backend.join("embedded_bridge.py").is_file() {bail!("В приложении отсутствует модуль распознавания.");}
+    let verified=crate::python_runtime::validate(root,&interpreter)?;
+    Ok(Runtime { interpreter:verified.interpreter.clone(), real:verified.real.clone(), base:verified.base.clone(), venv:verified.venv.clone(), backend, verified })
 }
 /// Reject unsupported commands and unowned dictation paths before loading Python.
 fn validate_request(input: &Value) -> Result<()> {
@@ -217,7 +217,7 @@ fn host()->Result<&'static mpsc::Sender<Job>> {
                     let runtime=runtime(&job.input)?;
                     if selected.as_ref().is_some_and(|(old,_)|old!=&runtime) {bail!("Компоненты распознавания изменились. Перезапустите «После».");}
                     if selected.is_none() {
-                        let api=unsafe{Api::load(&runtime.base.join("lib/libpython3.12.dylib"))?};
+                        let api=unsafe{Api::load(&runtime.verified)?};
                         unsafe{api.initialize(&runtime)?;}
                         selected=Some((runtime,api));
                     }

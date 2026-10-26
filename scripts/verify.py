@@ -37,8 +37,8 @@ class Verification:
         for key in list(self.env):
             if any(word in key.upper() for word in ("API_KEY", "ACCESS_TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")):
                 self.env.pop(key, None)
-        self.env.pop("POSLE_DATA_DIR", None)
-        self.env.pop("POSLE_JOB_SETTINGS", None)
+        for key in ("POSLE_DATA_DIR", "POSLE_JOB_SETTINGS", "POSLE_RUST_LIBRARY", "POSLE_RUST_ENGINE", "POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS"):
+            self.env.pop(key, None)
         for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
             self.env.pop(key, None)
         self.cargo = self.find_cargo()
@@ -114,11 +114,13 @@ class Verification:
     def integration(self):
         self.build_rust()
         self.run("CLI, C ABI and localhost HTTP", [self.python, "scripts/e2e.py", "--engine", self.engine, "--library", self.library])
-        self.run("Recording through native worker", [self.python, "scripts/e2e_media.py", "--python", self.python, "--engine", self.engine])
+        self.run("Recording through native worker", [self.python, "scripts/e2e_media.py", "--python", self.python, "--engine", self.engine],
+                 env=self.env | {"POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"})
         self.run("Long, delayed and idle recording tracks", [self.python, "scripts/check_media.py"],
                  env=self.env | {"PYTHONPATH": str(PROJECT / "backend")})
         self.run("Search corpus and index rebuild", [self.python, "scripts/check_search.py", "--library", self.library])
         self.run("Owned model runtime migration", [self.python, "scripts/check_managed_identity.py"])
+        self.run("Native library integrity before constructors", [self.python, "scripts/check_native_integrity.py"])
 
     def native(self):
         self.build_swift()
@@ -126,15 +128,17 @@ class Verification:
         binary = self.swift / "debug/Posle"
         for scenario in NATIVE:
             with tempfile.TemporaryDirectory(prefix="posle-native-check-", dir="/private/tmp") as fixture:
-                env = self.env | {"POSLE_DATA_DIR": fixture, "POSLE_RUST_ENGINE": str(self.engine), "POSLE_RUST_LIBRARY": str(self.library)}
+                env = self.env | {"POSLE_DATA_DIR": fixture, "POSLE_RUST_ENGINE": str(self.engine), "POSLE_RUST_LIBRARY": str(self.library),
+                                  "POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"}
                 self.run(f"Native {scenario}", [binary, "--preview", "--check-" + scenario], env=env, timeout=240)
                 if scenario == "recording-sessions":
                     self.run("Native capture writer through real finalize", [self.python, "scripts/e2e_media.py",
                         "--python", self.python, "--engine", self.engine, "--native-capture",
-                        Path(fixture) / "capture-writer/static"], timeout=240)
+                        Path(fixture) / "capture-writer/static"], env=self.env | {"POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"}, timeout=240)
         with tempfile.TemporaryDirectory(prefix="posle-ui-check-", dir="/private/tmp") as fixture:
             self.run("Synthetic UI fixture", [self.python, "scripts/preview.py", fixture])
-            env = self.env | {"POSLE_DATA_DIR": fixture, "POSLE_RUST_ENGINE": str(self.engine), "POSLE_RUST_LIBRARY": str(self.library)}
+            env = self.env | {"POSLE_DATA_DIR": fixture, "POSLE_RUST_ENGINE": str(self.engine), "POSLE_RUST_LIBRARY": str(self.library),
+                                  "POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"}
             self.run("UI geometry and interactions", [binary, "--preview", "--check-ui-consistency"], env=env, timeout=300)
 
     def release(self):

@@ -137,7 +137,10 @@ final class AppStore: ObservableObject {
     }
     var python: URL { root.appendingPathComponent("runtime/venv/bin/python") }
     var rustEngine: URL {
+        #if DEBUG
+        // Only isolated developer diagnostics may select another executable.
         if let path = ProcessInfo.processInfo.environment["POSLE_RUST_ENGINE"] { return URL(fileURLWithPath: path) }
+        #endif
         let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/После Обработка.app/Contents/MacOS/После Обработка")
         if FileManager.default.isExecutableFile(atPath: helper.path) { return helper }
         return Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/posle-engine")

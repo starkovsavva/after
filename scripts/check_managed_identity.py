@@ -62,6 +62,27 @@ private enum RuntimeChecks {
         defer { session.invalidateAndCancel() }
         let service = LocalModelService(session: session)
         defer { service.stop() }
+        // Real Swift subprocess boundary: shell startup code must not run before
+        // the child reaches its native/runtime integrity checks.
+        let envScript = root.deletingLastPathComponent().appendingPathComponent("env-injection.sh")
+        let envMarker = root.deletingLastPathComponent().appendingPathComponent("env-injection-ran")
+        try Data(": > \"$POSLE_ENV_MARKER\"\n".utf8).write(to: envScript)
+        let clean = ProcessEnvironment.withoutSecrets([
+            "PATH": "/usr/bin:/bin", "KEEP": "yes", "POSLE_ENV_MARKER": envMarker.path,
+            "BASH_ENV": envScript.path, "ENV": envScript.path, "SHELLOPTS": "xtrace",
+            "BASH_FUNC_probe%%": "() { :; }", "DYLD_INSERT_LIBRARIES": "not-a-library", "LD_PRELOAD": "not-a-library"
+        ])
+        guard clean["PATH"] == "/usr/bin:/bin", clean["KEEP"] == "yes",
+              clean["BASH_ENV"] == nil, clean["ENV"] == nil, clean["SHELLOPTS"] == nil,
+              clean["BASH_FUNC_probe%%"] == nil, clean["DYLD_INSERT_LIBRARIES"] == nil, clean["LD_PRELOAD"] == nil else {
+            throw AppError.message("Executable shell/loader overrides survived Swift process sanitization")
+        }
+        let shell = Process(); shell.executableURL = URL(fileURLWithPath: "/bin/bash")
+        shell.arguments = ["-c", "exit 0"]; shell.environment = clean
+        try shell.run(); shell.waitUntilExit()
+        guard shell.terminationStatus == 0, !FileManager.default.fileExists(atPath: envMarker.path) else {
+            throw AppError.message("Shell startup code ran before child integrity checks")
+        }
         func expect(_ condition: @autoclosure () -> Bool, _ detail: String) throws {
             if !condition() { throw AppError.message(detail) }
         }

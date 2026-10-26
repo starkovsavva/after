@@ -121,10 +121,7 @@ final class EmbeddedSpeechService: @unchecked Sendable {
     private func loadAPI() throws -> API {
         lock.lock(); defer { lock.unlock() }
         if let api { return api }
-        let path = ProcessInfo.processInfo.environment["POSLE_RUST_LIBRARY"] ?? Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks/libposle_core.dylib").path
-        guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) else {
-            throw AppError.message("Не удалось загрузить Rust-ядро распознавания.")
-        }
+        let handle = try NativeLibraryIntegrity.openCoreLibrary()
         guard let run = dlsym(handle, "posle_speech_run"), let cancel = dlsym(handle, "posle_speech_set_cancelled"),
               let release = dlsym(handle, "posle_free_string") else {
             dlclose(handle)

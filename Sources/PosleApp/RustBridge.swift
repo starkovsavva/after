@@ -11,12 +11,7 @@ final class RustBridge: @unchecked Sendable {
     static let shared: Result<RustBridge, Error> = Result { try RustBridge() }
 
     private init() throws {
-        let library: URL
-        if let path = ProcessInfo.processInfo.environment["POSLE_RUST_LIBRARY"] { library = URL(fileURLWithPath: path) }
-        else { library = Bundle.main.bundleURL.appendingPathComponent("Contents/Frameworks/libposle_core.dylib") }
-        guard let handle = dlopen(library.path, RTLD_NOW | RTLD_LOCAL) else {
-            throw AppError.message("Не удалось загрузить Rust-ядро. Откройте собранное После.app целиком.")
-        }
+        let handle = try NativeLibraryIntegrity.openCoreLibrary()
         guard let request = dlsym(handle, "posle_request"), let free = dlsym(handle, "posle_free_string") else {
             dlclose(handle)
             throw AppError.message("Версия Rust-ядра не соответствует приложению.")

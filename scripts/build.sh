@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+umask 022
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${POSLE_BUILD_DIR:-$PROJECT/.build}"
 cd "$PROJECT"
@@ -45,9 +46,18 @@ else
         --release --locked --target aarch64-apple-darwin --target-dir "$RUST_BUILD"
     RUST_RELEASE="$RUST_BUILD/aarch64-apple-darwin/release"
 fi
-swift build --scratch-path "$BUILD" -c release --disable-automatic-resolution
-SWIFT_BIN="$(swift build --scratch-path "$BUILD" -c release --show-bin-path)"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources/backend"
+CORE_LIBRARY="$APP/Contents/Frameworks/libposle_core.dylib"
+CORE_DIGEST="$STAGING/core.sha256"
+cp "$RUST_RELEASE/libposle_core.dylib" "$CORE_LIBRARY"
+chmod 755 "$CORE_LIBRARY"
+install_name_tool -id @rpath/libposle_core.dylib "$CORE_LIBRARY"
+# The final signed bytes must exist before linking the executable's trusted
+# digest. Final app signing preserves this library instead of timestamping it again.
+python3 "$PROJECT/scripts/signing.py" --library "$CORE_LIBRARY" --digest-file "$CORE_DIGEST"
+swift build --scratch-path "$BUILD" -c release --disable-automatic-resolution \
+    -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __posle_core -Xlinker "$CORE_DIGEST"
+SWIFT_BIN="$(swift build --scratch-path "$BUILD" -c release --show-bin-path)"
 cp "$SWIFT_BIN/Posle" "$APP/Contents/MacOS/Posle"
 cp "$RUST_RELEASE/posle-engine" "$APP/Contents/MacOS/posle-engine"
 # Helpers are real native processes. The speech helper embeds the private
@@ -71,7 +81,6 @@ for title, executable, identifier in [
                       "CFBundleShortVersionString": version["CFBundleShortVersionString"], "LSBackgroundOnly": True,
                       "LSMinimumSystemVersion": "15.0"}, stream, sort_keys=False)
 PYHELPERS
-cp "$RUST_RELEASE/libposle_core.dylib" "$APP/Contents/Frameworks/libposle_core.dylib"
 # The checkout identity is embedded in the signed app, so release tooling can
 # reject a stale bundle built from another commit.
 python3 - "$PROJECT/packaging/Info.plist" "$APP/Contents/Info.plist" "$SOURCE_REVISION" "$SOURCE_STATUS" <<'PYINFO'
@@ -98,14 +107,13 @@ fi
 codesign --verify --deep --strict "$SPARKLE"
 ditto --noextattr --norsrc --noqtn "$SPARKLE" "$APP/Contents/Frameworks/Sparkle.framework"
 codesign --verify --deep --strict "$APP/Contents/Frameworks/Sparkle.framework"
-cp "$PROJECT/backend/engine.py" "$PROJECT/backend/models.py" "$PROJECT/backend/media_runtime.py" "$PROJECT/backend/cloud_speech.py" "$PROJECT/backend/embedded_bridge.py" "$PROJECT/backend/short_speech.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$APP/Contents/Resources/backend/"
+cp "$PROJECT/backend/engine.py" "$PROJECT/backend/models.py" "$PROJECT/backend/media_runtime.py" "$PROJECT/backend/cloud_speech.py" "$PROJECT/backend/embedded_bridge.py" "$PROJECT/backend/short_speech.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$PROJECT/backend/python-runtime.json" "$APP/Contents/Resources/backend/"
 cp "$PROJECT/THIRD_PARTY.md" "$APP/Contents/Resources/THIRD_PARTY.md"
 cp "$PROJECT/LICENSE" "$APP/Contents/Resources/LICENSE"
 swift "$PROJECT/scripts/icon.swift" "$BUILD/AppIcon.iconset"
 iconutil -c icns "$BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
-install_name_tool -id @rpath/libposle_core.dylib "$APP/Contents/Frameworks/libposle_core.dylib"
 python3 "$PROJECT/scripts/signing.py" --app "$APP" \
-    --entitlements "$PROJECT/packaging/entitlements.plist"
+    --entitlements "$PROJECT/packaging/entitlements.plist" --presigned-core-sha256 "$CORE_DIGEST"
 codesign --verify --deep --strict "$APP"
 if [[ "$(git rev-parse --verify HEAD)" != "$SOURCE_REVISION" || "$(git status --porcelain)" != "$SOURCE_STATUS" ]]; then
     echo "Исходный коммит изменился во время сборки; повторите сборку." >&2
