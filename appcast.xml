@@ -6,31 +6,26 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.12.1</title>
-      <sparkle:version>16</sparkle:version>
-      <sparkle:shortVersionString>0.12.1</sparkle:shortVersionString>
+      <title>После 0.12.2</title>
+      <sparkle:version>17</sparkle:version>
+      <sparkle:shortVersionString>0.12.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Mon, 26 Oct 2026 21:03:32 GMT</pubDate>
-      <description sparkle:format="markdown"># 0.12.1
+      <pubDate>Mon, 26 Oct 2026 21:39:44 GMT</pubDate>
+      <description sparkle:format="markdown"># 0.12.2
 
-- **ChatGPT.** Исправлена обработка потоковых и завершённых JSON-ответов. Ошибки сервиса содержат детали формата ответа.
-- **Вход.** Возврат в приложение после браузера. Отменённый вход не открывает вкладку, закрытие настроек сохраняет выбранную модель.
-- **Диктовка.** Исправлены пересечения с запуском и остановкой записи, зависание обработки после ошибки диктовки.
-- **Ручные правки.** Если транскрипт или конспект изменён во время распознавания, замена результата останавливается с сохранением изменений.
-- **Редакторы.** Защита несохранённых заметок, шаблонов и контекста встречи при выходе. Убраны устаревшие ошибки после успешного удаления заметки.
-- **Очередь.** История отделена от текущих попыток. Старые ошибки не требуют повторного действия после нового успешного результата.
-- **Локальный ИИ.** Понятная проверка готовности встроенного ИИ и восстановление движка через «Подготовить ИИ» с сохранением скачанных моделей.
+- **ChatGPT.** Исправлена сборка текста из событий Responses, когда завершающее событие не повторяет полный ответ.
+- **Проверка подключения.** Добавлена иконка копирования диагностики ошибки. Отчёт содержит версию приложения и структуру ответа без текста встреч, ключей и данных аккаунта.
 </description>
-      <posle:sourceRevision>ac78f3ea3612f278df0c356feccaf08fd82f1235</posle:sourceRevision>
-      <posle:archiveSHA256>08e2a32e0171a311ca322b102536484b596fbb098367f00776adb4df15059760</posle:archiveSHA256>
-      <posle:sourceSHA256>91af6daa6252c1df41b11888d8d14ca37aa26ee41cae0cf2d641deb622ba3c58</posle:sourceSHA256>
-      <posle:packageSHA256>b5bd7c11211c7f4c2998064ebd488491c71a5a21c2a5da2e974f7c28a6228423</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.12.1/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="RQhy+pHa8p7sO4BhgF093FelxpovLEtgVIhwgq7uUVj69oYv+IZ2vXGBBkCSQlvYvpPWnTmodXoo3QtGR4qDBw==" length="15169043" type="application/octet-stream" />
+      <posle:sourceRevision>69d0a221f0788be56bce4ca9fa869b4edbdcc3c5</posle:sourceRevision>
+      <posle:archiveSHA256>cc45eeb87b41279990d58cb55d8bcf6b7fe6d6943bcd9d12368f60f18e559da6</posle:archiveSHA256>
+      <posle:sourceSHA256>e40b36e72c2ee50caa0130628e1903b00ba6fe34a7a00b30e058e5fe7b83ef9c</posle:sourceSHA256>
+      <posle:packageSHA256>9961b5315aa59c1fd75aeaf609388d44a290e6c508fbd94776366a71cd78539c</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.12.2/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="M+SUODYBYwPMA7v52GPB8DNd5XMVRTFkpM6RLamFmzS0WgtFuN+NHCWBVJNYhJIKdLSQsIlGkOpwLo/sARKkCw==" length="15240688" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: eFCdalyaQuy6+DW5p/sOJsOV55heljQbR1xN52ypa1lncsVNQJkvrbGasfZylsC+mxNtzvtcOLF4n0+06bnYDg==
-length: 3248
+edSignature: vDswgKlqzUrvSGRHOca+Zf8tfhEJg6VAtrqMLwgSSqSbWG5nHsnNf0MvHSRLQmHDTw7EqS9kCJosnz3MI3HvAA==
+length: 2076
 -->
