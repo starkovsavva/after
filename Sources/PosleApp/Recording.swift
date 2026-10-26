@@ -46,6 +46,24 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         }
     }
 
+    static func shareableContentError(_ error: Error) -> AppError {
+        let value = error as NSError
+        let code = value.code
+        let diagnostic = value.domain == SCStreamErrorDomain ? "ScreenCaptureKit, код \(code)" : "код \(code)"
+        let message: String
+        if value.domain == SCStreamErrorDomain, code == SCStreamError.Code.userDeclined.rawValue {
+            message = "macOS не разрешила запись экрана или звука. Разрешите доступ для открытой копии «После» в настройках конфиденциальности, затем завершите и откройте приложение снова."
+        } else if value.domain == SCStreamErrorDomain,
+                  [SCStreamError.Code.noDisplayList.rawValue, SCStreamError.Code.noCaptureSource.rawValue].contains(code) {
+            message = "macOS не нашла доступный экран. Проверьте подключение дисплея и повторите запись."
+        } else if value.domain == SCStreamErrorDomain, code == SCStreamError.Code.failedNoMatchingApplicationContext.rawValue {
+            message = "macOS потеряла подключение к этой копии «После». Завершите приложение и откройте установленную копию снова."
+        } else {
+            message = "macOS не смогла получить доступные экраны и звук. Повторите попытку; если ошибка сохранится, перезапустите «После»."
+        }
+        return .message("\(message) (\(diagnostic))")
+    }
+
     private static func persistentDisplayID(_ id: UInt32) -> String? {
         guard let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { return nil }
         return CFUUIDCreateString(nil, uuid) as String
@@ -98,7 +116,7 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         let content: SCShareableContent
         do { content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) }
         catch {
-            throw AppError.message("Для записи экрана или звука звонка разрешите запись экрана и системного аудио в настройках конфиденциальности macOS, затем перезапустите После.")
+            throw Self.shareableContentError(error)
         }
         guard let selectedID = RecordingDisplaySelection.resolve(
             requested: video ? initialDisplayID : nil,
@@ -184,7 +202,7 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
     }
 }
 
-private final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
+final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
     let queue = DispatchQueue(label: "app.posle.capture", qos: .userInitiated)
     var failed: (@Sendable (String) -> Void)?
     var levels: (@Sendable (Double?, Double?) -> Void)?
@@ -195,6 +213,14 @@ private final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
     private let microphone: AVAssetWriterInput
     private let video: AVAssetWriterInput?
     private let nativeVideo: Bool
+    private let frameDuration: CMTime
+    // ScreenCaptureKit emits complete frames only when the display changes.
+    // Retain one surface so a static screen can last until the capture ends.
+    private var latestVideoFrame: CMSampleBuffer?
+    private var pendingVideoFrame = false
+    private var lastWrittenVideoTime = CMTime.invalid
+    private var captureEndTime = CMTime.invalid
+    private var writtenVideoFrames = 0
     private var started = false
     private var ending = false
     private var reportedFailure = false
@@ -203,6 +229,7 @@ private final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
          videoQuality: RecordingVideoQuality = .compact, audioQuality: RecordingAudioQuality = .standard) throws {
         writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         nativeVideo = videoSize != nil && videoQuality == .native
+        frameDuration = CMTime(value: 1, timescale: Int32(videoQuality.frameRate))
         let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 48000, AVNumberOfChannelsKey: 2, AVEncoderBitRateKey: audioQuality.bitRate]
         system = systemAudio ? AVAssetWriterInput(mediaType: .audio, outputSettings: settings) : nil
@@ -235,33 +262,87 @@ private final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard !ending, buffer.isValid, CMSampleBufferDataIsReady(buffer) else { return }
+        consume(buffer, type: type)
+    }
+
+    /// Runs on `queue`; diagnostics feed generated buffers through the same path.
+    func consume(_ buffer: CMSampleBuffer, type: SCStreamOutputType) {
+        guard !ending, buffer.isValid else { return }
+        let input: AVAssetWriterInput?
+        if type == .screen {
+            guard video != nil,
+                  let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+                  let raw = attachments.first?[.status] as? Int,
+                  let status = SCFrameStatus(rawValue: raw) else { return }
+            switch status {
+            case .complete:
+                guard CMSampleBufferDataIsReady(buffer), CMSampleBufferGetImageBuffer(buffer) != nil,
+                      CMSampleBufferGetPresentationTimeStamp(buffer).isValid,
+                      CMSampleBufferGetPresentationTimeStamp(buffer).isNumeric else { return }
+                latestVideoFrame = buffer
+                pendingVideoFrame = true
+            case .idle:
+                observeEnd(buffer, videoFrame: true)
+                flushVideoFrame()
+                return
+            case .blank, .suspended:
+                // A protected, sleeping or suspended display is not a static
+                // desktop. Do not use its previous image as the final tail.
+                latestVideoFrame = nil
+                pendingVideoFrame = false
+                observeEnd(buffer, videoFrame: true)
+                return
+            case .started, .stopped:
+                return
+            @unknown default:
+                return
+            }
+            input = video
+        } else if type == .audio { input = system }
+        else if type == .microphone { input = microphone }
+        else { return }
+        guard let input, CMSampleBufferDataIsReady(buffer) else { return }
+        let now = CMSampleBufferGetPresentationTimeStamp(buffer)
+        guard now.isValid, now.isNumeric else { return }
+        observeEnd(buffer, videoFrame: type == .screen)
         if type == .audio || type == .microphone {
-            let now = CMSampleBufferGetPresentationTimeStamp(buffer)
             let last = type == .audio ? lastSystemMeter : lastMicrophoneMeter
             if !last.isValid || CMTimeGetSeconds(now - last) >= 0.1 {
                 if type == .audio { lastSystemMeter = now } else { lastMicrophoneMeter = now }
                 if let value = Self.level(buffer) { levels?(type == .microphone ? value : nil, type == .audio ? value : nil) }
             }
         }
-        let input: AVAssetWriterInput?
-        if type == .screen {
-            guard video != nil,
-                  let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-                  let raw = attachments.first?[.status] as? Int,
-                  SCFrameStatus(rawValue: raw) == .complete else { return }
-            input = video
-        } else if type == .audio { input = system }
-        else if type == .microphone { input = microphone }
-        else { return }
-        guard let input else { return }
         if !started {
             guard writer.startWriting() else { report(); return }
-            writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(buffer))
+            writer.startSession(atSourceTime: now)
             started = true
         }
         guard writer.status == .writing else { report(); return }
-        if input.isReadyForMoreMediaData, !input.append(buffer) { report() }
+        if type == .screen { flushVideoFrame() }
+        else {
+            if input.isReadyForMoreMediaData, !input.append(buffer) { report() }
+            // Retry a back-pressured first/last screen frame even while the
+            // display is static and only audio callbacks continue to arrive.
+            flushVideoFrame()
+        }
+    }
+
+    private func observeEnd(_ buffer: CMSampleBuffer, videoFrame: Bool) {
+        let time = CMSampleBufferGetPresentationTimeStamp(buffer)
+        guard time.isValid, time.isNumeric else { return }
+        let duration = CMSampleBufferGetDuration(buffer)
+        let end = time + (duration.isValid && duration.isNumeric && duration > .zero
+            ? duration : (videoFrame ? frameDuration : .zero))
+        if !captureEndTime.isValid || end > captureEndTime { captureEndTime = end }
+    }
+
+    private func flushVideoFrame() {
+        guard started, writer.status == .writing, pendingVideoFrame,
+              let frame = latestVideoFrame, let video, video.isReadyForMoreMediaData else { return }
+        guard video.append(frame) else { report(); return }
+        pendingVideoFrame = false
+        lastWrittenVideoTime = CMSampleBufferGetPresentationTimeStamp(frame)
+        writtenVideoFrames += 1
     }
 
     private static func level(_ sample: CMSampleBuffer) -> Double? {
@@ -301,6 +382,7 @@ private final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
             queue.async {
                 self.ending = true
                 self.writer.cancelWriting()
+                self.latestVideoFrame = nil
                 continuation.resume()
             }
         }
@@ -310,21 +392,69 @@ private final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 self.ending = true
-                guard self.writer.status != .failed else {
-                    continuation.resume(throwing: self.writingError)
+                self.finish(continuation, deadline: .now() + 2)
+            }
+        }
+    }
+
+    private func finish(_ continuation: CheckedContinuation<Void, Error>, deadline: DispatchTime) {
+        guard writer.status != .failed else {
+            continuation.resume(throwing: writingError)
+            return
+        }
+        guard started else {
+            writer.cancelWriting()
+            continuation.resume(throwing: AppError.message("В записи нет звука. Проверьте микрофон и звук звонка."))
+            return
+        }
+        flushVideoFrame()
+        guard writer.status == .writing else {
+            continuation.resume(throwing: writingError)
+            return
+        }
+        var finishingError: Error?
+        let tailTime = captureEndTime - frameDuration
+        if let video, let frame = latestVideoFrame,
+           captureEndTime.isValid,
+           pendingVideoFrame || !lastWrittenVideoTime.isValid || tailTime > lastWrittenVideoTime {
+            if pendingVideoFrame || !video.isReadyForMoreMediaData {
+                if DispatchTime.now() < deadline {
+                    queue.asyncAfter(deadline: .now() + .milliseconds(10)) {
+                        self.finish(continuation, deadline: deadline)
+                    }
                     return
                 }
-                guard self.started else {
-                    self.writer.cancelWriting()
-                    continuation.resume(throwing: AppError.message("В записи нет звука. Проверьте микрофон и звук звонка."))
-                    return
-                }
-                self.system?.markAsFinished(); self.microphone.markAsFinished(); self.video?.markAsFinished()
-                self.writer.finishWriting {
-                    if self.writer.status == .completed { continuation.resume() }
-                    else { continuation.resume(throwing: self.writingError) }
+                finishingError = AppError.message("Не удалось сохранить последний видеокадр. Исходная запись со звуком сохранена.")
+            } else {
+                var timing = CMSampleTimingInfo(duration: frameDuration,
+                    presentationTimeStamp: tailTime, decodeTimeStamp: .invalid)
+                var tail: CMSampleBuffer?
+                let status = CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault,
+                    sampleBuffer: frame, sampleTimingEntryCount: 1,
+                    sampleTimingArray: &timing, sampleBufferOut: &tail)
+                if status == noErr, let tail {
+                    if !video.append(tail) { finishingError = writingError }
+                } else {
+                    finishingError = AppError.message("Не удалось завершить видеодорожку. Исходная запись со звуком сохранена.")
                 }
             }
+        }
+        guard writer.status == .writing else {
+            continuation.resume(throwing: writingError)
+            return
+        }
+        if video != nil && writtenVideoFrames == 0 {
+            finishingError = AppError.message("macOS не передала ни одного видеокадра. Исходная запись со звуком сохранена. Проверьте доступ к записи экрана и повторите попытку.")
+        }
+        if captureEndTime.isValid { writer.endSession(atSourceTime: captureEndTime) }
+        system?.markAsFinished(); microphone.markAsFinished(); video?.markAsFinished()
+        latestVideoFrame = nil
+        let resultError = finishingError
+        writer.finishWriting {
+            if self.writer.status == .completed {
+                if let resultError { continuation.resume(throwing: resultError) }
+                else { continuation.resume() }
+            } else { continuation.resume(throwing: self.writingError) }
         }
     }
 }

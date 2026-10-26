@@ -23,6 +23,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 import uuid
@@ -119,6 +120,76 @@ print(json.dumps({'base':sys.base_prefix,'version':list(sys.version_info[:2]),
     require(ffmpeg.resolve().is_relative_to(venv), "FFmpeg came from outside the isolated runtime")
     require(Path(private_info["base"]).resolve() == base.resolve(), "Python did not select the copied base")
     return ffmpeg
+
+
+def mp4_video_duration(path):
+    """Read the finalized video track's movie timeline, not guessed codec fps."""
+    require(path.stat().st_size <= 16 * 1024 * 1024, "Generated MP4 exceeds its inspection bounds")
+    data = memoryview(path.read_bytes())
+    def boxes(payload):
+        offset = 0
+        while offset < len(payload):
+            require(len(payload) - offset >= 8, "Truncated generated MP4 box")
+            size, kind = struct.unpack_from(">I4s", payload, offset)
+            header = 8
+            if size == 1:
+                require(len(payload) - offset >= 16, "Truncated large generated MP4 box")
+                size = struct.unpack_from(">Q", payload, offset + 8)[0]
+                header = 16
+            elif size == 0:
+                size = len(payload) - offset
+            require(header <= size <= len(payload) - offset, "Invalid generated MP4 box bounds")
+            yield kind, payload[offset + header:offset + size]
+            offset += size
+    def child(payload, kind):
+        matches = [value for name, value in boxes(payload) if name == kind]
+        require(len(matches) == 1, "Generated MP4 lacks a unique " + kind.decode("ascii") + " box")
+        return matches[0]
+    movie = child(data, b"moov")
+    header = child(movie, b"mvhd")
+    require(len(header) >= 20 and header[0] in (0, 1), "Invalid generated MP4 movie header")
+    scale_offset = 20 if header[0] else 12
+    require(len(header) >= scale_offset + 4, "Truncated generated MP4 movie timescale")
+    timescale = struct.unpack_from(">I", header, scale_offset)[0]
+    require(timescale > 0, "Generated MP4 has no movie timescale")
+    durations = []
+    for kind, track in boxes(movie):
+        if kind != b"trak":
+            continue
+        handler = child(child(track, b"mdia"), b"hdlr")
+        require(len(handler) >= 12, "Invalid generated MP4 track handler")
+        if handler[8:12] != b"vide":
+            continue
+        header = child(track, b"tkhd")
+        require(len(header) >= 24 and header[0] in (0, 1), "Invalid generated MP4 video header")
+        offset, format = (28, ">Q") if header[0] else (20, ">I")
+        require(len(header) >= offset + struct.calcsize(format), "Truncated generated MP4 video duration")
+        durations.append(struct.unpack_from(format, header, offset)[0] / timescale)
+    require(len(durations) == 1 and 0 < durations[0] <= 5, "Generated MP4 has no bounded video timeline")
+    return durations[0]
+
+
+def native_capture_fixture(directory):
+    """Accept only the generated native-check fixture, never an existing library."""
+    directory = Path(directory)
+    require(not directory.is_symlink(), "Native capture fixture must not be a symlink")
+    directory = directory.resolve(strict=True)
+    owner = directory.parent.parent
+    require(directory.name in ("static", "single", "short", "fractional") and directory.parent.name == "capture-writer"
+            and owner.name.startswith("posle-native-check-")
+            and owner.parent in (Path("/private/tmp"), Path("/tmp")),
+            "Native capture must come from a disposable recording-session check")
+    source, metadata = directory / "recording.mov", directory / "meta.json"
+    require(all(path.is_file() and not path.is_symlink() for path in (source, metadata)),
+            "Native capture needs ordinary generated recording.mov and meta.json files")
+    require(source.stat().st_size <= 4 * 1024 * 1024 and metadata.stat().st_size <= 4096,
+            "Native capture fixture exceeds its generated-media bounds")
+    meta = json.loads(metadata.read_text(encoding="utf-8"))
+    require(isinstance(meta, dict) and meta.get("id") == directory.name
+            and meta.get("title") == "Synthetic static screen" and meta.get("source") == "recording.mov"
+            and meta.get("hasVideo") is True and meta.get("recordingTracks") is False,
+            "Native capture metadata does not identify the generated static-screen check")
+    return source, meta
 
 
 class MediaE2E:
@@ -315,6 +386,97 @@ class MediaE2E:
         result["idempotentRetry"] = True
         return result
 
+    def native_capture(self, directory):
+        """Actual CaptureSink output through the production finalize CLI."""
+        source, original_meta = native_capture_fixture(directory)
+        expected = {"duration": 1.0, "audioDuration": 1.0, "firstLuma": 80, "lastLuma": 180}
+        manifest = source.parent / "capture-expected.json"
+        if manifest.exists():
+            require(manifest.is_file() and not manifest.is_symlink() and manifest.stat().st_size <= 4096,
+                    "Native capture expectations must be a small ordinary generated file")
+            expected = json.loads(manifest.read_text(encoding="utf-8"))
+        else:
+            require(source.parent.name == "static", "Native capture variant is missing its generated expectations")
+        require(isinstance(expected, dict)
+                and all(isinstance(expected.get(key), (int, float)) and not isinstance(expected[key], bool)
+                        and math.isfinite(expected[key]) for key in ("duration", "audioDuration", "firstLuma", "lastLuma"))
+                and 0 < expected["duration"] <= 1.1 and 0 < expected["audioDuration"] <= 1.1
+                and expected["firstLuma"] in (80, 180) and expected["lastLuma"] == 180,
+                "Native capture expectations do not describe a bounded generated timeline")
+        source_hash = digest(source)
+        metadata_hash = digest(source.parent / "meta.json")
+        packets = self.video_packets(source)
+        identifier = str(uuid.uuid4())
+        meeting = self.root / "meetings" / identifier
+        meeting.mkdir(mode=0o700)
+        copy_file(source, meeting / "recording.mov")
+        meta = {"createdAt": 1700000000, "status": "recording", "duration": 0,
+                "speakerNames": {}, "completedTasks": [], "focus": "synthetic capture writer only",
+                **original_meta, "id": identifier}
+        (meeting / "meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        (self.root / "settings.json").write_text('{"recordAudioQuality":"compact"}', encoding="utf-8")
+        settings_hash = digest(self.root / "settings.json")
+        self.cli(meeting)
+        video = meeting / "video.mp4"
+        description = run([self.ffmpeg, "-nostdin", "-hide_banner", "-i", video], expected_ok=False).stderr
+        video_streams = [line.strip() for line in description.splitlines() if "Video:" in line]
+        require(len(video_streams) == 1 and "h264" in video_streams[0] and "320x200" in video_streams[0],
+                "Native capture finalization lost H264 or the complete 320x200 frame")
+        require(self.video_packets(video) == packets,
+                "Native capture finalization re-encoded or changed the original H264 packets")
+        video_seconds = mp4_video_duration(video)
+        require(abs(video_seconds - expected["duration"]) <= 1 / 30 + 0.002,
+                f"Native video track ended while audio continued: expected {expected['duration']:.4f}s, actual video {video_seconds:.4f}s")
+        # CaptureSink emits variable-rate screen updates. Decode their display
+        # timeline at 30 fps; this checks held-frame duration without encoding
+        # extra frames in the production pipeline or padding a short video.
+        # VFR H264/B-frame codecs can report guessed frame durations beyond the
+        # MP4 track's actual end. Trim only that excess; never extend a short track.
+        decoded = run([self.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", video,
+                       "-map", "0:v:0", "-an", "-t", f"{video_seconds:.9f}", "-vf", "fps=30",
+                       "-frames:v", "45", "-pix_fmt", "gray",
+                       "-f", "rawvideo", "pipe:1"], text=False).stdout
+        frame_bytes = 320 * 200
+        require(len(decoded) % frame_bytes == 0, "Native video did not decode complete full-size frames")
+        frames = len(decoded) // frame_bytes
+        require(abs(frames / 30 - expected["duration"]) <= 1 / 30 + 0.002,
+                f"Native screen timing differs from its full audio timeline: expected {expected['duration']:.4f}s, decoded {frames} frames at 30 fps")
+        probes = (0, 319, 320 * 199, frame_bytes - 1, 320 * 100 + 160)
+        if expected["duration"] <= 1 / 30 + 0.002:
+            # A subframe recording may yield zero frames when sampled at 30 fps.
+            # Decode its actual first image without frame-rate resampling too.
+            first = run([self.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", video,
+                         "-map", "0:v:0", "-an", "-frames:v", "1", "-pix_fmt", "gray",
+                         "-f", "rawvideo", "pipe:1"], text=False).stdout
+            require(len(first) == frame_bytes, "Short native capture lost its actual video frame")
+        else:
+            require(frames > 0, "Native capture lost its video frames")
+            first = decoded[:frame_bytes]
+        first_pixels = [first[index] for index in probes]
+        first_gray = (expected["firstLuma"] - 16) * 255 / 219
+        last_gray = (expected["lastLuma"] - 16) * 255 / 219
+        require(all(abs(value - first_gray) <= 20 for value in first_pixels),
+                "Native video lost the first generated screen image")
+        tail_pixels = ([[decoded[frame * frame_bytes + index] for index in probes]
+                        for frame in range(math.floor(frames * 0.8), frames)] if frames else [first_pixels])
+        require(all(abs(value - last_gray) <= 20 for pixels in tail_pixels for value in pixels),
+                "Native video turned black or retained stale pixels near the end instead of the latest screen image")
+        audio_seconds = {name: len(self.samples(meeting / name)) / 16000 for name in ("recording.mp3", "video.mp4")}
+        require(all(abs(seconds - expected["audioDuration"]) <= 0.06 for seconds in audio_seconds.values()),
+                "Native capture finalization truncated full-length audio")
+        require(json.loads((meeting / "meta.json").read_text()) == dict(meta, source="recording.mp3"),
+                "Native capture finalization changed unrelated metadata")
+        require(digest(self.root / "settings.json") == settings_hash,
+                "Native capture finalization rewrote current preferences")
+        require(digest(source) == source_hash and digest(source.parent / "meta.json") == metadata_hash,
+                "Native capture integration modified the original writer fixture")
+        require(not (meeting / "recording.mov").exists() and not list(meeting.glob(".posle-finalize-*")),
+                "Native capture finalization left temporary capture/intermediate files")
+        return {"id": identifier, "videoDecodedFramesAt30fps": frames, "firstPixels": first_pixels,
+                "tailPixels": tail_pixels, "audioSeconds": audio_seconds,
+                "h264PacketsPreserved": True, "nativeWriterFixturePreserved": True,
+                "fullFrameSize": [320, 200], "expectedSeconds": expected["duration"], "videoTrackSeconds": video_seconds}
+
     def failure(self):
         meeting, external, meta = self.fixture("failed-video-export")
         meta["hasVideo"] = True  # Deliberate mismatch exercises the real FFmpeg failure path.
@@ -336,6 +498,7 @@ def main():
     parser.add_argument("--engine", type=Path, default=PROJECT / "dist/После.app/Contents/MacOS/posle-engine")
     parser.add_argument("--backend", type=Path, default=PROJECT / "backend")
     parser.add_argument("--work-dir", type=Path, help="Parent for a new unique fixture (never an existing library)")
+    parser.add_argument("--native-capture", type=Path, help="Finalize only the generated native recording-session fixture in this directory")
     parser.add_argument("--keep", action="store_true", help="Retain the new isolated runtime, generated media and report")
     args = parser.parse_args()
     os.umask(0o077)
@@ -349,15 +512,22 @@ def main():
     try:
         ffmpeg = prepare_runtime(python, root)
         test = MediaE2E(engine, backend, root, ffmpeg)
-        results = {"audioOnly": test.successful("audio-only"),
-                   "lightVideo": test.successful("light-video", video=True),
-                   "dualVideo": test.successful("dual-video", video=True, dual=True),
-                   "failurePreservesSource": test.failure()}
-        for quality in ("compact", "standard", "high"):
-            results[quality + "1080p"] = test.successful(quality + "-1080p", video=True, dual=True,
-                                                         size="1920x1080", quality=quality, high_frequency=True, stereo=quality == "high")
-        results["fullFrameNonWidescreen"] = test.successful("full-frame-native-ratio", video=True, dual=True,
-            size="1512x982", quality="high", high_frequency=True, microphone_delay=0.6)
+        if args.native_capture:
+            captures = [args.native_capture]
+            if args.native_capture.name == "static":
+                captures += [args.native_capture.parent / name for name in ("single", "short", "fractional")
+                             if (args.native_capture.parent / name / "capture-expected.json").is_file()]
+            results = {"nativeCapture-" + capture.name: test.native_capture(capture) for capture in captures}
+        else:
+            results = {"audioOnly": test.successful("audio-only"),
+                       "lightVideo": test.successful("light-video", video=True),
+                       "dualVideo": test.successful("dual-video", video=True, dual=True),
+                       "failurePreservesSource": test.failure()}
+            for quality in ("compact", "standard", "high"):
+                results[quality + "1080p"] = test.successful(quality + "-1080p", video=True, dual=True,
+                                                             size="1920x1080", quality=quality, high_frequency=True, stereo=quality == "high")
+            results["fullFrameNonWidescreen"] = test.successful("full-frame-native-ratio", video=True, dual=True,
+                size="1512x982", quality="high", high_frequency=True, microphone_delay=0.6)
         branded = root / "runtime/media/После Медиа"
         require(branded.is_file() and not branded.is_symlink(), "Real finalize did not use the owned media runtime")
         result = {"result": "PASS", "cliCommands": test.calls, "cases": results,
@@ -365,7 +535,10 @@ def main():
         (root / "results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         for name in results:
             print("PASS:", name)
-        print("PASS: real native finalize, private owned runtime, selected MP3 quality, full-rate audio, full-frame H26430 packet preservation, isolated tracks/timeline and retry")
+        if args.native_capture:
+            print("PASS: actual capture writer through real finalize preserves screen timelines, pixels, audio and H264 packets")
+        else:
+            print("PASS: real native finalize, private owned runtime, selected MP3 quality, full-rate audio, full-frame H26430 packet preservation, isolated tracks/timeline and retry")
         print(json.dumps({"result": "PASS", "cliCommands": test.calls, "report": str(root / "results.json")}, ensure_ascii=False))
     finally:
         if args.keep:

@@ -86,7 +86,8 @@ enum RecordingSessionNativeChecks {
         catch is CancellationError {}
         print("PASS: quit cancels blocked background and legacy work while flushing raw capture without starting encoding")
         try await runtimeAdmission()
-        print("4 native recording session groups passed"); fflush(stdout)
+        try await CaptureWriterNativeChecks.run(root: root)
+        print("8 native recording session groups passed"); fflush(stdout)
     }
     private static func runtimeAdmission() async throws {
         let lease = LocalRuntimeLease()

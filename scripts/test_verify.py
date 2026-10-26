@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 import verify
+import e2e_media
 
 
 class VerifyIsolationTests(unittest.TestCase):
@@ -73,6 +74,80 @@ class VerifyIsolationTests(unittest.TestCase):
         controller.native()
         self.assertEqual(len(roots), len(set(roots)))
         self.assertTrue(all(not root.exists() for root in roots))
+
+    def test_native_capture_cross_layer_check_runs_before_fixture_cleanup_once(self):
+        controller = self.controller()
+        controller.build_swift = mock.Mock()
+        controller.build_rust = mock.Mock()
+        commands = []
+        capture = None
+        def run(label, command, *, env=None, timeout=1200):
+            nonlocal capture
+            commands.append(command)
+            if '--check-recording-sessions' in command:
+                capture = Path(env['POSLE_DATA_DIR']) / 'capture-writer/static'
+                capture.mkdir(parents=True)
+                (capture / 'recording.mov').write_bytes(b'generated native writer fixture')
+            if str(command[1]) == 'scripts/e2e_media.py':
+                self.assertIsNotNone(capture)
+                self.assertEqual(command[-2:], ['--native-capture', capture])
+                self.assertTrue((capture / 'recording.mov').is_file())
+                self.assertEqual(command[0], controller.python)
+                self.assertEqual(command[command.index('--engine') + 1], controller.engine)
+                self.assertNotIn('POSLE_DATA_DIR', controller.env)
+        controller.run = run
+        controller.native()
+        media = [index for index, command in enumerate(commands) if str(command[1]) == 'scripts/e2e_media.py']
+        self.assertEqual(len(media), 1)
+        self.assertIn('--check-recording-sessions', commands[media[0] - 1])
+        self.assertIn('--check-corrections', commands[media[0] + 1])
+        self.assertFalse(capture.exists())
+
+    def test_native_media_fixture_rejects_foreign_files_symlinks_and_wrong_identity(self):
+        import json
+        with tempfile.TemporaryDirectory(prefix='posle-native-check-', dir='/private/tmp') as temporary:
+            capture = Path(temporary) / 'capture-writer/static'
+            capture.mkdir(parents=True)
+            recording = capture / 'recording.mov'
+            recording.write_bytes(b'generated media')
+            meta = {'id': 'static', 'title': 'Synthetic static screen', 'source': 'recording.mov',
+                    'hasVideo': True, 'recordingTracks': False}
+            metadata = capture / 'meta.json'
+            metadata.write_text(json.dumps(meta))
+            source, actual = e2e_media.native_capture_fixture(capture)
+            self.assertEqual(source, recording)
+            self.assertEqual(actual, meta)
+            metadata.write_text(json.dumps(meta | {'title': 'Existing personal meeting'}))
+            with self.assertRaisesRegex(AssertionError, 'generated static-screen'):
+                e2e_media.native_capture_fixture(capture)
+            metadata.write_text(json.dumps(meta))
+            recording.unlink()
+            foreign = Path(temporary) / 'outside.mov'
+            foreign.write_bytes(b'outside source must remain untouched')
+            recording.symlink_to(foreign)
+            with self.assertRaisesRegex(AssertionError, 'ordinary generated'):
+                e2e_media.native_capture_fixture(capture)
+            with self.assertRaisesRegex(AssertionError, 'disposable recording-session'):
+                e2e_media.native_capture_fixture(Path(temporary))
+            self.assertEqual(foreign.read_bytes(), b'outside source must remain untouched')
+
+    def test_native_media_duration_uses_video_track_instead_of_full_audio_container(self):
+        import struct
+        def box(kind, payload):
+            return struct.pack('>I4s', len(payload) + 8, kind) + payload
+        def track(kind, duration):
+            header = bytes(4) + struct.pack('>IIIII', 0, 0, 1, 0, duration)
+            handler = bytes(8) + kind
+            return box(b'trak', box(b'tkhd', header) + box(b'mdia', box(b'hdlr', handler)))
+        movie_header = bytes(4) + struct.pack('>IIII', 0, 0, 1000, 1000)
+        movie = box(b'moov', box(b'mvhd', movie_header) + track(b'soun', 1000) + track(b'vide', 57))
+        with tempfile.TemporaryDirectory(prefix='posle-native-duration-') as temporary:
+            path = Path(temporary) / 'short-video-full-audio.mp4'
+            path.write_bytes(movie)
+            self.assertAlmostEqual(e2e_media.mp4_video_duration(path), 0.057)
+            path.write_bytes(struct.pack('>I4s', 4096, b'moov'))
+            with self.assertRaisesRegex(AssertionError, 'box bounds'):
+                e2e_media.mp4_video_duration(path)
 
     def test_command_line_tools_runs_all_core_contracts_without_xctest(self):
         controller = self.controller()

@@ -128,6 +128,10 @@ class Verification:
             with tempfile.TemporaryDirectory(prefix="posle-native-check-", dir="/private/tmp") as fixture:
                 env = self.env | {"POSLE_DATA_DIR": fixture, "POSLE_RUST_ENGINE": str(self.engine), "POSLE_RUST_LIBRARY": str(self.library)}
                 self.run(f"Native {scenario}", [binary, "--preview", "--check-" + scenario], env=env, timeout=240)
+                if scenario == "recording-sessions":
+                    self.run("Native capture writer through real finalize", [self.python, "scripts/e2e_media.py",
+                        "--python", self.python, "--engine", self.engine, "--native-capture",
+                        Path(fixture) / "capture-writer/static"], timeout=240)
         with tempfile.TemporaryDirectory(prefix="posle-ui-check-", dir="/private/tmp") as fixture:
             self.run("Synthetic UI fixture", [self.python, "scripts/preview.py", fixture])
             env = self.env | {"POSLE_DATA_DIR": fixture, "POSLE_RUST_ENGINE": str(self.engine), "POSLE_RUST_LIBRARY": str(self.library)}

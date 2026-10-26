@@ -3,6 +3,8 @@ set -euo pipefail
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${POSLE_BUILD_DIR:-$PROJECT/.build}"
 cd "$PROJECT"
+# A caller must explicitly select a valid Apple certificate before any build work.
+python3 "$PROJECT/scripts/signing.py" --check
 SOURCE_REVISION="$(git rev-parse --verify HEAD)"
 SOURCE_STATUS="$(git status --porcelain)"
 mkdir -p "$PROJECT/dist"
@@ -102,11 +104,8 @@ cp "$PROJECT/LICENSE" "$APP/Contents/Resources/LICENSE"
 swift "$PROJECT/scripts/icon.swift" "$BUILD/AppIcon.iconset"
 iconutil -c icns "$BUILD/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
 install_name_tool -id @rpath/libposle_core.dylib "$APP/Contents/Frameworks/libposle_core.dylib"
-codesign --force --sign - "$APP/Contents/Frameworks/libposle_core.dylib"
-codesign --force --sign - "$APP/Contents/MacOS/posle-engine"
-codesign --force --sign - "$APP/Contents/Helpers/После Распознавание.app"
-codesign --force --sign - "$APP/Contents/Helpers/После Обработка.app"
-codesign --force --sign - --entitlements "$PROJECT/packaging/entitlements.plist" "$APP"
+python3 "$PROJECT/scripts/signing.py" --app "$APP" \
+    --entitlements "$PROJECT/packaging/entitlements.plist"
 codesign --verify --deep --strict "$APP"
 if [[ "$(git rev-parse --verify HEAD)" != "$SOURCE_REVISION" || "$(git status --porcelain)" != "$SOURCE_STATUS" ]]; then
     echo "Исходный коммит изменился во время сборки; повторите сборку." >&2
