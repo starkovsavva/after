@@ -6,30 +6,28 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.8.1</title>
-      <sparkle:version>10</sparkle:version>
-      <sparkle:shortVersionString>0.8.1</sparkle:shortVersionString>
+      <title>После 0.9.0</title>
+      <sparkle:version>11</sparkle:version>
+      <sparkle:shortVersionString>0.9.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Mon, 26 Oct 2026 01:04:54 GMT</pubDate>
-      <description sparkle:format="markdown">- **Черновики конспекта.** Ручные правки сохраняются при переходе между вкладками, встречами и перезапуске приложения. При конфликте их можно перенести в заметки.
-- **Сохранение данных.** Устаревший конспект больше не перезаписывает результат нового распознавания. Правки встречи и конспекта проходят через атомарные операции Rust.
-- **Обработка.** Повторные нажатия не запускают параллельные задания. Отмена и повтор сохраняют готовые результаты и исходное аудио.
-- **Распознавание и модели.** Повреждённое аудио и некорректная модель обрабатываются с понятной ошибкой. Ошибка одной модели не прерывает поиск остальных.
-- **Поиск.** Повреждённый индекс восстанавливается по библиотеке.
-- **Карточки.** Выбор карточки восстанавливается после обновления конспекта.
-- **Интерфейс.** Исправлены падения на некорректных таймкодах и номерах голосов. Улучшен контраст переключателей в тёмной теме.
-- **Обновления.** Несохранённые правки остаются доступны до установки. Архив приложения и исходники проверяются до публикации.
+      <pubDate>Mon, 26 Oct 2026 12:02:10 GMT</pubDate>
+      <description sparkle:format="markdown">- Голосовые поручения: создание и дополнение заметок и задач, создание карточек. Кнопка микрофона и ⌃⌥M.
+- Трекер задач: сроки, ответственные, подзадачи, история и дополнения голосом.
+- Устойчивые задачи из конспекта: повторная суммаризация сохраняет связь с исходными репликами.
+- Выбор из похожих объектов, отмена изменений и восстановление поручений и черновиков после перезапуска.
+- Графитовый интерфейс, компактная панель действий и новый логотип «Реплика».
+- Светлая и тёмная темы, свой цвет, размер текста и плотность. Импорт и экспорт тем.
 </description>
-      <posle:sourceRevision>25bd4f528352cef820e022520e97674ac7be4312</posle:sourceRevision>
-      <posle:archiveSHA256>83f18efae6fa3e9b00aa32397152829a6a5c96c6dea7ccdbcdd98bc8e5ec5e14</posle:archiveSHA256>
-      <posle:sourceSHA256>8b08782cf60a00c8fa4793599b804e18b08f077c1d73d7be911d29d418db2fb7</posle:sourceSHA256>
-      <posle:packageSHA256>643ba87d1ccc57647b9df94a1b8115d47f25f6d3b44313adf8a91fcfdec32331</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.8.1/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="fsBcXHfZDi74ylUmaPxFvqrureR8v0q51PGRERBj1iLP1A+SgLDh1skhiz5ZpfMqmNW0dumk7H9B721FZ7bOAA==" length="12472159" type="application/octet-stream" />
+      <posle:sourceRevision>4858bf64da87a4fc6e4e04ca444246baf2d2231b</posle:sourceRevision>
+      <posle:archiveSHA256>6646403817e77fb69b6ff22728dbe9198cc30711c68c5b6ab419fc079c89dcd5</posle:archiveSHA256>
+      <posle:sourceSHA256>c2bbcfa3e1fc9379e134e84b50f03b5f1bad24bfd4c3a8ecbef0c2b0e20509c1</posle:sourceSHA256>
+      <posle:packageSHA256>c24683fbe3967da62bdf0ea38c7f4acdacf18b635b02760f6f4b7947e4da5ae3</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.9.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="OjSQOMdvpVTwrPlyVYRI/geApdWqVssQ74Ft1uRnRkF4niP//lw+e0y31cjQgtJVMbujK+6IPyO1Yjf/5IaBAg==" length="13633414" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 5C2+3aa0CH+FgV0n6E8jPeM1DwqA0cbZ9uBH/XiJiK4xiy2DM9GzbBz7jMSNGcLH6dxXrEb7HKjiDfd1tMW3Cg==
-length: 3402
+edSignature: IQPmbvFxxzKWFENbEA7MPhuW54eVLhv3NWGZtlIqxoJlpTlbrCBRsx85BabAzITn4rxaw+x+xSTtNak9JB2VAg==
+length: 2551
 -->
