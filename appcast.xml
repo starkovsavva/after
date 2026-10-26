@@ -6,28 +6,34 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.10.0</title>
-      <sparkle:version>13</sparkle:version>
-      <sparkle:shortVersionString>0.10.0</sparkle:shortVersionString>
+      <title>После 0.11.0</title>
+      <sparkle:version>14</sparkle:version>
+      <sparkle:shortVersionString>0.11.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Mon, 26 Oct 2026 13:15:09 GMT</pubDate>
-      <description sparkle:format="markdown">- Календарь на всю рабочую область: День, 3 дня, Неделя и Месяц.
-- Сохранение выбранного вида, кнопка «Сегодня» и переход между периодами.
-- Создание события по свободному времени в сетке.
-- Отдельная полоса событий на весь день и колонки для пересекающихся встреч.
-- Точное время коротких встреч, отметки задач и продолжения ночных событий.
-- Компактный выбор календарей и обновлённый скриншот в README.
+      <pubDate>Mon, 26 Oct 2026 15:39:24 GMT</pubDate>
+      <description sparkle:format="markdown"># 0.11.0
+
+- **Фоновые задачи.** Сохраняемая очередь, независимые статусы и отмена. Запись и заметки доступны во время генерации.
+- **Запись.** Начало без установленных моделей, проверка микрофона и звука Mac, индикаторы дорожек.
+- **Правки.** Редактирование реплик, собеседников и пунктов конспекта. Защита ручных изменений при повторной генерации.
+- **Источники.** Прослушивание цитаты прямо в конспекте или карточке.
+- **Карточки.** Список библиотеки, создание и редактирование, исключение из повторений, реальные интервалы FSRS и отмена оценки.
+- **Сроки.** Выбор даты, отдельные просроченные задачи и распознавание сроков из старых встреч.
+- **Оформление.** Графит, матовое стекло и Liquid Glass; предпросмотр и поддержка настроек доступности macOS.
+- **Подсказки.** Необязательное знакомство, контекстная помощь и «Что нового» после содержательного обновления.
+- **Обновления.** Небольшое предложение установить новую версию, возможность отложить и защита текущей работы.
+- **Разработка.** Единый запуск проверок, CI, отдельные диагностические сценарии и лицензия MIT.
 </description>
-      <posle:sourceRevision>ff6d1e2d8371cea3fd21c1b79e94ca2a77378826</posle:sourceRevision>
-      <posle:archiveSHA256>e6fc0b03338bef5f213458d8dfd8c5ef6e61142d4052fc2d43961cbb06498280</posle:archiveSHA256>
-      <posle:sourceSHA256>827029e380626ceffc168ee3e6da3074bbecb861b219a263ed69da7e12107c27</posle:sourceSHA256>
-      <posle:packageSHA256>2b44958f907e2d415c0dcd956a35ca4c565e817475135cb4d442a9eda282c282</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.10.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="9c2CXPEOw0f92LWndNaA6q0ttOydXZKbJFbiCSLSSAMVW4R5ced0KKbYK/34PhfNW+WIn/HhAd12ykMxZxLSBw==" length="13840793" type="application/octet-stream" />
+      <posle:sourceRevision>d1c9658b156cf2cef61239b2502fe60dd8ef5c83</posle:sourceRevision>
+      <posle:archiveSHA256>877938a4af1f734291882e9793a5a4f208f995fce30222e85bda3912b8f54f22</posle:archiveSHA256>
+      <posle:sourceSHA256>5509c0a6cfdf721db080385a0009fe1b5455e40053775e33cb7f8eccd76c821e</posle:sourceSHA256>
+      <posle:packageSHA256>9edca97071d9fe2b52c1c2ef2417c5369d637b3ef3f0483f341c362491e28bd0</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.11.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="tZybSZfSgO+PHf1FjY+wzG98dBZulFBBXLC+RhGVhwWPuWl6lwjY2NGLhYvMg6gV4LRYfdXMqDEJetDbSnbgAg==" length="14796893" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: JomRfMHMkUZNYo2Q2d8mSn2sz+OeEkVczkMSUJHTSR3YG2eVdfn8HaymMCp/7giMImN8MDqsjmIFAoSbMcQqAg==
-length: 2282
+edSignature: NO2w4fRkjJf6PG6l1xqAfsdW+0Hau2Wg3zC7tex6doms3JmrGVedpqi1c9RyyxD2/6nb/ZgoVPDCWCFP/uRPCg==
+length: 3450
 -->
