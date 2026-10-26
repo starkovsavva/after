@@ -351,6 +351,55 @@ public enum Exporter {
         return text
     }
 
+    /// Transcript only, with stable speaker labels and timestamps. Literal
+    /// Markdown characters in names or speech must remain visible when pasted.
+    public static func transcriptMarkdown(meeting: Meeting, transcript: Transcript) -> String {
+        func escaped(_ value: String) -> String {
+            let special = Set("\\`*_[]<>#|&")
+            return value.map { special.contains($0) ? "\\" + String($0) : String($0) }.joined()
+        }
+        func singleLine(_ value: String) -> String {
+            value.components(separatedBy: .newlines).joined(separator: " ")
+        }
+        func escapedSpeech(_ value: String) -> String {
+            value.components(separatedBy: "\n").map { line in
+                var result = escaped(line)
+                let head = line.drop(while: { $0 == " " })
+                let indent = line.count - head.count
+                guard indent <= 3, let first = head.first else { return result }
+                var markerOffset: Int?
+                let following = head.dropFirst().first
+                if (first == "-" || first == "+") && (following == nil || following == " " || following == "\t") {
+                    markerOffset = indent
+                }
+                let ruler = head.filter { $0 != " " && $0 != "\t" }
+                if (ruler.count >= 3 && ruler.allSatisfy { $0 == "-" }) ||
+                    (!ruler.isEmpty && ruler.allSatisfy { $0 == "=" }) {
+                    markerOffset = indent
+                }
+                let digits = head.prefix(while: { $0 >= "0" && $0 <= "9" }).count
+                if (1...9).contains(digits) {
+                    let tail = head.dropFirst(digits)
+                    let afterMarker = tail.dropFirst().first
+                    if (tail.first == "." || tail.first == ")") && (afterMarker == nil || afterMarker == " " || afterMarker == "\t") {
+                        markerOffset = indent + digits
+                    }
+                }
+                // Neutralize only block syntax at the start of this line.
+                // Decimal points and hyphens inside ordinary speech stay readable.
+                if let markerOffset { result.insert("\\", at: result.index(result.startIndex, offsetBy: markerOffset)) }
+                return result
+            }.joined(separator: "\n")
+        }
+        guard !transcript.segments.isEmpty else { return "" }
+        var text = "# \(escaped(singleLine(meeting.title)))\n\n## Транскрипт\n\n"
+        for segment in transcript.segments {
+            text += "**\(timestamp(segment.start)) · \(escaped(singleLine(meeting.speakerName(segment.speaker))))**\n\n"
+            text += escapedSpeech(segment.text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")) + "\n\n"
+        }
+        return text
+    }
+
     /// Anki's text importer interprets <br> when html:true. Escape content before exporting.
     public static func anki(cards: [Flashcard], title: String) -> String {
         func html(_ value: String) -> String {

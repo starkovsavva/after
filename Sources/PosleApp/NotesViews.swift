@@ -85,8 +85,9 @@ struct NotesWorkspaceView: View {
 struct NotesInboxView: View {
     @EnvironmentObject private var app: AppStore
     @ObservedObject var notes: NotesStore
-    private var text: Binding<String> { Binding(get: { notes.captureDrafts["inbox"] ?? "" }, set: { notes.captureDrafts["inbox"] = $0 }) }
-    private var kind: Binding<String> { Binding(get: { notes.captureKinds["inbox"] ?? "note" }, set: { notes.captureKinds["inbox"] = $0 }) }
+    var draftKey = "inbox"
+    private var text: Binding<String> { Binding(get: { notes.captureDrafts[draftKey] ?? "" }, set: { notes.captureDrafts[draftKey] = $0 }) }
+    private var kind: Binding<String> { Binding(get: { notes.captureKinds[draftKey] ?? "note" }, set: { notes.captureKinds[draftKey] = $0 }) }
     @State private var query = ""
     @State private var editing: CapturedNote?
     private var inbox: [CapturedNote] {
@@ -104,7 +105,10 @@ struct NotesInboxView: View {
                             .accessibilityLabel("Поиск во входящих заметках")
                     }
                     NoteComposer(text: text, kind: kind, placeholder: "Новая заметка…") {
-                        if notes.capture(text: text.wrappedValue, kind: kind.wrappedValue) != nil { text.wrappedValue = "" }
+                        if notes.capture(text: text.wrappedValue, kind: kind.wrappedValue) != nil {
+                            text.wrappedValue = ""
+                            if app.showingCaptureDrafts { app.showingCaptureDrafts = false }
+                        }
                     }
                     if inbox.isEmpty && notes.error == nil { NotesEmpty(title: query.isEmpty ? "Входящие пусты" : "Заметки не найдены", text: "", icon: "tray") }
                     ForEach(inbox) { note in
@@ -674,11 +678,21 @@ struct NotesTasksView: View {
                     }
                 }
             }.appContentLayout()
-        }.onAppear { notes.reload(); notes.loadTasks() }
+        }.onAppear { notes.reload(); notes.loadTasks(); updateNewTaskEditing() }
+            .onChange(of: newText) { _, _ in updateNewTaskEditing() }
+            .onDisappear { notes.editingNewTask = false }
             .onChange(of: notes.workspace.notes) { _, _ in notes.loadTasks() }
             .onChange(of: app.busy) { _, busy in if !busy { notes.reload(); notes.loadTasks() } }
             .overlay(alignment: .bottomTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
             .sheet(item: $editing, onDismiss: { notes.loadTasks() }) { note in NoteEditorView(notes: notes, note: note).environmentObject(app) }
     }
-    private func addTask() { if notes.capture(text: newText, kind: "task") != nil { newText = ""; notes.loadTasks() } }
+    private func updateNewTaskEditing() {
+        notes.editingNewTask = !newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    private func addTask() {
+        guard !newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if notes.capture(text: newText, kind: "task") != nil {
+            newText = ""; notes.editingNewTask = false; notes.loadTasks()
+        }
+    }
 }

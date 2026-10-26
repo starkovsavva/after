@@ -7,8 +7,17 @@
   <key>CFBundleExecutable</key><string>Posle</string>
   <key>CFBundleIdentifier</key><string>app.posle.meetings</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.7.0</string>
-  <key>CFBundleVersion</key><string>8</string>
+  <key>CFBundleShortVersionString</key><string>0.8.0</string>
+  <key>CFBundleVersion</key><string>9</string>
+  <key>SUFeedURL</key><string>https://raw.githubusercontent.com/starkovsavva/posle/updates/appcast.xml</string>
+  <key>SUPublicEDKey</key><string>M0KZyIhcEoO1zC6FcDJZTmBhxEdeCv6CXhdqavL9Pk0=</string>
+  <key>SUEnableAutomaticChecks</key><true/>
+  <key>SUAutomaticallyUpdate</key><false/>
+  <key>SUAllowsAutomaticUpdates</key><false/>
+  <key>SUVerifyUpdateBeforeExtraction</key><true/>
+  <key>SURequireSignedFeed</key><true/>
+  <key>SUSignedFeedFailureExpirationInterval</key><integer>0</integer>
+  <key>SUEnableSystemProfiling</key><false/>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>

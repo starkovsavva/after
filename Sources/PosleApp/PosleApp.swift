@@ -20,6 +20,10 @@ struct PosleApp: App {
         .defaultSize(width: 1260, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForAppUpdates(updates: store.updates)
+                OpenUpdateDraft(updates: store.updates)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("Добавить запись…") { store.chooseFile() }.keyboardShortcut("o")
                 Button(store.librarySection == "inbox" ? "Новая заметка" : "Записать встречу…") {
@@ -46,11 +50,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func connect(_ store: AppStore) {
         self.store = store
         let args = ProcessInfo.processInfo.arguments
-        guard !args.contains("--preview") && !args.contains("--snapshot") && !args.contains("--check-navigation") else { return }
+        guard !args.contains("--preview") && !args.contains("--snapshot") && !args.contains(where: { $0.hasPrefix("--check-") }) else { return }
         if capture == nil {
             let controller = QuickCaptureController(store: store); capture = controller; controller.start()
             store.quickCaptureAction = { [weak controller] in controller?.show() }
             store.bookmarkAction = { [weak controller] in controller?.markImportant() }
+            store.updates.start(store: store, hasQuickDraft: { [weak controller] in controller?.hasUnsavedDraft ?? false },
+                                showQuickDraft: { [weak controller] in controller?.show() })
         }
     }
     func applicationWillTerminate(_ notification: Notification) { capture?.stop(); store?.localService.stop(); store?.calendar.stop() }
@@ -62,6 +68,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task {
                 do { try await EmbeddedSpeechNativeChecks.run(); NSApp.terminate(nil) }
                 catch { fputs("Embedded NSApplication check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-copy-transcript") {
+            do { try TranscriptNativeChecks.run(); NSApp.terminate(nil) }
+            catch { fputs("Clipboard check failed: \(error)\n", stderr); exit(1) }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-updates") {
+            Task {
+                do { try await UpdateNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Updater check failed: \(error)\n", stderr); exit(1) }
             }
             return
         }
@@ -192,6 +210,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let store, store.updates.relaunchRequested && !store.updates.canSafelyRelaunch {
+            store.notice = "Завершите работу и сохраните правки перед обновлением"
+            return .terminateCancel
+        }
         if !NoteDraftPersistence.flushAll() {
             sender.activate(ignoringOtherApps: true)
             let alert = NSAlert()

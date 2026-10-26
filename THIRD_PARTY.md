@@ -3,6 +3,7 @@
 Models are downloaded on request, not bundled into the application archive.
 Each component retains its original license and notices in the installed runtime.
 
+- [Sparkle 2.10.0](https://github.com/sparkle-project/Sparkle), MIT. Native update framework; its full license and third-party notices are retained in the bundled framework.
 - [Parakeet MLX](https://github.com/senstella/parakeet-mlx), Apache-2.0.
 - [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3): see the model card and license.
 - [MLX model conversion](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3): see the model card.

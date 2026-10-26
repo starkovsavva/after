@@ -46,7 +46,8 @@ struct SettingsView: View {
         ("general", "Общие", "gearshape"), ("record", "Запись", "record.circle"),
         ("speech", "Распознавание речи", "waveform"), ("ai", "Конспект и карточки", "sparkles"),
         ("notes", "Заметки и шаблоны", "square.and.pencil"), ("keys", "Горячие клавиши", "keyboard"),
-        ("data", "Данные и экспорт", "externaldrive")
+        ("data", "Данные и экспорт", "externaldrive"),
+        ("updates", "Обновления", "arrow.triangle.2.circlepath")
     ]
     var body: some View {
         VStack(spacing: 0) {
@@ -130,6 +131,7 @@ struct SettingsView: View {
         case "notes": notesSettings
         case "keys": shortcutSettings
         case "data": dataSettings
+        case "updates": UpdateSettingsView(updates: store.updates)
         default: generalSettings
         }
     }
@@ -267,8 +269,6 @@ struct SettingsView: View {
             Button("Экспортировать заметки…") { store.exportManualNotes() }.buttonStyle(.bordered)
             Button("Открыть папку данных") { NSWorkspace.shared.open(store.root) }.buttonStyle(.bordered)
                 .help(store.root.path)
-            Button("Открыть обновления") { NSWorkspace.shared.open(URL(string: "https://github.com/starkovsavva/posle/releases")!) }.buttonStyle(.bordered)
-                .help("Установите .pkg поверх приложения. Встречи, модели и ключи сохранятся.")
         }
     }
 

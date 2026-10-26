@@ -6,6 +6,7 @@ swiftc -parse-as-library "$PROJECT/Sources/PosleCore/"*.swift "$PROJECT/Tests/Co
 "$CHECK_DIR/core-checks"
 PYTHON="${POSLE_PYTHON:-$HOME/Library/Application Support/Posle/runtime/venv/bin/python}"
 "$PYTHON" -m unittest discover -s "$PROJECT/backend" -v
+python3 -m unittest discover -s "$PROJECT/scripts" -p "test_*.py" -v
 
 if [[ -n "${POSLE_CARGO_HOME:-}" ]]; then
     export CARGO_HOME="$POSLE_CARGO_HOME"

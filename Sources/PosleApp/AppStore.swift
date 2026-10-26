@@ -11,6 +11,7 @@ final class AppStore: ObservableObject {
     @Published var librarySection = "meetings"
     let notes: NotesStore
     let calendar: CalendarStore
+    let updates = AppUpdateController()
     var quickCaptureAction: (() -> Void)?
     var bookmarkAction: (() -> Void)?
     var captureMeetingID: String? { isRecording ? recordingID : nil }
@@ -27,9 +28,12 @@ final class AppStore: ObservableObject {
     @Published var progressText = ""
     @Published var error: String?
     @Published var notice: String?
+    @Published var editingOverview = false
     @Published var showingSettings = false
     @Published var settingsSection = "general"
     @Published var showingRecord = false
+    @Published var showingCaptureDrafts = false
+    var recoveryCaptureDraftKey = "inbox"
     @Published var showingSearch = false
     @Published var searchQuery = ""
     @Published var searchScope = "all"
@@ -880,6 +884,20 @@ final class AppStore: ObservableObject {
     }
     private static func cardSearchText(_ card: Flashcard) -> String {
         [card.front, card.back, card.context].joined(separator: "\n")
+    }
+    @discardableResult
+    func copyTranscriptMarkdown(to pasteboard: NSPasteboard = .general) -> Bool {
+        guard let meeting = selected, let transcript, !transcript.segments.isEmpty else { return false }
+        let text = Exporter.transcriptMarkdown(meeting: meeting, transcript: transcript)
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setString(text, forType: NSPasteboard.PasteboardType("net.daringfireball.markdown"))
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([item]) else {
+            error = "Не удалось скопировать транскрипт. Попробуйте ещё раз."
+            return false
+        }
+        return true
     }
     func export(_ cards: Bool) {
         guard let meeting = selected else { return }

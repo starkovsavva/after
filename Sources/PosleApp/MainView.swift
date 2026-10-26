@@ -53,6 +53,17 @@ struct MainView: View {
                     .padding(10).allowsHitTesting(false)
             }
         }
+        .sheet(isPresented: $store.showingCaptureDrafts) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Черновик заметки").font(AppTypography.modalTitle)
+                    Spacer()
+                    Button("Закрыть") { store.showingCaptureDrafts = false }.keyboardShortcut(.cancelAction)
+                }.padding(22)
+                Divider()
+                NotesInboxView(notes: store.notes, draftKey: store.recoveryCaptureDraftKey).environmentObject(store)
+            }.frame(width: 700, height: 600).appControlDefaults()
+        }
         .sheet(isPresented: $store.showingSettings) { SettingsView(section: store.settingsSection).environmentObject(store) }
         .sheet(isPresented: $store.showingRecord) { RecordView().environmentObject(store) }
         .sheet(isPresented: $store.showingSearch) { SearchView().environmentObject(store) }
@@ -145,7 +156,7 @@ struct MainView: View {
                 }.padding(.horizontal, 12)
             }
             Spacer(minLength: 10)
-            if ProcessInfo.processInfo.arguments.contains("--preview") {
+            if ProcessInfo.processInfo.arguments.contains("--preview") && !ProcessInfo.processInfo.arguments.contains("--snapshot") {
                 Text("Демонстрационные данные").font(AppTypography.caption).foregroundStyle(Ink.warning).padding(.horizontal, 22).padding(.bottom, 10)
             }
             Button { store.openSettings() } label: {
@@ -212,6 +223,7 @@ struct MainView: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: error ? "exclamationmark.circle" : "checkmark.circle").foregroundStyle(error ? Ink.warning : Ink.green)
             Text(text).font(AppTypography.control).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            if !error { OpenUpdateDraft(updates: store.updates).buttonStyle(.borderless) }
             Button { if error { store.error = nil } else { store.notice = nil } } label: { Image(systemName: "xmark") }
                 .buttonStyle(.plain).accessibilityLabel("Закрыть сообщение")
         }.padding(14).background(Ink.paper, in: RoundedRectangle(cornerRadius: AppLayout.cardRadius))
@@ -490,14 +502,14 @@ struct SummaryView: View {
     }
     private func beginOverviewEdit(_ summary: Summary) {
         guard let id = store.selection, !overviewLocked else { return }
-        overviewMeetingID = id
+        overviewMeetingID = id; store.editingOverview = true
         overviewDraft = summary.overview
         originalOverview = summary.overview
         originalGeneratedAt = summary.generatedAt
         DispatchQueue.main.async { overviewFocused = true }
     }
     private func cancelOverviewEdit() {
-        overviewMeetingID = nil
+        overviewMeetingID = nil; store.editingOverview = false
         overviewDraft = ""
         originalOverview = ""
         originalGeneratedAt = 0
@@ -542,6 +554,7 @@ struct TranscriptView: View {
     @State private var speaker: String?
     @State private var name = ""
     @State private var showingSpeakers = false
+    @State private var transcriptCopied = ProcessInfo.processInfo.arguments.contains("--preview") && ProcessInfo.processInfo.arguments.contains("--preview-copied")
     private var segments: [Segment] {
         (store.transcript?.segments ?? []).filter { store.transcriptSearch.isEmpty || $0.text.localizedCaseInsensitiveContains(store.transcriptSearch) }
     }
@@ -551,12 +564,24 @@ struct TranscriptView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("Поиск по словам встречи", text: $store.transcriptSearch).textFieldStyle(.plain)
-                    Text("\(segments.count) реплик").foregroundStyle(.secondary).monospacedDigit()
+                    Text("Реплик: \(segments.count)").foregroundStyle(.secondary).monospacedDigit()
                 }.padding(10).background(Ink.soft, in: RoundedRectangle(cornerRadius: AppLayout.controlRadius))
                 Button { showingSpeakers = true } label: {
                     Label("Собеседники: \(Set((store.transcript?.segments ?? []).map(\.speaker).filter { $0 != "unknown" }).count)", systemImage: "person.2")
                 }.buttonStyle(.bordered).disabled(store.busy || store.isRecording)
                     .help("Указать точное число участников и пересчитать голоса без повторного распознавания")
+                Button {
+                    if store.copyTranscriptMarkdown() { transcriptCopied = true }
+                } label: {
+                    Image(systemName: transcriptCopied ? "checkmark" : "doc.on.doc")
+                        .frame(width: 20, height: 20)
+                        .foregroundStyle(transcriptCopied ? Ink.green : .secondary)
+                }.buttonStyle(.bordered)
+                    .disabled(store.transcript?.segments.isEmpty ?? true)
+                    .help(transcriptCopied ? "Транскрипт скопирован" : "Скопировать весь транскрипт в Markdown")
+                    .accessibilityLabel("Скопировать транскрипт в Markdown")
+                    .accessibilityValue(transcriptCopied ? "Скопировано" : "")
+                    .accessibilityIdentifier("transcript.copy-markdown")
             }.font(AppTypography.control)
                 .padding(.horizontal, AppLayout.contentInset).padding(.top, 16).padding(.bottom, 8)
             ScrollViewReader { proxy in
@@ -597,7 +622,12 @@ struct TranscriptView: View {
                     }
                 }
             }
-        }.sheet(isPresented: $showingSpeakers) {
+        }.task(id: transcriptCopied) {
+            guard transcriptCopied, !(ProcessInfo.processInfo.arguments.contains("--preview") && ProcessInfo.processInfo.arguments.contains("--preview-copied")) else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            transcriptCopied = false
+        }.onChange(of: store.selection) { _, _ in transcriptCopied = false }
+        .sheet(isPresented: $showingSpeakers) {
             if let id = store.selection { SpeakerReviewView(meetingID: id).environmentObject(store) }
         }.alert("Имя собеседника", isPresented: Binding(get: { speaker != nil }, set: { if !$0 { speaker = nil } })) {
             TextField("Имя", text: $name)

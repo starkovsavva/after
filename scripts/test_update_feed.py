@@ -1,0 +1,327 @@
+"""Offline release/feed tests. Optional real Sparkle tests use only a public test key.
+
+No GitHub writes, production Keychain reads, microphone or personal files.
+"""
+import argparse
+import base64
+import importlib.util
+import json
+import os
+from pathlib import Path
+import plistlib
+import shutil
+import stat
+import subprocess
+import tempfile
+import unittest
+from unittest import mock
+import zipfile
+import xml.etree.ElementTree as ET
+
+import update_feed as u
+import publish_release as publisher
+
+REPO = "example/posle"
+REVISION = "a" * 40
+PUBLIC = base64.b64encode(bytes(range(32))).decode()
+SIGNATURE = base64.b64encode(bytes(range(64))).decode()
+
+
+def info(build=9, public=PUBLIC):
+    return {"CFBundleIdentifier": "app.posle.meetings", "CFBundleShortVersionString": "0.8.0", "CFBundleVersion": str(build),
+            "PosleSourceRevision": REVISION, "SUPublicEDKey": public, "SUFeedURL": u.feed_url(REPO),
+            "SURequireSignedFeed": True, "SUVerifyUpdateBeforeExtraction": True, "SUSignedFeedFailureExpirationInterval": 0, "LSMinimumSystemVersion": "15.0"}
+
+
+def signed(data):
+    return data + f"<!-- sparkle-signatures:\nedSignature: {SIGNATURE}\nlength: {len(data)}\n-->\n".encode()
+
+
+class Verifier:
+    def __init__(self): self.calls = []
+    def verify(self, path, signature, public, length=None): self.calls.append((Path(path).name, signature, public, length))
+    def verify_feed(self, path, public):
+        u.feed_signature(Path(path).read_bytes())
+        self.calls.append((u.FEED, public))
+
+
+class Fixture:
+    def __init__(self, root, public=PUBLIC):
+        self.root = Path(root)
+        self.identity = u.identity(info(public=public), REPO)
+        self.files = {name: self.root / name for name in u.ASSETS}
+        self.files[u.PKG].write_bytes(b"synthetic pkg fixture")
+        with zipfile.ZipFile(self.files[u.ZIP], "w") as z:
+            z.writestr(u.APP + "/Contents/Info.plist", plistlib.dumps(info(public=public)))
+        with zipfile.ZipFile(self.files[u.SOURCE], "w") as z:
+            z.writestr("posle/packaging/Info.plist", plistlib.dumps(info(public=public)))
+        self.files[u.FEED].write_bytes(signed(u.make_appcast(self.identity, REPO, SIGNATURE, self.files, "Synthetic release notes")))
+        self.files["SHA256SUMS"].write_text("".join(u.digest(self.files[name]) + "  " + name + "\n" for name in u.CHECKSUMMED))
+        self.release = {"draft": False, "published_at": "2026-10-26T00:00:00Z", "tag_name": self.identity.tag, "assets": [
+            {"name": name, "state": "uploaded", "size": path.stat().st_size, "digest": "sha256:" + u.digest(path),
+             "browser_download_url": u.asset_url(REPO, self.identity.tag, name)} for name, path in self.files.items()]}
+
+    def download(self, url, path, expected_size):
+        name = next(name for name in self.files if url == u.asset_url(REPO, self.identity.tag, name))
+        shutil.copy2(self.files[name], path)
+        if Path(path).stat().st_size != expected_size: raise RuntimeError("wrong synthetic size")
+
+
+class GitHubFixture:
+    repo = REPO
+    def __init__(self, previous=None, race=False):
+        self.previous = previous
+        self.head = "old" if previous else None
+        self.race = race
+        self.calls = []
+        self.new_content = None
+        self.created_parents = None
+    def tag_revision(self, tag): return REVISION
+    def api(self, route, method="GET", body=None, missing_ok=False):
+        self.calls.append((route, method, body))
+        if route == "git/ref/heads/updates": return {"object": {"sha": self.head}} if self.head else None
+        if route == "git/commits/old": return {"tree": {"sha": "oldtree"}}
+        if route == "git/trees/oldtree": return {"tree": [{"path": u.FEED, "mode": "100644", "type": "blob", "sha": "oldblob"}]}
+        if route == "git/blobs/oldblob": return {"encoding": "base64", "size": len(self.previous), "content": base64.b64encode(self.previous).decode()}
+        if route == "git/trees" and method == "POST":
+            self.new_content = body["tree"][0]["content"].encode(); return {"sha": "newtree"}
+        if route == "git/commits" and method == "POST":
+            self.created_parents = body["parents"]; return {"sha": "newcommit"}
+        if route == "git/refs" and method == "POST":
+            if self.head: raise RuntimeError("concurrent branch creation")
+            self.head = body["sha"]; return {}
+        if route == "git/refs/heads/updates" and method == "PATCH":
+            if body.get("force") is not False: raise AssertionError("force update forbidden")
+            if self.race:
+                self.head = "concurrent"; raise RuntimeError("not fast forward")
+            self.head = body["sha"]; return {}
+        raise AssertionError((route, method, body))
+
+
+class FeedTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="posle-feed-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.fixture = Fixture(self.temporary.name)
+        self.verifier = Verifier()
+        self.verified = u.VerifiedRelease(self.fixture.identity, self.fixture.files[u.FEED].read_bytes())
+
+    def older(self):
+        identity = u.identity(info(build=8), REPO)
+        return signed(u.make_appcast(identity, REPO, SIGNATURE, self.fixture.files, "Old notes"))
+
+    def test_identity_requires_signed_head_provenance(self):
+        self.assertEqual(u.identity(info(), REPO, REVISION).build, 9)
+        for changes in ({"PosleSourceRevision": "b" * 40}, {"SURequireSignedFeed": False}, {"SUPublicEDKey": "missing"},
+                        {"SUFeedURL": "https://github.com/example/posle/releases/latest/download/appcast.xml"}):
+            with self.subTest(changes=changes), self.assertRaises(RuntimeError): u.identity(dict(info(), **changes), REPO, REVISION)
+
+    def test_feed_preserves_exact_bytes_and_authenticated_hashes(self):
+        data = self.verified.appcast
+        content, signature = u.feed_signature(data)
+        self.assertEqual(data[:len(content)], content)
+        self.assertEqual(signature, SIGNATURE)
+        parsed = u.parse_feed(data, REPO)
+        self.assertEqual(parsed["revision"], REVISION)
+        self.assertEqual(parsed["length"], self.fixture.files[u.ZIP].stat().st_size)
+        self.assertEqual(parsed["hashes"][u.SOURCE], u.digest(self.fixture.files[u.SOURCE]))
+        for changed in (data + b"extra", data.replace(b"length: ", b"length: 99", 1), content):
+            with self.assertRaises(RuntimeError): u.feed_signature(changed)
+
+    def test_markdown_release_notes_and_arm64_requirement_use_official_elements(self):
+        notes = "## Новое\n\n- **Карточки** и заметки\n- Поиск & ссылки"
+        data = u.make_appcast(self.fixture.identity, REPO, SIGNATURE, self.fixture.files, notes)
+        root = ET.fromstring(data)
+        description = root.find("channel/item/description")
+        self.assertEqual(description.get(f"{{{u.SPARKLE}}}format"), "markdown")
+        self.assertEqual(description.text, notes)
+        self.assertEqual(root.findtext(f"channel/item/{{{u.SPARKLE}}}hardwareRequirements"), "arm64")
+
+    def test_initial_feed_is_one_file_orphan_and_never_touches_main(self):
+        github = GitHubFixture()
+        self.assertTrue(u.promote_feed(github, self.verified, self.verifier))
+        self.assertEqual(github.created_parents, [])
+        self.assertEqual(github.new_content, self.verified.appcast)
+        self.assertFalse(any("main" in route for route, _, _ in github.calls))
+        tree_body = next(body for route, method, body in github.calls if route == "git/trees" and method == "POST")
+        self.assertEqual([entry["path"] for entry in tree_body["tree"]], [u.FEED])
+        self.assertNotIn("base_tree", tree_body)
+
+    def test_following_feed_appends_parent_and_uses_nonforce_cas(self):
+        github = GitHubFixture(self.older())
+        self.assertTrue(u.promote_feed(github, self.verified, self.verifier))
+        self.assertEqual(github.created_parents, ["old"])
+        mutation = next(body for _, method, body in github.calls if method == "PATCH")
+        self.assertIs(mutation["force"], False)
+
+    def test_concurrent_feed_advance_is_not_overwritten(self):
+        github = GitHubFixture(self.older(), race=True)
+        with self.assertRaisesRegex(RuntimeError, "fast forward"):
+            u.promote_feed(github, self.verified, self.verifier)
+        self.assertEqual(github.head, "concurrent")
+
+    def test_resume_is_idempotent_and_issued_build_cannot_be_replaced(self):
+        github = GitHubFixture(self.verified.appcast)
+        self.assertFalse(u.promote_feed(github, self.verified, self.verifier))
+        self.assertTrue(all(method == "GET" for _, method, _ in github.calls))
+        github = GitHubFixture(self.verified.appcast)
+        other = u.VerifiedRelease(self.fixture.identity, self.verified.appcast.replace(b"Synthetic release", b"Different release"))
+        with self.assertRaisesRegex(RuntimeError, "already announced"):
+            u.promote_feed(github, other, self.verifier)
+        self.assertTrue(all(method == "GET" for _, method, _ in github.calls))
+
+    def test_lower_build_and_unrelated_branch_contents_fail_before_mutation(self):
+        github = GitHubFixture(self.verified.appcast)
+        older = u.VerifiedRelease(u.identity(info(build=8), REPO), self.older())
+        with self.assertRaises(RuntimeError): u.promote_feed(github, older, self.verifier)
+        self.assertTrue(all(method == "GET" for _, method, _ in github.calls))
+        original = github.api
+        def api(route, method="GET", body=None, missing_ok=False):
+            if route == "git/trees/oldtree": return {"tree": [{"path": "README.md"}]}
+            return original(route, method, body, missing_ok)
+        github.api = api
+        with self.assertRaisesRegex(RuntimeError, "only a regular appcast"):
+            u.promote_feed(github, self.verified, self.verifier)
+
+    def test_public_pipeline_checks_every_download_before_returning_verified(self):
+        github = GitHubFixture()
+        with mock.patch.object(u, "anonymous_download", side_effect=self.fixture.download) as download, mock.patch.object(u, "verify_zip") as unzip:
+            verified = u.verify_public_release(github, self.fixture.release, PUBLIC, self.verifier)
+        self.assertEqual(verified, self.verified)
+        self.assertEqual(download.call_count, 5)
+        unzip.assert_called_once()
+        self.assertTrue(any(call[0] == u.ZIP for call in self.verifier.calls))
+        self.assertFalse(any(method != "GET" for _, method, _ in github.calls))
+
+    def test_public_corruption_never_reaches_zip_extraction_or_feed(self):
+        github = GitHubFixture()
+        def corrupt(url, path, size):
+            self.fixture.download(url, path, size)
+            if Path(path).name == u.ZIP: Path(path).write_bytes(b"tampered")
+        with mock.patch.object(u, "anonymous_download", side_effect=corrupt), mock.patch.object(u, "verify_zip") as unzip:
+            with self.assertRaisesRegex(RuntimeError, "digest mismatch"):
+                u.verify_public_release(github, self.fixture.release, PUBLIC, self.verifier)
+        unzip.assert_not_called()
+        self.assertFalse(any(method != "GET" for _, method, _ in github.calls))
+
+    def test_final_draft_check_rejects_extra_or_duplicate_assets(self):
+        u.uploaded_assets(self.fixture.release, self.fixture.files, require_exact=True)
+        for assets in (self.fixture.release["assets"] + [{"name": "obsolete.zip"}],
+                       self.fixture.release["assets"] + [self.fixture.release["assets"][0]]):
+            with self.assertRaises(RuntimeError):
+                u.uploaded_assets(dict(self.fixture.release, assets=assets), self.fixture.files, require_exact=True)
+        # Partial checks intentionally allow the appcast/manifest to be uploaded later.
+        u.uploaded_assets(self.fixture.release, {u.ZIP: self.fixture.files[u.ZIP]})
+
+    def test_draft_and_missing_asset_are_rejected_before_download(self):
+        for change in ({"draft": True}, {"assets": self.fixture.release["assets"][:-1]}):
+            with mock.patch.object(u, "anonymous_download") as download, self.assertRaises(RuntimeError):
+                u.verify_public_release(GitHubFixture(), dict(self.fixture.release, **change), PUBLIC, self.verifier)
+            download.assert_not_called()
+
+    def test_source_mismatch_and_zip_path_escape_are_rejected(self):
+        with zipfile.ZipFile(self.fixture.files[u.SOURCE], "w") as z:
+            z.writestr("posle/packaging/Info.plist", plistlib.dumps(dict(info(), CFBundleVersion="8")))
+        with self.assertRaisesRegex(RuntimeError, "source archive differs"):
+            u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO)
+        for filename, target in (("../outside", None), (u.APP + "/Contents/evil", "../../../../outside")):
+            with zipfile.ZipFile(self.fixture.files[u.ZIP], "w") as z:
+                z.writestr(u.APP + "/Contents/Info.plist", plistlib.dumps(info()))
+                entry = zipfile.ZipInfo(filename)
+                if target: entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+                z.writestr(entry, target or "outside")
+            with mock.patch.object(u.subprocess, "run") as command, self.assertRaises(RuntimeError):
+                u.verify_zip(self.fixture.files[u.ZIP], self.fixture.identity, REPO)
+            command.assert_not_called()
+
+    def test_resume_only_verifies_and_promotes_never_signs_or_edits_release(self):
+        github = mock.Mock(repo=REPO)
+        github.release.return_value = self.fixture.release
+        args = argparse.Namespace(tag="v0.8.0", expected_visibility="public", repo=REPO)
+        packaging = Path(self.temporary.name) / "packaging"
+        packaging.mkdir()
+        (packaging / "Info.plist").write_bytes(plistlib.dumps(info()))
+        with mock.patch.object(publisher, "PROJECT", Path(self.temporary.name)), mock.patch.object(publisher, "run") as run, \
+             mock.patch.object(u, "verify_public_release", return_value=self.verified) as verify, \
+             mock.patch.object(u, "promote_feed", return_value=True) as promote, mock.patch("builtins.print"):
+            publisher.resume(args, github, self.verifier)
+        run.assert_not_called()
+        verify.assert_called_once()
+        promote.assert_called_once()
+        github.api.assert_not_called()
+
+
+class RealSparkleTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tool = Path(os.environ.get("POSLE_TEST_SPARKLE_BIN_DIR", "/private/tmp/posle-sparkle-build/artifacts/sparkle/Sparkle/bin")) / "sign_update"
+        if not cls.tool.is_file() or not Path("/usr/bin/swiftc").is_file():
+            raise unittest.SkipTest("Pinned Sparkle SDK + Swift required for real signature interoperability tests")
+        # Public, deterministic TEST seed. This is never a production key, never
+        # touches Keychain, and is supplied to sign_update only via stdin.
+        code = '''import Foundation\nimport CryptoKit\nlet k = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32))\nprint(k.rawRepresentation.base64EncodedString())\nprint(k.publicKey.rawRepresentation.base64EncodedString())'''
+        result = subprocess.run(["/usr/bin/swift", "-e", code], capture_output=True, text=True, check=True)
+        cls.test_key, cls.public = result.stdout.splitlines()
+        cls.verifier = u.PublicVerifier()
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "verifier"): cls.verifier.close()
+
+    def sign(self, path, *arguments):
+        result = subprocess.run([str(self.tool), "--ed-key-file", "-", *arguments, str(path)],
+                                input=self.test_key + "\n", capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+
+    def test_official_sparkle_archive_and_xml_verify_with_only_public_key(self):
+        with tempfile.TemporaryDirectory(prefix="posle-sparkle-test-") as temporary:
+            fixture = Fixture(temporary)
+            signature = self.sign(fixture.files[u.ZIP], "-p")
+            self.verifier.verify(fixture.files[u.ZIP], signature, self.public)
+            release = u.Identity("0.8.0", 9, REVISION, self.public)
+            feed = fixture.files[u.FEED]
+            feed.write_bytes(u.make_appcast(release, REPO, signature, fixture.files, "Notes <must> stay signed & safe"))
+            self.sign(feed, "--disable-signing-warning")
+            self.verifier.verify_feed(feed, self.public)
+            self.assertEqual(u.parse_feed(feed.read_bytes(), REPO)["build"], 9)
+            data = feed.read_bytes()
+            feed.write_bytes(data.replace(b"stay signed", b"stay forged"))
+            with self.assertRaisesRegex(RuntimeError, "EdDSA"): self.verifier.verify_feed(feed, self.public)
+            fixture.files[u.ZIP].write_bytes(fixture.files[u.ZIP].read_bytes() + b"tampered")
+            with self.assertRaisesRegex(RuntimeError, "EdDSA"): self.verifier.verify(fixture.files[u.ZIP], signature, self.public)
+
+    def test_complete_publisher_signing_wrapper_uses_only_expected_account(self):
+        with tempfile.TemporaryDirectory(prefix="posle-signing-test-") as temporary:
+            root = Path(temporary); (root / "dist").mkdir()
+            fixture = Fixture(root / "dist", public=self.public)
+            commands = []
+            def test_run(arguments, capture=False):
+                commands.append(arguments)
+                self.assertEqual(arguments[1:3], ["--account", u.ACCOUNT])
+                return self.sign(Path(arguments[-1]), *arguments[3:-1])
+            with mock.patch.object(publisher, "PROJECT", root), mock.patch.object(publisher, "run", side_effect=test_run):
+                files = publisher.signing_files(fixture.identity, REPO, "## New\n- Useful notes", str(self.tool), self.verifier)
+            self.assertEqual(set(files), set(u.ASSETS))
+            self.assertEqual(len(commands), 2)
+            self.verifier.verify_feed(files[u.FEED], self.public)
+            u.verify_checksums(root / "dist")
+            self.assertEqual(u.parse_feed(files[u.FEED].read_bytes(), REPO)["build"], 9)
+
+    def test_production_signing_flow_public_key_mismatch_fails_before_feed(self):
+        with tempfile.TemporaryDirectory(prefix="posle-signing-test-") as temporary:
+            root = Path(temporary); (root / "dist").mkdir()
+            fixture = Fixture(root / "dist")
+            fixture.files[u.FEED].unlink(); fixture.files["SHA256SUMS"].unlink()
+            def test_run(arguments, capture=False):
+                self.assertEqual(arguments[1:3], ["--account", u.ACCOUNT])
+                path = Path(arguments[-1])
+                return self.sign(path, *arguments[3:-1])
+            with mock.patch.object(publisher, "PROJECT", root), mock.patch.object(publisher, "run", side_effect=test_run):
+                with self.assertRaisesRegex(RuntimeError, "public key"):
+                    publisher.signing_files(fixture.identity, REPO, "Test", str(self.tool), self.verifier)
+            self.assertFalse(fixture.files[u.FEED].exists())
+            self.assertFalse(fixture.files["SHA256SUMS"].exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

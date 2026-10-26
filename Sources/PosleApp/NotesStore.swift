@@ -20,6 +20,15 @@ final class NotesStore: ObservableObject {
     @Published var hotkeyNotice: String?
     @Published var captureDrafts: [String: String] = [:]
     @Published var captureKinds: [String: String] = [:]
+    @Published var editingNewTask = false
+    /// Composer drafts are intentionally memory-only until the user saves.
+    /// Keep hidden meeting drafts in the update gate as well as the visible one.
+    var firstPendingCaptureDraftKey: String? {
+        captureDrafts.keys.sorted().first { key in
+            !(captureDrafts[key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+    var hasUnsavedCaptureDrafts: Bool { firstPendingCaptureDraftKey != nil }
     @Published var contextSelection: String?
     var contextMode = "project"
     init(root: URL) { self.root = root; reload() }

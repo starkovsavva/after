@@ -17,6 +17,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
     private var started = false
     private let draft = QuickCaptureDraft()
     init(store: AppStore) { self.store = store; super.init() }
+    var hasUnsavedDraft: Bool { !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     func start() {
         guard !started else { return }; started = true
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
