@@ -6,28 +6,27 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.9.0</title>
-      <sparkle:version>11</sparkle:version>
-      <sparkle:shortVersionString>0.9.0</sparkle:shortVersionString>
+      <title>После 0.9.1</title>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>0.9.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Mon, 26 Oct 2026 12:02:10 GMT</pubDate>
-      <description sparkle:format="markdown">- Голосовые поручения: создание и дополнение заметок и задач, создание карточек. Кнопка микрофона и ⌃⌥M.
-- Трекер задач: сроки, ответственные, подзадачи, история и дополнения голосом.
-- Устойчивые задачи из конспекта: повторная суммаризация сохраняет связь с исходными репликами.
-- Выбор из похожих объектов, отмена изменений и восстановление поручений и черновиков после перезапуска.
-- Графитовый интерфейс, компактная панель действий и новый логотип «Реплика».
-- Светлая и тёмная темы, свой цвет, размер текста и плотность. Импорт и экспорт тем.
+      <pubDate>Mon, 26 Oct 2026 12:31:01 GMT</pubDate>
+      <description sparkle:format="markdown">- Выбор качества видео: до 720p, до 1080p или исходное разрешение, 30 кадров/с.
+- Запись целого выбранного экрана с сохранением пропорций, включая меню и Dock.
+- Выбор качества MP3: 64, 128 или 192 кбит/с.
+- Исправлено ухудшение звука при сохранении: стерео и частота 48 кГц сохраняются отдельно от копий для распознавания.
+- Запоминание экрана и параметров записи. Отключённый монитор не подменяется другим.
 </description>
-      <posle:sourceRevision>4858bf64da87a4fc6e4e04ca444246baf2d2231b</posle:sourceRevision>
-      <posle:archiveSHA256>6646403817e77fb69b6ff22728dbe9198cc30711c68c5b6ab419fc079c89dcd5</posle:archiveSHA256>
-      <posle:sourceSHA256>c2bbcfa3e1fc9379e134e84b50f03b5f1bad24bfd4c3a8ecbef0c2b0e20509c1</posle:sourceSHA256>
-      <posle:packageSHA256>c24683fbe3967da62bdf0ea38c7f4acdacf18b635b02760f6f4b7947e4da5ae3</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.9.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="OjSQOMdvpVTwrPlyVYRI/geApdWqVssQ74Ft1uRnRkF4niP//lw+e0y31cjQgtJVMbujK+6IPyO1Yjf/5IaBAg==" length="13633414" type="application/octet-stream" />
+      <posle:sourceRevision>2ced8b94857c6cf14573392bbd99ce2d907409bc</posle:sourceRevision>
+      <posle:archiveSHA256>00ea3f5650541a4d1df12544b9a05bbd3f4f094a38c0da48f7b22f79e20e4175</posle:archiveSHA256>
+      <posle:sourceSHA256>01007c2d5fba3b8aa6b085c84fdace1224c4354eca324a38ea18a6ef569b52ca</posle:sourceSHA256>
+      <posle:packageSHA256>7e27372f54e96b0b895bb9f89132dcdcb1d2fde3bb709e957de94d4c58658888</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.9.1/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="dDvNLDGzpICgIMN/x0eMnbMn9t40Pqte2nFSNx2JAVfFhiRmaZVGLW+EdDQVUlkopP4cVql/g1bt0MKb51f2BQ==" length="13678610" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: IQPmbvFxxzKWFENbEA7MPhuW54eVLhv3NWGZtlIqxoJlpTlbrCBRsx85BabAzITn4rxaw+x+xSTtNak9JB2VAg==
-length: 2551
+edSignature: Fb4hc7rcvPZJpv+U04ih049R8RlhSbiXw9RsUJHJy7lLgA54JI9UoZ0aWln00w//BSRtya3VpO2nxr/oc/SmAQ==
+length: 2263
 -->
