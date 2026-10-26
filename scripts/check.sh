@@ -4,6 +4,8 @@ PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/posle-check.XXXXXX")"
 swiftc -parse-as-library "$PROJECT/Sources/PosleCore/"*.swift "$PROJECT/Tests/CoreChecks.swift" -o "$CHECK_DIR/core-checks"
 "$CHECK_DIR/core-checks"
+swiftc -parse-as-library "$PROJECT/Sources/PosleCore/"*.swift "$PROJECT/Tests/CalendarLayoutChecks.swift" -o "$CHECK_DIR/calendar-checks"
+"$CHECK_DIR/calendar-checks"
 PYTHON="${POSLE_PYTHON:-$HOME/Library/Application Support/Posle/runtime/venv/bin/python}"
 "$PYTHON" -m unittest discover -s "$PROJECT/backend" -v
 python3 -m unittest discover -s "$PROJECT/scripts" -p "test_*.py" -v

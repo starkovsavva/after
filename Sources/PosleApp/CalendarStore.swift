@@ -85,6 +85,19 @@ struct CalendarTaskLink: Codable, Identifiable, Equatable {
     }
 }
 
+/// Display preferences never grant calendar access or change calendar/task links.
+struct CalendarViewPreferences: Codable {
+    var displayMode: CalendarDisplayMode = .week
+
+    init(displayMode: CalendarDisplayMode = .week) { self.displayMode = displayMode }
+    private enum CodingKeys: String, CodingKey { case displayMode }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try values.decodeIfPresent(String.self, forKey: .displayMode)
+        displayMode = raw.flatMap(CalendarDisplayMode.init(rawValue:)) ?? .week
+    }
+}
+
 private struct CalendarPreferences: Codable {
     var enabled = false
     var selectedCalendarID: String = ""
@@ -126,7 +139,17 @@ final class CalendarStore: ObservableObject {
     @Published private(set) var calendars: [CalendarChoice] = []
     @Published private(set) var events: [CalendarAgendaEvent] = []
     @Published private(set) var links: [CalendarTaskLink] = []
-    @Published var selectedDate = Date()
+    @Published var selectedDate = Date() {
+        didSet { if selectedDate != oldValue { refresh() } }
+    }
+    @Published var displayMode: CalendarDisplayMode = .week {
+        didSet {
+            guard displayMode != oldValue else { return }
+            do { try persistViewPreferences() } catch { self.error = error.localizedDescription }
+            refresh()
+        }
+    }
+    var displayPeriod: CalendarPeriod { CalendarPeriod(anchor: selectedDate, mode: displayMode, calendar: .current) }
     @Published var error: String?
     @Published private(set) var requesting = false
     @Published private(set) var lastRefreshed: Date?
@@ -143,6 +166,7 @@ final class CalendarStore: ObservableObject {
     private var eventChanges: NSObjectProtocol?
     private var activation: NSObjectProtocol?
     private var preferenceLoadFailed = false
+    private var viewPreferenceLoadFailed = false
 
     init(root: URL, preview: Bool = false) {
         self.root = root; self.preview = preview
@@ -159,6 +183,17 @@ final class CalendarStore: ObservableObject {
         } catch {
             preferenceLoadFailed = true
             self.error = "Не удалось прочитать связи с календарём. Файл сохранён без изменений: \(error.localizedDescription)"
+        }
+        do {
+            let url = try stateURL(filename: "calendar-view.json")
+            if FileManager.default.fileExists(atPath: url.path) {
+                let data = try Data(contentsOf: url)
+                guard data.count < 64 * 1024 else { throw CalendarError.invalidState }
+                displayMode = try JSONDecoder().decode(CalendarViewPreferences.self, from: data).displayMode
+            }
+        } catch {
+            viewPreferenceLoadFailed = true
+            if self.error == nil { self.error = "Не удалось прочитать вид календаря. Файл calendar-view.json сохранён без изменений." }
         }
         permissionDenied = [.denied, .restricted, .writeOnly].contains(EKEventStore.authorizationStatus(for: .event))
         // Existing explicit opt-in survives restart, but never asks the OS for access here.
@@ -183,7 +218,6 @@ final class CalendarStore: ObservableObject {
               let id = UUID(uuidString: url.lastPathComponent),
               let link = links.first(where: { $0.marker.lastPathComponent.lowercased() == id.uuidString.lowercased() }) else { return false }
         selectedDate = link.start
-        if connected { refresh() }
         return true
     }
 
@@ -252,9 +286,11 @@ final class CalendarStore: ObservableObject {
                 ?? calendars.first(where: \.writable)?.id ?? ""
         }
         notes?.loadTasks(); reconcileTasks()
-        let calendar = Calendar.current
-        let start = calendar.date(from: calendar.dateComponents([.year, .month], from: selectedDate)) ?? calendar.startOfDay(for: selectedDate)
-        let end = calendar.date(byAdding: .month, value: 1, to: start) ?? start.addingTimeInterval(32 * 86400)
+        // Match the exact visible interval. A week can cross a month boundary,
+        // and the month grid includes its leading/trailing week days.
+        let period = displayPeriod
+        let start = period.start
+        let end = period.end
         let chosen = eventStore.calendars(for: .event).filter { visibleCalendarIDs?.contains($0.calendarIdentifier) ?? true }
         if chosen.isEmpty { events = [] }
         else {
@@ -283,7 +319,13 @@ final class CalendarStore: ObservableObject {
     func events(on date: Date) -> [CalendarAgendaEvent] {
         let start = Calendar.current.startOfDay(for: date)
         let end = Calendar.current.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86400)
-        return events.filter { $0.start < end && $0.end > start }
+        return events.filter { event in
+            guard visibleCalendarIDs?.contains(event.calendarID) ?? true else { return false }
+            // Calendar end dates are exclusive: an event ending at midnight is
+            // absent on the next day. A zero-duration event belongs to its start day.
+            if event.end == event.start { return event.start >= start && event.start < end }
+            return event.end > event.start && event.start < end && event.end > start
+        }
     }
 
     /// A new block is explicit. A persisted creation intent plus marker recovers an interrupted save.
@@ -478,13 +520,13 @@ final class CalendarStore: ObservableObject {
         return matches.count == 1 ? matches[0] : nil
     }
 
-    private func stateURL() throws -> URL {
+    private func stateURL(filename: String = "calendar-state.json") throws -> URL {
         let manager = FileManager.default
         if manager.fileExists(atPath: root.path) {
             let values = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard values.isDirectory == true, values.isSymbolicLink != true else { throw CalendarError.invalidState }
         }
-        let url = root.appendingPathComponent("calendar-state.json")
+        let url = root.appendingPathComponent(filename)
         if manager.fileExists(atPath: url.path) {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             guard values.isRegularFile == true, values.isSymbolicLink != true else { throw CalendarError.invalidState }
@@ -501,6 +543,17 @@ final class CalendarStore: ObservableObject {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(preferences)
         guard data.count < 8 * 1024 * 1024 else { throw CalendarError.invalidState }
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private func persistViewPreferences() throws {
+        guard !preview else { return }
+        guard !viewPreferenceLoadFailed else { throw CalendarError.invalidState }
+        let url = try stateURL(filename: "calendar-view.json")
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(CalendarViewPreferences(displayMode: displayMode))
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
@@ -538,6 +591,29 @@ final class CalendarStore: ObservableObject {
         let restored = CalendarStore(root: root); defer { restored.stop() }
         try expect(restored.links == [link] && restored.selectedCalendarID == "fixture" && restored.visibleCalendarIDs == ["fixture"], "Calendar link identity/date roundtrip failed")
         try expect(restored.eventStore == nil && !restored.connected, "Restoring a disabled calendar touched EventKit")
+        try expect(restored.displayMode == .week, "An existing calendar without view preferences must default to week")
+        store.displayMode = .month
+        let viewFile = root.appendingPathComponent("calendar-view.json")
+        let viewPermissions = try manager.attributesOfItem(atPath: viewFile.path)[.posixPermissions] as? NSNumber
+        try expect(viewPermissions?.intValue == 0o600, "Calendar view preferences are not private")
+        let viewRestored = CalendarStore(root: root); defer { viewRestored.stop() }
+        try expect(viewRestored.displayMode == .month && viewRestored.eventStore == nil, "Calendar view did not roundtrip independently of access")
+        try expect(viewRestored.links == [link], "Changing calendar view modified task/calendar links")
+        let invalidView = Data("{broken-view".utf8)
+        try invalidView.write(to: viewFile)
+        let corruptView = CalendarStore(root: root); defer { corruptView.stop() }
+        try expect(corruptView.viewPreferenceLoadFailed && corruptView.displayMode == .week, "Corrupt calendar view was silently accepted")
+        corruptView.displayMode = .day
+        try expect(try Data(contentsOf: viewFile) == invalidView, "Changing view overwrote corrupt preferences")
+        let viewSentinel = directory.appendingPathComponent("calendar-view-sentinel.txt")
+        let viewBytes = Data("view target must survive".utf8); try viewBytes.write(to: viewSentinel)
+        try manager.removeItem(at: viewFile); try manager.createSymbolicLink(at: viewFile, withDestinationURL: viewSentinel)
+        let symlinkView = CalendarStore(root: root); defer { symlinkView.stop() }
+        try expect(symlinkView.viewPreferenceLoadFailed && symlinkView.eventStore == nil, "Calendar view symlink was accepted")
+        symlinkView.displayMode = .threeDays
+        try expect(try Data(contentsOf: viewSentinel) == viewBytes, "Calendar view modified a symlink target")
+        try manager.removeItem(at: viewFile)
+        try invalidView.write(to: viewFile)
         let sentinel = directory.appendingPathComponent("calendar-sentinel.txt")
         let bytes = Data("must survive".utf8); try bytes.write(to: sentinel)
         try manager.removeItem(at: file); try manager.createSymbolicLink(at: file, withDestinationURL: sentinel)
@@ -554,9 +630,38 @@ final class CalendarStore: ObservableObject {
         catch is CalendarError { }
         try expect(try Data(contentsOf: file) == invalid, "Corrupt calendar data was not preserved")
         let preview = CalendarStore(root: root, preview: true); defer { preview.stop() }
-        preview.seedPreview(); preview.refresh()
-        try expect(preview.eventStore == nil && preview.events.count == 2, "Preview accessed real calendars")
+        preview.seedPreview(); preview.displayMode = .threeDays; preview.refresh()
+        try expect(preview.eventStore == nil && preview.events.count >= 10, "Preview accessed real calendars")
         try expect(try Data(contentsOf: file) == invalid, "Preview changed persisted calendar state")
+        try expect(try Data(contentsOf: viewFile) == invalidView, "Preview changed persisted view preferences")
+    }
+
+    static func verifyDisplayEventBoundaries() throws {
+        func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+            guard condition() else { throw AppError.message(message) }
+        }
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        let next = calendar.date(byAdding: .day, value: 1, to: day)!
+        let third = calendar.date(byAdding: .day, value: 2, to: day)!
+        func event(_ id: String, start: Date, end: Date, allDay: Bool = false) -> CalendarAgendaEvent {
+            CalendarAgendaEvent(id: id, eventID: id, title: id, start: start, end: end,
+                allDay: allDay, calendarID: "fiction", calendarTitle: "Календарь",
+                account: "Локальный", color: .systemBlue, writable: true)
+        }
+        let store = CalendarStore(root: URL(fileURLWithPath: "/private/tmp/posle-calendar-memory-only"), preview: true)
+        store.events = [event("ends-at-midnight", start: day, end: next),
+                        event("all-day-two-days", start: day, end: third, allDay: true),
+                        event("zero-midnight", start: next, end: next),
+                        event("crosses-midnight", start: next.addingTimeInterval(-1800), end: next.addingTimeInterval(1800)),
+                        event("invalid-negative", start: next, end: day)]
+        try expect(Set(store.events(on: day).map(\.id)) == ["ends-at-midnight", "all-day-two-days", "crosses-midnight"], "First day event clipping is incorrect")
+        try expect(Set(store.events(on: next).map(\.id)) == ["all-day-two-days", "zero-midnight", "crosses-midnight"], "Midnight boundaries must be exclusive and zero events stay on their start day")
+        try expect(store.events(on: third).isEmpty, "An all-day event leaked beyond its exclusive end")
+        store.visibleCalendarIDs = []
+        try expect(store.events(on: day).isEmpty, "Hidden preview calendars remain visible")
+        store.visibleCalendarIDs = ["fiction"]
+        try expect(store.events(on: next).count == 3 && store.eventStore == nil, "Restoring calendar visibility touched EventKit or lost events")
     }
 
     /// Synthetic UI fixtures only; never reads real calendars or asks for permission.
@@ -566,9 +671,48 @@ final class CalendarStore: ObservableObject {
         calendars = [CalendarChoice(id: "preview-google", title: "Рабочий", account: "Google", writable: true, color: .systemPurple),
                      CalendarChoice(id: "preview-yandex", title: "Личный", account: "Яндекс", writable: true, color: .systemOrange)]
         selectedCalendarID = calendars[0].id
-        let today = Calendar.current.startOfDay(for: selectedDate)
-        events = [CalendarAgendaEvent(id: "demo1", eventID: "demo1", title: "Планирование продукта", start: today.addingTimeInterval(11 * 3600), end: today.addingTimeInterval(12 * 3600), allDay: false, calendarID: "preview-google", calendarTitle: "Рабочий", account: "Google", color: .systemPurple, writable: true),
-                  CalendarAgendaEvent(id: "demo2", eventID: "demo2", title: "○ Подготовить вопросы для следующего звонка", start: today.addingTimeInterval(15 * 3600), end: today.addingTimeInterval(15.5 * 3600), allDay: false, calendarID: "preview-yandex", calendarTitle: "Личный", account: "Яндекс", color: .systemOrange, writable: true)]
+        let calendar = Calendar.current
+        let week = CalendarPeriod(anchor: selectedDate, mode: .week, calendar: calendar)
+        func date(_ day: Int, _ hour: Int = 0, _ minute: Int = 0) -> Date {
+            let start = calendar.date(byAdding: .day, value: day, to: week.start) ?? week.start
+            return calendar.date(bySettingHour: hour, minute: minute, second: 0, of: start) ?? start
+        }
+        func event(_ id: String, _ title: String, _ day: Int, _ hour: Int, _ minute: Int,
+                   _ duration: TimeInterval, personal: Bool = false, taskID: String? = nil) -> CalendarAgendaEvent {
+            let choice = calendars[personal ? 1 : 0]
+            let start = date(day, hour, minute)
+            return CalendarAgendaEvent(id: id, eventID: id, title: title, start: start,
+                end: start.addingTimeInterval(duration), allDay: false,
+                calendarID: choice.id, calendarTitle: choice.title, account: choice.account,
+                color: choice.color, writable: true, taskID: taskID)
+        }
+        let linkedTask = notes?.tasks.first(where: { !$0.completed })
+        let taskText = linkedTask?.text ?? "Подготовить вопросы к интервью"
+        let taskID = linkedTask?.id ?? "preview-interview-questions"
+        events = [
+            event("plan-week", "Планы на неделю", 0, 10, 0, 45 * 60),
+            event("product-review", "Обсуждение продукта", 0, 11, 0, 60 * 60),
+            event("design-review", "Разбор макетов", 0, 11, 30, 60 * 60),
+            event("evening-training", "Тренировка", 0, 18, 30, 60 * 60, personal: true),
+            event("team-sync", "Командная встреча", 1, 9, 30, 30 * 60),
+            event("interview-questions", taskText, 1, 15, 0, 45 * 60, taskID: taskID),
+            event("research", "Интервью с пользователем", 2, 13, 0, 60 * 60),
+            event("project-checkpoint", "Промежуточные результаты", 3, 10, 0, 60 * 60),
+            event("release-support", "Релиз: окно поддержки", 3, 23, 30, 90 * 60),
+            event("week-review", "Итоги недели", 4, 16, 0, 45 * 60)
+        ]
+        events.append(CalendarAgendaEvent(id: "launch-preparation", eventID: "launch-preparation",
+            title: "Подготовка запуска", start: date(1), end: date(3), allDay: true,
+            calendarID: calendars[0].id, calendarTitle: calendars[0].title,
+            account: calendars[0].account, color: calendars[0].color, writable: true))
+        if let block = events.first(where: { $0.taskID == taskID }) {
+            links = [CalendarTaskLink(taskID: taskID, eventID: block.eventID,
+                calendarID: block.calendarID, title: block.title, start: block.start, end: block.end,
+                lastTaskText: taskText, lastTaskCompleted: false, lastEventTitle: block.title)]
+        }
+        events.sort { $0.start == $1.start ? $0.title < $1.title : $0.start < $1.start }
+        lastRefreshed = Date()
+
     }
     #endif
 }

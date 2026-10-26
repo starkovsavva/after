@@ -75,9 +75,18 @@ enum CalendarNativeChecks {
         summaryTask.noteID = "stable-note"
         try expect(CalendarTaskLink.signature(for: summaryTask) == nil, "Manual note edits must retain their stable identity")
         print("PASS: regenerated summary tasks cannot silently inherit another task's calendar block")
+        let missingView = try JSONDecoder().decode(CalendarViewPreferences.self, from: Data("{}".utf8))
+        let unknownView = try JSONDecoder().decode(CalendarViewPreferences.self, from: Data("{\"displayMode\":\"future-mode\"}".utf8))
+        try expect(missingView.displayMode == .week && unknownView.displayMode == .week, "Missing/future calendar views must retain a usable default")
+        for mode in CalendarDisplayMode.allCases {
+            let data = try JSONEncoder().encode(CalendarViewPreferences(displayMode: mode))
+            try expect(try JSONDecoder().decode(CalendarViewPreferences.self, from: data).displayMode == mode, "Calendar mode codec roundtrip failed")
+        }
+        try CalendarStore.verifyDisplayEventBoundaries()
+        print("PASS: day boundaries, all-day exclusive ends, hidden calendars and view preferences work without calendar access")
         try CalendarStore.verifyPrivatePersistence(at: root)
         print("PASS: stable private calendar links roundtrip, symlinks/corrupt files are preserved, previews never instantiate EventKit")
-        print("4 native calendar checks passed")
+        print("5 native calendar checks passed")
     }
     private static func expect(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
         guard try condition() else { throw AppError.message(message) }

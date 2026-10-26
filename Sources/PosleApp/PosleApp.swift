@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import PosleCore
 
 @main
 struct PosleApp: App {
@@ -123,6 +124,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-calendar-workspace") {
+            Task {
+                do { try await CalendarWorkspaceNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Calendar workspace check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-calendar") {
             Task {
                 do { try await CalendarNativeChecks.run(); NSApp.terminate(nil) }
@@ -226,7 +234,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             default: content = AnyView(MainView().environmentObject(previewStore))
             }
             #if DEBUG
-            if screen == "calendar" { previewStore.calendar.seedPreview() }
+            if screen == "calendar" {
+                if let date = option("--calendar-date"), let value = ISO8601DateFormatter().date(from: date) { previewStore.calendar.selectedDate = value }
+                previewStore.calendar.seedPreview()
+                if let mode = option("--calendar-view").flatMap(CalendarDisplayMode.init(rawValue:)) { previewStore.calendar.displayMode = mode }
+            }
             #endif
             if let provider = option("--cloud-provider") { previewStore.settings.mode = "cloud"; previewStore.settings.switchCloudProvider(provider) }
             if let speechMode = option("--speech-mode") { previewStore.settings.speechMode = speechMode }
