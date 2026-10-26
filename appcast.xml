@@ -1,0 +1,40 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:posle="https://posle.app/xml-namespaces/release" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>После</title>
+    <link>https://github.com/starkovsavva/posle/releases</link>
+    <description>Обновления После для macOS</description>
+    <language>ru</language>
+    <item>
+      <title>После 0.8.0</title>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <pubDate>Mon, 26 Oct 2026 00:32:35 GMT</pubDate>
+      <description sparkle:format="markdown">## Добавлено
+
+- Обновления внутри приложения: проверка при запуске, список изменений, установка и перезапуск.
+- Раздел «Обновления»: ручная проверка и настройка автоматической проверки.
+- Копирование всего транскрипта в Markdown одной иконкой: собеседники и таймкоды.
+- Скриншоты конспекта, транскрипта, заметок, карточек и календаря в README.
+
+## Исправлено
+
+- Обновление ждёт завершения записи и обработки, сохранения черновиков и закрытия редакторов.
+- Устаревшие файлы приложения удаляются при обновлении.
+
+Для перехода с 0.7.0 один раз установите PKG. Следующие версии можно будет ставить из приложения.
+</description>
+      <posle:sourceRevision>5f2c9c227ee54d0f0a9b126e34cd89fe86bda601</posle:sourceRevision>
+      <posle:archiveSHA256>39a927028ed04927297cf27f95fda248fdd7477ebb3e1ea1aa6d982228afb965</posle:archiveSHA256>
+      <posle:sourceSHA256>a44c3c66dc5256f911cb554733dab0e6413ae4d1ba648d57dcbbb0db70f2d576</posle:sourceSHA256>
+      <posle:packageSHA256>db53d82d18484ef316d0a3f1d77d61b4e6b90c95524d04d1a9773eac93f1a47c</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.8.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="u2L7HrHtTfGcqwPL+IV95cRVwkHKeXgWGh3P8XdjsUB1N8k6Zv2CboYxN7ji866Jho4Qy6DVes6WzGGWTgaVDQ==" length="12416436" type="application/octet-stream" />
+    </item>
+  </channel>
+</rss>
+<!-- sparkle-signatures:
+edSignature: 4YMmP1bqpTldtG6z59rhdeOBTwjNOmrCyxfnrlLZlxhIwrm/0AFk7gVT7f4NaIjLN+UgY3R/jvdDwUbb4ylBAA==
+length: 2639
+-->
