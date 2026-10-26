@@ -130,6 +130,8 @@ def run(raw: str) -> str:
             event(json.dumps(payload, ensure_ascii=False).encode(), context)
 
     restored = []
+    settings_token = None
+    settings_context = None
     def replace(module, name, value):
         restored.append((module, name, getattr(module, name)))
         setattr(module, name, value)
@@ -146,6 +148,16 @@ def run(raw: str) -> str:
             emit("done", pid=os.getpid(), session=_SESSION, python=sys.version.split()[0], **memory)
             return json.dumps({"ok": True, "value": last_done})
         import engine
+        snapshot = request.get("settings")
+        if snapshot is not None:
+            if not isinstance(snapshot, dict) or len(json.dumps(snapshot)) > 262144:
+                raise RuntimeError("Некорректные настройки задания.")
+            original_load = engine.load
+            replace(engine, "load", lambda path, default=None: snapshot if path == root / "settings.json" else original_load(path, default))
+            settings_context = engine.local_models.SETTINGS_OVERRIDE
+            settings_token = settings_context.set(snapshot)
+            original_json = engine.local_models._json
+            replace(engine.local_models, "_json", lambda path: snapshot if path == root / "settings.json" else original_json(path))
         settings = engine.load(root / "settings.json", {})
         if command == "transcribe" and settings.get("speechMode", "local") != "local":
             raise RuntimeError("Для облачного распознавания выберите облачный обработчик.")
@@ -245,6 +257,8 @@ def run(raw: str) -> str:
             message = message.replace(secret, "[hidden]")
         return json.dumps({"ok": False, "error": message[:2000]}, ensure_ascii=False)
     finally:
+        if settings_token is not None:
+            settings_context.reset(settings_token)
         for module, name, original in reversed(restored):
             setattr(module, name, original)
         gc.collect()

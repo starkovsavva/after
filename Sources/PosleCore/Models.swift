@@ -50,6 +50,9 @@ public struct Transcript: Codable {
     public var segments: [Segment]
     public var warnings: [String]
     public var model: String
+    public init(duration: Double, segments: [Segment], warnings: [String], model: String) {
+        self.duration = duration; self.segments = segments; self.warnings = warnings; self.model = model
+    }
 }
 
 public struct Insight: Codable, Identifiable, Hashable {
@@ -85,6 +88,9 @@ public struct Summary: Codable {
     public var generatedAt: Double
     public var warnings: [String]
     public var overviewClaims: [OverviewClaim] = []
+    public var sourceStale = false
+    public var overviewStale = false
+    public var manuallyEdited = false
 
     public init(overview: String, items: [Insight], cards: [Flashcard], provider: String, model: String,
                 generatedAt: Double, warnings: [String], overviewClaims: [OverviewClaim] = []) {
@@ -92,7 +98,7 @@ public struct Summary: Codable {
         self.model = model; self.generatedAt = generatedAt; self.warnings = warnings; self.overviewClaims = overviewClaims
     }
     private enum CodingKeys: String, CodingKey {
-        case overview, items, cards, provider, model, generatedAt, warnings, overviewClaims
+        case overview, items, cards, provider, model, generatedAt, warnings, overviewClaims, sourceStale, overviewStale, manuallyEdited
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -104,11 +110,14 @@ public struct Summary: Codable {
         generatedAt = try values.decode(Double.self, forKey: .generatedAt)
         warnings = try values.decode([String].self, forKey: .warnings)
         overviewClaims = try values.decodeIfPresent([OverviewClaim].self, forKey: .overviewClaims) ?? []
+        sourceStale = try values.decodeIfPresent(Bool.self, forKey: .sourceStale) ?? false
+        overviewStale = try values.decodeIfPresent(Bool.self, forKey: .overviewStale) ?? false
+        manuallyEdited = try values.decodeIfPresent(Bool.self, forKey: .manuallyEdited) ?? false
     }
 
     /// Never attach citations to edited or inconsistent prose, or to missing facts/segments.
     public func hasVerifiedOverviewClaims(transcript: Transcript?) -> Bool {
-        guard !overviewClaims.isEmpty, let transcript else { return false }
+        guard !sourceStale, !overviewStale, !overviewClaims.isEmpty, let transcript else { return false }
         func normalized(_ text: String) -> String { text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
         guard normalized(overviewClaims.map(\.text).joined(separator: " ")) == normalized(overview) else { return false }
         let ids = Set(transcript.segments.map(\.id))

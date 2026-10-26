@@ -78,6 +78,31 @@ struct AppPageHeader: View {
     }
 }
 
+/// Shared structure; document and schedule workspaces keep their own widths.
+struct AppWorkspaceHeader<Actions: View>: View {
+    let title: String
+    var subtitle: String = ""
+    @ViewBuilder var actions: () -> Actions
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 16) {
+            AppPageHeader(title: title, subtitle: subtitle)
+            actions().fixedSize(horizontal: true, vertical: false)
+        }.appControlDefaults()
+    }
+}
+
+struct AppListHeader<Actions: View>: View {
+    let title: String
+    @ViewBuilder var actions: () -> Actions
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title).font(AppTypography.controlStrong).accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 0)
+            actions()
+        }.frame(minHeight: 28).padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
+    }
+}
+
 private struct AppContentLayout: ViewModifier {
     func body(content: Content) -> some View {
         content.frame(maxWidth: AppLayout.readableWidth, alignment: .leading)

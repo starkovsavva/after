@@ -11,6 +11,7 @@ struct EvidenceButton: View {
     @State private var sourceSnapshot: [Segment] = []
     @State private var sourceMeetingID: String?
     @State private var sourceTitle = ""
+    @StateObject private var playback = SourcePlaybackState()
     private var uniqueIDs: [Int] { var seen = Set<Int>(); return ids.filter { seen.insert($0).inserted } }
     private var visibleSegments: [Segment] {
         guard meetingID == nil || meetingID == store.selection else { return [] }
@@ -46,10 +47,15 @@ struct EvidenceButton: View {
                     }
                     if !sourceTitle.isEmpty { Text(sourceTitle).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2) }
                     ScrollView {
-                        SourceQuotes(ids: ids, snapshot: sourceSnapshot, meetingID: sourceMeetingID, open: openSource)
+                        SourceQuotes(ids: ids, snapshot: sourceSnapshot, meetingID: sourceMeetingID,
+                                     playingID: playback.playingID, preparingID: playback.preparingID, open: openSource)
                     }.frame(maxHeight: 430)
-                }.padding(20).frame(width: 470).background(Ink.paper)
+                    if let error = playback.error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).textSelection(.enabled) }
+                }.padding(20).frame(width: 470).background(Ink.paper).onDisappear { playback.stop() }
             }
+            .onChange(of: showing) { _, shown in if !shown { playback.stop() } }
+            .onChange(of: store.isPlaying) { _, playing in if playing { playback.stop() } }
+            .onDisappear { playback.stop() }
     }
     private func openSource(_ id: Int, _ play: Bool) {
         guard let meeting = sourceMeetingID,
@@ -58,10 +64,14 @@ struct EvidenceButton: View {
         guard fresh?.segments.first(where: { $0.id == id }) == expected else {
             store.error = "Источник изменился. Откройте актуальный конспект."; showing = false; return
         }
-        showing = false
-        store.openMeeting(meeting, tab: "transcript", segmentID: id)
-        guard store.selection == meeting, store.transcript?.segments.first(where: { $0.id == id }) == expected else { return }
-        store.openSegment(id, play: play)
+        if play {
+            playback.toggle(store: store, meetingID: meeting, expected: expected)
+        } else {
+            playback.stop(); showing = false
+            store.openMeeting(meeting, tab: "transcript", segmentID: id)
+            guard store.selection == meeting, store.transcript?.segments.first(where: { $0.id == id }) == expected else { return }
+            store.openSegment(id, play: false)
+        }
     }
 }
 
@@ -70,6 +80,8 @@ struct SourceQuotes: View {
     let ids: [Int]
     var snapshot: [Segment]? = nil
     var meetingID: String? = nil
+    var playingID: Int? = nil
+    var preparingID: Int? = nil
     let open: (Int, Bool) -> Void
     private var uniqueIDs: [Int] { var seen = Set<Int>(); return ids.filter { seen.insert($0).inserted } }
     private var sourceTranscript: Transcript? {
@@ -101,9 +113,15 @@ struct SourceQuotes: View {
                         Text(meeting?.speakerName(segment.speaker) ?? segment.speaker)
                             .font(AppTypography.controlStrong).lineLimit(1)
                         Spacer()
-                        Button { open(segment.id, true) } label: { Label(Exporter.timestamp(segment.start), systemImage: "play.circle") }
-                            .font(AppTypography.control).monospacedDigit().buttonStyle(.borderless).foregroundStyle(Ink.accent)
-                            .help("Прослушать реплику").accessibilityLabel("Прослушать с \(Exporter.timestamp(segment.start))")
+                        Button { open(segment.id, true) } label: {
+                            HStack(spacing: 6) {
+                                if preparingID == segment.id { ProgressView().controlSize(.small).frame(width: 18, height: 18) }
+                                Label(Exporter.timestamp(segment.start), systemImage: playingID == segment.id ? "stop.circle" : "play.circle")
+                            }
+                        }
+                        .font(AppTypography.control).monospacedDigit().buttonStyle(.borderless).foregroundStyle(Ink.accent)
+                        .help(playingID == segment.id ? "Остановить реплику" : "Прослушать реплику здесь")
+                        .accessibilityLabel(playingID == segment.id ? "Остановить реплику" : "Прослушать с \(Exporter.timestamp(segment.start))")
                     }
                     Text(segment.text).font(AppTypography.body).lineSpacing(5).textSelection(.enabled)
                     Button { open(segment.id, false) } label: { Label("Открыть транскрипт", systemImage: "arrow.up.forward") }
@@ -123,6 +141,7 @@ struct ClaimReferenceButton: View {
     @State private var showing = false
     @State private var sourceMeetingID: String?
     @State private var sourceSnapshot: [Segment] = []
+    @StateObject private var playback = SourcePlaybackState()
     var body: some View {
         Button("[\(number)]") {
             sourceMeetingID = store.selection
@@ -152,7 +171,8 @@ struct ClaimReferenceButton: View {
                                                 Text([item.owner, item.due].filter { !$0.isEmpty }.joined(separator: " · "))
                                                     .font(AppTypography.control).foregroundStyle(.secondary)
                                             }
-                                            SourceQuotes(ids: item.segmentIDs, snapshot: sourceSnapshot, meetingID: sourceMeetingID) { id, play in showing = false; store.openSegment(id, play: play) }
+                                            SourceQuotes(ids: item.segmentIDs, snapshot: sourceSnapshot, meetingID: sourceMeetingID,
+                                                         playingID: playback.playingID, preparingID: playback.preparingID, open: openSource)
                                         }
                                     }
                                 }
@@ -162,7 +182,29 @@ struct ClaimReferenceButton: View {
                             }
                         }
                     }.frame(maxHeight: 480)
-                }.padding(20).frame(width: 530).background(Ink.paper)
+                    if let error = playback.error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).textSelection(.enabled) }
+                }.padding(20).frame(width: 530).background(Ink.paper).onDisappear { playback.stop() }
             }
+            .onChange(of: showing) { _, shown in if !shown { playback.stop() } }
+            .onChange(of: store.isPlaying) { _, playing in if playing { playback.stop() } }
+            .onDisappear { playback.stop() }
+    }
+    private func openSource(_ id: Int, _ play: Bool) {
+        guard let meeting = sourceMeetingID, let expected = sourceSnapshot.first(where: { $0.id == id }) else { return }
+        let fresh: Transcript? = store.read(store.meetingDirectory(meeting).appendingPathComponent("transcript.json"))
+        guard validSummary(meetingID: meeting), fresh?.segments.first(where: { $0.id == id }) == expected else {
+            playback.stop(); store.error = "Источник изменился. Откройте актуальный конспект."; showing = false; return
+        }
+        if play {
+            playback.toggle(store: store, meetingID: meeting, expected: expected) { validSummary(meetingID: meeting) }
+        } else {
+            playback.stop(); showing = false
+            store.openMeeting(meeting, tab: "transcript", segmentID: id)
+            store.openSegment(id, play: false)
+        }
+    }
+    private func validSummary(meetingID: String) -> Bool {
+        let fresh: Summary? = store.read(store.meetingDirectory(meetingID).appendingPathComponent("summary.json"))
+        return fresh?.generatedAt == summary.generatedAt && fresh?.overview == summary.overview && fresh?.items == summary.items
     }
 }

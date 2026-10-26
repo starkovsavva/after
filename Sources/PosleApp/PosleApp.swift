@@ -44,6 +44,10 @@ struct PosleApp: App {
                 Button("Карточки встречи") { store.librarySection = "meetings"; store.tab = "cards" }.keyboardShortcut("3")
                 Button("Заметки встречи") { store.librarySection = "meetings"; store.tab = "notes" }.keyboardShortcut("4")
             }
+            CommandGroup(replacing: .help) {
+                Button("Начало работы с После") { GuidanceController.shared.presentGettingStarted() }
+                Button("Что нового") { GuidanceController.shared.presentWhatsNew() }
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Настройки…") { store.openSettings() }.keyboardShortcut(",")
             }
@@ -84,6 +88,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do { try await PipelineNativeChecks.run(); NSApp.terminate(nil) }
                 catch { fputs("Native pipeline check failed: \(error)\n", stderr); exit(1) }
             }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-corrections") {
+            Task {
+                do { try await CorrectionsNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Corrections check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-recording-sessions") {
+            Task {
+                do { try await RecordingSessionNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Recording session check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-cards") {
+            Task {
+                do { try await CardsNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Cards check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-source-playback") {
+            Task {
+                do { try await SourcePlaybackNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Source playback check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-queue") {
+            Task {
+                do { try await QueueNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Queue check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-guidance") {
+            do { try GuidanceNativeChecks.run(); NSApp.terminate(nil) }
+            catch { fputs("Guidance check failed: \(error)\n", stderr); exit(1) }
             return
         }
         if ProcessInfo.processInfo.arguments.contains("--check-recording") {
@@ -215,6 +259,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if screen == "error" { previewStore.error = "Модель не найдена. Загрузите её в настройках и повторите создание конспекта. Транскрипт сохранён." }
             let content: AnyView
             switch screen {
+            case "getting-started", "whats-new":
+                let guide = GuidanceController.shared
+                guide.configure(root: previewStore.root, preview: true)
+                if screen == "getting-started" { guide.presentGettingStarted() } else { guide.presentWhatsNew() }
+                content = AnyView(GuidanceSheet(controller: guide))
+            case "transcript-editor":
+                content = AnyView(TranscriptSegmentEditor(meetingID: previewStore.selection ?? "", segmentID: previewStore.transcript?.segments.first?.id ?? 0).environmentObject(previewStore))
+            case "insight-editor":
+                content = AnyView(SummaryInsightEditor(meetingID: previewStore.selection ?? "", itemIndex: 0).environmentObject(previewStore))
             case "settings": content = AnyView(SettingsView(section: option("--settings-section") ?? "general").environmentObject(previewStore))
             case "note-editor":
                 if let note = previewStore.notes.notes.first(where: { $0.meetingID == previewStore.selection }) { content = AnyView(NoteEditorView(notes: previewStore.notes, note: note).environmentObject(previewStore)) }
@@ -243,8 +296,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let provider = option("--cloud-provider") { previewStore.settings.mode = "cloud"; previewStore.settings.switchCloudProvider(provider) }
             if let speechMode = option("--speech-mode") { previewStore.settings.speechMode = speechMode }
             let dark = option("--appearance") == "dark"
-            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : screen == "record" ? 560 : screen == "speakers" ? 560 : screen.hasPrefix("sources") ? 470 : 1260
-            let defaultHeight: Double = screen == "note-editor" ? 650 : screen == "quick-note" ? 280 : screen == "search" ? 650 : screen == "settings" ? 690 : screen == "record" ? 560 : screen == "speakers" ? 430 : screen.hasPrefix("sources") ? 460 : 820
+            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : ["getting-started", "whats-new", "transcript-editor", "insight-editor"].contains(screen) ? 620 : screen == "record" ? 560 : screen == "speakers" ? 560 : screen.hasPrefix("sources") ? 470 : 1260
+            let defaultHeight: Double = screen == "note-editor" ? 650 : screen == "quick-note" ? 280 : screen == "search" ? 650 : screen == "settings" ? 760 : ["getting-started", "whats-new", "transcript-editor", "insight-editor"].contains(screen) ? 480 : screen == "record" ? 660 : screen == "speakers" ? 430 : screen.hasPrefix("sources") ? 460 : 820
             let width = option("--width").flatMap(Double.init) ?? defaultWidth
             let height = option("--height").flatMap(Double.init) ?? defaultHeight
             let view = NSHostingView(rootView: content
@@ -280,9 +333,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if store?.isTerminating == true { return .terminateLater }
         if let store, store.updates.relaunchRequested && !store.updates.canSafelyRelaunch {
             store.notice = "Завершите работу и сохраните правки перед обновлением"
             return .terminateCancel
+        }
+        if UnsavedEditorRegistry.hasUnsaved {
+            let alert = NSAlert()
+            alert.messageText = "Есть несохранённые правки"
+            alert.informativeText = UnsavedEditorRegistry.titles.joined(separator: "\n")
+            alert.addButton(withTitle: "Вернуться к редактированию")
+            alert.addButton(withTitle: "Выйти без сохранения")
+            guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         }
         if store?.notes.flushCaptureDrafts() == false { store?.error = store?.notes.error; return .terminateCancel }
         if store?.voice.flushDraft() == false { store?.presentVoice(); return .terminateCancel }
@@ -300,27 +362,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return .terminateCancel
             }
         }
-        guard let store, store.isRecording || store.busy else { return .terminateNow }
+        guard let store, store.isRecording || store.startingRecording || store.stoppingRecording || store.busy || store.voice.isWorking || store.jobs.activeCount > 0 else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = store.isRecording ? "Сохранить запись перед выходом?" : "Остановить обработку и выйти?"
         alert.informativeText = store.isRecording ? "Приложение завершит сохранение звуковых дорожек." : "Исходная запись останется на Mac. Обработку можно повторить."
         alert.addButton(withTitle: store.isRecording ? "Сохранить и выйти" : "Остановить и выйти")
         alert.addButton(withTitle: "Остаться")
         guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
-        if store.isRecording {
-            Task {
-                // Saving on exit must not start another transcription job.
-                store.processAfterRecording = false
-                if store.stoppingRecording {
-                    while store.stoppingRecording { try? await Task.sleep(for: .milliseconds(100)) }
-                } else { await store.stopRecording() }
-                NSApp.reply(toApplicationShouldTerminate: true)
-            }
-            return .terminateLater
-        }
-        store.cancelJob()
         Task {
-            while store.busy { try? await Task.sleep(for: .milliseconds(100)) }
+            await store.prepareForTermination()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

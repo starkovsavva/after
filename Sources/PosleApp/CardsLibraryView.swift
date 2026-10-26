@@ -1,143 +1,224 @@
 import AppKit
+import Combine
 import PosleCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-private struct LibraryCard: Identifiable {
-    let meeting: Meeting
-    let card: Flashcard
-    let review: ReviewState?
-    let example: CardExample?
-    var id: String { meeting.id + ":" + card.id }
-}
+struct CardsLibraryView: View { var body: some View { CardsWorkspaceView() } }
 
-/// One native review queue across the library. Scheduling remains in Rust FSRS.
-struct CardsLibraryView: View {
+struct CardsWorkspaceView: View {
     @EnvironmentObject private var app: AppStore
-    @State private var entries: [LibraryCard] = []
+    @StateObject private var workspace = CardsWorkspace()
+    var meetingID: String? = nil
+    var embedded = false
     @State private var query = ""
     @State private var mode = "study"
     @State private var deck = ""
     @State private var picked: String?
     @State private var flipped = false
-    @State private var loading = false
-    @State private var generation = UUID()
+    @State private var editor: CardEditorRequest?
+    @State private var deleting: LibraryCardEntry?
+    @State private var showingMeetings = false
     @State private var importURL: URL?
     @State private var showingImport = false
-    @State private var exampleCardID: String?
-    private var matching: [LibraryCard] {
-        entries.filter { (deck.isEmpty || $0.meeting.id == deck) && (query.isEmpty || ($0.card.front + " " + $0.card.back + " " + $0.card.context).localizedCaseInsensitiveContains(query)) }
+    private var matching: [LibraryCardEntry] {
+        workspace.entries.filter { entry in
+            (deck.isEmpty || entry.meeting.id == deck) &&
+            (query.isEmpty || (entry.card.front + " " + entry.card.back + " " + entry.card.context + " " + entry.meeting.title).localizedCaseInsensitiveContains(query))
+        }
     }
-    private var dueCount: Int { matching.filter { $0.review?.isDue ?? true }.count }
-    private var visible: [LibraryCard] { mode == "study" ? matching.filter { $0.review?.isDue ?? true } : matching }
-    private var current: LibraryCard? { visible.first { $0.id == picked } ?? visible.first }
-    private var decks: [Meeting] { app.meetings.filter { meeting in entries.contains { $0.meeting.id == meeting.id } } }
+    private var visible: [LibraryCardEntry] { mode == "study" ? matching.filter(\.isDue) : matching }
+    private var current: LibraryCardEntry? { visible.first { $0.id == picked } ?? visible.first }
+    private var scopeMeeting: Meeting? { app.meetings.first { $0.id == meetingID } }
+    private var decks: [Meeting] { app.meetings.filter { meeting in workspace.entries.contains { $0.meeting.id == meeting.id } } }
+    private var hasContent: Bool { !workspace.entries.isEmpty }
     var body: some View {
-        // Keep due-driven content and its controls in the same clock update.
         TimelineView(.periodic(from: .now, by: 30)) { _ in
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 14) {
-                    Text("Карточки").font(AppTypography.pageTitle).accessibilityAddTraits(.isHeader)
-                    Spacer()
-                    Button("Импорт…") { chooseImport() }.buttonStyle(.bordered).disabled(app.busy)
-                    Button("Экспорт…") { exportCards() }.buttonStyle(.bordered).disabled(matching.isEmpty)
-                        .help("Сохранить карточки как TSV, совместимый с Anki")
+            VStack(spacing: 0) {
+                header
+                Divider()
+                if let error = workspace.error { problem(error) }
+                if !workspace.errors.isEmpty { problem("Не удалось загрузить часть карточек. " + workspace.errors.joined(separator: "\n")) }
+                if workspace.loading && !hasContent { ProgressView("Загружаю карточки…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                else if mode == "all" && !visible.isEmpty { browser }
+                else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            if let entry = current { cardDetail(entry, showingAnswer: flipped) }
+                            else { empty }
+                        }.appContentLayout()
+                    }
                 }
-                HStack(spacing: 12) {
-                    Picker("Режим", selection: $mode) { Text("Повторение").tag("study"); Text("Все карточки").tag("all") }
-                        .pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 225)
-                    Picker("Колода", selection: $deck) {
-                        Text("Все колоды").tag("")
-                        ForEach(decks) { Text($0.title).tag($0.id) }
-                    }.labelsHidden().frame(maxWidth: 210)
-                    TextField("Найти карточку", text: $query).textFieldStyle(.roundedBorder).frame(minWidth: 140)
+                if mode == "study", let entry = current {
+                    StudyReviewBar(flipped: $flipped, enabled: !workspace.saving && !entry.suspended, review: entry.review, rate: { value in
+                        Task { await workspace.rate(root: app.root, entry: entry, rating: value, meetingID: meetingID); flipped = false; picked = nil; app.refreshResults(entry.meeting.id) }
+                    }, intervals: workspace.options)
                 }
-            }.padding(.vertical, 20).frame(maxWidth: AppLayout.readableWidth, alignment: .leading)
-                .padding(.horizontal, AppLayout.contentInset).frame(maxWidth: .infinity)
-            Divider()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            Text(mode == "study" ? "\(dueCount) к повторению" : "Всего: \(matching.count)")
-                                .font(AppTypography.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            ProgressView().controlSize(.small).opacity(loading ? 1 : 0).frame(width: 16, height: 16)
-                                .accessibilityHidden(!loading)
-                        }
-                        if let entry = current {
-                            if mode == "all" {
-                                Picker("Карточка", selection: Binding(get: { current?.id ?? "" }, set: { picked = $0; flipped = false })) {
-                                    ForEach(visible) { Text($0.card.front).tag($0.id) }
-                                }.labelsHidden()
-                            }
-                            StudyCardContent(card: entry.card, flipped: flipped, example: entry.example,
-                                             makingExample: exampleCardID == entry.id,
-                                             sourceMeetingID: entry.meeting.id, meetingTitle: entry.meeting.title,
-                                             openMeeting: {
-                                                 if entry.meeting.libraryKind == "cards" { deck = entry.meeting.id; mode = "all" }
-                                                 else { app.openMeeting(entry.meeting.id, tab: "cards") }
-                                             }, originIsDeck: entry.meeting.libraryKind == "cards") {
-                                makeExample(entry)
-                            }
-                        } else { empty }
-                    }.appContentLayout()
-                }
-            if let entry = current {
-                StudyReviewBar(flipped: $flipped, enabled: !app.busy && !app.isRecording,
-                               review: entry.review) { value in rate(entry, value: value) }
             }
-        }.task { await reload() }
-            .onChange(of: app.busy) { _, busy in if !busy { Task { await reload() } } }
-            .onChange(of: mode) { _, _ in flipped = false; picked = nil }
-            .onChange(of: deck) { _, _ in flipped = false; picked = nil }
-            .onChange(of: query) { _, _ in flipped = false; picked = nil }
-            .onChange(of: current?.id) { _, _ in
-                flipped = ProcessInfo.processInfo.arguments.contains("--preview") && ProcessInfo.processInfo.arguments.contains("--preview-answer")
-            }
-            .sheet(isPresented: $showingImport) {
-                if let url = importURL {
-                    CardImportView(url: url) { meeting in
-                        app.reloadLibrary(); deck = meeting.id; mode = "all"; showingImport = false
-                        Task { await reload() }
-                    }.environmentObject(app)
-                }
+            .task(id: current.map { $0.id + $0.fingerprint + $0.reviewFingerprint }) { await workspace.preview(root: app.root, entry: current) }
+            .onChange(of: current?.id) { _, _ in flipped = previewAnswer }
+        }
+        .task { await reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .posleJobsChanged)) { _ in Task { await reload() } }
+        .onChange(of: mode) { _, _ in flipped = previewAnswer; picked = nil }
+        .onChange(of: deck) { _, _ in flipped = false; picked = nil }
+        .onChange(of: query) { _, _ in flipped = false; picked = nil }
+        .onChange(of: app.navigationTarget?.id) { _, _ in revealTarget() }
+        .onAppear { if ProcessInfo.processInfo.arguments.contains("--preview-all") { mode = "all" }; revealTarget() }
+        .sheet(item: $editor) { request in
+            CardEditorView(request: request) { result in
+                app.reloadLibrary(); if !embedded { deck = result.meeting.id }; mode = "all"; picked = result.meeting.id + ":" + result.card.id
+                Task { await reload() }
+            }.environmentObject(app)
+        }
+        .sheet(isPresented: $showingImport) {
+            if let url = importURL {
+                CardImportView(url: url) { meeting in
+                    app.reloadLibrary(); if !embedded { deck = meeting.id }; mode = "all"; showingImport = false; Task { await reload() }
+                }.environmentObject(app)
             }
         }
+        .sheet(isPresented: $showingMeetings) { meetingPicker }
+        .alert("Удалить карточку?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Отмена", role: .cancel) { deleting = nil }
+            Button("Удалить", role: .destructive) {
+                if let entry = deleting { Task { await workspace.mutate(root: app.root, entry: entry, delete: true, meetingID: meetingID); app.refreshResults(entry.meeting.id) } }; deleting = nil
+            }
+        } message: { Text(deleting?.card.front ?? "") }
+    }
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                if !embedded { Text("Карточки").font(AppTypography.pageTitle).accessibilityAddTraits(.isHeader) }
+                if hasContent {
+                    Picker("Режим", selection: $mode) { Text("Повторение").tag("study"); Text("Все карточки").tag("all") }
+                        .pickerStyle(.segmented).labelsHidden().frame(width: 225)
+                }
+                Spacer(minLength: 8)
+                if workspace.canUndo {
+                    Button { Task { await workspace.undo(root: app.root, meetingID: meetingID); flipped = false } } label: { Image(systemName: "arrow.uturn.backward").frame(width: 24, height: 24) }
+                        .buttonStyle(.plain).help("Отменить последнюю оценку").accessibilityLabel("Отменить последнюю оценку").disabled(workspace.saving)
+                }
+                if hasContent {
+                    Button { editor = CardEditorRequest(meeting: scopeMeeting) } label: { Image(systemName: "plus").frame(width: 24, height: 24) }
+                        .buttonStyle(.plain).help("Новая карточка").accessibilityLabel("Новая карточка")
+                }
+                Menu {
+                    if !embedded { Button("Импортировать TSV или CSV…") { chooseImport() } }
+                    Button("Экспортировать TSV…") { exportCards() }.disabled(matching.isEmpty)
+                    if !embedded { Button("Взять из встречи…") { showingMeetings = true } }
+                } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
+                    .menuStyle(.borderlessButton).frame(width: 28).accessibilityLabel("Действия с карточками")
+            }
+            if hasContent {
+                HStack(spacing: 12) {
+                    if !embedded && decks.count > 1 {
+                        Picker("Колода", selection: $deck) { Text("Все колоды").tag(""); ForEach(decks) { Text($0.title).tag($0.id) } }.labelsHidden().frame(maxWidth: 210, alignment: .leading)
+                    }
+                    TextField("Найти карточку", text: $query).textFieldStyle(.roundedBorder).frame(minWidth: 120, maxWidth: 320)
+                    Spacer()
+                    Text(mode == "study" ? "\(visible.count) к повторению" : "Всего: \(matching.count)").font(AppTypography.caption).foregroundStyle(.secondary)
+                    if workspace.loading || workspace.saving { ProgressView().controlSize(.small) }
+                }
+            }
+        }.padding(.horizontal, AppLayout.contentInset).padding(.vertical, embedded ? 12 : 20)
+    }
+    private var browser: some View {
+        HStack(spacing: 0) {
+            List(selection: Binding(get: { current?.id }, set: { picked = $0; flipped = false })) {
+                ForEach(visible) { entry in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(entry.card.front).font(AppTypography.bodyStrong).lineLimit(2)
+                            if entry.suspended { Image(systemName: "pause.circle").foregroundStyle(.secondary).accessibilityLabel("Не повторяется") }
+                        }
+                        Text(entry.card.back).font(AppTypography.control).foregroundStyle(.secondary).lineLimit(2)
+                        if !embedded { Text(entry.meeting.title).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1) }
+                    }.padding(.vertical, 6).tag(entry.id)
+                }
+            }.listStyle(.plain).scrollContentBackground(.hidden).background(Ink.paper).frame(minWidth: 200, idealWidth: 240, maxWidth: 280)
+            Divider()
+            ScrollView {
+                if let entry = current { cardDetail(entry, showingAnswer: true).appContentLayout() }
+            }.frame(maxWidth: .infinity)
+        }
+    }
+    private func cardDetail(_ entry: LibraryCardEntry, showingAnswer: Bool) -> some View {
+        StudyCardContent(card: entry.card, flipped: showingAnswer, example: entry.example,
+            makingExample: app.jobs.contains(objectID: entry.meeting.id, kinds: ["example"]), sourceMeetingID: entry.meeting.id,
+            meetingTitle: embedded ? nil : entry.meeting.title, openMeeting: {
+                if entry.meeting.libraryKind == "cards" { deck = entry.meeting.id; mode = "all" }
+                else { app.openMeeting(entry.meeting.id, tab: "cards") }
+            }, originIsDeck: entry.meeting.libraryKind == "cards", exampleIsStale: entry.exampleIsStale, sourceStale: entry.sourceStale, showSourceHint: mode == "study",
+            actions: cardActions(entry)) { app.enqueueExample(entry.card, meetingID: entry.meeting.id) }
+    }
+    private func cardActions(_ entry: LibraryCardEntry) -> CardActionsView {
+        CardActionsView(paused: entry.suspended, disabled: workspace.saving,
+            edit: { editor = CardEditorRequest(entry: entry) },
+            togglePause: { Task { await workspace.mutate(root: app.root, entry: entry, delete: false, meetingID: meetingID); app.refreshResults(entry.meeting.id) } },
+            delete: { deleting = entry })
     }
     private var empty: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(loading ? "Загружаю карточки…" : entries.isEmpty ? "Карточек пока нет" : !query.isEmpty ? "Ничего не найдено" : mode == "study" ? "На сегодня всё" : "В этой колоде нет карточек")
-                .font(AppTypography.heading)
-            if !loading {
-                if entries.isEmpty {
-                    Button("Импортировать карточки") { chooseImport() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
-                } else if mode == "study" && query.isEmpty {
-                    Button("Все карточки") { mode = "all" }.buttonStyle(.bordered)
-                } else if !query.isEmpty {
-                    Button("Очистить поиск") { query = "" }.buttonStyle(.bordered)
+            if workspace.error != nil || !workspace.errors.isEmpty {
+                Text(hasContent ? "Нет доступных карточек" : "Не удалось загрузить карточки").font(AppTypography.heading)
+                Button("Повторить загрузку") { Task { await reload() } }.buttonStyle(.bordered)
+            } else if !hasContent {
+                Text("Карточек пока нет").font(AppTypography.heading)
+                Text(embedded ? "Создайте карточку вручную или получите её вместе с конспектом встречи." : "Сохраняйте фразы и понятия из встреч и повторяйте их здесь.").font(AppTypography.body).foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    Button("Создать карточку") { editor = CardEditorRequest(meeting: scopeMeeting) }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    Button(embedded ? "Открыть конспект" : "Взять из встречи…") {
+                        if embedded { app.tab = "summary" } else { showingMeetings = true }
+                    }.buttonStyle(.bordered)
                 }
+                if !embedded {
+                    Button("Импортировать…") { chooseImport() }.buttonStyle(.plain).font(AppTypography.control).foregroundStyle(.secondary)
+                }
+            } else if !query.isEmpty {
+                Text("Ничего не найдено").font(AppTypography.heading)
+                Button("Очистить поиск") { query = "" }.buttonStyle(.bordered)
+            } else if mode == "study" {
+                Text("На сегодня всё").font(AppTypography.heading)
+                Text(matching.allSatisfy(\.suspended) ? "Эти карточки исключены из повторения." : "Можно посмотреть все карточки или вернуться позже.").font(AppTypography.body).foregroundStyle(.secondary)
+                Button("Все карточки") { mode = "all" }.buttonStyle(.bordered)
+            } else {
+                Text("В этой колоде нет карточек").font(AppTypography.heading)
+                Button("Все колоды") { deck = "" }.buttonStyle(.bordered)
             }
-        }.frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading).padding(.vertical, 16)
+        }.frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading).padding(.vertical, 30)
     }
-    private func reload() async {
-        let token = UUID(); generation = token; loading = true
-        let meetings = app.meetings, root = app.root
-        let loaded = await Task.detached(priority: .userInitiated) {
-            var result: [LibraryCard] = []
-            guard let bridge = try? RustBridge.shared.get() else { return result }
-            for meeting in meetings {
-                let directory = root.appendingPathComponent("meetings/\(meeting.id)")
-                guard let data = try? bridge.read(root: root, url: directory.appendingPathComponent("summary.json")), let summary = try? JSONDecoder().decode(Summary.self, from: data) else { continue }
-                let reviews = (try? bridge.read(root: root, url: directory.appendingPathComponent("review-state.json"))).flatMap { try? JSONDecoder().decode([String: ReviewState].self, from: $0) } ?? [:]
-                let examples = (try? bridge.read(root: root, url: directory.appendingPathComponent("examples.json"))).flatMap { try? JSONDecoder().decode([String: CardExample].self, from: $0) } ?? [:]
-                result += summary.cards.map { LibraryCard(meeting: meeting, card: $0, review: reviews[$0.id], example: examples[$0.id]) }
+    private var meetingPicker: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack { Text("Карточки из встречи").font(AppTypography.modalTitle); Spacer(); Button("Готово") { showingMeetings = false }.keyboardShortcut(.cancelAction) }
+            Text("Карточки создаются вместе с конспектом. Выберите встречу, чтобы посмотреть или подготовить их.").font(AppTypography.body).foregroundStyle(.secondary)
+            List(app.meetings.filter { $0.libraryKind != "cards" }) { meeting in
+                Button {
+                    showingMeetings = false; app.openMeeting(meeting.id, tab: "summary")
+                } label: {
+                    HStack { Text(meeting.title).font(AppTypography.body); Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary) }.padding(.vertical, 8).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+            }.frame(height: 260)
+            if app.meetings.allSatisfy({ $0.libraryKind == "cards" }) {
+                Button("Открыть встречи") { showingMeetings = false; app.librarySection = "meetings" }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
             }
-            return result
-        }.value
-        guard generation == token else { return }
-        entries = loaded; loading = false
+        }.padding(24).frame(width: 540).appControlDefaults()
     }
+    private func problem(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle").foregroundStyle(Ink.warning)
+            Text(text).font(AppTypography.control).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            Spacer()
+            Button("Повторить") { Task { await reload() } }.buttonStyle(.bordered).disabled(workspace.loading)
+        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Ink.warning.opacity(0.07))
+    }
+    private func reload() async { await workspace.reload(root: app.root, meetingID: meetingID); revealTarget() }
+    private func revealTarget() {
+        guard let target = app.navigationTarget, target.kind == "card", let cardID = target.cardID,
+              workspace.entries.contains(where: { $0.meeting.id == target.meetingID && $0.card.id == cardID }) else { return }
+        mode = "all"; picked = target.meetingID + ":" + cardID
+    }
+    private var previewAnswer: Bool { ProcessInfo.processInfo.arguments.contains("--preview") && ProcessInfo.processInfo.arguments.contains("--preview-answer") }
     private func chooseImport() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.tabSeparatedText, .commaSeparatedText, .plainText]; panel.canChooseDirectories = false
         panel.message = "TSV или CSV: вопрос, ответ и необязательный контекст. Текстовый экспорт Anki поддерживается."
@@ -147,26 +228,7 @@ struct CardsLibraryView: View {
         let panel = NSSavePanel(); panel.allowedContentTypes = [.tabSeparatedText]; panel.nameFieldStringValue = "После — карточки.tsv"
         if panel.runModal() == .OK, let url = panel.url {
             do { try Exporter.anki(cards: matching.map(\.card), title: "После").write(to: url, atomically: true, encoding: .utf8) }
-            catch { app.error = error.localizedDescription }
-        }
-    }
-    private func rate(_ entry: LibraryCard, value: Int) {
-        guard flipped, current?.id == entry.id, !app.busy && !app.isRecording else { return }
-        app.beginJob(id: entry.meeting.id); app.progressText = "Сохраняю повторение…"
-        Task {
-            defer { app.endJob() }
-            do { try await app.worker("review", id: entry.meeting.id, extra: ["--card", entry.card.id, "--rating", String(value)]); app.refreshResults(entry.meeting.id); flipped = false; picked = nil }
-            catch { app.error = error.localizedDescription }
-        }
-    }
-    private func makeExample(_ entry: LibraryCard) {
-        guard exampleCardID == nil, !app.busy && !app.isRecording else { return }
-        exampleCardID = entry.id
-        app.beginJob(id: entry.meeting.id); app.progressText = "Придумываю пример…"
-        Task {
-            defer { exampleCardID = nil; app.endJob() }
-            do { try await app.worker("example", id: entry.meeting.id, extra: ["--card", entry.card.id]); app.refreshResults(entry.meeting.id) }
-            catch { app.error = error.localizedDescription }
+            catch { workspace.error = error.localizedDescription }
         }
     }
 }

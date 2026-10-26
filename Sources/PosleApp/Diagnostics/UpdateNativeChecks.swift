@@ -18,11 +18,13 @@ enum UpdateNativeChecks {
         updates.configureForChecks(store: app, hasQuickDraft: { draft })
         try expect(!updates.isAvailable && !updates.canCheck, "Preview must never start a real updater")
         try expect(updates.canSafelyRelaunch, "Idle fixture should allow relaunch")
-        for activity in ["recording", "stopping", "processing", "attachment"] {
+        for activity in ["starting", "recording", "stopping", "terminating", "processing", "attachment"] {
+            app.startingRecording = activity == "starting"; app.isTerminating = activity == "terminating"
             app.isRecording = activity == "recording"; app.stoppingRecording = activity == "stopping"
             app.busy = activity == "processing"; app.notes.attachmentBusy = activity == "attachment"
             try expect(!updates.canSafelyRelaunch, "Active \(activity) must block relaunch")
         }
+        app.startingRecording = false; app.isTerminating = false
         app.isRecording = false; app.stoppingRecording = false; app.busy = false; app.notes.attachmentBusy = false
         print("PASS: recording, saving, processing and attachment work block update restart")
         app.editingOverview = true; try expect(!updates.canSafelyRelaunch, "Inline overview draft blocks restart")
@@ -112,8 +114,55 @@ enum UpdateNativeChecks {
                    "Persisting the durable overview resumes installation exactly once")
         updates.standardUserDriverWillFinishUpdateSession()
         print("PASS: failed overview persistence defers update, reveals its meeting and safely resumes after retry")
+        let unsavedID = UUID()
+        UnsavedEditorRegistry.set(id: unsavedID, title: "Исправление транскрипта", dirty: true)
+        defer { UnsavedEditorRegistry.remove(id: unsavedID) }
+        try expect(!updates.canSafelyRelaunch, "Dirty registered editors must block the final restart gate")
+        var registryResumed = 0
+        updates.postponeForChecks { registryResumed += 1 }
+        updates.resumeForChecks()
+        try expect(registryResumed == 0 && updates.hasDeferredDraft, "An unsaved editor must defer the actual installation callback")
+        UnsavedEditorRegistry.remove(id: unsavedID)
+        updates.resumeForChecks(); updates.resumeForChecks()
+        try expect(registryResumed == 1, "Saving the registered editor must release the installation callback exactly once")
+        updates.standardUserDriverWillFinishUpdateSession()
+        print("PASS: registered unsaved editors gate both final restart and the deferred installation callback")
+        let reminder = AppUpdateController(); reminder.configureForChecks(store: app)
+        reminder.announceForChecks(version: "99.1", build: "901")
+        try expect(reminder.showsUpdateAnnouncement && reminder.canCheck && !reminder.waitingForWork, "An idle app must offer an unobtrusive update action without a stale waiting reason")
+        app.busy = true; reminder.refreshForChecks()
+        try expect(!reminder.showsUpdateAnnouncement && !reminder.canCheck && reminder.waitingForWork, "Processing must disable update actions and expose the reason")
+        app.busy = false; reminder.refreshForChecks()
+        try expect(reminder.showsUpdateAnnouncement && reminder.canCheck && !reminder.waitingForWork, "The announcement and manual actions must return without the waiting reason when the app becomes idle")
+        reminder.dismissUpdateAnnouncement()
+        try expect(!reminder.showsUpdateAnnouncement && reminder.canCheck && reminder.availableVersion == "99.1",
+                   "Later must hide only the reminder, leaving manual update checking available")
+        let reopenedReminder = AppUpdateController(); reopenedReminder.configureForChecks(store: app)
+        reopenedReminder.announceForChecks(version: "99.1", build: "901")
+        try expect(!reopenedReminder.showsUpdateAnnouncement, "Reminder dismissal must survive reopening for this exact build")
+        reopenedReminder.announceForChecks(version: "99.2", build: "902")
+        try expect(reopenedReminder.showsUpdateAnnouncement, "A later build must have its own optional reminder")
+        print("PASS: gentle update availability waits for idle; Later persists per build and leaves manual checks enabled")
+        app.jobs.setRecording(true)
+        let queued = Task {
+            try await app.jobs.submit(JobConfiguration(command: "summarize", meetingID: nil, extra: [], input: nil, settings: app.settings),
+                                      resource: "local-heavy", revision: "updater-fixture", title: "Проверка защиты обновления", paid: false)
+        }
+        for _ in 0..<100 where app.jobs.activeCount == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        try expect(app.jobs.activeCount > 0, "The test must create an actual queued operation")
+        reopenedReminder.refreshForChecks()
+        try expect(!reopenedReminder.canSafelyRelaunch && !reopenedReminder.canCheck && !reopenedReminder.showsUpdateAnnouncement && reopenedReminder.waitingForWork,
+                   "Queued work must block restart and update actions with an explicit waiting reason")
+        queued.cancel()
+        _ = try? await queued.value
+        for _ in 0..<100 where app.jobs.activeCount > 0 { try await Task.sleep(for: .milliseconds(10)) }
+        app.jobs.setRecording(false)
+        reopenedReminder.refreshForChecks()
+        try expect(app.jobs.activeCount == 0 && reopenedReminder.canSafelyRelaunch && reopenedReminder.showsUpdateAnnouncement && reopenedReminder.canCheck && !reopenedReminder.waitingForWork,
+                   "Cancelling the isolated queued job must release the update gate and clear its waiting reason")
+        print("PASS: real queued job blocks restart independently of the legacy busy flag")
         try QuickCaptureController.verifyDraftPreservation(store: app)
-        print("7 native updater checks passed (no production feed, preferences or installation)")
+        print("10 native updater checks passed (no production feed, preferences or installation)")
     }
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         if !condition() { throw AppError.message(message) }

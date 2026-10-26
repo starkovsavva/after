@@ -24,6 +24,8 @@ enum JobNativeChecks {
         for meeting in [first, second] {
             try FileManager.default.createDirectory(at: store.meetingDirectory(meeting.id), withIntermediateDirectories: true)
             try store.write(meeting, store.meetingDirectory(meeting.id).appendingPathComponent("meta.json"))
+            let transcript = Transcript(duration: 5, segments: [Segment(id: 0, start: 0, end: 5, speaker: "speaker_1", text: "Please follow up tomorrow.")], warnings: [], model: "fixture")
+            try store.write(transcript, store.meetingDirectory(meeting.id).appendingPathComponent("transcript.json"))
             let summary: [String: Any] = ["overview": "Срок поставки согласован.", "items": [],
                 "cards": [["id": "follow-up", "kind": "phrase", "front": "follow up", "back": "Уточнить результат",
                            "context": "Please follow up tomorrow.", "segmentIDs": [0]]],
@@ -49,7 +51,7 @@ enum JobNativeChecks {
         print("PASS: navigation during a job preserves its original destination")
 
         let actions: [() -> Void] = [
-            { store.rate(card, 3) }, { store.makeExample(card) }, { store.summarizeSelected() },
+            { store.rate(card, 3) },
             { store.ollama("check") }, { store.discoverLocalModels() },
             { store.discoverGGUFModels() }, { store.discoverASRModels() }
         ]
@@ -62,7 +64,40 @@ enum JobNativeChecks {
         }
         let cancelled: [String: ReviewState]? = store.read(store.meetingDirectory(second.id).appendingPathComponent("review-state.json"))
         try expect(cancelled == nil, "Cancellation before execution must not change review history")
-        print("PASS: seven operations support immediate cancellation without starting models or downloads")
+        print("PASS: five exclusive maintenance/review operations support immediate cancellation without starting models or downloads")
+
+        // Local inference is paused behind a synthetic recording admission gate.
+        // This enqueues the real operations without starting a model or server.
+        store.jobs.setRecording(true)
+        let firstSummaryURL = store.meetingDirectory(first.id).appendingPathComponent("summary.json")
+        let secondSummaryURL = store.meetingDirectory(second.id).appendingPathComponent("summary.json")
+        let firstBefore = try Data(contentsOf: firstSummaryURL)
+        let secondBefore = try Data(contentsOf: secondSummaryURL)
+        store.selection = first.id; store.loadSelection()
+        store.makeExample(card)
+        try expect(!store.busy, "Queued generation must not reserve the global UI busy flag")
+        try await waitUntil { store.jobs.jobs.contains { $0.kind == "example" && $0.objectID == first.id && $0.active } }
+        store.selection = second.id; store.loadSelection(); store.tab = "notes"
+        store.summarizeSelected()
+        try expect(!store.busy && store.selection == second.id && store.tab == "notes", "A second meeting must remain navigable while generation is queued")
+        try await waitUntil { store.jobs.activeCount == 2 }
+        guard let exampleJob = store.jobs.jobs.first(where: { $0.kind == "example" && $0.objectID == first.id }),
+              let summaryJob = store.jobs.jobs.first(where: { $0.kind == "summarize" && $0.objectID == second.id }) else {
+            throw AppError.message("Two distinct queued generation attempts required")
+        }
+        store.jobs.cancel(exampleJob.id)
+        try await waitUntil { store.jobs.jobs.contains { $0.id == exampleJob.id && $0.state == "cancelled" } }
+        try expect(store.jobs.jobs.contains { $0.id == summaryJob.id && $0.active }, "Cancelling one meeting's example must leave the other meeting's summary queued")
+        try expect(store.selection == second.id && store.tab == "notes" && !store.busy, "Per-job cancellation must not navigate or block the current meeting")
+        store.jobs.cancel(summaryJob.id)
+        try await waitUntil { store.jobs.activeCount == 0 }
+        store.jobs.setRecording(false)
+        let firstAfter = try Data(contentsOf: firstSummaryURL)
+        let secondAfter = try Data(contentsOf: secondSummaryURL)
+        try expect(firstAfter == firstBefore && secondAfter == secondBefore, "Cancelling queued operations must preserve both original summaries")
+        try expect(!FileManager.default.fileExists(atPath: store.meetingDirectory(first.id).appendingPathComponent("examples.json").path),
+                   "A cancelled queued example must not publish a result")
+        print("PASS: two meeting jobs remain independent; per-job cancellation preserves navigation, both sources and the surviving queued operation")
 
         var missing = card; missing.id = "missing-card"
         store.rate(missing, 3)
@@ -77,7 +112,7 @@ enum JobNativeChecks {
         try expect(committed?.title == "Название после правки" && committed?.source == "committed.mp3" && committed?.hasVideo == true,
                    "UI metadata changes must preserve fields committed by a worker after the UI read")
         print("PASS: native metadata patch preserves a concurrent worker's source and video fields")
-        print("5 native adversarial job checks passed")
+        print("6 native adversarial job checks passed")
     }
     private static func appMetadataRace(store: AppStore, meetingID: String) {
         store.updateMeeting(meetingID) { value in

@@ -6,6 +6,8 @@ pub mod cards;
 pub mod voice;
 pub mod search;
 pub mod worker;
+pub mod jobs;
+pub mod corrections;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -39,7 +41,9 @@ pub fn request(value: &Value) -> Result<Value> {
     match value["command"].as_str().context("Нет команды ядра")? {
         command if ["notes-list", "note-save", "note-delete", "note-trash", "note-restore", "context-save", "template-save", "template-delete", "note-attach", "attachment-path", "attachment-remove", "attachment-text", "notes-search", "notes-tasks", "notes-task-complete", "notes-brief", "note-search-validate", "note-expansion-validate", "note-expansion-valid"].contains(&command) => notes::dispatch(&root, value),
         "voice-plan" | "voice-inspect" | "voice-choose" | "voice-apply" | "voice-undo" | "voice-recover" | "task-update" | "task-materialize" | "task-append" => voice::dispatch(&root, value),
-        "cards-import" | "cards-import-preview" => cards::dispatch(&root,value),
+        "cards-import" | "cards-import-preview" | "cards-library" | "card-save" | "card-delete" | "card-suspend" | "cards-review" | "cards-review-preview" | "cards-review-undo" => cards::dispatch(&root,value),
+        command if command.starts_with("job-") => jobs::dispatch(&root, value),
+        "meeting-content-snapshot" | "transcript-segment-save" | "summary-item-save" => corrections::dispatch(&root, value),
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),
         "search-validate" => search::validate(&root, value["meetingID"].as_str().context("Нет ID встречи")?, value["sourceFingerprint"].as_str().unwrap_or("")),
         "search" => search::search(&root, value["query"].as_str().unwrap_or(""), value["scope"].as_str().unwrap_or("all"), value["limit"].as_u64().unwrap_or(60).min(100) as usize),
@@ -118,7 +122,7 @@ mod tests {
         let mut input = json!({"root":directory.path(),"command":"summary-overview-save","meetingID":"synthetic",
             "text":"Edited", "expectedOverview":"Old", "expectedGeneratedAt":1});
         let result = request(&input).unwrap();
-        assert_eq!(result, json!({"overview":"Edited","overviewClaims":[],"generatedAt":1,"cards":[],"future":true}));
+        assert_eq!(result, json!({"overview":"Edited","overviewClaims":[],"generatedAt":1,"cards":[],"future":true,"manuallyEdited":true,"overviewManuallyEdited":true,"overviewStale":false}));
         let committed = std::fs::read(&path).unwrap();
         input.as_object_mut().unwrap().remove("expectedGeneratedAt");
         assert!(request(&input).is_err());

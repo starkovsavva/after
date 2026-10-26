@@ -305,21 +305,35 @@ enum UIConsistencyChecks {
         }
         mode.selectedSegment = 1; mode.sendAction(mode.action, to: mode.target)
         _ = try await measure(host, window)
-        guard let picker = descendants(host, as: NSPopUpButton.self).first(where: { $0.numberOfItems >= 2 }) else {
-            throw AppError.message("Native all-cards picker missing")
+        func waitForRows(_ predicate: (NSTableView) -> Bool) async throws -> NSTableView {
+            for _ in 0..<30 {
+                _ = try await measure(host, window)
+                if let table = descendants(host, as: NSTableView.self).first(where: predicate) { return table }
+            }
+            throw AppError.message("Native all-cards list did not reach the requested selection")
         }
-        picker.selectItem(at: 1); picker.sendAction(picker.action, to: picker.target)
-        _ = try await measure(host, window)
-        guard frames["cards.review"] != nil else { throw AppError.message("Selected card did not show its answer controls") }
-        store.summary?.cards = store.summary?.cards.map { card in
+        let table = try await waitForRows { $0.numberOfRows >= 2 }
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        _ = try await waitForRows { $0.numberOfRows >= 2 && $0.selectedRow == 1 }
+        guard let detail = frames["cards.detail"], detail.width > 0, detail.height > 0 else {
+            throw AppError.message("Selected card did not show its actual reading surface")
+        }
+        guard let original = store.summary else { throw AppError.message("Selected meeting summary disappeared") }
+        let url = store.meetingDirectory(meeting.id).appendingPathComponent("summary.json")
+        defer { try? store.write(original, url); NotificationCenter.default.post(name: .posleJobsChanged, object: nil) }
+        var replacement = original
+        replacement.cards = original.cards.map { card in
             var replaced = card; replaced.id = "refreshed-" + card.id; return replaced
-        } ?? []
-        _ = try await measure(host, window)
-        guard frames["cards.review"] != nil else {
-            throw AppError.message("Replacing summary card IDs stranded the all-cards view in an empty state")
         }
-        try expectNear(frames["cards.review"]!.height, 56, "Refreshed cards retain their answer controls")
-        print("PASS: native all-cards selection falls back to a real card after summary IDs are replaced")
+        // The shipped workspace reloads committed results, not an unrelated
+        // AppStore copy. Exercise that same persistence + notification path.
+        try store.write(replacement, url)
+        NotificationCenter.default.post(name: .posleJobsChanged, object: nil)
+        _ = try await waitForRows { $0.numberOfRows >= 2 && $0.selectedRow == 0 }
+        guard let refreshed = frames["cards.detail"], refreshed.width > 0, refreshed.height > 0 else {
+            throw AppError.message("Replacing committed card IDs stranded the all-cards view in an empty state")
+        }
+        print("PASS: native all-cards list preserves a real reading surface and selects a valid fallback after committed IDs change")
     }
 
     /// Advance real wall-clock time without publishing any app state: a due

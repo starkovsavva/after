@@ -12,6 +12,24 @@ struct ThemePalette: Codable, Equatable {
     var accent = "65696F"
     var textSize = 14
     var density = "regular"
+    var material = "graphite"
+
+    private enum CodingKeys: String, CodingKey { case version, name, appearance, accent, textSize, density, material }
+    init(version: Int = 1, name: String = "Графит", appearance: String = "system", accent: String = "65696F",
+         textSize: Int = 14, density: String = "regular", material: String = "graphite") {
+        self.version = version; self.name = name; self.appearance = appearance; self.accent = accent
+        self.textSize = textSize; self.density = density; self.material = material
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Графит"
+        appearance = try c.decodeIfPresent(String.self, forKey: .appearance) ?? "system"
+        accent = try c.decodeIfPresent(String.self, forKey: .accent) ?? "65696F"
+        textSize = try c.decodeIfPresent(Int.self, forKey: .textSize) ?? 14
+        density = try c.decodeIfPresent(String.self, forKey: .density) ?? "regular"
+        material = try c.decodeIfPresent(String.self, forKey: .material) ?? "graphite"
+    }
 
     static let graphite = ThemePalette()
     func validated() throws -> ThemePalette {
@@ -20,7 +38,8 @@ struct ThemePalette: Codable, Equatable {
               name.count <= 60, !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               !name.contains("/"), !name.contains("\\"), ["system", "light", "dark"].contains(appearance),
               hex.count == 6, hex.allSatisfy({ $0.isHexDigit && $0.isASCII }),
-              (12...18).contains(textSize), ["regular", "compact"].contains(density) else {
+              (12...18).contains(textSize), ["regular", "compact"].contains(density),
+              AppearanceMaterial(rawValue: material) != nil else {
             throw AppError.message("В файле темы неверные параметры. Нужна тема После версии 1.")
         }
         var result = self; result.accent = hex
@@ -151,6 +170,16 @@ struct ThemeSettingsView: View {
         VStack(alignment: .leading, spacing: 24) {
             AppPageHeader(title: "Оформление", compact: true)
             VStack(alignment: .leading, spacing: 18) {
+                row("Стиль") {
+                    Picker("Стиль", selection: binding(\.material)) {
+                        ForEach(AppearanceMaterial.allCases) { material in Text(material.title).tag(material.rawValue) }
+                    }.labelsHidden().frame(width: 210).accessibilityIdentifier("theme.material")
+                }
+                if theme.palette.material == AppearanceMaterial.nativeLiquidGlass.rawValue,
+                   !AppearanceMaterial.nativeLiquidGlass.availabilityDescription.isEmpty {
+                    Text(AppearanceMaterial.nativeLiquidGlass.availabilityDescription)
+                        .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                }
                 Picker("Внешний вид", selection: binding(\.appearance)) {
                     Text("Как в macOS").tag("system"); Text("Светлый").tag("light"); Text("Тёмный").tag("dark")
                 }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Внешний вид")
@@ -181,11 +210,8 @@ struct ThemeSettingsView: View {
                     }.labelsHidden().frame(width: 160)
                 }
             }
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Пример текста").font(AppTypography.heading)
-                Text("Обсудили запуск пилота. К пятнице подготовим сценарий и согласуем метрики.").font(AppTypography.body).lineSpacing(6)
-                Text("Ссылка на источник").font(AppTypography.control).foregroundStyle(Ink.accent)
-            }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
+            ThemeApplicationPreview()
+                .accessibilityLabel("Предпросмотр оформления: список встреч, конспект и панель управления")
             HStack {
                 Button("Импортировать тему…") { theme.importPalette() }
                 Button("Экспортировать…") { theme.exportPalette() }

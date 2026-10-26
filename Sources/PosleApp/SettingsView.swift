@@ -354,6 +354,7 @@ struct RecordView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
+    @StateObject private var audioCheck = AudioCheckController()
     @State private var systemAudio = true
     @State private var video = false
     @State private var audioQuality: RecordingAudioQuality = .standard
@@ -367,14 +368,14 @@ struct RecordView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Запись встречи").font(AppTypography.modalTitle)
             TextField("Название встречи", text: $title).textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Название новой встречи").disabled(store.busy)
+                .accessibilityLabel("Название новой встречи").disabled(store.startingRecording)
             Picker("Звук", selection: $systemAudio) {
                 Text("Микрофон и звук Mac").tag(true)
                 Text("Только микрофон").tag(false)
-            }.pickerStyle(.radioGroup).disabled(store.busy)
+            }.pickerStyle(.radioGroup).disabled(store.startingRecording)
                 .help("Для звонков выберите звук Mac и используйте наушники. Для встречи в комнате — только микрофон.")
             RecordingOptionsView(audioQuality: $audioQuality, video: $video,
-                                 videoQuality: $videoQuality, displayUUID: $displayUUID, displays: displays).disabled(store.busy)
+                                 videoQuality: $videoQuality, displayUUID: $displayUUID, displays: displays).disabled(store.startingRecording)
             HStack {
                 Text(video ? "MP3 + MP4" : "MP3").font(AppTypography.captionStrong).foregroundStyle(Ink.secondaryText)
                 Spacer()
@@ -387,28 +388,28 @@ struct RecordView: View {
                     .font(AppTypography.control).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
-            if store.busy {
+            RecordingAudioCheck(check: audioCheck, systemAudio: systemAudio).environmentObject(store)
+            if store.startingRecording {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small).accessibilityHidden(true)
                     Text("Проверяю доступ к записи…").font(AppTypography.control)
                 }.accessibilityElement(children: .combine)
             }
             HStack {
-                Button("Отмена", role: .cancel) { dismiss() }.buttonStyle(.bordered).disabled(store.busy).keyboardShortcut(.cancelAction)
+                Button("Отмена", role: .cancel) { dismiss() }.buttonStyle(.bordered).disabled(store.startingRecording).keyboardShortcut(.cancelAction)
                 Spacer()
-                Button(store.runtimeReady ? "Начать запись" : "Подготовить распознавание") {
-                    if store.runtimeReady {
-                        recordingError = nil
-                        store.settings.recordSystemAudio = systemAudio; store.settings.recordVideo = video
-                        store.settings.recordAudioQuality = audioQuality; store.settings.recordVideoQuality = videoQuality
-                        store.settings.recordDisplayUUID = displayUUID; store.saveSettings()
-                        Task {
-                            await store.startRecording(systemAudio: systemAudio, video: video, title: title)
-                            if !store.isRecording { recordingError = store.error }
-                        }
-                    } else { dismiss(); store.openSettings("speech") }
-                }.buttonStyle(.borderedProminent).tint(store.runtimeReady ? Ink.recordFill : Ink.actionFill)
-                    .disabled(store.busy || (store.runtimeReady && !displayIsAvailable)).keyboardShortcut(.defaultAction)
+                Button("Начать запись") {
+                    recordingError = nil
+                    store.settings.recordSystemAudio = systemAudio; store.settings.recordVideo = video
+                    store.settings.recordAudioQuality = audioQuality; store.settings.recordVideoQuality = videoQuality
+                    store.settings.recordDisplayUUID = displayUUID; store.saveSettings()
+                    Task {
+                        await audioCheck.stop()
+                        await store.startRecording(systemAudio: systemAudio, video: video, title: title)
+                        if !store.isRecording { recordingError = store.error }
+                    }
+                }.buttonStyle(.borderedProminent).tint(Ink.recordFill)
+                    .disabled(store.startingRecording || !displayIsAvailable).keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("record.start")
             }
         }.padding(AppLayout.contentInset).frame(width: 560).appControlDefaults().tint(Ink.accent)

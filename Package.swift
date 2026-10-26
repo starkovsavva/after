@@ -17,6 +17,13 @@ let package = Package(
                 "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
                 "-Xlinker", "-rpath", "-Xlinker", "@executable_path"
             ])]
+        ),
+        .testTarget(
+            name: "PosleCoreTests",
+            dependencies: ["PosleCore"],
+            path: "Tests",
+            exclude: ["UpdateFixture.swift"],
+            sources: ["CoreChecks.swift", "CalendarLayoutChecks.swift", "TaskDueDateChecks.swift"]
         )
     ]
 )

@@ -115,6 +115,7 @@ pub(crate) fn lock(directory: &Path) -> Result<File> {
     Ok(file)
 }
 pub(crate) fn load(directory: &Path) -> Result<NotesWorkspace> {
+    crate::corrections::recover_notes_transaction(directory)?;
     let path = directory.join("workspace.json");
     if fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) { return Ok(defaults()); }
     let mut bytes = Vec::new(); regular(&path,MAX_WORKSPACE)?.take(MAX_WORKSPACE+1).read_to_end(&mut bytes)?;
@@ -168,7 +169,7 @@ fn validate_note(note: &CapturedNote) -> Result<()> {
     if let Some(expansion) = &note.expansion { ensure!(expansion.is_object() && serde_json::to_vec(expansion)?.len() <= 200_000, "Некорректное дополнение заметки"); }
     Ok(())
 }
-fn validate_workspace(data: &NotesWorkspace) -> Result<()> {
+pub(crate) fn validate_workspace(data: &NotesWorkspace) -> Result<()> {
     ensure!(data.notes.len() <= MAX_NOTES && data.templates.len() <= 100 && data.contexts.len() <= MAX_NOTES,"Слишком много заметок или шаблонов");
     ensure!(data.voice_plans.len() <= 100 && data.voice_operations.len() <= 500, "Слишком много голосовых операций");
     let mut ids = std::collections::HashSet::new();

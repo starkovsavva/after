@@ -48,11 +48,12 @@ final class EmbeddedSpeechService: @unchecked Sendable {
 
     @discardableResult
     func run(root: URL, interpreter: URL, backend: URL, command: String, meeting: URL?,
-             speakers: Int = 0, diarization: Bool = true,
+             speakers: Int = 0, diarization: Bool = true, settings: Data? = nil,
              event: @escaping @Sendable (WorkerEvent) -> Void) async throws -> WorkerEvent? {
         var input: [String: Any] = ["root": root.path, "interpreter": interpreter.path, "backend": backend.path,
                                    "command": command, "speakers": speakers, "diarization": diarization]
         if let meeting { input["meeting"] = meeting.path }
+        if let settings { input["settings"] = try JSONSerialization.jsonObject(with: settings) }
         let response = try await perform(input: input, event: event)
         guard let value = response["value"] as? [String: Any] else { return nil }
         return try JSONDecoder().decode(WorkerEvent.self, from: JSONSerialization.data(withJSONObject: value))
@@ -60,11 +61,12 @@ final class EmbeddedSpeechService: @unchecked Sendable {
 
     /// Explicit short-audio ASR; it never creates a meeting or persists text.
     /// Keep the session's input until this method finishes, including on cancel.
-    func dictate(root: URL, interpreter: URL, backend: URL, audio: URL, apiKey: String? = nil,
+    func dictate(root: URL, interpreter: URL, backend: URL, audio: URL, apiKey: String? = nil, settings: Data? = nil,
                  event: @escaping @Sendable (WorkerEvent) -> Void) async throws -> DictationResult {
         var input: [String: Any] = ["root": root.path, "interpreter": interpreter.path, "backend": backend.path,
                                    "command": "dictate", "audio": audio.path]
         if let apiKey { input["apiKey"] = apiKey }
+        if let settings { input["settings"] = try JSONSerialization.jsonObject(with: settings) }
         let response = try await perform(input: input, event: event)
         guard let value = response["value"] as? [String: Any] else {
             throw AppError.message("Распознавание не вернуло текст поручения.")

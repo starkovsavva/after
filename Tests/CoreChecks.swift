@@ -1,10 +1,19 @@
 import Foundation
+#if SWIFT_PACKAGE
+import XCTest
+@testable import PosleCore
+#endif
 
-// A small executable test harness: runs on Apple's Command Line Tools without full Xcode.
+#if !SWIFT_PACKAGE
 @main
+#endif
 struct CoreChecks {
     static func expect(_ value: @autoclosure () -> Bool, _ message: String, line: UInt = #line) {
+        #if SWIFT_PACKAGE
+        XCTAssertTrue(value(), message, line: line)
+        #else
         precondition(value(), "Line \(line): \(message)")
+        #endif
     }
     static func main() throws {
         expect(Exporter.timestamp(-2) == "00:00", "negative timestamp")
@@ -140,3 +149,9 @@ struct CoreChecks {
         print("9 Swift checks passed")
     }
 }
+
+#if SWIFT_PACKAGE
+final class CoreChecksTests: XCTestCase {
+    func testContracts() throws { try CoreChecks.main() }
+}
+#endif

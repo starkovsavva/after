@@ -13,6 +13,10 @@ final class AppStore: ObservableObject {
     let calendar: CalendarStore
     let updates = AppUpdateController()
     let voice = VoiceCommandController()
+    let jobs: BackgroundJobsController
+    private var jobsSubscription: AnyCancellable?
+    @Published var startingRecording = false
+    @Published var isTerminating = false
     var isPreview: Bool { preview }
     var quickCaptureAction: (() -> Void)?
     var bookmarkAction: (() -> Void)?
@@ -95,16 +99,19 @@ final class AppStore: ObservableObject {
     let root: URL
     let runner = ProcessRunner()
     let embeddedSpeech = EmbeddedSpeechService()
-    let recorder = MeetingRecorder()
+    let recorder: any MeetingRecordingBackend
+    let audioLevels = AudioLevels()
     let localService = LocalModelService()
+    let localRuntimeLease = LocalRuntimeLease()
     private var player: AVPlayer?
     private var playerObserver: Any?
-    private var recordingID: String?
-    private var assertions: IOPMAssertionID = 0
-    private var cancellationRequested = false
+    var recordingID: String?
+    var assertions: IOPMAssertionID = 0
+    var recordingAssertion: IOPMAssertionID = 0
+    var cancellationRequested = false
     private var jobGeneration = UUID()
     private var confirmingCloudSpeech = false
-    private static let stoppedProcessingMessage = "Обработка остановлена. Запись сохранена."
+    static let stoppedProcessingMessage = "Обработка остановлена. Запись сохранена."
     private var preview: Bool
 
     var selected: Meeting? { meetings.first { $0.id == selection } }
@@ -129,8 +136,9 @@ final class AppStore: ObservableObject {
         return Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/posle-engine")
     }
 
-    init(preview: Bool = false) {
-        self.preview = preview
+    init(preview: Bool = false, recorder: any MeetingRecordingBackend = MeetingRecorder(),
+         executor: JobCoordinator.Executor? = nil) {
+        self.preview = preview; self.recorder = recorder
         let dataRoot: URL
         if let path = ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] { dataRoot = URL(fileURLWithPath: path) }
         else {
@@ -138,6 +146,7 @@ final class AppStore: ObservableObject {
                 .appendingPathComponent(preview ? "PoslePreview" : "Posle")
         }
         root = dataRoot
+        jobs = BackgroundJobsController(root: dataRoot)
         notes = NotesStore(root: dataRoot)
         calendar = CalendarStore(root: dataRoot, preview: preview)
         do {
@@ -157,11 +166,22 @@ final class AppStore: ObservableObject {
         } catch { self.error = error.localizedDescription }
         calendar.bindNotes(notes)
         voice.connect(self)
-        recorder.failed = { [weak self] message in
+        jobsSubscription = jobs.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        if let executor { jobs.connect(executor) }
+        else {
+            jobs.connect { [weak self] job, cancellation, event in
+                guard let self else { throw CancellationError() }
+                return try await self.executeBackgroundJob(job, cancellation: cancellation, event: event)
+            }
+        }
+        recorder.levels = { [weak self] microphone, system in
+            Task { @MainActor in self?.audioLevels.receive(microphone: microphone, system: system) }
+        }
+        recorder.failed = { [weak self] failure in
             Task { @MainActor in
-                guard let self else { return }
-                self.error = "Запись прервалась: \(message). Завершаю сохранение доступного аудио."
-                if self.isRecording { await self.stopRecording() }
+                guard let self, self.isRecording, self.recordingID == failure.sessionID else { return }
+                self.error = "Запись прервалась: \(failure.message). Завершаю сохранение доступного аудио."
+                await self.stopRecording()
             }
         }
     }
@@ -189,7 +209,7 @@ final class AppStore: ObservableObject {
             meetings = try JSONDecoder().decode(Library.self, from: data).meetings
         } catch { self.error = error.localizedDescription; return }
         // Interrupted jobs stay retryable. Never discard an existing source or transcript.
-        for i in meetings.indices where ["processing", "recording"].contains(meetings[i].status) && !busy && !isRecording {
+        for i in meetings.indices where ["processing", "recording"].contains(meetings[i].status) && !busy && !isRecording && !jobs.contains(objectID: meetings[i].id) {
             meetings[i].status = FileManager.default.fileExists(atPath: meetingDirectory(meetings[i].id).appendingPathComponent("transcript.json").path)
                 ? "transcribed" : "imported"
             meetings[i].error = "Предыдущая обработка прервалась. Можно продолжить."
@@ -294,7 +314,8 @@ final class AppStore: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url { importFile(url) }
     }
     func importFile(_ source: URL) {
-        guard !busy, !isRecording else { error = "Дождитесь текущей обработки или остановите запись."; return }
+        guard !isTerminating else { return }
+        guard !busy, !startingRecording else { error = "Дождитесь сохранения файла или завершения настройки компонентов."; return }
         let ext = source.pathExtension.lowercased()
         guard ["mp4", "mov", "m4a", "mp3", "wav", "aiff", "aif", "caf", "flac", "ogg", "webm", "mkv", "aac"].contains(ext) else {
             error = "Добавьте аудио или видео: MP4, MOV, M4A, MP3, WAV, FLAC или WebM."; return
@@ -318,9 +339,26 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private var runtimeWorkCancelled: Bool { cancellationRequested || isTerminating }
+
     @discardableResult
     func worker(_ command: String, id: String? = nil, extra: [String] = [], input: Data? = nil) async throws -> WorkerEvent? {
-        guard !cancellationRequested else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
+        guard !isTerminating else { throw CancellationError() }
+        if Self.queuedCommands.contains(command) { return try await queuedWorker(command, id: id, extra: extra, input: input) }
+        let lease: UUID?
+        if ["prepare", "install-local", "check", "pull", "discover-local", "import-gguf"].contains(command) {
+            lease = try await localRuntimeLease.acquire { [weak self] in
+                guard let self else { return true }
+                return await self.runtimeWorkCancelled
+            }
+        } else { lease = nil }
+        defer { if let lease { Task { await localRuntimeLease.release(lease) } } }
+        return try await legacyWorker(command, id: id, extra: extra, input: input)
+    }
+
+    @discardableResult
+    private func legacyWorker(_ command: String, id: String? = nil, extra: [String] = [], input: Data? = nil) async throws -> WorkerEvent? {
+        guard !cancellationRequested, !isTerminating else { throw CancellationError() }
         if ["transcribe", "finalize", "install-local", "import-gguf"].contains(command) && !runtimeReady {
             throw AppError.message("Сначала подготовьте распознавание в настройках.")
         }
@@ -399,7 +437,7 @@ final class AppStore: ObservableObject {
     }
     func beginJob(id: String?) {
         jobGeneration = UUID()
-        cancellationRequested = false; runner.resetCancellation(); embeddedSpeech.resetCancellation()
+        cancellationRequested = false; runner.resetCancellation()
         canCancelJob = true
         busy = true; processingID = id; progress = -1; progressText = "Начинаю обработку…"; error = nil; notice = nil
         if assertions == 0 {
@@ -412,12 +450,12 @@ final class AppStore: ObservableObject {
         cancellationRequested = false
         canCancelJob = false
         busy = false; processingID = nil; progress = -1
-        if assertions != 0 && !isRecording { IOPMAssertionRelease(assertions); assertions = 0 }
+        if assertions != 0 { IOPMAssertionRelease(assertions); assertions = 0 }
     }
     func cancelJob() {
         guard canCancelJob else { return }
         if voice.isWorking { voice.cancelWork(); return }
-        cancellationRequested = true; runner.cancel(); embeddedSpeech.cancel()
+        cancellationRequested = true; runner.cancel()
         progressText = "Останавливаю обработку…"
     }
     /// Importing or finishing a recording never authorizes a cloud upload by
@@ -461,7 +499,7 @@ final class AppStore: ObservableObject {
         }
         return true
     }
-    private func processingWasCancelled(_ error: Error) -> Bool {
+    func processingWasCancelled(_ error: Error) -> Bool {
         error is CancellationError || cancellationRequested
     }
     private func reportJobFailure(_ error: Error) {
@@ -469,9 +507,8 @@ final class AppStore: ObservableObject {
         else { self.error = error.localizedDescription }
     }
     func processMeeting(_ id: String) async {
-        guard !busy, !isRecording, !confirmingCloudSpeech else { return }
-        guard confirmCloudTranscription(id), !busy, !isRecording else { return }
-        beginJob(id: id); defer { endJob() }
+        guard !confirmingCloudSpeech, !jobs.contains(objectID: id, kinds: ["transcribe"]) else { return }
+        guard confirmCloudTranscription(id) else { return }
         updateMeeting(id) { $0.status = "processing"; $0.error = nil }
         do {
             var arguments = ["--speakers", String(settings.speakerCount)]
@@ -480,24 +517,16 @@ final class AppStore: ObservableObject {
             if let fresh: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")),
                let index = meetings.firstIndex(where: { $0.id == id }) { meetings[index] = fresh }
             let result: Transcript? = read(meetingDirectory(id).appendingPathComponent("transcript.json"))
-            updateMeeting(id) { $0.status = "transcribed"; $0.duration = result?.duration ?? 0 }
+            updateMeeting(id) { $0.duration = result?.duration ?? 0 }
             refreshResults(id)
-            if settings.autoSummary && settings.mode == "local" {
-                do {
-                    try await worker("summarize", id: id)
-                    updateMeeting(id) { $0.status = "ready" }
-                    refreshResults(id)
-                    if selection == id { tab = "summary" }
-                } catch {
-                    if processingWasCancelled(error) { self.error = nil; notice = Self.stoppedProcessingMessage }
-                    else { self.error = "Транскрипция готова. Конспект: \(error.localizedDescription)" }
-                }
-            } else if settings.mode == "cloud" {
+            if settings.mode == "cloud" {
                 notice = "Транскрипция готова. Создайте конспект через \(settings.cloudProviderTitle)."
+            } else if settings.autoSummary {
+                notice = "Транскрипция готова. Конспект поставлен в очередь."
             }
             if selection == id { loadSelection() }
         } catch {
-            if processingWasCancelled(error) {
+            if error is CancellationError {
                 let savedTranscript: Transcript? = read(meetingDirectory(id).appendingPathComponent("transcript.json"))
                 let savedSummary: Summary? = read(meetingDirectory(id).appendingPathComponent("summary.json"))
                 updateMeeting(id) {
@@ -506,38 +535,46 @@ final class AppStore: ObservableObject {
                 }
                 self.error = nil; notice = Self.stoppedProcessingMessage
             } else {
-                updateMeeting(id) { $0.status = "imported"; $0.error = error.localizedDescription }
+                updateMeeting(id) {
+                    $0.status = FileManager.default.fileExists(atPath: meetingDirectory(id).appendingPathComponent("transcript.json").path) ? "transcribed" : "imported"
+                    $0.error = error.localizedDescription
+                }
                 self.error = error.localizedDescription
             }
             refreshResults(id)
         }
     }
     func rediarizeMeeting(_ id: String, speakers: Int) async {
-        guard !busy, !isRecording, runtimeReady, (0...100).contains(speakers) else { return }
-        beginJob(id: id); progressText = "Пересчитываю собеседников…"
-        defer { endJob() }
+        guard runtimeReady, (0...100).contains(speakers), !jobs.contains(objectID: id, kinds: ["diarize"]) else { return }
         do {
             try await worker("diarize", id: id, extra: ["--speakers", String(speakers)])
             reloadLibrary(); refreshResults(id)
             if selection == id { tab = "transcript" }
             notice = "Собеседники пересчитаны. Проверьте реплики и задайте имена голосам. Предыдущая версия сохранена в истории."
         } catch {
-            if processingWasCancelled(error) { self.error = nil; notice = Self.stoppedProcessingMessage }
+            if error is CancellationError { self.error = nil; notice = Self.stoppedProcessingMessage }
             else { self.error = error.localizedDescription }
             reloadLibrary(); refreshResults(id)
         }
     }
     func summarizeSelected() {
-        guard let id = selection, !busy, !isRecording else { return }
-        beginJob(id: id); progressText = "Создаю конспект…"
+        guard let id = selection, !jobs.contains(objectID: id, kinds: ["summarize"]) else { return }
+        var extra: [String] = []
+        if summary?.manuallyEdited == true {
+            let alert = NSAlert()
+            alert.messageText = "Обновить конспект с ручными правками?"
+            alert.informativeText = "Новый конспект заменит исправленные пункты. Предыдущая версия сохранится в истории; ваши карточки сохранятся."
+            alert.addButton(withTitle: "Обновить"); alert.addButton(withTitle: "Отмена")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            extra = ["--replace-manual-summary"]
+        }
         Task {
-            defer { endJob() }
             do {
-                try await worker("summarize", id: id)
+                try await worker("summarize", id: id, extra: extra)
                 updateMeeting(id) { $0.status = "ready"; $0.error = nil }
                 refreshResults(id)
                 if selection == id { tab = "summary" }
-            } catch { reportJobFailure(error) }
+            } catch { if !(error is CancellationError) { self.error = error.localizedDescription } }
         }
     }
     func rememberOverviewDraft(_ text: String, meetingID: String, original: String, generatedAt: Double) {
@@ -563,10 +600,6 @@ final class AppStore: ObservableObject {
     }
     @discardableResult
     func saveOverview(_ text: String, meetingID: String, expectedOverview: String, expectedGeneratedAt: Double) -> Bool {
-        guard !busy, !isRecording else {
-            error = "Дождитесь окончания обработки или записи, чтобы сохранить правки."
-            return false
-        }
         guard selection == meetingID else {
             error = "Выбрана другая встреча. Откройте её конспект для редактирования."
             return false
@@ -588,13 +621,8 @@ final class AppStore: ObservableObject {
         }
     }
     func makeExample(_ card: Flashcard) {
-        guard let id = selection, !busy, !isRecording else { return }
-        beginJob(id: id); progressText = "Придумываю пример…"
-        Task {
-            defer { endJob() }
-            do { try await worker("example", id: id, extra: ["--card", card.id]); refreshResults(id) }
-            catch { reportJobFailure(error) }
-        }
+        guard let id = selection else { return }
+        enqueueExample(card, meetingID: id)
     }
     func rate(_ card: Flashcard, _ value: Int) {
         guard let id = selection, !busy, !isRecording else { return }
@@ -609,12 +637,18 @@ final class AppStore: ObservableObject {
     }
     func installRuntime() {
         guard !busy, !isRecording else { return }
+        guard jobs.activeCount == 0 else { error = "Дождитесь фоновых задач перед обновлением компонентов распознавания."; return }
         let requestedASR = settings.speechMode == "local" ? asrSelectionIdentity : nil
         beginJob(id: nil); progressText = "Подготавливаю распознавание и проверяю скачанные модели…"
         let generation = jobGeneration
         Task {
             defer { endJob() }
             do {
+                let lease = try await localRuntimeLease.acquire { [weak self] in
+                    guard let self else { return true }
+                    return await self.runtimeWorkCancelled
+                }
+                defer { Task { await localRuntimeLease.release(lease) } }
                 try write(settings, root.appendingPathComponent("settings.json"))
                 try await runner.run(rustEngine,
                                      arguments: ["install-runtime", "--root", root.path, "--backend", backend.path]) { [weak self] event in
@@ -647,9 +681,14 @@ final class AppStore: ObservableObject {
         Task {
             defer { endJob() }
             do {
-                try await worker("install-local")
-                try await localService.ensure(root: root, settings: settings, cancelled: { self.cancellationRequested })
-                try await worker("pull")
+                let lease = try await localRuntimeLease.acquire { [weak self] in
+                    guard let self else { return true }
+                    return await self.runtimeWorkCancelled
+                }
+                defer { Task { await localRuntimeLease.release(lease) } }
+                try await legacyWorker("install-local")
+                try await localService.ensure(root: root, settings: settings, cancelled: { self.cancellationRequested || self.isTerminating })
+                try await legacyWorker("pull")
                 localStatus = "Локальный ИИ готов. Интернет больше не требуется."
             } catch { self.error = error.localizedDescription; localStatus = error.localizedDescription }
         }
@@ -658,7 +697,7 @@ final class AppStore: ObservableObject {
         guard !busy, !isRecording, provider != settings.localProvider else { return }
         modelsByProvider[settings.localProvider] = settings.localModel
         endpointsByProvider[settings.localProvider] = settings.localEndpoint
-        localService.stop()
+        if jobs.activeCount == 0 { localService.stop() }
         settings.localProvider = provider
         settings.localEndpoint = endpointsByProvider[provider] ?? ""
         settings.localModel = modelsByProvider[provider] ?? (provider == "managed" ? AppSettings.qualityLocalModel : "")
@@ -1005,109 +1044,7 @@ final class AppStore: ObservableObject {
             catch { self.error = error.localizedDescription }
         }
     }
-    func startRecording(systemAudio: Bool, video: Bool = false, title: String) async {
-        guard !busy, !isRecording else { return }
-        // Snapshot before any permission prompt. Finalization must use this meeting's
-        // quality even if the default settings change before an interrupted job resumes.
-        let audioQuality = settings.recordAudioQuality
-        let videoQuality = settings.recordVideoQuality
-        let requestedDisplay = settings.recordDisplayUUID
-        let displays = video ? RecordingDisplay.choices(preview: isPreview) : []
-        let selectedDisplay = requestedDisplay.isEmpty
-            ? displays.first(where: \.isMain)
-            : displays.first(where: { $0.persistentID == requestedDisplay })
-        if video && selectedDisplay == nil {
-            error = "Выбранный экран недоступен. Выберите подключённый экран перед записью."
-            return
-        }
-        pause(); error = nil
-        cancellationRequested = false; runner.resetCancellation(); embeddedSpeech.resetCancellation()
-        processAfterRecording = true
-        canCancelJob = false
-        var meeting = Meeting(title: title.isEmpty ? "Встреча \(Date().formatted(date: .abbreviated, time: .shortened))" : title,
-                              source: systemAudio || video ? "recording.mov" : "recording.m4a", status: "recording", focus: settings.focus)
-        meeting.recordingTracks = systemAudio; meeting.speakerNames["self"] = "Вы"
-        meeting.hasVideo = video
-        meeting.recordingAudioQuality = audioQuality.rawValue
-        meeting.recordingVideoQuality = video ? videoQuality.rawValue : nil
-        meeting.recordingDisplayUUID = selectedDisplay?.persistentID
-        let directory = meetingDirectory(meeting.id)
-        busy = true; progressText = "Проверяю доступ к записи…"
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                                   attributes: [.posixPermissions: 0o700])
-            try await recorder.start(url: directory.appendingPathComponent(meeting.source), systemAudio: systemAudio, video: video,
-                                     videoQuality: videoQuality, audioQuality: audioQuality,
-                                     displayID: selectedDisplay?.id, expectedDisplayUUID: selectedDisplay?.persistentID)
-            try write(meeting, directory.appendingPathComponent("meta.json"))
-            isRecording = true; recordingID = meeting.id; recordingDate = Date()
-            IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
-                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), "После записывает встречу" as CFString, &assertions)
-            busy = false; reloadLibrary(); librarySection = "meetings"; selection = meeting.id; tab = "notes"; loadSelection(); applyDefaultNoteTemplate(to: meeting.id); showingRecord = false
-        } catch {
-            try? await recorder.stop()
-            busy = false; self.error = error.localizedDescription
-        }
-    }
-    func stopRecording() async {
-        guard let id = recordingID, isRecording, !stoppingRecording else { return }
-        stoppingRecording = true
-        defer { stoppingRecording = false }
-        // Finalizing a meeting has priority over a typed voice-assistant job.
-        // Wait for the shared runner to drain before using it for media work.
-        if busy && voice.isWorking {
-            voice.cancelWork()
-            while busy { try? await Task.sleep(for: .milliseconds(20)) }
-        }
-        cancellationRequested = false; runner.resetCancellation(); embeddedSpeech.resetCancellation()
-        canCancelJob = false
-        busy = true; progressText = "Сохраняю запись…"
-        do {
-            try await recorder.stop()
-            let duration = Date().timeIntervalSince(recordingDate ?? Date())
-            updateMeeting(id) { $0.status = "imported"; $0.duration = duration }
-            var finalized = false
-            if runtimeReady {
-                canCancelJob = true
-                do {
-                    try await worker("finalize", id: id)
-                    finalized = true
-                } catch {
-                    if processingWasCancelled(error) {
-                        cancellationRequested = true; self.error = nil
-                    } else {
-                        self.error = "Исходная запись сохранена. Преобразование в MP3: \(error.localizedDescription)"
-                    }
-                }
-                canCancelJob = false
-                // Finalization may have committed MP3 metadata just before a
-                // cancellation. Keep its actual source instead of a stale MOV.
-                if let fresh: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")),
-                   let index = meetings.firstIndex(where: { $0.id == id }) { meetings[index] = fresh }
-            }
-            let wasCancelled = cancellationRequested
-            let shouldProcess = runtimeReady && finalized && processAfterRecording && !wasCancelled
-            isRecording = false; recordingID = nil; recordingDate = nil; endJob(); stoppingRecording = false
-            if shouldProcess {
-                await processMeeting(id)
-            } else if wasCancelled {
-                notice = Self.stoppedProcessingMessage
-            } else if !runtimeReady {
-                notice = "Встреча записана. Установите модели в настройках."
-            } else if !finalized {
-                notice = "Исходная запись сохранена. Выберите «Распознать встречу», чтобы повторить обработку позже."
-            } else {
-                notice = "Встреча записана и сохранена в MP3."
-            }
-        } catch {
-            let wasCancelled = processingWasCancelled(error)
-            isRecording = false; recordingID = nil; recordingDate = nil; endJob()
-            if wasCancelled {
-                updateMeeting(id) { $0.status = "imported"; $0.error = nil }
-                self.error = nil; notice = Self.stoppedProcessingMessage
-            } else { self.error = error.localizedDescription }
-        }
-    }
+
 }
 
 import IOKit.pwr_mgt

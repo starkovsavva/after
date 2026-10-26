@@ -9,18 +9,22 @@ import SwiftUI
 final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate, @preconcurrency SPUStandardUserDriverDelegate {
     @Published private(set) var isAvailable = false
     @Published private(set) var canCheck = false
+    @Published private(set) var waitingForWork = false
     @Published private(set) var automaticallyChecks = true
     @Published private(set) var lastChecked: Date?
     @Published private(set) var status: String?
     @Published private(set) var hasDeferredDraft = false
     @Published private(set) var canRevealDraft = false
+    @Published private(set) var availableVersion: String?
+    @Published private(set) var showsUpdateAnnouncement = false
+    private var availableBuild: String?
+    private var dismissedBuild: String?
+    private var attendedBuild: String?
     private(set) var relaunchRequested = false
     private weak var store: AppStore?
     private var controller: SPUStandardUpdaterController?
     private var observations = Set<AnyCancellable>()
     private var pendingCheck = false
-    private var pendingPresentation = false
-    private var probingDeferredCheck = false
     private var installHandler: (() -> Void)?
     private var retryTimer: Timer?
     private var hasQuickDraft: () -> Bool = { false }
@@ -35,18 +39,18 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     private var flushLibraryDrafts: () -> Bool = { NoteDraftPersistence.flushAll() }
 
     var currentVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.10.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.11.0"
     }
     private var workInProgress: Bool {
         guard let store else { return false }
-        return store.isRecording || store.stoppingRecording || store.busy || store.notes.attachmentBusy || store.voice.isWorking
+        return store.startingRecording || store.isRecording || store.stoppingRecording || store.isTerminating || store.busy || store.jobs.activeCount > 0 || store.notes.attachmentBusy || store.voice.isWorking
     }
     private var editorOpen: Bool {
         guard let store else { return false }
         return store.voice.isPresented || store.editingOverview || store.notes.editingNewTask || store.showingCaptureDrafts || store.showingSettings || store.showingRecord || store.showingSearch || NSApp.modalWindow != nil ||
             NSApp.windows.contains { $0.attachedSheet != nil || ($0 is NSPanel && $0.isVisible && $0.title == "Быстрая заметка") }
     }
-    var canSafelyRelaunch: Bool { !workInProgress && !editorOpen && !hasQuickDraft() && store?.notes.hasUnsavedCaptureDrafts != true && !failedLibraryFlush && !failedOverviewFlush }
+    var canSafelyRelaunch: Bool { !UnsavedEditorRegistry.hasUnsaved && !workInProgress && !editorOpen && !hasQuickDraft() && store?.notes.hasUnsavedCaptureDrafts != true && !failedLibraryFlush && !failedOverviewFlush }
 
     func start(store: AppStore, hasQuickDraft: @escaping () -> Bool, showQuickDraft: @escaping () -> Void) {
         guard controller == nil, Bundle.main.bundleIdentifier == "app.posle.meetings",
@@ -54,6 +58,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         let args = ProcessInfo.processInfo.arguments
         guard !args.contains("--preview"), !args.contains("--snapshot"), !args.contains(where: { $0.hasPrefix("--check-") }) else { return }
         self.store = store; self.hasQuickDraft = hasQuickDraft; self.showQuickDraft = showQuickDraft
+        loadReminderPreferences()
         let controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: self)
         self.controller = controller
         let updater = controller.updater
@@ -69,6 +74,12 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         }.store(in: &observations)
         store.notes.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.refreshAvailability() }
+        }.store(in: &observations)
+        NotificationCenter.default.publisher(for: .posleUnsavedEditorsChanged).sink { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.refreshAvailability()
+                if self?.installHandler != nil { self?.resumeWhenIdle() }
+            }
         }.store(in: &observations)
         controller.startUpdater()
         isAvailable = true
@@ -90,17 +101,57 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         updater.automaticallyChecksForUpdates = enabled
         automaticallyChecks = updater.automaticallyChecksForUpdates
         if !enabled {
-            pendingCheck = false; pendingPresentation = false; probingDeferredCheck = false
+            pendingCheck = false
             if installHandler == nil { retryTimer?.invalidate(); retryTimer = nil }
         }
     }
     private func refreshAvailability() {
-        let deferred = installHandler != nil && (hasQuickDraft() || store?.notes.hasUnsavedCaptureDrafts == true || failedLibraryFlush || failedOverviewFlush)
+        let waiting = isAvailable && workInProgress
+        if waitingForWork != waiting { waitingForWork = waiting }
+        let deferred = installHandler != nil && (UnsavedEditorRegistry.hasUnsaved || hasQuickDraft() || store?.notes.hasUnsavedCaptureDrafts == true || failedLibraryFlush || failedOverviewFlush)
         let reveal = deferred && !workInProgress && !editorOpen
         let check = isAvailable && sparkleCanCheck && !workInProgress && installHandler == nil && !relaunchRequested
         if hasDeferredDraft != deferred { hasDeferredDraft = deferred }
         if canRevealDraft != reveal { canRevealDraft = reveal }
         if canCheck != check { canCheck = check }
+        let announcement = isAvailable && availableVersion != nil && availableBuild != dismissedBuild && availableBuild != attendedBuild
+            && !UnsavedEditorRegistry.hasUnsaved && !workInProgress && !editorOpen && installHandler == nil && !relaunchRequested
+        if showsUpdateAnnouncement != announcement { showsUpdateAnnouncement = announcement }
+    }
+    func dismissUpdateAnnouncement() {
+        guard let availableBuild else { return }
+        dismissedBuild = availableBuild
+        do {
+            if let url = reminderURL {
+                try validateReminderFile(url)
+                let data = try JSONEncoder().encode(["dismissedBuild": availableBuild])
+                try data.write(to: url, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            }
+        } catch { status = "Не удалось сохранить выбор. Обновление можно открыть в настройках." }
+        refreshAvailability()
+    }
+    private var reminderURL: URL? { store?.root.appendingPathComponent("update-reminders.json") }
+    private func validateReminderFile(_ url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .fileSizeKey])
+        guard values.isSymbolicLink != true, (values.fileSize ?? 0) <= 16_384 else {
+            throw AppError.message("Неверный файл настроек обновлений.")
+        }
+    }
+    private func loadReminderPreferences() {
+        dismissedBuild = nil
+        guard let url = reminderURL else { return }
+        do {
+            try validateReminderFile(url)
+            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            dismissedBuild = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: url))["dismissedBuild"]
+        } catch { /* Reminder preferences must never prevent opening the app. */ }
+    }
+    private func foundUpdate(version: String, build: String) {
+        availableVersion = version; availableBuild = build
+        status = "Доступна версия \(version)"
+        refreshAvailability()
     }
     private func deferUntilIdle() {
         guard retryTimer == nil else { return }
@@ -114,6 +165,10 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         refreshAvailability()
         guard !workInProgress && !editorOpen else { return }
         if let handler = installHandler {
+            guard !UnsavedEditorRegistry.hasUnsaved else {
+                status = "Сохраните правки перед установкой обновления"
+                refreshAvailability(); return
+            }
             if hasQuickDraft() {
                 if !promptedQuickDraft { promptedQuickDraft = true; showQuickDraft() }
                 return
@@ -132,14 +187,12 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
             installHandler = nil; relaunchRequested = true
             status = "Устанавливаю обновление…"; refreshAvailability()
             handler()
-        } else if automaticallyChecks && (pendingCheck || pendingPresentation), let controller {
+        } else if automaticallyChecks && pendingCheck, let controller {
             guard controller.updater.canCheckForUpdates else { return }
-            let presenting = pendingPresentation
-            pendingCheck = false; pendingPresentation = false
-            if presenting { controller.checkForUpdates(nil) }
-            else { probingDeferredCheck = true; controller.updater.checkForUpdateInformation() }
+            pendingCheck = false
+            controller.updater.checkForUpdateInformation()
         }
-        if installHandler == nil && !pendingCheck && !pendingPresentation {
+        if installHandler == nil && !pendingCheck {
             retryTimer?.invalidate(); retryTimer = nil
         }
     }
@@ -158,7 +211,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         failedLibraryFlush = false; promptedLibraryDraft = false
         failedOverviewFlush = false; promptedOverviewDraft = false
         relaunchRequested = false
-        if !pendingCheck && !pendingPresentation { retryTimer?.invalidate(); retryTimer = nil }
+        if !pendingCheck { retryTimer?.invalidate(); retryTimer = nil }
         refreshAvailability()
     }
     private func revealOverviewDraftIfNeeded() {
@@ -222,17 +275,15 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         lastChecked = Date(); status = nil
     }
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
-        status = "Доступна версия \(item.displayVersionString)"
-        if probingDeferredCheck && automaticallyChecks {
-            probingDeferredCheck = false; pendingPresentation = true; deferUntilIdle()
-        }
+        foundUpdate(version: item.displayVersionString, build: item.versionString)
     }
     func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
-        probingDeferredCheck = false
+        availableVersion = nil; availableBuild = nil; attendedBuild = nil
         status = "Установлена последняя версия"
+        refreshAvailability()
     }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
-        relaunchRequested = false; probingDeferredCheck = false
+        relaunchRequested = false
         let failure = error as NSError
         if failure.domain != "app.posle.meetings.updates" { clearDeferredInstallation() }
         if failure.domain == SUSparkleErrorDomain && failure.code == Int(SUError.noUpdateError.rawValue) {
@@ -272,16 +323,20 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
 
     var supportsGentleScheduledUpdateReminders: Bool { true }
     func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool) -> Bool {
-        !workInProgress && !editorOpen
+        // A scheduled check only adds an in-app affordance. User-initiated
+        // checks still use Sparkle's standard signed download/install flow.
+        false
     }
     func standardUserDriverWillHandleShowingUpdate(_ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState) {
-        if !handleShowingUpdate {
-            pendingPresentation = true; deferUntilIdle()
-        }
+        foundUpdate(version: update.displayVersionString, build: update.versionString)
+        if state.userInitiated || handleShowingUpdate { attendedBuild = update.versionString }
+        refreshAvailability()
+    }
+    func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
+        attendedBuild = update.versionString; refreshAvailability()
     }
     func standardUserDriverWillFinishUpdateSession() {
         let installationWasDeferred = installHandler != nil
-        pendingPresentation = false
         clearDeferredInstallation()
         if installationWasDeferred { status = "Установка отложена. Проверьте обновления ещё раз." }
         else if status == "Проверяю обновления…" { status = nil }
@@ -292,10 +347,16 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     func configureForChecks(store: AppStore, hasQuickDraft: @escaping () -> Bool = { false },
                             flushLibraryDrafts: (() -> Bool)? = nil) {
         self.store = store; self.hasQuickDraft = hasQuickDraft
+        loadReminderPreferences()
         self.flushLibraryDrafts = flushLibraryDrafts ?? { NoteDraftPersistence.flushAll() }
     }
     func postponeForChecks(_ handler: @escaping () -> Void) { installHandler = handler }
     func resumeForChecks() { resumeWhenIdle() }
+    func announceForChecks(version: String, build: String) {
+        isAvailable = true; sparkleCanCheck = true
+        foundUpdate(version: version, build: build)
+    }
+    func refreshForChecks() { refreshAvailability() }
     #endif
 }
 

@@ -662,3 +662,43 @@ fn prepared_voice_plan_follows_exact_source_after_summary_reordering() {
         .iter()
         .any(|task| task["text"] == "Другая задача" && task["noteID"].is_null()));
 }
+
+#[test]
+fn new_voice_deadlines_use_command_local_date_and_preserve_unrecognized_wording() {
+    let at=Utc.with_ymd_and_hms(2026,10,25,23,30,0).unwrap().timestamp() as f64;
+    assert_eq!(due_date("завтра",at,180).unwrap(),"2026-10-27");
+    assert_eq!(due_date("tomorrow",at,-420).unwrap(),"2026-10-26");
+    assert_eq!(due_date("послезавтра",at,180).unwrap(),"2026-10-28");
+    assert_eq!(due_date("к пятнице",at,180).unwrap(),"2026-10-30");
+    assert_eq!(due_date("Friday",at,180).unwrap(),"2026-10-30");
+    assert_eq!(due_date("после согласования",at,180).unwrap(),"после согласования");
+    assert_eq!(due_date("2026-12-15",at,180).unwrap(),"2026-12-15");
+    assert_eq!(due_date("",at,180).unwrap(),"");
+    assert!(due_date("завтра",at,1440).is_err());
+}
+
+#[test]
+fn voice_deadline_update_on_old_task_is_frozen_at_command_time_not_source_time() {
+    let root=tempfile::tempdir().unwrap();let task_id=fixture(root.path());
+    let at=Utc.with_ymd_and_hms(2026,10,25,23,30,0).unwrap().timestamp() as f64;
+    let mut proposal=proposed("updateTask","");proposal.set_due=true;proposal.due="завтра".into();
+    let plan=planned(root.path(),json!({"taskID":task_id,"now":at,"timeZoneOffsetMinutes":180}),proposal);
+    assert_eq!(plan["status"],"ready");let result=applied(root.path(),&plan);
+    let note=notes::load_note_snapshot(root.path(),result["target"]["id"].as_str().unwrap()).unwrap();
+    assert_eq!(note.due,"2026-10-27");
+    // Retrying an already-applied plan cannot reinterpret tomorrow later.
+    assert_eq!(applied(root.path(),&plan),result);
+    let original=read_json(&root.path().join("meetings/meeting/summary.json"),1_048_576).unwrap();
+    assert_eq!(original["items"][0]["due"],"");
+}
+
+#[test]
+fn changing_only_owner_does_not_reinterpret_legacy_source_deadline() {
+    let root=tempfile::tempdir().unwrap();fixture(root.path());
+    let path=root.path().join("meetings/meeting/summary.json");let mut source=read_json(&path,1_048_576).unwrap();source["items"][0]["due"]=json!("к пятнице");crate::storage::atomic_json(&path,&source).unwrap();
+    let task_id=notes::tasks(root.path()).unwrap()["tasks"][0]["id"].clone();
+    let mut proposal=proposed("updateTask","");proposal.set_owner=true;proposal.owner="Майкл".into();
+    let plan=planned(root.path(),json!({"taskID":task_id,"now":2_000_000_000,"timeZoneOffsetMinutes":180}),proposal);let result=applied(root.path(),&plan);
+    let note=notes::load_note_snapshot(root.path(),result["target"]["id"].as_str().unwrap()).unwrap();
+    assert_eq!(note.due,"к пятнице");assert_eq!(note.owner,"Майкл");assert_eq!(read_json(&path,1_048_576).unwrap(),source);
+}

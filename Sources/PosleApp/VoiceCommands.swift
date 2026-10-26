@@ -231,22 +231,21 @@ final class VoiceCommandController: ObservableObject {
             task = Task {
                 defer { capture.discard() }
                 do {
-                    try store.write(store.settings, store.root.appendingPathComponent("settings.json"))
-                    let key = store.settings.speechMode == "cloud" && !store.isPreview
-                        ? Keychain.read(account: Keychain.speechAccount(for: store.settings)) : nil
-                    let value = try await store.embeddedSpeech.dictate(root: store.root, interpreter: store.python,
-                        backend: store.backend, audio: audio, apiKey: key, event: { _ in })
+                    store.endJob()
+                    guard let value = try await store.worker("dictate", extra: ["--audio", audio.path])?.dictation else {
+                        throw AppError.message("Распознавание не вернуло текст поручения.")
+                    }
                     guard current == generation, !Task.isCancelled else { return }
                     let addition = value.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     if addition.isEmpty { message = "Речь не найдена. Повторите диктовку или введите текст." }
                     else { text += (text.isEmpty ? "" : " ") + addition; message = value.warnings.first }
-                    phase = .editing; store.endJob()
+                    phase = .editing
                 } catch {
                     guard current == generation else { return }
-                    phase = .editing; message = error is CancellationError ? "Диктовка остановлена." : error.localizedDescription; store.endJob()
+                    phase = .editing; message = error is CancellationError ? "Диктовка остановлена." : error.localizedDescription
                 }
             }
-        } catch { capture.discard(); phase = .editing; message = error.localizedDescription; store.endJob() }
+        } catch { capture.discard(); phase = .editing; message = error.localizedDescription }
     }
     func perform() {
         guard let store, !isWorking, !store.busy, !store.stoppingRecording else { return }
@@ -271,9 +270,7 @@ final class VoiceCommandController: ObservableObject {
         input["text"] = command; input["now"] = Date().timeIntervalSince1970
         input["timeZoneOffsetMinutes"] = TimeZone.current.secondsFromGMT() / 60
         phase = .planning; message = nil; result = nil; plan = nil
-        store.beginJob(id: nil); store.progressText = "Разбираю поручение…"
         task = Task {
-            defer { if current == generation { store.endJob() } }
             do {
                 let data = try JSONSerialization.data(withJSONObject: input, options: [.sortedKeys])
                 guard let planned = try await store.worker("voice-plan", input: data)?.voicePlan else {
@@ -350,12 +347,16 @@ final class VoiceCommandController: ObservableObject {
         // while a committed operation may already exist; it remains undoable.
         guard phase != .applying else { return }
         let previousPhase = phase
-        generation = UUID(); task?.cancel(); phase = .editing; store.cancelJob()
+        generation = UUID(); task?.cancel(); phase = .editing
+        if [.authorizing, .capturing].contains(previousPhase) { store.cancelJob() }
         if previousPhase == .capturing { capture.discard() }
         message = "Остановлено. Текст поручения сохранён."
         // Keep the global reservation until the underlying service exits.
         let pending = task
-        task = Task { await pending?.value; capture.discard(); store.endJob() }
+        task = Task {
+            await pending?.value; capture.discard()
+            if [.authorizing, .capturing].contains(previousPhase) { store.endJob() }
+        }
     }
     @discardableResult func flushDraft() -> Bool {
         draftSaveTask?.cancel(); draftSaveTask = nil

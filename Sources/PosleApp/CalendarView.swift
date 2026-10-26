@@ -20,8 +20,7 @@ private struct CalendarWorkspace: View {
         Group {
             if calendar.connected {
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack(spacing: 14) {
-                        AppPageHeader(title: "Календарь")
+                    AppWorkspaceHeader(title: "Календарь") {
                         Button { showingCalendars.toggle() } label: {
                             Label("Календари", systemImage: "line.3.horizontal.decrease")
                         }.buttonStyle(.bordered).accessibilityIdentifier("calendar.sources")

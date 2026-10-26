@@ -101,13 +101,27 @@ struct TasksWorkspaceView: View {
         let active = filtered.filter { !$0.completed }
         let today = Calendar.current.startOfDay(for: Date())
         let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: today) ?? today
-        let dueToday = active.filter { task in
-            guard let date = Self.date(task.due) else { return task.due.localizedCaseInsensitiveContains("сегодня") }
-            return date < tomorrow
+        var dated: [(task: LibraryTask, date: Date)] = []
+        for task in active { if let date = deadline(task) { dated.append((task, date)) } }
+        dated.sort { left, right in
+            if left.date == right.date { return left.task.text.localizedStandardCompare(right.task.text) == .orderedAscending }
+            return left.date < right.date
         }
-        let todayIDs = Set(dueToday.map(\.id))
-        return [("Сегодня", dueToday), ("Предстоящие", active.filter { !$0.due.isEmpty && !todayIDs.contains($0.id) }),
-                ("Без срока", active.filter { $0.due.isEmpty }), ("Завершённые", filtered.filter(\.completed))].filter { !$0.1.isEmpty }
+        let datedIDs = Set(dated.map { $0.task.id })
+        var overdue: [LibraryTask] = []
+        var dueToday: [LibraryTask] = []
+        var upcoming: [LibraryTask] = []
+        for entry in dated {
+            if entry.date < today { overdue.append(entry.task) }
+            else if entry.date < tomorrow { dueToday.append(entry.task) }
+            else { upcoming.append(entry.task) }
+        }
+        let unresolved = active.filter { !$0.due.isEmpty && !datedIDs.contains($0.id) }
+        let noDeadline = active.filter { $0.due.isEmpty }
+        let completed = filtered.filter(\.completed)
+        let result: [(String, [LibraryTask])] = [("Просрочено", overdue), ("Сегодня", dueToday),
+            ("Предстоящие", upcoming), ("Уточнить срок", unresolved), ("Без срока", noDeadline), ("Завершённые", completed)]
+        return result.filter { !$0.1.isEmpty }
     }
     var body: some View {
         HStack(spacing: 0) {
@@ -135,12 +149,10 @@ struct TasksWorkspaceView: View {
     }
     private var taskList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Задачи").font(AppTypography.controlStrong)
-                Spacer()
+            AppListHeader(title: "Задачи") {
                 Button { notes.reload(); notes.loadTasks(); app.reloadLibrary() } label: { Image(systemName: "arrow.clockwise").frame(width: 24, height: 24) }
                     .buttonStyle(.plain).accessibilityLabel("Обновить задачи")
-            }.padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 14)
+            }
             Picker("Статус задач", selection: $filter) {
                 Text("В работе").tag("open"); Text("Готово").tag("done"); Text("Все").tag("all")
             }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 12).padding(.bottom, 12)
@@ -178,7 +190,7 @@ struct TasksWorkspaceView: View {
                     Text(Self.title(task)).font(isSelected(task) ? AppTypography.controlStrong : AppTypography.control)
                         .lineLimit(2).strikethrough(task.completed).frame(maxWidth: .infinity, alignment: .leading)
                     HStack(spacing: 7) {
-                        if !task.due.isEmpty { Text(task.due).foregroundStyle(isOverdue(task) ? Ink.warning : Color.secondary) }
+                        if !task.due.isEmpty { Text(displayDeadline(task)).foregroundStyle(isOverdue(task) ? Ink.warning : Color.secondary) }
                         if !task.owner.isEmpty { Text(task.owner).foregroundStyle(.secondary) }
                     }.font(AppTypography.caption).lineLimit(1)
                 }.padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
@@ -227,7 +239,7 @@ struct TasksWorkspaceView: View {
         if let value = metadataDraft(task) {
             VStack(alignment: .leading, spacing: 12) {
                 TextField("Ответственный", text: Binding(get: { metadataDraft(task)?.owner ?? value.owner }, set: { owner in var next = metadataDraft(task) ?? value; next.owner = owner; saveMetadataDraft(next, key: key) })).textFieldStyle(.roundedBorder)
-                TextField("Срок, например 2026-10-30", text: Binding(get: { metadataDraft(task)?.due ?? value.due }, set: { due in var next = metadataDraft(task) ?? value; next.due = due; saveMetadataDraft(next, key: key) })).textFieldStyle(.roundedBorder)
+                deadlineEditor(task, value: value, key: key)
                 HStack {
                     Button("Отмена") { clearDraft(key) }
                     Button("Сохранить") {
@@ -239,7 +251,7 @@ struct TasksWorkspaceView: View {
         } else {
             HStack(spacing: 12) {
                 if !task.owner.isEmpty { Label(task.owner, systemImage: "person").lineLimit(1).help(task.owner) }
-                if !task.due.isEmpty { Label(task.due, systemImage: "calendar").lineLimit(1).help(task.due).foregroundStyle(isOverdue(task) ? Ink.warning : Color.secondary) }
+                if !task.due.isEmpty { Label(displayDeadline(task), systemImage: "calendar").lineLimit(1).help(task.due).foregroundStyle(isOverdue(task) ? Ink.warning : Color.secondary) }
                 Button(task.owner.isEmpty && task.due.isEmpty ? "Указать срок и ответственного" : "Изменить") {
                     guard let note = notes.materializeTask(task) else { return }
                     saveMetadataDraft(TaskMetadataDraft(owner: note.owner, due: note.due, revision: note.revision), key: "taskmeta:manual:\(note.id)")
@@ -352,20 +364,46 @@ struct TasksWorkspaceView: View {
         let title = Self.title(task)
         return task.text.hasPrefix(title) ? String(task.text.dropFirst(title.count)).trimmingCharacters(in: .whitespacesAndNewlines) : task.text
     }
-    private static func date(_ value: String) -> Date? {
-        guard value.count == 10 else { return nil }
-        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
-        guard parts.count == 3, parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
-              let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]),
-              (1...9999).contains(year), (1...12).contains(month), (1...31).contains(day) else { return nil }
-        let calendar = Calendar(identifier: .gregorian)
-        let components = DateComponents(year: year, month: month, day: day)
-        guard let date = calendar.date(from: components) else { return nil }
-        let actual = calendar.dateComponents([.year, .month, .day], from: date)
-        return actual.year == year && actual.month == month && actual.day == day ? date : nil
+    private func referenceDate(_ task: LibraryTask) -> Date? {
+        if let id = task.meetingID, let meeting = app.noteMeetings.first(where: { $0.id == id }) {
+            return Date(timeIntervalSince1970: meeting.createdAt)
+        }
+        if let id = task.noteID, let note = notes.workspace.notes.first(where: { $0.id == id }) {
+            return Date(timeIntervalSince1970: note.createdAt)
+        }
+        return nil
     }
+    private func deadline(_ task: LibraryTask) -> Date? { TaskDueDate.resolve(task.due, reference: referenceDate(task)) }
+    private func displayDeadline(_ task: LibraryTask) -> String { TaskDueDate.display(task.due, reference: referenceDate(task)) }
     private func isOverdue(_ task: LibraryTask) -> Bool {
-        guard !task.completed, let due = Self.date(task.due) else { return false }
+        guard !task.completed, let due = deadline(task) else { return false }
         return due < Calendar.current.startOfDay(for: Date())
+    }
+    private func deadlineEditor(_ task: LibraryTask, value: TaskMetadataDraft, key: String) -> some View {
+        let current = metadataDraft(task) ?? value
+        let resolved = TaskDueDate.resolve(current.due, reference: referenceDate(task))
+        func set(_ date: Date?) {
+            var next = metadataDraft(task) ?? value
+            next.due = date.map { TaskDueDate.storage($0) } ?? ""
+            saveMetadataDraft(next, key: key)
+        }
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Text("Срок").foregroundStyle(.secondary)
+                if let resolved {
+                    DatePicker("Срок задачи", selection: Binding(get: { TaskDueDate.resolve((metadataDraft(task) ?? value).due, reference: referenceDate(task)) ?? resolved }, set: { set($0) }), displayedComponents: .date)
+                        .datePickerStyle(.field).labelsHidden().accessibilityIdentifier("tasks.due-date")
+                } else {
+                    Text(current.due.isEmpty ? "Не указан" : current.due).lineLimit(2)
+                    Button("Выбрать дату") { set(Date()) }.buttonStyle(.borderless)
+                }
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 12) {
+                Button("Сегодня") { set(Date()) }.accessibilityIdentifier("tasks.due-today")
+                Button("Завтра") { set(Calendar.current.date(byAdding: .day, value: 1, to: Date())) }.accessibilityIdentifier("tasks.due-tomorrow")
+                Button("Без срока") { set(nil) }.disabled(current.due.isEmpty).accessibilityIdentifier("tasks.due-none")
+            }.buttonStyle(.bordered)
+        }
     }
 }

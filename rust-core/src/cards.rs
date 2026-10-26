@@ -1,6 +1,7 @@
 //! Import basic UTF-8 Anki text decks without running HTML or reading media.
 //! Preview is read-only; an import validates the entire file before creating a
 //! private standalone deck which reuses the existing FSRS review storage.
+mod workspace;
 use anyhow::{bail,ensure,Context,Result};
 use chrono::Utc;
 use serde_json::{json,Value};
@@ -230,6 +231,7 @@ pub fn import_checked(root:&Path,path:&Path,separator:Option<&str>,title:Option<
     result
 }
 pub fn dispatch(root:&Path,value:&Value)->Result<Value> {
+    if !matches!(value["command"].as_str(), Some("cards-import" | "cards-import-preview")) { return workspace::dispatch(root, value); }
     let path=Path::new(value["path"].as_str().context("Выберите файл карточек")?);
     match value["command"].as_str() {
         Some("cards-import-preview")=>preview(path,value["separator"].as_str()),

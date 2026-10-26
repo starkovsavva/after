@@ -206,14 +206,12 @@ struct NotesLibraryView: View {
     }
     private var noteList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Заметки").font(AppTypography.controlStrong)
-                Spacer()
+            AppListHeader(title: "Заметки") {
                 Menu {
                     Button("Новая заметка") { createNote() }
                     Button("Новая папка…") { folderNoteID = nil; showFolder = true }
                 } label: { Image(systemName: "square.and.pencil").frame(width: 26, height: 26) }.menuStyle(.borderlessButton).frame(width: 30).help("Создать заметку или папку")
-            }.padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 10)
+            }
             VStack(spacing: 9) {
                 HStack(spacing: 7) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -264,7 +262,7 @@ struct NotesLibraryView: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 5) {
                 if note.pinned { Image(systemName: "pin.fill").font(AppTypography.caption).foregroundStyle(Ink.accent) }
-                Text(note.displayTitle).font(AppTypography.bodyStrong).lineLimit(1)
+                Text(note.displayTitle).font(AppTypography.controlStrong).lineLimit(2)
             }
             HStack(spacing: 6) {
                 Text(Date(timeIntervalSince1970: note.updatedAt), style: .date).font(AppTypography.caption).foregroundStyle(.secondary)

@@ -25,6 +25,7 @@ struct Args {
     #[arg(long, default_value_t=3)] rating: u8,
     #[arg(long, default_value_t=0)] speakers: u32,
     #[arg(long)] no_diarization: bool,
+    #[arg(long)] replace_manual_summary: bool,
     #[arg(long, default_value="")] query: String,
     #[arg(long, default_value="all")] scope: String,
     #[arg(long, default_value_t=60)] limit: usize,
@@ -56,7 +57,7 @@ fn run(args: Args) -> Result<Value> {
             Ok(json!({}))
         }
         Command::InstallRuntime => { worker::install_runtime(&args.root, &backend)?; Ok(json!({})) }
-        Command::Summarize => { ai::summarize(&args.root, required()?)?; Ok(json!({})) }
+        Command::Summarize => { ai::summarize_with_options(&args.root, required()?, args.replace_manual_summary)?; Ok(json!({})) }
         Command::Example => { ai::example(&args.root, required()?, &args.card)?; Ok(json!({})) }
         Command::Review => {
             let id = required()?.file_name().and_then(|s|s.to_str()).context("Нет ID")?;

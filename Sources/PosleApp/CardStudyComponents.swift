@@ -13,6 +13,10 @@ struct StudyCardContent: View {
     var meetingTitle: String? = nil
     var openMeeting: (() -> Void)? = nil
     var originIsDeck = false
+    var exampleIsStale = false
+    var sourceStale = false
+    var showSourceHint = false
+    var actions: CardActionsView? = nil
     let makeExample: () -> Void
 
     var body: some View {
@@ -20,6 +24,10 @@ struct StudyCardContent: View {
             HStack(spacing: 12) {
                 Text(card.kind == "phrase" ? "Фраза" : "Понятие")
                     .font(AppTypography.caption).foregroundStyle(.secondary)
+                if actions?.paused == true {
+                    Image(systemName: "pause.circle").font(AppTypography.caption).foregroundStyle(.secondary)
+                        .help("Не повторяется").accessibilityLabel("Не повторяется")
+                }
                 Spacer(minLength: 12)
                 if let meetingTitle, let openMeeting {
                     Button(action: openMeeting) {
@@ -27,9 +35,14 @@ struct StudyCardContent: View {
                     }.font(AppTypography.control).buttonStyle(.plain).foregroundStyle(Ink.accent)
                         .help((originIsDeck ? "Открыть колоду: " : "Открыть встречу: ") + meetingTitle)
                 }
+                if let actions { actions }
+            }
+            if sourceStale {
+                Text("Транскрипт исправлен. Проверьте карточку по источнику.")
+                    .font(AppTypography.caption).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true)
             }
             Text(card.front).font(AppTypography.cardFront).lineSpacing(4)
-                .textSelection(.enabled).accessibilityLabel("Карточка: \(card.front)")
+                .textSelection(.enabled).accessibilityLabel("Карточка: \(card.front)").accessibilityIdentifier("cards.detail.front")
             if flipped {
                 Divider()
                 Text(card.back).font(AppTypography.cardAnswer).lineSpacing(5)
@@ -46,9 +59,12 @@ struct StudyCardContent: View {
                         }
                     }.padding(12).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
                 }
+                if showSourceHint && !card.segmentIDs.isEmpty {
+                    GuidanceHint(controller: .shared, id: "cards.source-playback", text: "По таймкоду можно прослушать исходную реплику.")
+                }
                 HStack {
                     Button {
-                        guard !app.busy, !app.isRecording, !makingExample else { return }
+                        guard !makingExample else { return }
                         makeExample()
                     } label: {
                         HStack(spacing: 7) {
@@ -58,7 +74,7 @@ struct StudyCardContent: View {
                             }.frame(width: 15, height: 15).accessibilityHidden(true)
                             Text(example == nil ? "Пример" : "Другой пример")
                         }
-                    }.buttonStyle(.bordered).disabled(app.busy || app.isRecording || makingExample)
+                    }.buttonStyle(.bordered).disabled(makingExample)
                         .accessibilityLabel(example == nil ? "Придумать пример с этой карточкой" : "Придумать другой пример с этой карточкой")
                         .help("Создать пример с этой карточкой; исходная цитата сохранится")
                     Spacer()
@@ -70,7 +86,7 @@ struct StudyCardContent: View {
                 }
                 if let example {
                     VStack(alignment: .leading, spacing: 9) {
-                        Text("Пример ИИ").font(AppTypography.caption).foregroundStyle(Ink.accent)
+                        Text(exampleIsStale ? "Пример до правки карточки" : "Пример ИИ").font(AppTypography.caption).foregroundStyle(Ink.accent)
                         Text(example.example).font(AppTypography.bodyStrong).lineSpacing(4).textSelection(.enabled)
                         if !example.translation.isEmpty {
                             Text(example.translation).font(AppTypography.body).foregroundStyle(.secondary)
@@ -90,6 +106,26 @@ struct StudyCardContent: View {
             .background(Ink.paper, in: RoundedRectangle(cornerRadius: AppLayout.cardRadius))
             .overlay(RoundedRectangle(cornerRadius: AppLayout.cardRadius).strokeBorder(Ink.line))
             .accessibilityElement(children: .contain)
+            .appLayoutAnchor("cards.detail")
+    }
+}
+
+struct CardActionsView: View {
+    let paused: Bool
+    let disabled: Bool
+    let edit: () -> Void
+    let togglePause: () -> Void
+    let delete: () -> Void
+    var body: some View {
+        HStack(spacing: 8) {
+            Button(action: edit) { Image(systemName: "pencil").frame(width: 22, height: 22) }
+                .buttonStyle(.plain).help("Изменить карточку").accessibilityLabel("Изменить карточку")
+            Menu {
+                Button(paused ? "Вернуть в повторение" : "Не повторять", action: togglePause)
+                Button("Удалить карточку…", role: .destructive, action: delete)
+            } label: { Image(systemName: "ellipsis").frame(width: 22, height: 22) }
+                .menuStyle(.borderlessButton).frame(width: 24).accessibilityLabel("Действия с карточкой")
+        }.disabled(disabled).foregroundStyle(.secondary)
     }
 }
 
@@ -100,34 +136,16 @@ struct StudyReviewBar: View {
     let enabled: Bool
     let review: ReviewState?
     let rate: (Int) -> Void
+    var intervals: [Int: String] = [:]
     private let labels = ["Снова", "Трудно", "Хорошо", "Легко"]
     private let descriptions = ["Не удалось вспомнить", "Вспомнил с трудом", "Вспомнил правильно", "Вспомнил без усилий"]
     var body: some View {
         HStack(spacing: 10) {
             if flipped {
-                ForEach(1...4, id: \.self) { value in
-                    Button {
-                        guard enabled, flipped else { return }
-                        rate(value)
-                    } label: {
-                        HStack(spacing: 7) {
-                            Text(String(value)).font(AppTypography.caption).foregroundStyle(.secondary).monospacedDigit()
-                            Text(labels[value - 1]).font(AppTypography.controlStrong)
-                        }.frame(maxWidth: .infinity, minHeight: 24)
-                    }.buttonStyle(.bordered).disabled(!enabled)
-                        .keyboardShortcut(KeyEquivalent(Character(String(value))), modifiers: [])
-                        .help("\(descriptions[value - 1]) · \(value)\(reviewTooltip)")
-                        .accessibilityLabel(labels[value - 1] + ": " + descriptions[value - 1])
-                        .accessibilityHint("Запланировать следующее повторение. Клавиша \(value).")
-                }
+                ForEach(1...4, id: \.self) { value in gradeButton(value) }
             } else {
                 Spacer()
-                Button("Показать ответ") {
-                    guard enabled, !flipped else { return }
-                    flipped = true
-                }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
-                    .keyboardShortcut(.space, modifiers: []).disabled(!enabled)
-                    .help("Показать ответ · Пробел").frame(minWidth: 180)
+                answerButton
                 Spacer()
             }
         }.padding(.horizontal, AppLayout.contentInset).frame(height: 56)
@@ -135,11 +153,39 @@ struct StudyReviewBar: View {
             .overlay(alignment: .top) { Rectangle().fill(Ink.line).frame(height: 1) }
             .appLayoutAnchor("cards.review")
     }
-    private var reviewTooltip: String {
-        guard let review else { return "" }
-        let parser = ISO8601DateFormatter(); parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = parser.date(from: review.due) ?? ISO8601DateFormatter().date(from: review.due)
-        let due = date?.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Locale(identifier: "ru_RU"))) ?? review.due
-        return "\nПовторений: \(review.count). Следующий показ: \(due)"
+    private var answerButton: some View {
+        Button("Показать ответ") {
+            guard enabled, !flipped else { return }
+            flipped = true
+        }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+            .keyboardShortcut(.space, modifiers: []).disabled(!enabled)
+            .help("Показать ответ · Пробел").frame(minWidth: 180)
+    }
+    private func gradeButton(_ value: Int) -> some View {
+        Button {
+            guard enabled, flipped else { return }
+            rate(value)
+        } label: { gradeLabel(value) }
+            .buttonStyle(.bordered).disabled(!enabled)
+            .keyboardShortcut(KeyEquivalent(Character(String(value))), modifiers: [])
+            .help(gradeHelp(value))
+            .accessibilityLabel(labels[value - 1] + ": " + descriptions[value - 1])
+            .accessibilityHint("Запланировать следующее повторение. Клавиша \(value).")
+    }
+    private func gradeLabel(_ value: Int) -> some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 7) {
+                Text(String(value)).font(AppTypography.caption).foregroundStyle(.secondary).monospacedDigit()
+                Text(labels[value - 1]).font(AppTypography.controlStrong)
+            }
+            if let interval = intervals[value] {
+                Text(interval).font(AppTypography.caption).foregroundStyle(.secondary)
+            }
+        }.frame(maxWidth: .infinity, minHeight: 24)
+    }
+    private func gradeHelp(_ value: Int) -> String {
+        var text = descriptions[value - 1] + " · \(value)"
+        if let interval = intervals[value] { text += " · Следующее повторение через " + interval }
+        return text
     }
 }

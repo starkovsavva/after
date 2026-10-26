@@ -1,9 +1,19 @@
 import Foundation
+#if SWIFT_PACKAGE
+import XCTest
+@testable import PosleCore
+#endif
 
+#if !SWIFT_PACKAGE
 @main
+#endif
 struct CalendarLayoutChecks {
     static func expect(_ value: @autoclosure () -> Bool, _ message: String, line: UInt = #line) {
+        #if SWIFT_PACKAGE
+        XCTAssertTrue(value(), message, line: line)
+        #else
         precondition(value(), "Line \(line): \(message)")
+        #endif
     }
     static func calendar(_ zone: String = "America/New_York", firstWeekday: Int = 2) -> Calendar {
         var result = Calendar(identifier: .gregorian)
@@ -148,3 +158,9 @@ struct CalendarLayoutChecks {
         print("PASS: all-day multi-date spans, clipping, row reuse and DST exclusive ends")
     }
 }
+
+#if SWIFT_PACKAGE
+final class CalendarLayoutChecksTests: XCTestCase {
+    func testContracts() throws { CalendarLayoutChecks.main() }
+}
+#endif

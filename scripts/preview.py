@@ -11,7 +11,7 @@ directory.mkdir(parents=True, exist_ok=True)
 def save(name, data):
     (directory / name).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
-save("meta.json", {"id": "demo-product", "title": "Демо: обсуждение запуска", "createdAt": time.time(),
+save("meta.json", {"id": "demo-product", "title": "Запуск пилота", "createdAt": time.time(),
      "source": "source.mp3", "status": "ready", "duration": 1840, "speakerNames": {"speaker_1": "Анна", "speaker_2": "Майкл"},
      "completedTasks": [], "focus": "Решения, сроки, бюджет и полезные английские выражения.", "recordingTracks": False, "hasVideo": False})
 save("transcript.json", {"duration": 1840, "warnings": [], "model": "demo", "segments": [
@@ -44,7 +44,7 @@ save("examples.json", {"demo-circle-back": {"example": "Can we circle back to th
 # A second, explicitly invented meeting exercises search across the whole library.
 directory = root / "meetings" / "demo-access"
 directory.mkdir(parents=True, exist_ok=True)
-save("meta.json", {"id": "demo-access", "title": "Демо: доступы и безопасность", "createdAt": time.time() - 86400,
+save("meta.json", {"id": "demo-access", "title": "Доступы к стенду", "createdAt": time.time() - 86400,
      "source": "source.mp3", "status": "ready", "duration": 620, "speakerNames": {"speaker_1": "Алекс"},
      "completedTasks": [], "focus": "Доступы и сроки.", "recordingTracks": False, "hasVideo": False})
 save("transcript.json", {"duration": 620, "warnings": [], "model": "demo", "segments": [

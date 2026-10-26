@@ -34,7 +34,7 @@ fn private_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn regular_json(path: &Path) -> Result<Value> {
+pub(crate) fn regular_json(path: &Path) -> Result<Value> {
     let info = fs::symlink_metadata(path)
         .with_context(|| format!("Файл не найден: {}", path.display()))?;
     ensure!(info.is_file() && !info.file_type().is_symlink(), "Ожидался обычный JSON-файл: {}", path.display());
@@ -223,6 +223,9 @@ pub fn save_summary_overview(root: &Path, id: &str, text: &str, expected_overvie
         "Конспект изменился. Откройте правку заново, чтобы сохранить актуальную версию.");
     object.insert("overview".into(), json!(text));
     object.insert("overviewClaims".into(), json!([]));
+    object.insert("manuallyEdited".into(), json!(true));
+    object.insert("overviewManuallyEdited".into(), json!(true));
+    object.insert("overviewStale".into(), json!(false));
     ensure!(serde_json::to_vec(&summary)?.len() as u64 <= MAX_SUMMARY, "Файл конспекта слишком большой.");
     atomic_json(&path, &summary)?;
     Ok(summary)
@@ -234,7 +237,7 @@ fn parse_time(value: &Value, field: &str) -> Result<DateTime<Utc>> {
         .with_context(|| format!("Некорректная дата {field} в истории карточки"))
 }
 
-fn schedule(previous: Option<&Value>, rating: u8, now: DateTime<Utc>) -> Result<(Value, Value)> {
+pub(crate) fn schedule(previous: Option<&Value>, rating: u8, now: DateTime<Utc>) -> Result<(Value, Value)> {
     ensure!((1..=4).contains(&rating), "Оценка карточки должна быть от 1 до 4");
     let previous_card = previous.map(|state| state.get("card").context("В истории карточки нет состояния FSRS")).transpose()?;
     let memory = match previous_card {
@@ -285,7 +288,7 @@ fn schedule(previous: Option<&Value>, rating: u8, now: DateTime<Utc>) -> Result<
 
 /// Complete an interrupted two-file review transaction idempotently. The journal
 /// is written before either durable output and removed after both are committed.
-fn recover_review(directory: &Path) -> Result<()> {
+pub(crate) fn recover_review(directory: &Path) -> Result<()> {
     let path = directory.join("review-pending.json");
     if !path.exists() { return Ok(()); }
     let pending = regular_json(&path)?;
@@ -331,6 +334,9 @@ fn recover_review(directory: &Path) -> Result<()> {
         file.sync_all()?;
     }
     atomic_json(&directory.join("review-state.json"), &pending["states"])?;
+    if let Some(undo) = pending.get("undo") {
+        atomic_json(&directory.join("cards-review-undo.json"), undo)?;
+    }
     // The transaction is committed. A failed journal cleanup must not report a
     // failed rating and invite the user to accidentally submit it twice.
     let _ = fs::remove_file(path);

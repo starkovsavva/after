@@ -47,12 +47,13 @@ struct WorkerEvent: Decodable {
     var asrModels: [InstalledASRModel]?
     var notes: [String]?
     var voicePlan: VoicePlan?
+    var dictation: DictationResult?
 
     init(event: String, message: String? = nil) {
         self.event = event; self.message = message
     }
 
-    private enum CodingKeys: String, CodingKey { case event, message, fraction, models, model, ggufModels, asrModels, notes, voicePlan }
+    private enum CodingKeys: String, CodingKey { case event, message, fraction, models, model, ggufModels, asrModels, notes, voicePlan, dictation }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         event = try values.decode(String.self, forKey: .event)
@@ -65,6 +66,7 @@ struct WorkerEvent: Decodable {
         asrModels = try values.decodeIfPresent([InstalledASRModel].self, forKey: .asrModels)
         notes = try values.decodeIfPresent([String].self, forKey: .notes)
         voicePlan = try values.decodeIfPresent(VoicePlan.self, forKey: .voicePlan)
+        dictation = try values.decodeIfPresent(DictationResult.self, forKey: .dictation)
     }
 }
 

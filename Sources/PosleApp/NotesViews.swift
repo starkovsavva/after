@@ -532,9 +532,7 @@ struct NotesContextsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                HStack(spacing: 16) {
-                    Text("Проекты и люди").font(AppTypography.sectionTitle).accessibilityAddTraits(.isHeader)
-                    Spacer()
+                AppWorkspaceHeader(title: "Проекты и люди") {
                     Picker("Группировать", selection: $mode) { Text("Проекты").tag("project"); Text("Люди").tag("person") }
                         .pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 200).accessibilityLabel("Проекты или люди")
                 }
