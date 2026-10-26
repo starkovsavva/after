@@ -132,15 +132,7 @@ struct CalendarScheduleView: View {
             Rectangle().fill(Ink.line).frame(width: 0.5)
             ForEach(placements) { placement in
                 if let event = visibleEvents.first(where: { $0.id == placement.eventID }) {
-                    let laneWidth = width / CGFloat(placement.columnCount)
-                    let height = max(22, CGFloat(placement.endMinute - placement.startMinute) / 60 * hourHeight - 2)
-                    Button { open(event) } label: {
-                        CalendarEventChip(event: event, compact: height < 42, displayStart: placement.start, displayEnd: placement.end, continuesBefore: placement.continuesBefore, continuesAfter: placement.continuesAfter)
-                            .frame(width: max(20, laneWidth - 6), height: height, alignment: .topLeading)
-                    }.buttonStyle(.plain)
-                        .offset(x: CGFloat(placement.column) * laneWidth + 3, y: min(CGFloat(placement.startMinute) / 60 * hourHeight + 1, hourHeight * 24 - height))
-                        .help(eventLabel(event)).accessibilityLabel(eventLabel(event))
-                        .accessibilityIdentifier("calendar.event.\(event.id)")
+                    timedEvent(event, placement: placement, width: width)
                 }
             }
             if clock.isDateInToday(day) {
@@ -153,6 +145,29 @@ struct CalendarScheduleView: View {
                 }
             }
         }.frame(width: width, height: hourHeight * 24).clipped()
+    }
+
+    private func timedEvent(_ event: CalendarAgendaEvent, placement: CalendarTimedPlacement, width: CGFloat) -> some View {
+        let laneWidth: CGFloat = width / CGFloat(placement.columnCount)
+        let durationHeight: CGFloat = CGFloat(placement.endMinute - placement.startMinute) / 60 * hourHeight
+        let height: CGFloat = max(22, durationHeight - 2)
+        let chipWidth: CGFloat = max(20, laneWidth - 6)
+        let x: CGFloat = CGFloat(placement.column) * laneWidth + 3
+        let startY: CGFloat = CGFloat(placement.startMinute) / 60 * hourHeight + 1
+        let lastY: CGFloat = hourHeight * 24 - height
+        let y: CGFloat = min(startY, lastY)
+        let label: String = eventLabel(event)
+        let chip = CalendarEventChip(
+            event: event, compact: height < 42,
+            displayStart: placement.start, displayEnd: placement.end,
+            continuesBefore: placement.continuesBefore, continuesAfter: placement.continuesAfter
+        )
+        return Button { open(event) } label: {
+            chip.frame(width: chipWidth, height: height, alignment: .topLeading)
+        }.buttonStyle(.plain)
+            .offset(x: x, y: y)
+            .help(label).accessibilityLabel(label)
+            .accessibilityIdentifier("calendar.event.\(event.id)")
     }
 
     private func monthGrid(height: CGFloat) -> some View {
