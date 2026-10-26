@@ -6,34 +6,28 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.11.0</title>
-      <sparkle:version>14</sparkle:version>
-      <sparkle:shortVersionString>0.11.0</sparkle:shortVersionString>
+      <title>После 0.12.0</title>
+      <sparkle:version>15</sparkle:version>
+      <sparkle:shortVersionString>0.12.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Mon, 26 Oct 2026 15:39:24 GMT</pubDate>
-      <description sparkle:format="markdown"># 0.11.0
+      <pubDate>Mon, 26 Oct 2026 20:05:17 GMT</pubDate>
+      <description sparkle:format="markdown"># 0.12.0
 
-- **Фоновые задачи.** Сохраняемая очередь, независимые статусы и отмена. Запись и заметки доступны во время генерации.
-- **Запись.** Начало без установленных моделей, проверка микрофона и звука Mac, индикаторы дорожек.
-- **Правки.** Редактирование реплик, собеседников и пунктов конспекта. Защита ручных изменений при повторной генерации.
-- **Источники.** Прослушивание цитаты прямо в конспекте или карточке.
-- **Карточки.** Список библиотеки, создание и редактирование, исключение из повторений, реальные интервалы FSRS и отмена оценки.
-- **Сроки.** Выбор даты, отдельные просроченные задачи и распознавание сроков из старых встреч.
-- **Оформление.** Графит, матовое стекло и Liquid Glass; предпросмотр и поддержка настроек доступности macOS.
-- **Подсказки.** Необязательное знакомство, контекстная помощь и «Что нового» после содержательного обновления.
-- **Обновления.** Небольшое предложение установить новую версию, возможность отложить и защита текущей работы.
-- **Разработка.** Единый запуск проверок, CI, отдельные диагностические сценарии и лицензия MIT.
+- **Подписка ChatGPT.** Конспекты, карточки, примеры и текстовые поручения без API-ключа.
+- **Модели.** Выбор из списка вашего аккаунта и настройка рассуждений. Для Luna доступен режим без рассуждений.
+- **Аккаунты.** Несколько подключений, сохранение входа между запусками и отмена задач аккаунта при выходе.
+- **Лимиты.** Пауза задач ChatGPT при исчерпании лимита, управление использованием и повтор по вашему выбору.
 </description>
-      <posle:sourceRevision>d1c9658b156cf2cef61239b2502fe60dd8ef5c83</posle:sourceRevision>
-      <posle:archiveSHA256>877938a4af1f734291882e9793a5a4f208f995fce30222e85bda3912b8f54f22</posle:archiveSHA256>
-      <posle:sourceSHA256>5509c0a6cfdf721db080385a0009fe1b5455e40053775e33cb7f8eccd76c821e</posle:sourceSHA256>
-      <posle:packageSHA256>9edca97071d9fe2b52c1c2ef2417c5369d637b3ef3f0483f341c362491e28bd0</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.11.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="tZybSZfSgO+PHf1FjY+wzG98dBZulFBBXLC+RhGVhwWPuWl6lwjY2NGLhYvMg6gV4LRYfdXMqDEJetDbSnbgAg==" length="14796893" type="application/octet-stream" />
+      <posle:sourceRevision>1e4db50acdf41b90d8375d9c72faa24a204d7e07</posle:sourceRevision>
+      <posle:archiveSHA256>c81ff9d4adb5cf3c68fca72a0287ca358d0933886613776a4383d4aa9c5b833a</posle:archiveSHA256>
+      <posle:sourceSHA256>342e66f80510ac56104f3d32522d3eaedbe367583875dc0dcf7c70846841b958</posle:sourceSHA256>
+      <posle:packageSHA256>a944cc2eefbb4684e85d294a55be81e262fb9849596a816bb9f357a20056b32d</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.12.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="Ibo8FSsH7J9NOFwfVyoQwwjt9NlCzsP84FJZqnT/CpKkpk++8jimtFmHAmM5ZjykgYvxqC2wnBHGDI5REbeUAQ==" length="15097202" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: NO2w4fRkjJf6PG6l1xqAfsdW+0Hau2Wg3zC7tex6doms3JmrGVedpqi1c9RyyxD2/6nb/ZgoVPDCWCFP/uRPCg==
-length: 3450
+edSignature: UUgWdAA1CArsvkEbuMuACvUU3xYzHb/rG6PxWfTtkSTs/jHyyGUyRZFbCTOCYWulJW9M4y5p/lGKGiQoOoIeAA==
+length: 2297
 -->
