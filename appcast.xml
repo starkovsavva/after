@@ -6,28 +6,31 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.12.0</title>
-      <sparkle:version>15</sparkle:version>
-      <sparkle:shortVersionString>0.12.0</sparkle:shortVersionString>
+      <title>После 0.12.1</title>
+      <sparkle:version>16</sparkle:version>
+      <sparkle:shortVersionString>0.12.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Mon, 26 Oct 2026 20:05:17 GMT</pubDate>
-      <description sparkle:format="markdown"># 0.12.0
+      <pubDate>Mon, 26 Oct 2026 21:03:32 GMT</pubDate>
+      <description sparkle:format="markdown"># 0.12.1
 
-- **Подписка ChatGPT.** Конспекты, карточки, примеры и текстовые поручения без API-ключа.
-- **Модели.** Выбор из списка вашего аккаунта и настройка рассуждений. Для Luna доступен режим без рассуждений.
-- **Аккаунты.** Несколько подключений, сохранение входа между запусками и отмена задач аккаунта при выходе.
-- **Лимиты.** Пауза задач ChatGPT при исчерпании лимита, управление использованием и повтор по вашему выбору.
+- **ChatGPT.** Исправлена обработка потоковых и завершённых JSON-ответов. Ошибки сервиса содержат детали формата ответа.
+- **Вход.** Возврат в приложение после браузера. Отменённый вход не открывает вкладку, закрытие настроек сохраняет выбранную модель.
+- **Диктовка.** Исправлены пересечения с запуском и остановкой записи, зависание обработки после ошибки диктовки.
+- **Ручные правки.** Если транскрипт или конспект изменён во время распознавания, замена результата останавливается с сохранением изменений.
+- **Редакторы.** Защита несохранённых заметок, шаблонов и контекста встречи при выходе. Убраны устаревшие ошибки после успешного удаления заметки.
+- **Очередь.** История отделена от текущих попыток. Старые ошибки не требуют повторного действия после нового успешного результата.
+- **Локальный ИИ.** Понятная проверка готовности встроенного ИИ и восстановление движка через «Подготовить ИИ» с сохранением скачанных моделей.
 </description>
-      <posle:sourceRevision>1e4db50acdf41b90d8375d9c72faa24a204d7e07</posle:sourceRevision>
-      <posle:archiveSHA256>c81ff9d4adb5cf3c68fca72a0287ca358d0933886613776a4383d4aa9c5b833a</posle:archiveSHA256>
-      <posle:sourceSHA256>342e66f80510ac56104f3d32522d3eaedbe367583875dc0dcf7c70846841b958</posle:sourceSHA256>
-      <posle:packageSHA256>a944cc2eefbb4684e85d294a55be81e262fb9849596a816bb9f357a20056b32d</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.12.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="Ibo8FSsH7J9NOFwfVyoQwwjt9NlCzsP84FJZqnT/CpKkpk++8jimtFmHAmM5ZjykgYvxqC2wnBHGDI5REbeUAQ==" length="15097202" type="application/octet-stream" />
+      <posle:sourceRevision>ac78f3ea3612f278df0c356feccaf08fd82f1235</posle:sourceRevision>
+      <posle:archiveSHA256>08e2a32e0171a311ca322b102536484b596fbb098367f00776adb4df15059760</posle:archiveSHA256>
+      <posle:sourceSHA256>91af6daa6252c1df41b11888d8d14ca37aa26ee41cae0cf2d641deb622ba3c58</posle:sourceSHA256>
+      <posle:packageSHA256>b5bd7c11211c7f4c2998064ebd488491c71a5a21c2a5da2e974f7c28a6228423</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.12.1/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="RQhy+pHa8p7sO4BhgF093FelxpovLEtgVIhwgq7uUVj69oYv+IZ2vXGBBkCSQlvYvpPWnTmodXoo3QtGR4qDBw==" length="15169043" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: UUgWdAA1CArsvkEbuMuACvUU3xYzHb/rG6PxWfTtkSTs/jHyyGUyRZFbCTOCYWulJW9M4y5p/lGKGiQoOoIeAA==
-length: 2297
+edSignature: eFCdalyaQuy6+DW5p/sOJsOV55heljQbR1xN52ypa1lncsVNQJkvrbGasfZylsC+mxNtzvtcOLF4n0+06bnYDg==
+length: 3248
 -->
