@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const VERSION: i64 = 1;
-const MAX_WORKSPACE: u64 = 32 * 1_048_576;
+pub(crate) const MAX_WORKSPACE: u64 = 32 * 1_048_576;
 const DATABASE: &str = "core.sqlite";
 const MARKER: &str = ".core-sqlite-migrated";
 const BACKUP: &str = "workspace.pre-sqlite.json";

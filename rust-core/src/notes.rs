@@ -631,7 +631,7 @@ mod tests {
     #[test] fn bad_or_oversized_json_cannot_be_overwritten() {
         let root=tempfile::tempdir().unwrap(); directory(root.path()).unwrap(); let path=root.path().join("notes/workspace.json"); fs::write(&path,b"{broken").unwrap();
         assert!(save_note(root.path(),note("Новая")).is_err()); assert_eq!(fs::read(&path).unwrap(),b"{broken");
-        File::create(&path).unwrap().set_len(MAX_WORKSPACE+1).unwrap(); assert!(list(root.path()).is_err());
+        File::create(&path).unwrap().set_len(crate::workspace_repository::MAX_WORKSPACE+1).unwrap(); assert!(list(root.path()).is_err());
         let root=tempfile::tempdir().unwrap(); let mut draft=note("x"); draft.text="x".repeat(MAX_TEXT+1); assert!(save_note(root.path(),draft).is_err());
         let mut draft=note("x"); draft.source_url="javascript:alert(1)".into(); assert!(save_note(root.path(),draft).is_err());
         let mut draft=note("x"); draft.timestamp=Some(0.0); assert!(save_note(root.path(),draft).is_err());
