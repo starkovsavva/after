@@ -354,7 +354,7 @@ enum TaskWorkspaceNativeChecks {
     }
     private static func expect(_ condition: Bool, _ message: String) throws { if !condition { throw AppError.message(message) } }
 
-    private struct AXNode {
+    @MainActor private struct AXNode {
         let object: NSObject
         private func get(_ name: String) -> Any? { let selector = NSSelectorFromString(name); return object.responds(to: selector) ? object.perform(selector)?.takeUnretainedValue() : nil }
         var identifier: String? { (object as? any NSAccessibilityProtocol)?.accessibilityIdentifier() ?? get("accessibilityIdentifier") as? String }

@@ -92,6 +92,10 @@ pub fn request(value: &Value) -> Result<Value> {
             value["text"].as_str().context("Нет текста конспекта")?,
             value["expectedOverview"].as_str().context("Нет исходного конспекта")?,
             value["expectedGeneratedAt"].as_f64().context("Нет даты исходного конспекта")?),
+        "meeting-rename" => storage::rename_meeting(&root,
+            value["meetingID"].as_str().context("Нет ID встречи")?,
+            value["title"].as_str().context("Нет названия встречи")?,
+            value["expectedTitle"].as_str().context("Нет исходного названия встречи")?),
         "update" => storage::update_meta(&root, value["id"].as_str().context("Нет ID")?, value.get("patch").context("Нет изменений")?),
         _ => Err(anyhow!("Неизвестная команда ядра")),
     }

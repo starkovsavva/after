@@ -15,7 +15,7 @@ struct SearchView: View {
                 Image(systemName: "magnifyingglass").font(.system(size: 21)).foregroundStyle(Ink.accent)
                 TextField("Слово или фраза", text: $store.searchQuery)
                     .font(.system(size: 20)).textFieldStyle(.plain).focused($queryFocused)
-                    .accessibilityLabel("Поиск по всей библиотеке")
+                    .accessibilityLabel(store.notes.folder(store.folderSelection).map { "Поиск в папке «" + $0.name + "»" } ?? "Поиск по всей библиотеке")
                     .onSubmit { openSelected() }
                     .onKeyPress(.downArrow) { move(1); return .handled }
                     .onKeyPress(.upArrow) { move(-1); return .handled }
@@ -27,6 +27,15 @@ struct SearchView: View {
                 Button("Закрыть") { store.showingSearch = false }
                     .buttonStyle(.borderless).keyboardShortcut(.cancelAction)
             }.padding(22)
+            if let folder = store.notes.folder(store.folderSelection) {
+                HStack(spacing: 12) {
+                    Label("В папке «" + folder.name + "»", systemImage: "folder").lineLimit(1)
+                    Spacer()
+                    Button("Искать во всей библиотеке") { store.folderSelection = nil }
+                        .buttonStyle(.borderless).accessibilityIdentifier("search.allFolders")
+                }.font(AppTypography.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 22).padding(.bottom, 12)
+            }
             if store.isFeatureEnabled(.semanticSearch) {
                 Picker("Способ поиска", selection: $byMeaning) {
                     Text("По словам").tag(false); Text("По смыслу").tag(true)
@@ -134,9 +143,9 @@ struct SearchView: View {
 
     @ViewBuilder private var content: some View {
         if store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            placeholder("Поиск по библиотеке", "Например: бюджет, доступы или follow up.", icon: "text.magnifyingglass")
+            placeholder(store.folderSelection == nil ? "Поиск по библиотеке" : "Поиск в папке", "Например: бюджет, доступы или follow up.", icon: "text.magnifyingglass")
         } else if store.searching && visibleSearchHits.isEmpty {
-            VStack(spacing: 12) { ProgressView(); Text("Ищу во всех встречах…").font(AppTypography.control).foregroundStyle(.secondary) }
+            VStack(spacing: 12) { ProgressView(); Text(store.folderSelection == nil ? "Ищу в библиотеке…" : "Ищу в папке…").font(AppTypography.control).foregroundStyle(.secondary) }
         } else if visibleSearchHits.isEmpty && store.searchError == nil {
             placeholder("Ничего не найдено", "Попробуйте другое слово или сократите запрос.", icon: "magnifyingglass")
         } else {

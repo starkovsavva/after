@@ -5,29 +5,23 @@ import SwiftUI
 struct MeetingView: View {
     @EnvironmentObject private var store: AppStore
     let meeting: Meeting
-    @State private var rename = false
-    @State private var newTitle = ""
     @State private var folderEditor: FolderEditorTarget?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
-                    Text(meeting.title).font(AppTypography.pageTitle)
-                        .lineLimit(1).help(meeting.title).textSelection(.enabled)
+                    MeetingTitleHeading(store: store, edits: store.meetingTitleEdits, meeting: meeting)
                     Spacer(minLength: 10)
                     Menu {
-                        Menu("Переместить в папку") {
-                            Button("Без папки") { assignFolder(nil) }
-                            ForEach(store.notes.folders) { folder in
-                                Button(folder.name) { assignFolder(folder.id) }
-                            }
-                        }.disabled(store.busy || store.isRecording)
+                        Button("Переместить в папку…") {
+                            NotificationCenter.default.post(name: Notification.Name("PosleMoveMeeting"), object: meeting.id)
+                        }.disabled(store.captureMeetingID == meeting.id)
                         if let folder = store.notes.folder(for: meeting.id) {
                             Button("Настройки папки…") { folderEditor = FolderEditorTarget(folder: folder) }
                         }
                         Divider()
-                        Button("Переименовать") { newTitle = meeting.title; rename = true }.disabled(store.busy || store.isRecording)
+                        Button("Переименовать…") { store.meetingTitleEdits.begin(meeting) }.disabled(store.captureMeetingID == meeting.id)
                         Button("Распознать заново") { Task { await store.processMeeting(meeting.id) } }.disabled(!store.runtimeReady || store.jobs.contains(objectID: meeting.id, kinds: ["transcribe"]) || meeting.libraryKind == "cards")
                     } label: { Image(systemName: "ellipsis").frame(width: 25, height: 25) }.menuStyle(.borderlessButton).frame(width: 32)
                         .accessibilityLabel("Действия со встречей")
@@ -35,10 +29,14 @@ struct MeetingView: View {
                 HStack(spacing: 16) {
                     Label(Date(timeIntervalSince1970: meeting.createdAt).formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Locale(identifier: "ru_RU"))), systemImage: "calendar")
                     if meeting.duration > 0 { Label(Exporter.timestamp(meeting.duration), systemImage: "clock") }
-                    if let folder = store.notes.folder(for: meeting.id) {
-                        Button { folderEditor = FolderEditorTarget(folder: folder) } label: { Label(folder.name, systemImage: "folder").lineLimit(1) }
-                            .buttonStyle(.plain).help("Настройки папки «" + folder.name + "»").accessibilityIdentifier("meeting.folder")
-                    }
+                    Button {
+                        NotificationCenter.default.post(name: Notification.Name("PosleMoveMeeting"), object: meeting.id)
+                    } label: {
+                        Label(store.notes.folder(for: meeting.id)?.name ?? "Без папки", systemImage: "folder").lineLimit(1)
+                    }.buttonStyle(.plain).help("Переместить встречу в папку")
+                        .accessibilityLabel("Папка встречи: " + (store.notes.folder(for: meeting.id)?.name ?? "Без папки"))
+                        .accessibilityIdentifier("meeting.folder")
+                        .disabled(store.captureMeetingID == meeting.id)
 
                 }.font(AppTypography.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, AppLayout.contentInset).padding(.top, 22).padding(.bottom, 18)
@@ -70,14 +68,6 @@ struct MeetingView: View {
             else { SummaryView() }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .sheet(item: $folderEditor) { target in FolderSettingsView(folder: target.folder).environmentObject(store) }
-            .alert("Название встречи", isPresented: $rename) {
-                TextField("Название", text: $newTitle)
-                Button("Сохранить") { store.updateMeeting(meeting.id) { $0.title = newTitle.isEmpty ? $0.title : newTitle } }
-                Button("Отмена", role: .cancel) {}
-            }
-    }
-    private func assignFolder(_ folderID: String?) {
-        if !store.notes.assignMeetingFolder(meeting.id, folderID: folderID) { store.error = store.notes.error }
     }
     private var unprocessed: some View {
         VStack(spacing: 16) {

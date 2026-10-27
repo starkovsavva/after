@@ -30,6 +30,74 @@ enum FolderNativeChecks {
         let main = Host(AnyView(MainView().environmentObject(app)), width: 1260, height: 820)
         defer { main.close() }
         try await settle(main) { ids(main).contains("folder.new") }
+        try snapshot(main.view, root.appendingPathComponent("folder-sidebar-empty.png"))
+        let originalNotes = app.notes.workspace.notes.count
+        try press(main, "folder.new")
+        try await settle(main) { ids(main).contains("folder.quick.name") }
+        try editName(main, text: "Личный проект")
+        try await settle(main) { UnsavedEditorRegistry.hasUnsaved }
+        if let sheet = main.window.attachedSheet?.contentView { try snapshot(sheet, root.appendingPathComponent("folder-create.png")) }
+        try press(main, "folder.quick.save")
+        try await settle(main) { app.notes.folders.contains { $0.name == "Личный проект" } && !ids(main).contains("folder.quick.save") }
+        guard let quickFolder = app.notes.folders.first(where: { $0.name == "Личный проект" }) else { throw AppError.message("Quick folder missing") }
+        try expect(app.folderSelection == quickFolder.id && quickFolder.overrides == FolderOverrides() && app.notes.workspace.notes.count == originalNotes,
+                   "Quick creation must select a real empty folder inheriting app defaults")
+        try snapshot(main.view, root.appendingPathComponent("folder-project.png"))
+        try doubleClick(main, "folder.select." + quickFolder.id)
+        try await settle(main) { ids(main).contains("folder.quick.name") }
+        try editName(main, text: "Личный проект · план")
+        try await settle(main) { UnsavedEditorRegistry.hasUnsaved }
+        try press(main, "folder.quick.save")
+        try await settle(main) { app.notes.folder(quickFolder.id)?.name == "Личный проект · план" && !ids(main).contains("folder.quick.save") }
+        try expect(app.notes.folder(quickFolder.id)?.id == quickFolder.id, "Double-click folder rename must preserve stable identity")
+        let renamedRevision = app.notes.folder(quickFolder.id)?.revision
+        try doubleClick(main, "folder.select." + quickFolder.id)
+        try await settle(main) { ids(main).contains("folder.quick.save") }
+        try press(main, "folder.quick.save")
+        try await settle(main) { !ids(main).contains("folder.quick.save") }
+        try expect(app.notes.folder(quickFolder.id)?.revision == renamedRevision, "Saving an unchanged folder name must not invalidate active model jobs")
+        print("PASS: visible sidebar creation and double-click rename use short native name sheets; no-op save preserves profile revision")
+
+        let movedMeeting = Meeting(title: "План личного проекта", source: "synthetic.mp3")
+        try FileManager.default.createDirectory(at: app.meetingDirectory(movedMeeting.id), withIntermediateDirectories: true)
+        try app.write(movedMeeting, app.meetingDirectory(movedMeeting.id).appendingPathComponent("meta.json")); app.reloadLibrary()
+        try await settle(main) { ids(main).contains("folder.addMeetings") }
+        try press(main, "folder.addMeetings")
+        try await settle(main) { ids(main).contains("folder.add.meeting." + movedMeeting.id) }
+        try press(main, "folder.add.meeting." + movedMeeting.id)
+        try await settle(main) { app.folderID(for: movedMeeting.id) == quickFolder.id && app.selection == movedMeeting.id && !ids(main).contains("folder.add.cancel") }
+        try expect(app.folderSelection == quickFolder.id && app.filteredMeetings.contains { $0.id == movedMeeting.id },
+                   "Selecting an existing meeting must populate its destination folder and keep the detail selected")
+        app.busy = true
+        NotificationCenter.default.post(name: Notification.Name("PosleMoveMeeting"), object: movedMeeting.id)
+        try await settle(main) { ids(main).contains("folder.move.to.none") }
+        try press(main, "folder.move.to.none")
+        try await settle(main) { app.folderID(for: movedMeeting.id) == nil && app.selection == movedMeeting.id && !ids(main).contains("folder.move.cancel") }
+        try expect(app.folderSelection == nil && app.filteredMeetings.contains { $0.id == movedMeeting.id }, "Move must follow the destination instead of displaying a meeting under its previous folder")
+        app.busy = false
+        let movedRevision = app.notes.context(for: movedMeeting.id).revision
+        NotificationCenter.default.post(name: Notification.Name("PosleMoveMeeting"), object: movedMeeting.id)
+        try await settle(main) { ids(main).contains("folder.move.to.none") }
+        try press(main, "folder.move.to.none")
+        try await settle(main) { !ids(main).contains("folder.move.cancel") }
+        try expect(app.notes.context(for: movedMeeting.id).revision == movedRevision, "Selecting the current destination must not create a new context revision")
+        try press(main, "folder.select." + quickFolder.id)
+        try await settle(main) { ids(main).contains("folder.current.settings") }
+        try press(main, "folder.current.settings")
+        try await settle(main) { ids(main).contains("folder.delete") }
+        let settingsRevision = app.notes.folder(quickFolder.id)?.revision
+        try press(main, "folder.save")
+        try await settle(main) { !ids(main).contains("folder.save") }
+        try expect(app.notes.folder(quickFolder.id)?.revision == settingsRevision, "Saving unchanged folder settings must preserve profile revision")
+        try press(main, "folder.current.settings")
+        try await settle(main) { ids(main).contains("folder.delete") }
+        try press(main, "folder.delete")
+        try await settle(main) { ids(main).contains("folder.delete.confirm") }
+        try press(main, "folder.delete.confirm")
+        try await settle(main) { app.notes.folder(quickFolder.id) == nil && !ids(main).contains("folder.delete") }
+        try expect(app.meetings.contains { $0.id == movedMeeting.id }, "Deleting a folder through native controls must retain the existing meeting")
+        print("PASS: native empty-folder picker, destination move and confirmed deletion preserve meetings")
+
         var english = LibraryFolder(name: "Английский")
         english.overrides.features = FolderFeatureOverrides(); english.overrides.features?.cards = true; english.overrides.features?.tasks = true
         english.overrides.language = "en"; english.overrides.generateCards = true
@@ -96,6 +164,12 @@ enum FolderNativeChecks {
         work.overrides.features = FolderFeatureOverrides(); work.overrides.features?.cards = false; work.overrides.features?.tasks = true
         guard let savedWork = app.notes.saveFolder(work) else { throw AppError.message(app.notes.error ?? "Cannot create work folder") }
         try await settle(main) { ids(main).contains("folder.select." + savedWork.id) }
+        var lessonNote = CapturedNote(text: "Повторить вежливые просьбы и подготовить три примера к следующему занятию.", title: "К следующему уроку", folderID: english.id)
+        lessonNote.meetingID = meeting.id
+        guard app.notes.save(lessonNote) != nil else { throw AppError.message(app.notes.error ?? "Cannot prepare synthetic lesson note") }
+        app.librarySection = "meetings"; app.folderSelection = english.id; app.selection = meeting.id; app.tab = "notes"; app.loadSelection()
+        try await settle(main) { ids(main).contains("meeting.folder") }
+        try snapshot(main.view, root.appendingPathComponent("folders-workflow.png"))
         try press(main, "folder.select." + savedWork.id)
         try await settle(main) { app.folderSelection == savedWork.id && !ids(main).contains("library.cards") }
         try expect(!app.filteredMeetings.contains(where: { $0.id == meeting.id }), "Different folder must not show English meeting")
@@ -114,7 +188,9 @@ enum FolderNativeChecks {
         defer { tasks.close() }
         try await settle(tasks) { ids(tasks).contains("tasks.row." + englishTask.id) }
         try expect(!ids(tasks).contains("tasks.row." + workTask.id), "English task list must hide another folder's task")
-        app.folderSelection = savedWork.id
+        app.librarySection = "tasks"
+        try press(main, "folder.select." + savedWork.id)
+        try expect(app.librarySection == "tasks", "Switching folders with tasks enabled must preserve the tasks workspace")
         try await settle(tasks) { ids(tasks).contains("tasks.row." + workTask.id) && !ids(tasks).contains("tasks.row." + englishTask.id) }
         app.folderSelection = nil
         try await settle(tasks) { ids(tasks).contains("tasks.row." + workTask.id) && ids(tasks).contains("tasks.row." + englishTask.id) }
@@ -157,10 +233,50 @@ enum FolderNativeChecks {
         try? snapshot(host.view, URL(fileURLWithPath: ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] ?? "/private/tmp").appendingPathComponent("folders-failure.png"))
         throw AppError.message("Folder UI did not reach expected state. IDs: " + ids(host).sorted().joined(separator: ", "))
     }
-    private static func ids(_ host: Host) -> Set<String> { Set(nodes(host.view).compactMap(\.identifier)) }
+    private static func roots(_ host: Host) -> [NSView] {
+        var result: [NSView] = [host.view]
+        func sheets(_ window: NSWindow) {
+            for sheet in window.sheets { if let view = sheet.contentView { result.append(view) }; sheets(sheet) }
+        }
+        sheets(host.window); return result
+    }
+    private static func ids(_ host: Host) -> Set<String> { Set(roots(host).flatMap(nodes).compactMap(\.identifier)) }
+    private static func editName(_ host: Host, text: String) throws {
+        func fields(_ view: NSView) -> [NSTextField] { (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields) }
+        guard let field = roots(host).reversed().flatMap(fields).first(where: { $0.placeholderString == "Название папки" }) else { throw AppError.message("Native folder name field missing") }
+        field.window?.makeFirstResponder(field)
+        guard let editor = field.currentEditor() as? NSTextView else { throw AppError.message("Native folder name editor missing") }
+        let range = NSRange(location: 0, length: (editor.string as NSString).length)
+        guard editor.shouldChangeText(in: range, replacementString: text) else { throw AppError.message("Native folder name change rejected") }
+        editor.replaceCharacters(in: range, with: text); editor.didChangeText()
+    }
+    private static func doubleClick(_ host: Host, _ identifier: String) throws {
+        guard let node = roots(host).flatMap(nodes).first(where: { $0.identifier == identifier }), let frame = node.frame else { throw AppError.message("Native folder row geometry missing") }
+        host.window.makeKeyAndOrderFront(nil)
+        let point = host.window.convertPoint(fromScreen: NSPoint(x: frame.midX, y: frame.midY))
+        for count in 1...2 {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.window.windowNumber, context: nil, eventNumber: count, clickCount: count, pressure: type == .leftMouseDown ? 1 : 0) else { throw AppError.message("Native double-click event missing") }
+                host.window.sendEvent(event)
+            }
+        }
+    }
     private static func press(_ host: Host, _ identifier: String) throws {
-        let matching = nodes(host.view).filter { $0.identifier == identifier }
+        let matching = roots(host).flatMap(nodes).filter { $0.identifier == identifier }
         for node in matching { if node.press() { return } }
+        if let node = matching.first, let frame = node.frame {
+            let point = NSPoint(x: frame.midX, y: frame.midY)
+            var windows = [host.window]
+            func addSheets(_ window: NSWindow) { for sheet in window.sheets { windows.append(sheet); addSheets(sheet) } }
+            addSheets(host.window)
+            if let window = windows.reversed().first(where: { $0.frame.contains(point) }) {
+                window.makeKeyAndOrderFront(nil)
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    if let event = NSEvent.mouseEvent(with: type, location: window.convertPoint(fromScreen: point), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) { window.sendEvent(event) }
+                }
+                return
+            }
+        }
         throw AppError.message("Folder control cannot be pressed: " + identifier + " types: " + matching.map { String(describing: type(of: $0.object)) }.joined(separator: ", "))
     }
     private static func snapshot(_ view: NSView, _ url: URL) throws {
@@ -189,6 +305,13 @@ enum FolderNativeChecks {
             return object.responds(to: selector) ? object.perform(selector)?.takeUnretainedValue() : nil
         }
         var identifier: String? { modern?.accessibilityIdentifier() ?? get("accessibilityIdentifier") as? String }
+        var frame: NSRect? {
+            if let modern { return modern.accessibilityFrame() }
+            let selector = NSSelectorFromString("accessibilityFrame")
+            guard object.responds(to: selector), let method = object.method(for: selector) else { return nil }
+            typealias Frame = @convention(c) (AnyObject, Selector) -> NSRect
+            return unsafeBitCast(method, to: Frame.self)(object, selector)
+        }
         var children: [Any] { modern?.accessibilityChildren() ?? get("accessibilityChildren") as? [Any] ?? [] }
         func press() -> Bool {
             if let cell = object as? NSButtonCell, let button = cell.controlView as? NSButton, button.isEnabled { button.performClick(nil); return true }

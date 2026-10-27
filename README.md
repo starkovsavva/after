@@ -36,6 +36,10 @@
 
 <a href="docs/screenshots/features.png"><img src="docs/screenshots/features.png" width="680" alt="Настройки возможностей: отдельные переключатели карточек, задач и проектов, календаря, помощника и смыслового поиска"></a>
 
+**Папки в библиотеке:** создавайте папки, перемещайте встречи и переключайтесь между рабочими контекстами.
+
+<a href="docs/screenshots/folders.png"><img src="docs/screenshots/folders.png" width="680" alt="Папки Английский и Работа в боковой панели; заметки выбранной встречи"></a>
+
 **Настройки папки:** свой язык, стиль конспекта, генерация карточек и локальная или облачная модель.
 
 <a href="docs/screenshots/folder-profile.png"><img src="docs/screenshots/folder-profile.png" width="680" alt="Папка Английский: язык конспекта, приоритеты и генерация карточек по умолчанию"></a>

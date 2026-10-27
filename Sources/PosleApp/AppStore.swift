@@ -15,6 +15,7 @@ final class AppStore: ObservableObject {
     let trackerSync: TrackerSyncCoordinator
     let updates = AppUpdateController()
     let voice = VoiceCommandController()
+    let meetingTitleEdits = MeetingTitleEdits()
     var assistantCardMeetingID: String?
     let jobs: BackgroundJobsController
     private var jobsSubscription: AnyCancellable?

@@ -18,6 +18,7 @@ struct StudyCardContent: View {
     var showSourceHint = false
     var actions: CardActionsView? = nil
     let makeExample: () -> Void
+    private var profileSettings: AppSettings { app.effectiveSettings(for: sourceMeetingID) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -79,10 +80,10 @@ struct StudyCardContent: View {
                         .help("Создать пример с этой карточкой; исходная цитата сохранится")
                     Spacer()
                 }
-                if app.settings.mode == "cloud" {
-                    Text(app.settings.cloudProvider == "chatgpt"
+                if profileSettings.mode == "cloud" {
+                    Text(profileSettings.cloudProvider == "chatgpt"
                          ? "ChatGPT получит карточку и контекст. Используются лимиты вашей подписки."
-                         : "Для примера \(app.settings.cloudProviderTitle) получит карточку и контекст. API оплачивается отдельно.")
+                         : "Для примера \(profileSettings.cloudProviderTitle) получит карточку и контекст. API оплачивается отдельно.")
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

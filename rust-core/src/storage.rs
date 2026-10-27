@@ -202,6 +202,23 @@ pub fn update_meta(root: &Path, id: &str, patch: &Value) -> Result<Value> {
     Ok(meta)
 }
 
+/// Rename only the title the editor opened, under the shared meeting lock.
+/// Other metadata, including worker updates and unknown fields, stays intact.
+pub fn rename_meeting(root: &Path, id: &str, title: &str, expected_title: &str) -> Result<Value> {
+    let title = title.trim();
+    ensure!(!title.is_empty(), "Введите название встречи.");
+    ensure!(title.chars().count() <= 500, "Название слишком длинное. Максимум — 500 символов.");
+    ensure!(!title.chars().any(char::is_control), "Название должно быть в одну строку.");
+    let directory = meeting_directory(root, id)?;
+    let _lock = meeting_lock(&directory)?;
+    let mut meta = compatible_meta(regular_json(&directory.join("meta.json"))?, id)?;
+    ensure!(meta["title"].as_str() == Some(expected_title),
+        "Название изменено в другом окне. Ваш вариант остался в поле.");
+    meta["title"] = json!(title);
+    atomic_json(&directory.join("meta.json"), &meta)?;
+    Ok(meta)
+}
+
 /// Save only a user's overview edit against the summary they actually opened.
 /// The meeting lock covers the comparison and commit, never model inference.
 pub fn save_summary_overview(root: &Path, id: &str, text: &str, expected_overview: &str, expected_generated_at: f64) -> Result<Value> {
@@ -441,6 +458,46 @@ mod tests {
         assert_eq!(changed["title"], meta["title"]);
         assert_eq!(changed["speakerNames"]["speaker_0"], "Мария");
         assert_eq!(changed["futureMetadata"], json!({"preserve": true}));
+    }
+
+    #[test]
+    fn meeting_rename_is_trimmed_and_preserves_latest_worker_fields() {
+        let temp = TestDirectory::new(); let meta = temp.meeting(); let root = temp.0.join("data");
+        let id = meta["id"].as_str().unwrap();
+        let old_title = meta["title"].as_str().unwrap();
+        let directory = meeting_directory(&root, id).unwrap();
+        let mut worker = meta.clone(); worker["duration"] = json!(72.5);
+        worker["status"] = json!("ready"); worker["futureField"] = json!({"keep":true});
+        atomic_json(&directory.join("meta.json"), &worker).unwrap();
+        let renamed = rename_meeting(&root, id, "  Английский — урок 2  ", old_title).unwrap();
+        assert_eq!(renamed["title"], "Английский — урок 2");
+        worker["title"] = json!("Английский — урок 2"); assert_eq!(renamed, worker);
+        assert_eq!(regular_json(&directory.join("meta.json")).unwrap(), worker);
+        let stale = rename_meeting(&root, id, "My stale name", old_title);
+        assert!(stale.is_err()); assert_eq!(regular_json(&directory.join("meta.json")).unwrap(), worker);
+        for invalid in [" ".to_owned(), "line\nbreak".to_owned(), "x".repeat(501)] {
+            assert!(rename_meeting(&root, id, &invalid, "Английский — урок 2").is_err());
+            assert_eq!(regular_json(&directory.join("meta.json")).unwrap(), worker);
+        }
+    }
+
+    #[test]
+    fn meeting_rename_rechecks_title_after_waiting_for_shared_lock() {
+        let temp = TestDirectory::new(); let meta = temp.meeting(); let root = temp.0.join("data");
+        let id = meta["id"].as_str().unwrap().to_owned(); let expected = meta["title"].as_str().unwrap().to_owned();
+        let directory = meeting_directory(&root, &id).unwrap(); let lock = meeting_lock(&directory).unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel(); let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap(); tx.send(rename_meeting(&root, &id, "Stale editor", &expected)).unwrap();
+        });
+        started_rx.recv().unwrap();
+        let early = rx.recv_timeout(std::time::Duration::from_millis(250));
+        let waited = matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+        let mut latest = meta; latest["title"] = json!("Other editor"); latest["duration"] = json!(45);
+        atomic_json(&directory.join("meta.json"), &latest).unwrap(); drop(lock);
+        let result = match early { Ok(value) => value, Err(_) => rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap() };
+        thread.join().unwrap(); assert!(waited); assert!(result.is_err());
+        assert_eq!(regular_json(&directory.join("meta.json")).unwrap(), latest);
     }
 
     #[test]

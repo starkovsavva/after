@@ -24,7 +24,7 @@ struct FolderSettingsView: View {
         _draft = State(initialValue: folder); _baseline = State(initialValue: folder); self.isNew = isNew
         self.onSaved = onSaved; self.onDeleted = onDeleted
     }
-    private var locked: Bool { app.isRecording || app.startingRecording || app.stoppingRecording || app.busy || app.jobs.activeCount > 0 }
+    private var locked: Bool { app.isRecording || app.startingRecording || app.stoppingRecording || app.isTerminating }
     private var inherited: AppSettings { app.settings }
     private var effective: AppSettings { draft.overrides.apply(to: inherited) }
     var body: some View {
@@ -85,7 +85,7 @@ struct FolderSettingsView: View {
                         if app.folderSelection == draft.id { app.folderSelection = nil }
                         onDeleted?(); dismiss()
                     } else { failure = app.notes.error ?? "Не удалось удалить папку." }
-                }
+                }.accessibilityIdentifier("folder.delete.confirm")
                 Button("Отмена", role: .cancel) {}
             } message: { Text("Встречи и заметки останутся в библиотеке. Для них будут действовать настройки приложения.") }
     }
@@ -247,6 +247,7 @@ struct FolderSettingsView: View {
     }
     private func save() {
         draft.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !isNew && draft == baseline { UnsavedEditorRegistry.remove(id: editorID); dismiss(); return }
         guard let saved = app.notes.saveFolder(draft) else { failure = app.notes.error ?? "Не удалось сохранить папку."; return }
         baseline = saved; draft = saved; UnsavedEditorRegistry.remove(id: editorID)
         onSaved?(saved); dismiss()

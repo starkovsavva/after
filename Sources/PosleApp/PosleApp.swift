@@ -43,6 +43,14 @@ struct PosleApp: App {
                 Button("Поиск по библиотеке…") { store.openGlobalSearch() }.keyboardShortcut("k")
             }
             CommandMenu("Встреча") {
+                Button("Переименовать встречу…") {
+                    if let meeting = store.selected {
+                        store.librarySection = "meetings"
+                        store.meetingTitleEdits.begin(meeting)
+                    }
+                }.keyboardShortcut("r", modifiers: [.command, .shift])
+                    .disabled(store.selected == nil || store.captureMeetingID == store.selection)
+                Divider()
                 Button("Конспект") { store.librarySection = "meetings"; store.tab = "summary" }.keyboardShortcut("1")
                 Button("Транскрипт") { store.librarySection = "meetings"; store.tab = "transcript" }.keyboardShortcut("2")
                 if store.isFeatureEnabled(.cards) {
@@ -154,6 +162,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task {
                 do { try await RecordingNativeChecks.run(); NSApp.terminate(nil) }
                 catch { fputs("Native recording check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-meeting-rename") {
+            Task { @MainActor in
+                do { try await MeetingRenameNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native meeting rename failed: \(error)\n", stderr); exit(1) }
             }
             return
         }

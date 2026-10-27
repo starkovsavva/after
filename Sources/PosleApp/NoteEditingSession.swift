@@ -36,13 +36,13 @@ struct NoteEditingSession {
                      meetingID: preserveMeeting ? draft.meetingID : nil,
                      timestamp: preserveMeeting ? draft.timestamp : nil,
                      sourceURL: draft.sourceURL, owner: draft.owner, due: draft.due,
-                     completed: draft.completed, title: draft.title, contentRTF: draft.contentRTF, folder: draft.folder, tags: draft.tags, pinned: draft.pinned)
+                     completed: draft.completed, title: draft.title, contentRTF: draft.contentRTF, folder: draft.folder, folderID: draft.folderID, tags: draft.tags, pinned: draft.pinned)
     }
     private static func sameEditable(_ left: CapturedNote, _ right: CapturedNote) -> Bool {
         left.text == right.text && left.kind == right.kind && left.meetingID == right.meetingID &&
         left.timestamp == right.timestamp && left.sourceURL == right.sourceURL && left.owner == right.owner &&
         left.due == right.due && left.completed == right.completed && left.title == right.title &&
-        left.contentRTF == right.contentRTF && left.folder == right.folder && left.tags == right.tags &&
+        left.contentRTF == right.contentRTF && left.folder == right.folder && left.folderID == right.folderID && left.tags == right.tags &&
         left.pinned == right.pinned && left.trashedAt == right.trashedAt
     }
 }

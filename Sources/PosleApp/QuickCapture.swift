@@ -88,11 +88,11 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
         guard let store else { return }
         if let panel { panel.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
         let candidate = store.settings.notesSaveToActiveMeeting ? (store.captureMeetingID ?? (store.isPlaying ? store.selection : nil)) : nil
-        let target = candidate.flatMap { id in store.noteMeetings.contains(where: { $0.id == id }) ? id : nil }
+        let target = candidate.flatMap { id in store.allNoteMeetings.contains(where: { $0.id == id }) ? id : nil }
         let timestamp: Double? = !store.settings.notesAutoTimestamp ? nil : target == store.captureMeetingID && store.isRecording
             ? max(0, Date().timeIntervalSince(store.recordingDate ?? Date())) : target != nil ? store.playbackTime : nil
-        let view = QuickCaptureView(notes: store.notes, initialMeetingID: target, initialTimestamp: timestamp, draft: draft) { [weak self] in self?.panel?.close() }.environmentObject(store)
-        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 490, height: 280), styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+        let view = QuickCaptureView(notes: store.notes, initialMeetingID: target, initialTimestamp: timestamp, initialFolderID: store.folderSelection, draft: draft) { [weak self] in self?.panel?.close() }.environmentObject(store)
+        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 490, height: 320), styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
         window.title = "Быстрая заметка"; window.isFloatingPanel = true; window.level = .floating
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]; window.hidesOnDeactivate = false
         window.isReleasedWhenClosed = false; window.delegate = self; window.contentView = NSHostingView(rootView: view)
@@ -104,7 +104,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
     func markImportant() {
         guard let store else { return }
         let meetingID = store.captureMeetingID ?? (store.transcript != nil ? store.selection : nil)
-        guard let meetingID, store.noteMeetings.contains(where: { $0.id == meetingID }) else { show(); return }
+        guard let meetingID, store.allNoteMeetings.contains(where: { $0.id == meetingID }) else { show(); return }
         let time = store.isRecording && meetingID == store.captureMeetingID
             ? max(0, Date().timeIntervalSince(store.recordingDate ?? Date())) : store.playbackTime
         if let note = store.notes.capture(text: "Важный момент", kind: "important", meetingID: meetingID, timestamp: time) {
@@ -128,22 +128,48 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
 /// meeting cannot silently attach an unfinished thought to the wrong recording.
 @MainActor
 final class QuickCaptureDraft: ObservableObject {
-    @Published var text = ""
+    private let editorID = UUID()
+    @Published var text = "" {
+        didSet { UnsavedEditorRegistry.set(id: editorID, title: "Быстрая заметка", dirty: !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+    }
     @Published var kind = "note"
     @Published var meetingID = ""
+    private(set) var folderID: String?
     private(set) var sourceMeetingID: String?
     private(set) var sourceTimestamp: Double?
     private var initialized = false
-    func prepare(meetingID: String?, timestamp: Double?) {
+    deinit {
+        let id = editorID
+        Task { @MainActor in UnsavedEditorRegistry.remove(id: id) }
+    }
+    func prepare(meetingID: String?, timestamp: Double?, folderID: String? = nil) {
         guard !initialized || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        self.meetingID = meetingID ?? ""; sourceMeetingID = meetingID; sourceTimestamp = timestamp; initialized = true
+        self.meetingID = meetingID ?? ""; self.folderID = folderID; sourceMeetingID = meetingID; sourceTimestamp = timestamp; initialized = true
     }
     var timestamp: Double? { meetingID == sourceMeetingID ? sourceTimestamp : nil }
     func destination(in meetings: [Meeting]) -> (meetingID: String?, timestamp: Double?) {
         guard let meeting = meetings.first(where: { $0.id == meetingID && $0.libraryKind != "cards" }) else { return (nil, nil) }
         return (meeting.id, timestamp)
     }
-    func saved() { text = ""; kind = "note"; meetingID = ""; sourceMeetingID = nil; sourceTimestamp = nil; initialized = false }
+    func saved() { text = ""; kind = "note"; meetingID = ""; folderID = nil; sourceMeetingID = nil; sourceTimestamp = nil; initialized = false }
+    func settings(in app: AppStore) -> AppSettings {
+        app.effectiveSettings(for: meetingID.isEmpty ? nil : meetingID, folderID: folderID)
+    }
+    var hasMeeting: Bool { !meetingID.isEmpty }
+    @discardableResult func save(in app: AppStore) -> CapturedNote? {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        if hasMeeting && !app.allNoteMeetings.contains(where: { $0.id == meetingID }) {
+            app.notes.error = "Встреча недоступна. Выберите другую встречу или сохранение без встречи."; return nil
+        }
+        if !hasMeeting, let folderID, app.notes.folder(folderID) == nil {
+            app.notes.error = "Папка удалена. Выберите папку для заметки."; return nil
+        }
+        let target = destination(in: app.allNoteMeetings)
+        guard let note = app.notes.capture(text: text, kind: kind == "task" && !settings(in: app).features.tasks ? "note" : kind,
+            meetingID: target.meetingID, timestamp: target.timestamp, folderID: target.meetingID == nil ? folderID : nil) else { return nil }
+        saved(); return note
+    }
+    func selectFolder(_ id: String?) { folderID = id; meetingID = "" }
 }
 
 #if DEBUG
@@ -176,7 +202,35 @@ extension QuickCaptureController {
         try expect(controller.panel != nil && controller.panel !== first && controller.draft.text == "Черновик после закрытия окна", "A newly opened panel must reuse the retained draft")
         controller.panel?.close()
         try expect(controller.draft.text == "Черновик после закрытия окна", "Hide/Escape close path must retain the draft")
-        print("PASS: quick-capture draft retains text/type/destination/zero timestamp across native close and reopen; successful save resets it")
+        try expect(UnsavedEditorRegistry.hasUnsaved, "A hidden quick capture must participate in the app's quit/update draft guard")
+        controller.draft.saved()
+        print("PASS: quick-capture draft retains text/type/destination/zero timestamp across native close and reopen; successful save resets it and releases quit protection")
+    }
+    static func verifyFolderScope(store app: AppStore) throws {
+        func expect(_ condition: Bool, _ message: String) throws { if !condition { throw AppError.message(message) } }
+        guard let english = app.notes.saveFolder(LibraryFolder(name: "Занятия · быстрые заметки")),
+              let work = app.notes.saveFolder(LibraryFolder(name: "Работа · быстрые заметки")) else { throw AppError.message(app.notes.error ?? "Cannot create quick capture folders") }
+        let value = QuickCaptureDraft()
+        defer { value.saved() }
+        value.prepare(meetingID: nil, timestamp: nil, folderID: english.id); value.text = "Повторить новые выражения"
+        app.folderSelection = work.id
+        value.prepare(meetingID: nil, timestamp: nil, folderID: work.id)
+        guard let note = value.save(in: app) else { throw AppError.message(app.notes.error ?? "Cannot save pinned capture") }
+        try expect(note.folderID == english.id, "Closing, switching folders and reopening must retain the draft's captured folder")
+        value.prepare(meetingID: nil, timestamp: nil); value.text = "Мысль без папки"
+        guard let base = value.save(in: app) else { throw AppError.message(app.notes.error ?? "Cannot save base capture") }
+        try expect(base.folderID == nil, "An explicitly captured base draft must not inherit the current sidebar folder")
+        value.prepare(meetingID: nil, timestamp: nil, folderID: english.id); value.text = "Не потерять после удаления папки"
+        guard let current = app.notes.folder(english.id), app.notes.deleteFolder(current) else { throw AppError.message("Cannot remove quick capture folder") }
+        try expect(value.save(in: app) == nil && !value.text.isEmpty, "A deleted folder must block silent redirection and preserve typed text")
+        value.selectFolder(work.id)
+        guard let recovered = value.save(in: app) else { throw AppError.message(app.notes.error ?? "Cannot select another destination") }
+        try expect(recovered.folderID == work.id, "Explicit destination selection must recover the same draft")
+        value.prepare(meetingID: "removed-meeting", timestamp: 7, folderID: work.id); value.text = "Мысль для удалённой встречи"
+        try expect(value.save(in: app) == nil && value.meetingID == "removed-meeting" && !value.text.isEmpty,
+                   "A missing meeting must preserve the draft and require an explicit destination")
+        app.folderSelection = nil; app.notes.error = nil
+        print("PASS: quick-capture folder stays pinned across sidebar changes; base scope, missing destinations and explicit recovery preserve drafts")
     }
 }
 #endif
@@ -186,37 +240,42 @@ struct QuickCaptureView: View {
     @ObservedObject var notes: NotesStore
     let initialMeetingID: String?
     let initialTimestamp: Double?
+    let initialFolderID: String?
     let close: () -> Void
     @ObservedObject private var draft: QuickCaptureDraft
-    private var destination: (meetingID: String?, timestamp: Double?) { draft.destination(in: app.noteMeetings) }
+    private var destination: (meetingID: String?, timestamp: Double?) { draft.destination(in: app.allNoteMeetings) }
     @State private var showingError = false
-    @FocusState private var focused: Bool
-    init(notes: NotesStore, initialMeetingID: String?, initialTimestamp: Double?, draft: QuickCaptureDraft? = nil, close: @escaping () -> Void) {
-        self.notes = notes; self.initialMeetingID = initialMeetingID; self.initialTimestamp = initialTimestamp
+    @State private var focused = false
+    init(notes: NotesStore, initialMeetingID: String?, initialTimestamp: Double?, initialFolderID: String? = nil, draft: QuickCaptureDraft? = nil, close: @escaping () -> Void) {
+        self.notes = notes; self.initialMeetingID = initialMeetingID; self.initialTimestamp = initialTimestamp; self.initialFolderID = initialFolderID
         self.draft = draft ?? QuickCaptureDraft(); self.close = close
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ZStack(alignment: .topLeading) {
-                if draft.text.isEmpty { Text("Новая заметка…").font(AppTypography.body).foregroundStyle(.secondary).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false) }
-                TextEditor(text: $draft.text).font(AppTypography.body).scrollContentBackground(.hidden).focused($focused).frame(height: 106)
-                    .accessibilityLabel("Текст быстрой заметки")
-            }.padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 9))
+            PlainNoteInput(text: $draft.text, placeholder: "Новая заметка…", isFocused: $focused, accessibilityLabel: "Текст быстрой заметки")
+                .frame(height: 106).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 9))
                 .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(focused ? Ink.accent.opacity(0.7) : Ink.line))
             HStack(spacing: 12) {
                 Picker("Тип", selection: Binding(get: {
-                    draft.kind == "task" && !app.isFeatureEnabled(.tasks) ? "note" : draft.kind
+                    draft.kind == "task" && !draft.settings(in: app).features.tasks ? "note" : draft.kind
                 }, set: { draft.kind = $0 })) {
                     Text("Заметка").tag("note"); Text("Важно").tag("important"); Text("Вопрос").tag("question")
-                    if app.isFeatureEnabled(.tasks) { Text("Задача").tag("task") }
+                    if draft.settings(in: app).features.tasks { Text("Задача").tag("task") }
                 }
                     .labelsHidden().frame(width: 116).accessibilityLabel("Тип заметки")
                 Picker("Куда сохранить", selection: $draft.meetingID) {
-                    Text("Входящие").tag("")
-                    if !draft.meetingID.isEmpty && !app.noteMeetings.contains(where: { $0.id == draft.meetingID }) { Text("Входящие · встреча недоступна").tag(draft.meetingID) }
-                    ForEach(app.noteMeetings) { Text($0.title).tag($0.id) }
+                    Text("Без встречи").tag("")
+                    if !draft.meetingID.isEmpty && !app.allNoteMeetings.contains(where: { $0.id == draft.meetingID }) { Text("Встреча недоступна · выберите другую").tag(draft.meetingID) }
+                    ForEach(app.allNoteMeetings) { Text($0.title).tag($0.id) }
                 }.labelsHidden().accessibilityLabel("Куда сохранить заметку")
                     .help("Куда сохранить заметку")
+            }
+            if !draft.hasMeeting {
+                Picker("Папка", selection: Binding(get: { draft.folderID ?? "" }, set: { draft.selectFolder($0.isEmpty ? nil : $0) })) {
+                    Text("Без папки").tag("")
+                    ForEach(app.notes.folders) { Text($0.name).tag($0.id) }
+                    if let id = draft.folderID, app.notes.folder(id) == nil { Text("Удалённая папка · выберите другую").tag(id) }
+                }.font(AppTypography.caption).accessibilityLabel("Папка быстрой заметки")
             }
             HStack(spacing: 10) {
                 if let error = notes.error {
@@ -236,13 +295,12 @@ struct QuickCaptureView: View {
                 Button("Скрыть", action: close).keyboardShortcut(.cancelAction)
                     .help("Закрыть окно и оставить черновик до выхода из приложения")
                 Button("Сохранить") {
-                    let target = destination
-                    if notes.capture(text: draft.text, kind: draft.kind == "task" && !app.isFeatureEnabled(.tasks) ? "note" : draft.kind, meetingID: target.meetingID, timestamp: target.timestamp, folderID: target.meetingID == nil ? app.folderSelection : nil) != nil { draft.saved(); close() }
+                    if draft.save(in: app) != nil { close() }
                 }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command])
                     .disabled(draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).help("Сохранить · ⌘↩")
             }
         }.padding(18).frame(width: 490).background(Ink.paper).appControlDefaults()
             .modifier(PosleThemeRoot(root: notes.root))
-            .onAppear { draft.prepare(meetingID: initialMeetingID, timestamp: initialTimestamp); focused = true }
+            .onAppear { draft.prepare(meetingID: initialMeetingID, timestamp: initialTimestamp, folderID: initialFolderID); focused = true }
     }
 }

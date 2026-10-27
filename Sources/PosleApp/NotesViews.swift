@@ -6,7 +6,13 @@ import UniformTypeIdentifiers
 // Imported card decks share library storage with meetings but are not valid
 // destinations for meeting notes. Keep this independent of the sidebar filter.
 extension AppStore {
-    var noteMeetings: [Meeting] { meetings.filter { $0.libraryKind != "cards" && (folderSelection == nil || folderID(for: $0.id) == folderSelection) } }
+    var allNoteMeetings: [Meeting] { meetings.filter { $0.libraryKind != "cards" } }
+    var noteMeetings: [Meeting] { allNoteMeetings.filter { folderSelection == nil || folderID(for: $0.id) == folderSelection } }
+    /// A note may explicitly override its linked meeting's folder. Match the
+    /// worker's precedence when describing where an AI action will run.
+    func settingsForNote(_ note: CapturedNote) -> AppSettings {
+        effectiveSettings(for: note.folderID == nil ? note.meetingID : nil, folderID: note.folderID)
+    }
 }
 
 private func noteKindTitle(_ kind: String) -> String {
@@ -32,7 +38,7 @@ struct NotesWorkspaceView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     contextLine
-                    NoteComposer(text: text, kind: kind, placeholder: "Новая заметка…") {
+                    NoteComposer(text: text, kind: kind, placeholder: "Новая заметка…", documentID: "meeting:" + meeting.id) {
                         let time = app.settings.notesAutoTimestamp ? (app.isRecording && app.captureMeetingID == meeting.id
                             ? Date().timeIntervalSince(app.recordingDate ?? Date()) : (app.transcript == nil ? nil : app.playbackTime)) : nil
                         if let saved = notes.capture(text: text.wrappedValue, kind: kind.wrappedValue, meetingID: meeting.id, timestamp: time) {
@@ -111,7 +117,7 @@ struct NotesInboxView: View {
                         TextField("Поиск в заметках", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
                             .accessibilityLabel("Поиск во входящих заметках")
                     }
-                    NoteComposer(text: text, kind: kind, placeholder: "Новая заметка…") {
+                    NoteComposer(text: text, kind: kind, placeholder: "Новая заметка…", documentID: "capture:" + draftKey) {
                         if notes.capture(text: text.wrappedValue, kind: kind.wrappedValue) != nil {
                             text.wrappedValue = ""
                             if app.showingCaptureDrafts { app.showingCaptureDrafts = false }
@@ -135,20 +141,18 @@ private struct NoteComposer: View {
     @Binding var text: String
     @Binding var kind: String
     let placeholder: String
+    let documentID: String
     let save: () -> Void
     @State private var expanded = false
-    @FocusState private var focused: Bool
+    @State private var focused = false
     private var editorHeight: CGFloat {
         if expanded { return 132 }
         return min(112, max(68, CGFloat(text.components(separatedBy: .newlines).count) * 20 + 12))
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ZStack(alignment: .topLeading) {
-                if text.isEmpty { Text(placeholder).font(AppTypography.body).foregroundStyle(.secondary).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false) }
-                TextEditor(text: $text).font(AppTypography.body).scrollContentBackground(.hidden).frame(height: editorHeight)
-                    .focused($focused).accessibilityLabel(placeholder)
-            }
+            PlainNoteInput(text: $text, placeholder: placeholder, isFocused: $focused, documentID: documentID)
+                .frame(height: editorHeight)
             HStack(spacing: 10) {
                 Picker("Тип заметки", selection: $kind) {
                     ForEach(app.isFeatureEnabled(.tasks) ? ["note", "important", "question", "task"] : ["note", "important", "question"], id: \.self) { value in Label(noteKindTitle(value), systemImage: noteKindIcon(value)).tag(value) }
@@ -231,6 +235,7 @@ struct NoteEditorView: View {
     init(notes: NotesStore, note: CapturedNote) { self.notes = notes; _session = State(initialValue: NoteEditingSession(note: note)) }
     private var persisted: CapturedNote? { notes.workspace.notes.first { $0.id == session.baseline.id } }
     private var current: CapturedNote { persisted ?? session.baseline }
+    private var profileSettings: AppSettings { app.settingsForNote(session.draft) }
     private var dirty: Bool { session.hasUnsavedChanges }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -271,7 +276,9 @@ struct NoteEditorView: View {
                         if session.draft.meetingID != (value.isEmpty ? nil : value) { session.draft.timestamp = nil }; session.draft.meetingID = value.isEmpty ? nil : value
                     })) {
                         Text("Входящие · без встречи").tag("")
-                        if let id = session.draft.meetingID, !app.noteMeetings.contains(where: { $0.id == id }) { Text("Встреча недоступна").tag(id) }
+                        if let id = session.draft.meetingID, !app.noteMeetings.contains(where: { $0.id == id }) {
+                            Text(app.allNoteMeetings.first(where: { $0.id == id })?.title ?? "Встреча недоступна").tag(id)
+                        }
                         ForEach(app.noteMeetings) { Text($0.title).tag($0.id) }
                     }
                     if showingSource || !session.draft.sourceURL.isEmpty { TextField("Ссылка", text: $session.draft.sourceURL).textFieldStyle(.roundedBorder).accessibilityLabel("Ссылка на источник") }
@@ -305,11 +312,11 @@ struct NoteEditorView: View {
                             .disabled(app.busy || current.meetingID == nil || current.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             .help(current.meetingID == nil ? "Сначала прикрепите заметку к встрече" : "Дополнить заметку подтверждёнными деталями. Исходный текст сохранится.")
                         Spacer()
-                        Image(systemName: app.settings.mode == "cloud" ? "cloud" : "laptopcomputer").foregroundStyle(.secondary)
-                            .help(app.settings.mode == "cloud" ? "Облачный ИИ" : "ИИ на этом Mac")
+                        Image(systemName: profileSettings.mode == "cloud" ? "cloud" : "laptopcomputer").foregroundStyle(.secondary)
+                            .help(profileSettings.mode == "cloud" ? profileSettings.cloudProviderTitle : "ИИ на этом Mac")
                     }
-                    if app.settings.mode == "cloud" {
-                        Label("\(app.settings.cloudProviderTitle) получит пометку и выбранные фрагменты транскрипта. Аудио и вложения остаются на Mac.", systemImage: "cloud").font(AppTypography.control).foregroundStyle(.secondary)
+                    if profileSettings.mode == "cloud" {
+                        Label("\(profileSettings.cloudProviderTitle) получит пометку и выбранные фрагменты транскрипта. Аудио и вложения остаются на Mac.", systemImage: "cloud").font(AppTypography.control).foregroundStyle(.secondary)
                     }
                     if let expansion = current.expansion { NoteExpansionView(expansion: expansion, note: current) }
                 }.padding(24)
@@ -346,7 +353,7 @@ struct NoteEditorView: View {
     }
     private func refreshConflict() { notes.reload(); session.receive(persisted) }
     private func saveAsNew() {
-        let preserveMeeting = session.draft.meetingID.map { id in app.noteMeetings.contains { $0.id == id } } ?? true
+        let preserveMeeting = session.draft.meetingID.map { id in app.allNoteMeetings.contains { $0.id == id } } ?? true
         if let saved = notes.save(session.asNewNote(preserveMeeting: preserveMeeting)) {
             notes.notice = "Ваш текст сохранён новой заметкой. Вложения остались в исходной."
             session.didPersist(saved); UnsavedEditorRegistry.remove(id: editorID); dismiss()

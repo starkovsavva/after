@@ -11,7 +11,9 @@ struct MainView: View {
     @State private var confirmDelete = false
     @State private var filteringMeetings = false
     @State private var folderEditor: FolderEditorTarget?
-    @State private var creatingFolder = false
+    @State private var folderNameEditor: FolderNameTarget?
+    @State private var meetingFolderTarget: MeetingFolderTarget?
+    @State private var folderMeetingPicker: LibraryFolder?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,7 +57,11 @@ struct MainView: View {
         .task { await TrashMaintenance.run(app: store) }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("PosleEditFolder"))) { notification in
             guard let id = notification.object as? String, let folder = store.notes.folder(id) else { return }
-            creatingFolder = false; folderEditor = FolderEditorTarget(folder: folder)
+            folderEditor = FolderEditorTarget(folder: folder)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("PosleMoveMeeting"))) { notification in
+            guard let id = notification.object as? String, let meeting = store.meetings.first(where: { $0.id == id }) else { return }
+            meetingFolderTarget = MeetingFolderTarget(meeting: meeting)
         }
         .onReceive(NotificationCenter.default.publisher(for: .posleJobsChanged)) { _ in
             store.reloadLibrary()
@@ -112,9 +118,18 @@ struct MainView: View {
             }.frame(width: 700, height: 600).appControlDefaults()
         }
         .sheet(item: $folderEditor) { target in
-            FolderSettingsView(folder: target.folder, isNew: creatingFolder, onSaved: { saved in
-                if creatingFolder { store.folderSelection = saved.id; store.librarySection = "meetings" }
-            }).environmentObject(store)
+            FolderSettingsView(folder: target.folder).environmentObject(store)
+        }
+        .sheet(item: $folderNameEditor) { target in
+            FolderNameSheet(folder: target.folder, isNew: target.isNew) { saved in
+                if target.isNew { selectFolder(saved.id) }
+            }.environmentObject(store)
+        }
+        .sheet(item: $meetingFolderTarget) { target in
+            MeetingFolderMoveSheet(meeting: target.meeting).environmentObject(store)
+        }
+        .sheet(item: $folderMeetingPicker) { folder in
+            FolderMeetingPicker(folder: folder).environmentObject(store)
         }
         .sheet(isPresented: $store.showingSettings) { SettingsView(section: store.settingsSection).environmentObject(store) }
         .sheet(isPresented: $store.showingRecord) { RecordView().environmentObject(store) }
@@ -182,28 +197,33 @@ struct MainView: View {
 
     private var folderNavigation: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text("Папки").font(AppTypography.captionStrong).foregroundStyle(.secondary)
-                Spacer()
-                Button { creatingFolder = true; folderEditor = FolderEditorTarget(folder: LibraryFolder()) } label: {
-                    Image(systemName: "plus").frame(width: 22, height: 22)
-                }.buttonStyle(.plain).foregroundStyle(.secondary).help("Новая папка")
-                    .accessibilityLabel("Новая папка").accessibilityIdentifier("folder.new")
-            }.padding(.horizontal, 10)
+            Text("Папки").font(AppTypography.captionStrong).foregroundStyle(.secondary)
+                .padding(.horizontal, 10).padding(.bottom, 4)
             folderRow(nil, "Все папки", icon: "tray.full")
             ForEach(store.notes.folders) { folder in
                 folderRow(folder.id, folder.name, icon: "folder")
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { folderNameEditor = FolderNameTarget(folder: folder) })
                     .contextMenu {
-                        Button("Настройки папки…") { creatingFolder = false; folderEditor = FolderEditorTarget(folder: folder) }
+                        Button("Переименовать…") { folderNameEditor = FolderNameTarget(folder: folder) }
+                        Button("Переместить встречу сюда…") { folderMeetingPicker = folder }
+                        Divider()
+                        Button("Настройки папки…") { folderEditor = FolderEditorTarget(folder: folder) }
                     }
+                    .accessibilityAction(named: "Переименовать") { folderNameEditor = FolderNameTarget(folder: folder) }
             }
+            Button { folderNameEditor = FolderNameTarget(folder: LibraryFolder(), isNew: true) } label: {
+                Label("Новая папка…", systemImage: "folder.badge.plus")
+                    .frame(maxWidth: .infinity, alignment: .leading).font(AppTypography.control)
+                    .padding(.horizontal, 10).frame(height: 32).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(.secondary).help("Создать папку для встреч и заметок")
+                .accessibilityIdentifier("folder.new")
         }.padding(.horizontal, 8).padding(.top, 20)
     }
+    private func selectFolder(_ id: String?) {
+        store.pause(); store.folderSelection = id
+    }
     private func folderRow(_ id: String?, _ name: String, icon: String) -> some View {
-        Button {
-            store.pause(); store.folderSelection = id
-            if !["meetings", "inbox"].contains(store.librarySection) { store.librarySection = "meetings" }
-        } label: {
+        Button { selectFolder(id) } label: {
             HStack(spacing: 9) {
                 Image(systemName: icon).frame(width: 18).foregroundStyle(.secondary)
                 Text(name).lineLimit(1)
@@ -213,7 +233,7 @@ struct MainView: View {
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityIdentifier("folder.select." + (id ?? "all"))
             .accessibilityAddTraits(store.folderSelection == id ? .isSelected : [])
-            .help(name)
+            .help(id == nil ? name : name + " · Двойной щелчок — переименовать")
     }
 
     private func libraryButton(_ id: String, _ title: String, _ icon: String) -> some View {
@@ -223,7 +243,7 @@ struct MainView: View {
                 Text(title)
                 Spacer(minLength: 0)
                 if id == "meetings" {
-                    Text("\(store.meetings.filter { $0.libraryKind != "cards" }.count)").font(AppTypography.caption).foregroundStyle(.secondary)
+                    Text("\(store.meetings.filter { $0.libraryKind != "cards" && (store.folderSelection == nil || store.folderID(for: $0.id) == store.folderSelection) }.count)").font(AppTypography.caption).foregroundStyle(.secondary)
                 }
             }.font(AppTypography.control).padding(.horizontal, 10).frame(height: 34)
                 .background(store.librarySection == id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 6))
@@ -247,7 +267,7 @@ struct MainView: View {
             HStack {
                 Text(store.notes.folder(store.folderSelection)?.name ?? "Встречи").font(AppTypography.controlStrong).lineLimit(1)
                 if let folder = store.notes.folder(store.folderSelection) {
-                    Button { creatingFolder = false; folderEditor = FolderEditorTarget(folder: folder) } label: {
+                    Button { folderEditor = FolderEditorTarget(folder: folder) } label: {
                         Image(systemName: "slider.horizontal.3").frame(width: 24, height: 24)
                     }.buttonStyle(.plain).foregroundStyle(.secondary).help("Настройки папки")
                         .accessibilityIdentifier("folder.current.settings")
@@ -291,9 +311,23 @@ struct MainView: View {
                                 }.padding(11).background(store.selection == meeting.id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
                                     .contentShape(Rectangle())
                             }.buttonStyle(.plain).padding(.horizontal, 8).padding(.bottom, 3)
+                                .accessibilityIdentifier("meeting.select." + meeting.id)
+                                .contextMenu {
+                                    Button("Переместить в папку…") { meetingFolderTarget = MeetingFolderTarget(meeting: meeting) }
+                                        .disabled(store.captureMeetingID == meeting.id || store.isTerminating)
+                                    Button("Переименовать…") {
+                                        let currentTab = store.selection == meeting.id ? store.tab : "summary"
+                                        store.openMeeting(meeting.id, tab: currentTab); store.meetingTitleEdits.begin(meeting)
+                                    }
+                                        .disabled(store.captureMeetingID == meeting.id || store.isTerminating)
+                                }
                                 .accessibilityValue(store.selection == meeting.id ? "Выбрана" : "")
                                 .accessibilityAddTraits(store.selection == meeting.id ? .isSelected : [])
                         }
+                    }
+                    if store.filteredMeetings.isEmpty && store.libraryFilter.isEmpty, let folder = store.notes.folder(store.folderSelection) {
+                        Button { folderMeetingPicker = folder } label: { Label("Выбрать из библиотеки…", systemImage: "folder.badge.plus") }
+                            .buttonStyle(.borderless).font(AppTypography.control).padding(16).accessibilityIdentifier("folder.addMeetings")
                     }
                     if store.filteredMeetings.isEmpty && !store.libraryFilter.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
@@ -375,6 +409,10 @@ struct MainView: View {
             HStack(spacing: 10) {
                 Button("Импортировать запись") { store.chooseFile() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(store.busy)
                 Button("Записать встречу") { store.showingRecord = true }.buttonStyle(.bordered).disabled(store.startingRecording)
+            }
+            if let folder = store.notes.folder(store.folderSelection), store.meetings.contains(where: { $0.libraryKind != "cards" && store.folderID(for: $0.id) != folder.id }) {
+                Button("Переместить встречу из библиотеки…") { folderMeetingPicker = folder }.buttonStyle(.borderless)
+                    .accessibilityIdentifier("folder.addExistingMeeting")
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(AppLayout.contentInset)
     }

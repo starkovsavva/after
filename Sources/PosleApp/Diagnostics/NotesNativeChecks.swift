@@ -168,7 +168,7 @@ enum NotesNativeChecks {
         app.openSearchHit(legacyHit)
         try await waitUntil { app.searchOpeningID == nil }
         try expect(app.librarySection == "inbox" && notes.highlightedNoteID == legacyDeckNote.id && !app.isPlaying, "Search opens a legacy deck note in accessible Inbox without audio")
-        let retainedDraft = QuickCaptureDraft(); retainedDraft.prepare(meetingID: imported.meeting.id, timestamp: 0)
+        let retainedDraft = QuickCaptureDraft(); defer { retainedDraft.saved() }; retainedDraft.prepare(meetingID: imported.meeting.id, timestamp: 0)
         retainedDraft.text = "Черновик не должен потеряться в скрытой колоде"
         let fallback = retainedDraft.destination(in: app.meetings)
         try expect(fallback.meetingID == nil && fallback.timestamp == nil && retainedDraft.meetingID == imported.meeting.id && !retainedDraft.text.isEmpty, "A retained deck destination falls back to Inbox without changing the unfinished draft")
@@ -205,7 +205,51 @@ enum NotesNativeChecks {
         print("PASS: immediate quit flushes debounce, failed CAS retains both versions and the draft recovers as a copy")
         try RichNoteNativeChecks.run()
         print("PASS: native formatting Undo/Redo preserves typed text, heading size and table RTF")
-        print("11 native notes checks passed")
+        try verifyFolderProfiles(app: app, meeting: meeting)
+        try QuickCaptureController.verifyFolderScope(store: app)
+        try await PlainNoteInputChecks.run(root: directory)
+        print("14 native notes checks passed")
+    }
+    /// The disclosure and existence checks use the object's profile, regardless
+    /// of which unrelated folder is currently selected in the sidebar.
+    private static func verifyFolderProfiles(app: AppStore, meeting: Meeting) throws {
+        let originalSettings = app.settings
+        let originalSelection = app.folderSelection
+        defer { app.settings = originalSettings; app.folderSelection = originalSelection }
+        app.settings.mode = "local"
+        var cloud = LibraryFolder(name: "Английский · профиль ИИ")
+        cloud.overrides.mode = "cloud"; cloud.overrides.cloudProvider = "chatgpt"; cloud.overrides.cloudModel = "gpt-6-luna"
+        var local = LibraryFolder(name: "Рабочие заметки · профиль ИИ")
+        local.overrides.mode = "local"; local.overrides.localModel = "fixture/local-model"
+        guard let cloudFolder = app.notes.saveFolder(cloud), let localFolder = app.notes.saveFolder(local),
+              app.notes.assignMeetingFolder(meeting.id, folderID: cloudFolder.id) else {
+            throw AppError.message(app.notes.error ?? "Folder profile fixture failed")
+        }
+        app.reloadLibrary(); app.folderSelection = localFolder.id
+        let inherited = CapturedNote(text: "Уточнить условия", meetingID: meeting.id)
+        let inheritedSettings = app.settingsForNote(inherited)
+        try expect(inheritedSettings.mode == "cloud" && inheritedSettings.cloudProvider == "chatgpt" && app.settings.mode == "local",
+                   "Note disclosure must use its meeting's cloud profile while app defaults and the visible folder are local")
+        let cardSettings = app.effectiveSettings(for: meeting.id)
+        try expect(cardSettings.mode == "cloud" && cardSettings.cloudProvider == "chatgpt",
+                   "Card example disclosure must use the source meeting profile, independent of the visible folder")
+        app.settings.mode = "cloud"; app.settings.cloudProvider = "openai"
+        let explicit = CapturedNote(text: "Мои локальные мысли", meetingID: meeting.id, folderID: localFolder.id)
+        let explicitSettings = app.settingsForNote(explicit)
+        try expect(explicitSettings.mode == "local" && explicitSettings.localModel == "fixture/local-model" && app.settings.mode == "cloud",
+                   "An explicit local note profile must override its cloud meeting and global cloud defaults")
+        try expect(!app.noteMeetings.contains(where: { $0.id == meeting.id }) && app.allNoteMeetings.contains(where: { $0.id == meeting.id }),
+                   "A meeting outside the sidebar folder is still a valid historical note source")
+        var session = NoteEditingSession(note: explicit)
+        session.draft.text += " · правка"
+        let copied = session.asNewNote(preserveMeeting: app.allNoteMeetings.contains { $0.id == meeting.id })
+        try expect(copied.folderID == localFolder.id && copied.meetingID == meeting.id,
+                   "Saving a conflicting note as a copy must retain its stable folder and real meeting link")
+        var moved = explicit; moved.folderID = cloudFolder.id; moved.revision += 1
+        session.receive(moved)
+        try expect(session.conflicted && session.draft.folderID == localFolder.id && session.draft.text.hasSuffix("правка"),
+                   "An external folder-ID-only edit must conflict with a dirty editor instead of rebasing and silently restoring the old folder")
+        print("PASS: note/card AI disclosures follow object profiles; cross-folder sources and copied/conflicting note folder IDs stay intact")
     }
     private static func syntheticImage() throws -> Data {
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 800, pixelsHigh: 160, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0), let context = NSGraphicsContext(bitmapImageRep: bitmap) else { throw AppError.message("Cannot create synthetic image") }
