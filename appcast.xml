@@ -6,34 +6,43 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.13.0</title>
-      <sparkle:version>19</sparkle:version>
-      <sparkle:shortVersionString>0.13.0</sparkle:shortVersionString>
+      <title>После 0.14.0</title>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>0.14.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Tue, 27 Oct 2026 09:07:52 GMT</pubDate>
-      <description sparkle:format="markdown"># 0.13.0
+      <pubDate>Tue, 27 Oct 2026 10:43:15 GMT</pubDate>
+      <description sparkle:format="markdown">- **Смысловой поиск.** Поиск карточек, заметок, задач и встреч по приблизительному описанию, включая запросы на другом языке. Доступен в общем поиске и помощнике.
+- **Модели поиска.** Отдельная embedding-модель через Ollama, LM Studio или совместимый API. Фоновая индексация с приоритетом записи и распознавания.
+- **Кодовая база.** Индексация явно выбранных папок задачи, учёт `.gitignore` и `.posleignore`, исключение секретов и переход к найденным файлам.
+- **Синхронизация задач.** Google Tasks и Яндекс Трекер: выбранные списки и очереди, получение изменений, отправка локальных задач, повтор после сетевых ошибок и разрешение конфликтов.
+- **Помощник.** Открытие карточки, заметки или встречи по описанию; продолжение вопроса с повторной проверкой актуальных источников.
+- **Хранение.** Заметки, задачи, история и операции перенесены в SQLite. Однократный импорт сохраняет исходную библиотеку; изменения и события фиксируются общей транзакцией.
+- **Подключения.** Ключи закреплены за адресом провайдера и хранятся в Связке ключей. Синхронизация и индексация папок включаются отдельно.
 
-- **Помощник.** Вопросы по библиотеке и подключённому календарю, ответы со ссылками на источники и проверкой актуальности данных.
+### Новые экраны
 
-- **Задачи.** Список и доска, четыре статуса, проекты, сроки и ответственные.
-- **Материалы.** Мысли, заметки, файлы, фрагменты встреч, папки и репозитории у задачи. Черновики мыслей сохраняются при переключении и перезапуске.
-- **История.** Снимки контекста, отчёты и результаты агента. Изменение исходной заметки не переписывает сохранённый снимок.
-- **Поручения.** Открытие, завершение, возврат в работу и дополнение задач голосом или текстом. Для нескольких задач — предпросмотр и отмена изменений.
-- **MCP.** Агент получает выбранные задачи и материалы, берёт задачу в работу, сохраняет отчёт и завершает её с проверкой актуального контекста. Доступ выключен по умолчанию.
-- **Внешние задачи.** Ссылки на Яндекс Трекер и Google Tasks с локальными статусом и материалами. Автоматической синхронизации нет.
-- **Логотип.** Новый знак с закатом для «После».
-- **Надёжность.** Проверка компонентов перед запуском; повторная подготовка сохраняет записи и кеш моделей.
+**Смысловой поиск**
+
+![Поиск карточки по приблизительному описанию](https://raw.githubusercontent.com/starkovsavva/posle/v0.14.0/docs/screenshots/search-semantic.png)
+
+**Синхронизация трекеров**
+
+![Подключения Google Tasks и Яндекс Трекера](https://raw.githubusercontent.com/starkovsavva/posle/v0.14.0/docs/screenshots/tracker-sync.png)
+
+**Помощник с источниками**
+
+![Ответ помощника и переходы к материалам](https://raw.githubusercontent.com/starkovsavva/posle/v0.14.0/docs/screenshots/assistant.png)
 </description>
-      <posle:sourceRevision>b08b7c491a866bbe3b14c0b740cceaffc6a3ef07</posle:sourceRevision>
-      <posle:archiveSHA256>5e9897e6bc294591c3f44d56ed15f3113685c4ccbb7a6bd8a1c1e834619afa9f</posle:archiveSHA256>
-      <posle:sourceSHA256>0b367970bc812a76a6d8fc9ab6666d98fbdb5adcfb2c42023fb1d2d25415d602</posle:sourceSHA256>
-      <posle:packageSHA256>609ed52c6d6fdf54630d055286ef800f3a4f520a04375484d3a94c5809a38545</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.13.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="cvnnaMkWHyaTeQMn+eUDvI5U43QBmsiE9u2bCLMHqCBLLSNO3GJQhpV/P88VaOS3J+qFMiPrRi/nSdX833n6Dw==" length="19702666" type="application/octet-stream" />
+      <posle:sourceRevision>ca68f77e1bcc2137ec21e7ddc0886d1b573a3039</posle:sourceRevision>
+      <posle:archiveSHA256>978c6185f769cfe5a867a0e05f923269d938e7b602c6d8b1c15e41f483aa6d59</posle:archiveSHA256>
+      <posle:sourceSHA256>aef6bf1dcc71eb4efe594d9834503dc93a54af934d3389946cea3a1891d95be5</posle:sourceSHA256>
+      <posle:packageSHA256>17f71624e612fe0bcd3cfb26803a31f6f014c1237f3df68947c3fd8f18b222e9</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.14.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="Fwj1P7a1IEGhT9+G3ndIhA2e1yxqF5ltb1cwq4v4h2Hw8AJucYKo+DHMWi6EZ7oreQMdhyBxuagKQMxmIXamDw==" length="22913723" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: bIp4CKnGn2nqpHlvq9pgG7V3rsT5jEsxtQhkBQyjn+Ad89tZv9hW3VWNvOyxFeryho9wEiM9v3hJQSsH9kS8Cg==
-length: 3521
+edSignature: zfh8rxWT4yuIsQ2nmzKDrNNm4yN5nqsk6zNDIPoqX60ATocdsYp3UtmDKWaODHRhlT/0jocYDWn0pWrJgV6iDA==
+length: 4147
 -->
