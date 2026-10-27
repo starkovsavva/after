@@ -6,32 +6,29 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.15.0</title>
-      <sparkle:version>21</sparkle:version>
-      <sparkle:shortVersionString>0.15.0</sparkle:shortVersionString>
+      <title>После 0.16.0</title>
+      <sparkle:version>22</sparkle:version>
+      <sparkle:shortVersionString>0.16.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Tue, 27 Oct 2026 12:41:48 GMT</pubDate>
-      <description sparkle:format="markdown">- **Карточки через помощника.** Массовая правка существующих карточек, включая направление «русский → английский». Предпросмотр, выбор карточек и отмена; прогресс повторений сохраняется.
-- **Корзина на 30 дней.** Восстановление встреч вместе с записью и конспектом, отдельных заметок, задач и карточек. Помощник умеет перемещать в Корзину и восстанавливать после проверки выбора.
-- **Контекст конспекта.** Необязательные сведения о вашей роли и цель конкретной встречи. Главные решения и следующие шаги получают приоритет перед случайными отступлениями.
-- **Продолжение поручений.** Ответ с результатом действия, переход к нему и продолжение в контексте созданного объекта. Выбранная колода учитывается при изменении карточек.
-- **Подготовка MP3.** Преобразование больше не зависит от Python и моделей распознавания. При сбое или отмене исходная запись сохраняется; старое задание можно повторить.
-- **Исправления данных.** Удалённые задачи не появляются заново из конспекта. Заметки удалённой встречи открываются во входящих и сохраняют связь для восстановления.
+      <pubDate>Tue, 27 Oct 2026 13:56:33 GMT</pubDate>
+      <description sparkle:format="markdown">- **Выбор возможностей.** Встречи, заметки, конспекты и транскрипты доступны сразу. Карточки, задачи и проекты, календарь, помощник и смысловой поиск включаются отдельно в настройках.
+- **Карточки для нужных встреч.** Генерация включается у каждой встречи отдельно. Обычный конспект не изменяет существующие карточки и прогресс повторений.
+- **Спокойный интерфейс.** Выключенные разделы, команды и настройки скрыты. Поиск по словам остаётся доступен.
+- **Сохранность данных.** Дополнительные возможности выключены по умолчанию, в том числе после обновления. Заметки, задачи, карточки и настройки подключения сохраняются.
+- **Редактор карточек.** После сохранения или отмены закрытое окно больше не блокирует обновление и смену возможностей.
 
-### Корзина
-
-![Восстановление встречи, карточки и заметки](https://raw.githubusercontent.com/starkovsavva/posle/v0.15.0/docs/screenshots/trash.png)
+![Выбор дополнительных возможностей](https://raw.githubusercontent.com/starkovsavva/posle/v0.16.0/docs/screenshots/features.png)
 </description>
-      <posle:sourceRevision>238c2376bfb51fc92bc21bd3c39b567a4e7b9cc4</posle:sourceRevision>
-      <posle:archiveSHA256>83c7b1ede6d099c49526aca44f201dc96068c39d6e3a92b51c93a46b8440066d</posle:archiveSHA256>
-      <posle:sourceSHA256>69ea33a9cbcf23e979a69ba38598fff357b04ff73c078cadda34b9f2a931cfc5</posle:sourceSHA256>
-      <posle:packageSHA256>225413ab129e67811e50e47f19f44e3b020ddff3168e816ea272661aeef8fd23</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.15.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="vBmg/zEbkl5U0zibWbFt0ogTwpCSmRjSfgW/Lm+GVEOwli7aSB/exF9G6tuXJFIMNQg3KuBIB8NbGCiq4/EJDA==" length="23445152" type="application/octet-stream" />
+      <posle:sourceRevision>01edd3a90a962b4638752c25b9870d7b12a7c995</posle:sourceRevision>
+      <posle:archiveSHA256>75037f93b00b0073b703c0a46ea316b1bbe7975b3dc66c9220f359231fb95b30</posle:archiveSHA256>
+      <posle:sourceSHA256>54a78cf1a67d8c84dbf50db7b1e98db998b071ca6a0aaff0a85e6c37fae0979e</posle:sourceSHA256>
+      <posle:packageSHA256>39dfe5ea2da024b121f76b85d679ec5893419b67786d28b5beee7130c95ae58c</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.16.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="VW9HZ4eNVOBHZwAle8MGWTP0d/qnCpJL/E+xR01qMlpJc6DCSFzbYeCX9vvDG3OpxNVL0IYqm7fhRLHHOP6HCg==" length="23585058" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: qcT7jJPVC8arc52InRKbQD++9q8w7NrgGexTpZlq1TaIM8m2XiXPNw0eqzsg31ap7FgUSg9UUW28/6Wys3yiAA==
-length: 3678
+edSignature: mmG1IHz5QFZx/ZMVHwABbS6qc71Pd62OUt7e9paj9LBBdyKGdPKs809vcYXsmcF7lU7Ap33+/nO2NEpL3WLbBA==
+length: 3060
 -->
