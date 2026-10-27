@@ -38,6 +38,7 @@ pub struct CapturedNote {
     #[serde(default)] pub title: String,
     #[serde(default, rename="contentRTF", alias="contentRtf")] pub content_rtf: String,
     #[serde(default)] pub folder: String,
+    #[serde(default, rename="folderID", alias="folderId")] pub folder_id: Option<String>,
     #[serde(default)] pub tags: Vec<String>,
     #[serde(default)] pub pinned: bool,
     #[serde(default)] pub trashed_at: Option<f64>,
@@ -59,11 +60,13 @@ pub struct NoteTemplate {
 pub struct MeetingContext {
     #[serde(rename = "meetingID", alias = "meetingId")] pub meeting_id: String, #[serde(default)] pub project: String,
     #[serde(default)] pub person: String, #[serde(default, rename = "templateID", alias = "templateId")] pub template_id: Option<String>,
+    #[serde(default, rename="folderID", alias="folderId")] pub folder_id: Option<String>,
     #[serde(default)] pub revision: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotesWorkspace {
+    #[serde(default)] pub folders: Vec<crate::folders::Folder>,
     #[serde(default)] pub notes: Vec<CapturedNote>,
     #[serde(default)] pub templates: Vec<NoteTemplate>,
     #[serde(default)] pub contexts: Vec<MeetingContext>,
@@ -81,7 +84,7 @@ pub(crate) fn defaults() -> NotesWorkspace {
         ("one-on-one", "Один на один", "Как дела\n\nЧто получилось\n\nЧто мешает\n\nОбратная связь\n\nДоговорённости", "Обратная связь, препятствия, ожидания и договорённости. Отделяй мнение от подтверждённых фактов."),
         ("english", "Английский", "Тема разговора\n\nНовые фразы\n\nЧто было трудно сказать\n\nОшибки и исправления\n\nЧто повторить", "Полезные английские фразы с контекстом, переводом и исправлениями, только если они подтверждены записью."),
     ].into_iter().map(|(id,name,body,focus)| NoteTemplate { id:id.into(),name:name.into(),body:body.into(),focus:focus.into(),revision:1 }).collect();
-    NotesWorkspace { notes:vec![],templates,contexts:vec![],voice_plans:vec![],voice_operations:vec![],task_workspaces:vec![],task_plans:vec![],task_operations:vec![],task_integration:Default::default() }
+    NotesWorkspace { folders:vec![],notes:vec![],templates,contexts:vec![],voice_plans:vec![],voice_operations:vec![],task_workspaces:vec![],task_plans:vec![],task_operations:vec![],task_integration:Default::default() }
 }
 fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
@@ -167,6 +170,7 @@ fn validate_note(note: &CapturedNote) -> Result<()> {
 }
 pub(crate) fn validate_workspace(data: &NotesWorkspace) -> Result<()> {
     crate::task_workspace::validate_workspace(data)?;
+    crate::folders::validate_workspace(data)?;
     ensure!(data.notes.len() <= MAX_NOTES && data.templates.len() <= 100 && data.contexts.len() <= MAX_NOTES,"Слишком много заметок или шаблонов");
     ensure!(data.voice_plans.len() <= 100 && data.voice_operations.len() <= 500, "Слишком много голосовых операций");
     let mut ids = std::collections::HashSet::new();
@@ -205,6 +209,7 @@ pub fn list(root: &Path) -> Result<NotesWorkspace> {
 pub fn save_note(root: &Path,mut note: CapturedNote) -> Result<CapturedNote> {
     validate_note(&note)?;
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
+    crate::folders::normalize_note_folder(&mut data,&mut note)?;
     if let Some(index)=data.notes.iter().position(|n|n.id == note.id) {
         let old=&data.notes[index]; ensure!(old.revision == note.revision, CONFLICT);
         ensure!(old.trashed_at == note.trashed_at,"Состояние Корзины изменилось. Обновите заметку.");
@@ -386,7 +391,7 @@ pub fn dispatch(root:&Path,value:&Value) -> Result<Value> {
     let string=|key:&str|value[key].as_str().with_context(||format!("Нет поля {key}"));
     let revision=||value["revision"].as_u64().context("Нет ревизии заметки");
     match value["command"].as_str().unwrap_or("") {
-        "notes-list"=>{let data=list(root)?;Ok(json!({"notes":data.notes,"templates":data.templates,"contexts":data.contexts}))},
+        "notes-list"=>{let data=list(root)?;Ok(json!({"notes":data.notes,"templates":data.templates,"contexts":data.contexts,"folders":data.folders}))},
         "note-save"=>Ok(serde_json::to_value(save_note(root,serde_json::from_value(value["note"].clone())?)?)?),
         "note-delete"=>delete_note(root,string("id")?,revision()?),
         "note-trash"|"note-restore"=>Ok(serde_json::to_value(trash_note(root,string("id")?,revision()?,value["command"]=="note-restore")?)?),
@@ -698,7 +703,7 @@ mod tests {
     }
     #[test] fn context_and_template_revisions_preserve_meeting_data() {
         let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one"); let original=fs::read(dir.join("meta.json")).unwrap();
-        let context=save_context(root.path(),MeetingContext{meeting_id:"one".into(),project:"Ремонт".into(),person:"Анна".into(),template_id:Some("purchases".into()),revision:0}).unwrap();
+        let context=save_context(root.path(),MeetingContext{meeting_id:"one".into(),project:"Ремонт".into(),person:"Анна".into(),template_id:Some("purchases".into()),folder_id:None,revision:0}).unwrap();
         assert!(save_context(root.path(),MeetingContext{revision:0,..context.clone()}).is_err());
         let builtin=list(root.path()).unwrap().templates[0].clone(); delete_template(root.path(),&builtin.id,builtin.revision).unwrap();
         assert!(list(root.path()).unwrap().contexts[0].template_id.is_none()); assert_eq!(fs::read(dir.join("meta.json")).unwrap(),original);
@@ -731,7 +736,7 @@ mod tests {
     #[test] fn preparation_links_existing_project_or_person_and_skips_deleted_meetings() {
         let root=tempfile::tempdir().unwrap(); for id in ["one","two","three"] { meeting(root.path(),id); }
         for (id,project,person) in [("one","Ремонт","Анна"),("two"," ремонт ","Борис"),("three","Другое","АННА")] {
-            save_context(root.path(),MeetingContext{meeting_id:id.into(),project:project.into(),person:person.into(),template_id:None,revision:0}).unwrap();
+            save_context(root.path(),MeetingContext{meeting_id:id.into(),project:project.into(),person:person.into(),template_id:None,folder_id:None,revision:0}).unwrap();
         }
         assert_eq!(brief(root.path(),"one").unwrap()["meetingIDs"],json!(["two","three"]));
         fs::remove_dir_all(root.path().join("meetings/two")).unwrap(); assert_eq!(brief(root.path(),"one").unwrap()["meetingIDs"],json!(["three"]));

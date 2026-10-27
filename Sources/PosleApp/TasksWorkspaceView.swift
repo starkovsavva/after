@@ -15,10 +15,13 @@ struct TasksWorkspaceView: View {
     @State private var boardDetail = false
     @State private var workspaceFileStamp = ""
 
+    private var taskDraftKey: String { app.folderSelection.map { "newtask:folder:" + $0 } ?? "newtask" }
     private var allTasks: [TaskWorkspace] {
         let ordered = notes.tasks.map { notes.taskWorkspace(for: $0) }
         let ids = Set(ordered.map(\.id))
-        return ordered + notes.taskWorkspaces.values.filter { !ids.contains($0.id) }.sorted { $0.updatedAt > $1.updatedAt }
+        let all = ordered + notes.taskWorkspaces.values.filter { !ids.contains($0.id) }.sorted { $0.updatedAt > $1.updatedAt }
+        guard let selectedFolderID = app.folderSelection else { return all }
+        return all.filter { folderID(for: $0) == selectedFolderID }
     }
     private var projects: [String] { Set(allTasks.map(\.project).filter { !$0.isEmpty }).sorted() }
     private var filtered: [TaskWorkspace] {
@@ -31,7 +34,7 @@ struct TasksWorkspaceView: View {
     }
     private var selected: TaskWorkspace? {
         guard let id = notes.selectedTaskID else { return nil }
-        return allTasks.first { $0.id == id } ?? notes.tasks.first { $0.taskOrigin?.summaryTaskID == id }.map { notes.taskWorkspace(for: $0) }
+        return allTasks.first { $0.id == id || notes.legacyTask(for: $0)?.taskOrigin?.summaryTaskID == id }
     }
 
     var body: some View {
@@ -48,7 +51,7 @@ struct TasksWorkspaceView: View {
                 }
             } else {
                 HStack(spacing: 0) {
-                    TaskListPane(notes: notes, tasks: filtered, hasAnyTasks: !allTasks.isEmpty, query: $query, select: { notes.selectedTaskID = $0.id }, addTask: addInlineTask, changeStatus: changeStatus)
+                    TaskListPane(notes: notes, tasks: filtered, hasAnyTasks: !allTasks.isEmpty, draftKey: taskDraftKey, query: $query, select: { notes.selectedTaskID = $0.id }, addTask: addInlineTask, changeStatus: changeStatus)
                         .frame(minWidth: 250, idealWidth: 292, maxWidth: 320)
                     Divider()
                     detail
@@ -68,6 +71,9 @@ struct TasksWorkspaceView: View {
         .onChange(of: notes.taskNavigationRequest) { _, _ in
             _ = consumeTaskNavigation()
         }
+        .onChange(of: app.folderSelection) { _, _ in
+            notes.selectedTaskProject = "all"; boardDetail = false; selectFirstIfNeeded()
+        }
         .onChange(of: statusFilter) { _, _ in selectFirstIfNeeded() }
         .onChange(of: sourceFilter) { _, _ in selectFirstIfNeeded() }
         .onChange(of: query) { _, _ in selectFirstIfNeeded() }
@@ -76,7 +82,7 @@ struct TasksWorkspaceView: View {
         .onChange(of: app.busy) { _, busy in if !busy { notes.reload(); notes.loadTasks(); notes.loadTaskWorkspaces() } }
         .overlay(alignment: .bottomTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
         .sheet(isPresented: $newTaskSheet) {
-            TaskCreationSheet(notes: notes, initialProject: notes.selectedTaskProject == "all" ? "" : notes.selectedTaskProject) { task in
+            TaskCreationSheet(notes: notes, initialProject: notes.selectedTaskProject == "all" ? "" : notes.selectedTaskProject, initialFolderID: app.folderSelection) { task in
                 statusFilter = "open"; sourceFilter = "all"; query = ""; notes.selectedTaskID = task.id
             }
         }
@@ -170,11 +176,16 @@ struct TasksWorkspaceView: View {
         if !filtered.contains(where: { $0.id == notes.selectedTaskID }) { notes.selectedTaskID = filtered.first?.id }
     }
     private func addInlineTask() {
-        let text = (notes.captureDrafts["newtask"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = (notes.captureDrafts[taskDraftKey] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        if let task = notes.createWorkspaceTask(title: text, project: notes.selectedTaskProject == "all" ? "" : notes.selectedTaskProject) {
-            notes.captureDrafts.removeValue(forKey: "newtask"); statusFilter = "open"; sourceFilter = "all"; query = ""; notes.selectedTaskID = task.id
+        if let task = notes.createWorkspaceTask(title: text, project: notes.selectedTaskProject == "all" ? "" : notes.selectedTaskProject, folderID: app.folderSelection) {
+            notes.captureDrafts.removeValue(forKey: taskDraftKey); statusFilter = "open"; sourceFilter = "all"; query = ""; notes.selectedTaskID = task.id
         }
+    }
+    private func folderID(for task: TaskWorkspace) -> String? {
+        let noteID = notes.legacyTask(for: task)?.noteID ?? (task.id.hasPrefix("manual:") ? String(task.id.dropFirst("manual:".count)) : nil)
+        if let noteID, let id = notes.workspace.notes.first(where: { $0.id == noteID })?.folderID { return id }
+        return task.meetingID.flatMap { app.folderID(for: $0) }
     }
     private func changeStatus(_ task: TaskWorkspace, _ status: TaskWorkspaceStatus) {
         if notes.updateTaskWorkspace(task, patch: ["status": status.rawValue]) != nil {

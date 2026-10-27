@@ -685,6 +685,8 @@ fn operation_fingerprint(input: &Value) -> String {
     let mut v = input.clone();
     if let Some(o) = v.as_object_mut() {
         o.remove("root");
+        // Transport policy is checked anew, not part of operation identity.
+        o.remove("requireTaskFeature");
     }
     hash(&v)
 }
@@ -721,6 +723,7 @@ fn remember(
         let mut request = input.clone();
         if let Some(o) = request.as_object_mut() {
             o.remove("root");
+            o.remove("requireTaskFeature");
         }
         receipt["request"] = request;
     }
@@ -774,10 +777,12 @@ fn create(root: &Path, workspace: &mut NotesWorkspace, input: &Value) -> Result<
         ["local", "manual", "yandex", "google"].contains(&source) && checked_url(url),
         "Некорректный источник или ссылка задачи"
     );
+    ensure!(input.get("folderID").is_none_or(|v|v.is_null()||v.is_string()),"Некорректная папка задачи");
+    let folder=input["folderID"].as_str().map(|id|workspace.folders.iter().find(|f|f.id==id).context("Папка удалена. Обновите данные.")).transpose()?;
     let id = uuid();
     let t = now();
     let note: CapturedNote = serde_json::from_value(
-        json!({"id":id,"kind":"task","title":name,"text":text,"owner":input["owner"].as_str().unwrap_or(""),"due":input["due"].as_str().unwrap_or(""),"completed":false,"revision":1,"createdAt":t,"updatedAt":t}),
+        json!({"id":id,"kind":"task","title":name,"text":text,"owner":input["owner"].as_str().unwrap_or(""),"due":input["due"].as_str().unwrap_or(""),"completed":false,"revision":1,"createdAt":t,"updatedAt":t,"folderID":folder.map(|f|&f.id),"folder":folder.map(|f|f.name.as_str()).unwrap_or("")}),
     )?;
     let mut r = TaskRecord {
         note_id: id.clone(),
@@ -1611,6 +1616,16 @@ fn agent_result(workspace: &NotesWorkspace, mut v: Value) -> Value {
     }
     v
 }
+/// MCP opts in to the current folder policy. Manual edits and recovery remain
+/// available while a module is hidden; this flag never comes from tool args.
+fn require_task_feature(root: &Path, input: &Value) -> Result<()> {
+    if input["requireTaskFeature"] == true {
+        ensure!(crate::ai::live_features_for_input(root,input)?.tasks,
+            "Задачи выключены в профиле этой папки. Изменения не сохранены.");
+    }
+    Ok(())
+}
+
 /// UI, voice and stdio MCP call this same transactional boundary. MCP transport
 /// supplies agentOnly itself; only native UI exposes settings and sharing edits.
 pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
@@ -1618,6 +1633,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
     let dir = notes::directory(root)?;
     let _lock = notes::lock(&dir)?;
     let mut workspace = notes::load(&dir)?;
+    require_task_feature(root,input)?;
     let agent = input["agentOnly"].as_bool().unwrap_or(false);
     if agent {
         ensure!(
@@ -1717,6 +1733,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
             }
             let result = serde_json::to_value(&workspace.task_integration)?;
             let result = remember(&mut workspace, input, result, Value::Null, Value::Null)?;
+            require_task_feature(root,input)?;
             persist(root, &workspace)?;
             return Ok(result);
         }
@@ -1737,6 +1754,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
         | "task-agent-release" => agent_action(root, &mut workspace, input, command)?,
         _ => bail!("Неизвестная команда задач"),
     };
+    require_task_feature(root,input)?;
     persist(root, &workspace)?;
     Ok(if agent {
         agent_result(&workspace, result)

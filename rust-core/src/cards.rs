@@ -199,6 +199,10 @@ pub fn import(root:&Path,path:&Path,separator:Option<&str>,title:Option<&str>)->
     import_checked(root,path,separator,title,None)
 }
 pub fn import_checked(root:&Path,path:&Path,separator:Option<&str>,title:Option<&str>,expected_fingerprint:Option<&str>)->Result<Value> {
+    import_scoped(root,path,separator,title,expected_fingerprint,None)
+}
+fn import_scoped(root:&Path,path:&Path,separator:Option<&str>,title:Option<&str>,expected_fingerprint:Option<&str>,folder_id:Option<&str>)->Result<Value> {
+    if folder_id.is_some() { crate::folders::resolve(root,None,folder_id)?; }
     ensure!(root.is_absolute(),"Папка данных должна иметь абсолютный путь");
     let source=read(path)?;
     if let Some(expected)=expected_fingerprint {
@@ -225,11 +229,30 @@ pub fn import_checked(root:&Path,path:&Path,separator:Option<&str>,title:Option<
         let meeting=json!({"id":id,"title":title,"createdAt":date,"source":"cards.tsv","status":"ready","duration":0.0,"speakerNames":{},"completedTasks":[],"focus":"","recordingTracks":false,"hasVideo":false,"libraryKind":"cards"});
         // Metadata is published last: an unfinished import never appears in the
         // library and a failed write removes only this generated directory.
-        crate::storage::atomic_json(&directory.join("meta.json"),&meeting)?;
+        publish_deck(root,&directory,&meeting,folder_id)?;
         Ok(json!({"meeting":meeting,"count":summary["cards"].as_array().unwrap().len(),"skipped":parsed.skipped,"warnings":summary["warnings"]}))
     })();
     if result.is_err() { let _=fs::remove_dir_all(&directory); }
     result
+}
+/// A deck becomes visible only after its canonical folder membership exists.
+/// A crash before metadata publication can leave an inert context, never a
+/// visible unscoped deck or a second imported copy on retry.
+pub(super) fn publish_deck(root:&Path,directory:&Path,meeting:&Value,folder_id:Option<&str>)->Result<()> {
+    let Some(folder)=folder_id else { return crate::storage::atomic_json(&directory.join("meta.json"),meeting); };
+    let notes_dir=crate::notes::directory(root)?;let _lock=crate::notes::lock(&notes_dir)?;
+    let mut data=crate::notes::load(&notes_dir)?;
+    ensure!(data.folders.iter().any(|f|f.id==folder),"Папка удалена. Выберите папку заново.");
+    let id=meeting["id"].as_str().context("Нет ID колоды")?;
+    ensure!(!data.contexts.iter().any(|c|c.meeting_id==id),"Колода уже опубликована");
+    data.contexts.push(serde_json::from_value(json!({"meetingID":id,"folderID":folder,"revision":1}))?);
+    crate::notes::persist(&notes_dir,&data)?;
+    if let Err(error)=crate::storage::atomic_json(&directory.join("meta.json"),meeting) {
+        data.contexts.retain(|c|c.meeting_id!=id);
+        let _=crate::notes::persist(&notes_dir,&data);
+        return Err(error);
+    }
+    Ok(())
 }
 pub fn dispatch(root:&Path,value:&Value)->Result<Value> {
     if matches!(value["command"].as_str(), Some("card-trash-list" | "card-restore" | "card-trash-purge" | "cards-batch-apply" | "cards-batch-undo" | "cards-batch-recover")) { return operations::dispatch(root,value); }
@@ -237,7 +260,7 @@ pub fn dispatch(root:&Path,value:&Value)->Result<Value> {
     let path=Path::new(value["path"].as_str().context("Выберите файл карточек")?);
     match value["command"].as_str() {
         Some("cards-import-preview")=>preview(path,value["separator"].as_str()),
-        Some("cards-import")=>import_checked(root,path,value["separator"].as_str(),value["title"].as_str(),value["expectedFingerprint"].as_str()),
+        Some("cards-import")=>import_scoped(root,path,value["separator"].as_str(),value["title"].as_str(),value["expectedFingerprint"].as_str(),value["folderID"].as_str()),
         _=>bail!("Неизвестная команда карточек"),
     }
 }
@@ -302,6 +325,13 @@ mod tests {
         assert!(!root.path().join("meetings").exists());
         fs::write(&path,"Reviewed question\tReviewed answer").unwrap();
         assert_eq!(crate::request(&request).unwrap()["count"],1);
+    }
+    #[test] fn new_decks_and_imports_publish_with_the_selected_folder_or_leave_no_visible_data() {
+        let root=tempfile::tempdir().unwrap();let source=tempfile::tempdir().unwrap();let path=source.path().join("cards.tsv");fs::write(&path,"Word\tСлово").unwrap();
+        let folder=crate::folders::save(root.path(),crate::folders::Folder{id:"english".into(),name:"Английский".into(),revision:0,overrides:json!({"features":{"cards":true}})}).unwrap();
+        let imported=dispatch(root.path(),&json!({"command":"cards-import","path":path,"folderID":folder.id})).unwrap();let id=imported["meeting"]["id"].as_str().unwrap();assert_eq!(crate::folders::resolve(root.path(),Some(id),None).unwrap().folder_id.as_deref(),Some("english"));
+        let created=dispatch(root.path(),&json!({"command":"card-save","front":"Вопрос","back":"Answer","folderID":"english"})).unwrap();let created_id=created["meeting"]["id"].as_str().unwrap();assert_eq!(crate::folders::resolve(root.path(),Some(created_id),None).unwrap().folder_id.as_deref(),Some("english"));
+        let before=crate::storage::list_meetings(root.path()).unwrap();assert!(dispatch(root.path(),&json!({"command":"cards-import","path":path,"folderID":"missing"})).is_err());assert!(dispatch(root.path(),&json!({"command":"card-save","front":"Вопрос","back":"Answer","folderID":"missing"})).is_err());assert_eq!(crate::storage::list_meetings(root.path()).unwrap(),before);
     }
     #[test] fn standalone_decks_cannot_escape_symlinked_library() {
         let root=tempfile::tempdir().unwrap(); let outside=tempfile::tempdir().unwrap(); let source=tempfile::tempdir().unwrap(); let path=source.path().join("cards.csv"); fs::write(&path,"Word,Answer").unwrap();

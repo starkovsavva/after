@@ -77,7 +77,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def upload(audio_path, settings, key, opener=None, timeout=300):
     if not key or any(ch in key for ch in "\r\n"):
-        raise RuntimeError("Добавьте ключ распознавания в настройках → Распознавание речи → Облако.")
+        raise RuntimeError("Для облачного распознавания нужен API-ключ сервиса. Добавьте его в настройках распознавания речи.")
     data, content_type = multipart(request_fields(settings), audio_path.read_bytes())
     destination = endpoint(settings)
     req = urllib.request.Request(destination, data=data, headers={
@@ -194,7 +194,7 @@ def transcribe(path: Path, root: Path, settings: dict, callback, key=None, uploa
     request_fields(settings)
     key = os.environ.get("POSLE_SPEECH_API_KEY", "") if key is None else key
     if not key:
-        raise RuntimeError("Добавьте ключ распознавания в настройках.")
+        raise RuntimeError("Для облачного распознавания нужен API-ключ сервиса. Добавьте его в настройках распознавания речи.")
     uploader = uploader or upload
     result, approximate, chunk_count = [], False, 0
     with wave.open(str(path), "rb") as source:

@@ -681,3 +681,55 @@ fn trashed_and_purged_source_alias_cannot_recreate_a_task() {
     assert_eq!(notes::list(root.path()).unwrap().notes.len(),1);
     assert!(call(root.path(),"task-list",json!({})).unwrap()["tasks"].as_array().unwrap().is_empty());
 }
+
+
+#[test]
+fn opted_in_mutations_enforce_current_folder_policy_without_blocking_manual_edits() {
+    let root=tempfile::tempdir().unwrap();
+    let task=create_task(root.path(),"Preserved task");
+    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"features":{"tasks":true}})).unwrap();
+    let folder=crate::folders::save(root.path(),crate::folders::Folder{id:"work".into(),name:"Work".into(),revision:0,overrides:json!({"features":{"tasks":false}})}).unwrap();
+    let mut note=notes::list(root.path()).unwrap().notes.into_iter().find(|n|Some(n.id.as_str())==task["id"].as_str().map(canonical_id)).unwrap();
+    note.folder_id=Some(folder.id.clone());let note=notes::save_note(root.path(),note).unwrap();
+    let current=get(root.path(),&task["id"]);
+    let request=json!({"taskID":task["id"],"expectedRevision":current["revision"],"expectedSourceFingerprint":current["sourceFingerprint"],"operationID":uuid(),"patch":{"status":"doing"},"requireTaskFeature":true});
+    let before=crate::workspace_repository::snapshot(root.path()).unwrap();
+    assert!(call(root.path(),"task-details-update",request.clone()).is_err());
+    assert_eq!(crate::workspace_repository::snapshot(root.path()).unwrap().fingerprint,before.fingerprint);
+    assert_eq!(notes::load_note_snapshot(root.path(),&note.id).unwrap().text,note.text);
+    // A manual UI edit remains allowed when the optional module is hidden.
+    let mut manual=request.clone();manual["requireTaskFeature"]=json!(false);
+    let changed=call(root.path(),"task-details-update",manual).unwrap();assert_eq!(changed["status"],"doing");
+    let mut enabled=folder;enabled.overrides=json!({"features":{"tasks":true}});crate::folders::save(root.path(),enabled).unwrap();
+    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"features":{"tasks":false}})).unwrap();
+    let current=get(root.path(),&task["id"]);
+    let request=json!({"taskID":task["id"],"expectedRevision":current["revision"],"expectedSourceFingerprint":current["sourceFingerprint"],"operationID":uuid(),"patch":{"status":"blocked"},"requireTaskFeature":true});
+    assert_eq!(call(root.path(),"task-details-update",request).unwrap()["status"],"blocked");
+}
+
+#[test]
+fn creating_a_task_in_a_folder_preserves_its_processing_scope() {
+    let root=tempfile::tempdir().unwrap();
+    let folder=crate::folders::save(root.path(),crate::folders::Folder{id:"english".into(),name:"Английский".into(),revision:0,overrides:json!({"features":{"tasks":true}})}).unwrap();
+    let task=call(root.path(),"task-create",json!({"title":"Повторить слова","text":"Контекст","folderID":folder.id,"operationID":uuid()})).unwrap();
+    let note=notes::load_note_snapshot(root.path(),canonical_id(task["id"].as_str().unwrap())).unwrap();
+    assert_eq!(note.folder_id.as_deref(),Some("english"));assert_eq!(note.folder,"Английский");
+    assert!(crate::ai::live_features_for_input(root.path(),&json!({"taskID":task["id"]})).unwrap().tasks);
+    let before=crate::workspace_repository::snapshot(root.path()).unwrap();
+    assert!(call(root.path(),"task-create",json!({"title":"Draft","folderID":"missing","operationID":uuid()})).is_err());
+    assert_eq!(crate::workspace_repository::snapshot(root.path()).unwrap().fingerprint,before.fingerprint);
+}
+
+#[test]
+fn adding_transport_feature_guard_preserves_existing_receipt_replay() {
+    let root=tempfile::tempdir().unwrap();
+    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"features":{"tasks":true}})).unwrap();
+    let request=json!({"title":"Existing task","operationID":uuid()});
+    let created=call(root.path(),"task-create",request.clone()).unwrap();
+    let mut guarded=request;guarded["requireTaskFeature"]=json!(true);
+    assert_eq!(call(root.path(),"task-create",guarded.clone()).unwrap(),created);
+    assert_eq!(notes::list(root.path()).unwrap().notes.len(),1);
+    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"features":{"tasks":false}})).unwrap();
+    assert!(call(root.path(),"task-create",guarded).is_err());
+    assert_eq!(notes::list(root.path()).unwrap().notes.len(),1);
+}

@@ -28,12 +28,13 @@ extension AppStore {
         pause(); error = nil; audioLevels.clear()
         processAfterRecording = true
         var meeting = Meeting(title: title.isEmpty ? "Встреча \(Date().formatted(date: .abbreviated, time: .shortened))" : title,
-                              source: systemAudio || video ? "recording.mov" : "recording.m4a", status: "recording", focus: settings.focus)
+                              source: systemAudio || video ? "recording.mov" : "recording.m4a", status: "recording", focus: "")
         meeting.recordingTracks = systemAudio; meeting.speakerNames["self"] = "Вы"
         meeting.hasVideo = video
         meeting.recordingAudioQuality = audioQuality.rawValue
         meeting.recordingVideoQuality = video ? videoQuality.rawValue : nil
         meeting.recordingDisplayUUID = selectedDisplay?.persistentID
+        let destinationFolderID = folderSelection
         let directory = meetingDirectory(meeting.id)
         // Capture is independent of model preparation and generation.
         do {
@@ -43,6 +44,10 @@ extension AppStore {
                                      videoQuality: videoQuality, audioQuality: audioQuality,
                                      displayID: selectedDisplay?.id, expectedDisplayUUID: selectedDisplay?.persistentID)
             try write(meeting, directory.appendingPathComponent("meta.json"))
+            if let destinationFolderID, !notes.assignMeetingFolder(meeting.id, folderID: destinationFolderID) {
+                recordingFolderFailures.insert(meeting.id)
+                self.error = "Запись началась без папки. Выберите папку после сохранения встречи."
+            }
             isRecording = true; recordingID = meeting.id; recordingDate = Date()
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
                                        IOPMAssertionLevel(kIOPMAssertionLevelOn), "После записывает встречу" as CFString, &recordingAssertion)
@@ -56,7 +61,8 @@ extension AppStore {
     func stopRecording(finalize: Bool = true) async {
         guard let id = recordingID, isRecording, !stoppingRecording else { return }
         let duration = Date().timeIntervalSince(recordingDate ?? Date())
-        let transcribeAfterSave = processAfterRecording
+        let folderAssignmentFailed = recordingFolderFailures.remove(id) != nil
+        let transcribeAfterSave = processAfterRecording && !folderAssignmentFailed
         stoppingRecording = true
         var captureError: Error?
         do { try await recorder.stop() } catch { captureError = error }

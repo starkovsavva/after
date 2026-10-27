@@ -3,7 +3,7 @@ import PosleCore
 
 extension AppStore {
     var activeTaskProjectID: String? {
-        guard settings.isEnabled(.tasks), librarySection == "tasks" else { return nil }
+        guard isFeatureEnabled(.tasks), librarySection == "tasks" else { return nil }
         if notes.selectedTaskProject != "all" { return notes.selectedTaskProject }
         guard let id = notes.selectedTaskID,
               let task = notes.taskWorkspaces[id], !task.project.isEmpty else { return nil }
@@ -13,7 +13,7 @@ extension AppStore {
     /// Opening a task never materializes or changes it. Both summary IDs and
     /// canonical IDs resolve after another process has accepted a summary task.
     func openTask(id: String) {
-        guard settings.isEnabled(.tasks) else {
+        guard availableFeatures.tasks else {
             error = "Включите «Задачи и проекты» в настройках → Возможности."
             return
         }
@@ -22,6 +22,10 @@ extension AppStore {
             error = "Задача больше недоступна. Обновите список задач."
             return
         }
+        guard settingsForTask(task).features.tasks else {
+            error = "Задачи выключены в настройках этой папки."; return
+        }
+        if folderSelection != nil, folderSelection != folderID(for: task) { folderSelection = folderID(for: task) }
         notes.pendingTaskNavigationID = task.id
         notes.selectedTaskProject = "all"
         notes.selectedTaskID = task.id

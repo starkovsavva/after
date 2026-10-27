@@ -402,16 +402,25 @@ pub(crate) fn search_batch(root: &Path, requests: &[(String, String, usize)]) ->
     Ok(results)
 }
 
+fn profile_visibility(connection:&Connection,root:&Path)->Result<crate::ai::FeatureResolver> {
+    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let ids=connection.prepare("SELECT meeting_id FROM sources")?.query_map([],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    connection.execute_batch("CREATE TEMP TABLE IF NOT EXISTS profile_visibility(meeting_id TEXT PRIMARY KEY,cards INTEGER NOT NULL,semantic INTEGER NOT NULL); DELETE FROM profile_visibility;")?;
+    for id in ids {
+        let features=profiles.features_for(&json!({"meetingID":id}))?;
+        connection.execute("INSERT INTO profile_visibility(meeting_id,cards,semantic) VALUES(?1,?2,?3)",params![id,features.cards,features.semantic_search])?;
+    }
+    Ok(profiles)
+}
 fn query_index(connection: &Connection, root: &Path, request: &SearchRequest, lexicon: &Lexicon, mut warnings: Vec<String>) -> Result<Value> {
     let SearchRequest { query, scope, limit, expression, terms } = request;
     let scope_filter = match scope.as_str() {
         "notes" => "d.kind IN ('overview','item')", "transcript" => "d.kind='transcript'",
         "cards" => "d.kind='card'", "meetings" => "d.kind='title'", _=>"1=1",
     };
-    let features = crate::ai::live_features(root)?;
-    // Apply optional-module visibility in SQL before COUNT/LIMIT. The cache
-    // retains all originals so re-enabling a module does not require migration.
-    let filter = format!("({scope_filter}) AND {}", if features.cards { "1=1" } else { "d.kind<>'card' AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.meeting_id=d.meeting_id AND s.library_kind='cards')" });
+    let profiles=profile_visibility(connection,root)?;
+    // Per-folder visibility is applied before COUNT/LIMIT; originals stay indexed.
+    let filter = format!("({scope_filter}) AND (EXISTS (SELECT 1 FROM profile_visibility p WHERE p.meeting_id=d.meeting_id AND p.cards=1) OR (d.kind<>'card' AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.meeting_id=d.meeting_id AND s.library_kind='cards')))");
     let count_sql = format!("SELECT COUNT(*) FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter}");
     let mut total: i64 = connection.query_row(&count_sql, [expression], |row|row.get(0))?;
     let sql = format!("SELECT d.key,d.meeting_id,d.title,d.created_at,d.kind,d.text,d.refs,d.start,d.item_index,d.card_id,d.fingerprint,d.excerpt_text FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter} ORDER BY bm25(documents_fts,1.0,0.8) * CASE d.kind WHEN 'title' THEN 4.0 WHEN 'overview' THEN 2.8 WHEN 'item' THEN 2.4 WHEN 'card' THEN 1.2 ELSE 1.0 END ASC,d.created_at DESC,d.meeting_id ASC,d.key ASC LIMIT ?2");
@@ -425,7 +434,7 @@ fn query_index(connection: &Connection, root: &Path, request: &SearchRequest, le
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
     if ["all","notes"].contains(&scope.as_str()) {
         let manual = match crate::notes::search_hits(root,query) {
-            Ok(hits)=>hits.into_iter().filter(|hit| features.tasks || hit["noteKind"] != "task").collect::<Vec<_>>(),
+            Ok(hits)=>hits.into_iter().filter(|hit| hit["noteKind"] != "task" || profiles.features_for(hit).is_ok_and(|f|f.tasks)).collect::<Vec<_>>(),
             Err(_)=>{ warnings.push("Ручные заметки недоступны для поиска. Проверьте библиотеку заметок.".into()); vec![] }
         };
         total += manual.len() as i64;
@@ -450,8 +459,8 @@ pub(crate) fn embedding_corpus(root: &Path) -> Result<Vec<Value>> {
     let database=folder.join("index.sqlite"); drop(regular_private(&database)?);
     for suffix in ["-journal","-wal","-shm"] { let p=folder.join(format!("index.sqlite{suffix}")); if fs::symlink_metadata(&p).is_ok() { drop(regular_private(&p)?); } }
     let (mut db,_)=open_index(&database)?; sync(&mut db,root,&Lexicon::new())?;
-    let enabled = crate::ai::live_features(root)?.cards;
-    let filter = if enabled { "1=1" } else { "kind<>'card' AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.meeting_id=documents.meeting_id AND s.library_kind='cards')" };
+    profile_visibility(&db,root)?;
+    let filter = "EXISTS (SELECT 1 FROM profile_visibility p WHERE p.meeting_id=documents.meeting_id AND p.semantic=1 AND (p.cards=1 OR (kind<>'card' AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.meeting_id=documents.meeting_id AND s.library_kind='cards'))))";
     let sql = format!("SELECT key,meeting_id,title,kind,text,refs,item_index,card_id,fingerprint FROM documents WHERE {filter} ORDER BY created_at DESC,key LIMIT 10000");
     let mut statement=db.prepare(&sql)?;
     let rows=statement.query_map([],|r| {
@@ -472,7 +481,7 @@ pub fn validate(root: &Path, id: &str, fingerprint: &str) -> Result<Value> {
     let directory = root.join("meetings").join(id);
     let Some(meta) = snapshot(&directory.join("meta.json"), MAX_META).ok().flatten() else { return Ok(json!({"valid":false})); };
     if meta["id"].as_str() != Some(id) { return Ok(json!({"valid":false})); }
-    if !crate::ai::live_features(root)?.cards && meta["libraryKind"] == "cards" { return Ok(json!({"valid":false})); }
+    if !crate::ai::live_features_for(root,Some(id),None)?.cards && meta["libraryKind"] == "cards" { return Ok(json!({"valid":false})); }
     let current = format!("{:x}", Sha256::digest(source_stamp(&directory).as_bytes()));
     Ok(json!({"valid":current == fingerprint}))
 }
@@ -483,7 +492,7 @@ mod tests {
     use crate::storage::atomic_json;
     fn enabled_root() -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
-        atomic_json(&root.path().join("settings.json"), &json!({"features":{"cards":true,"tasks":true}})).unwrap();
+        atomic_json(&root.path().join("settings.json"), &json!({"features":{"cards":true,"tasks":true,"semanticSearch":true}})).unwrap();
         root
     }
     fn meeting(root: &Path, id:&str, title:&str) -> std::path::PathBuf {
@@ -493,6 +502,18 @@ mod tests {
     }
     fn transcript(dir:&Path, content:&str) {
         atomic_json(&dir.join("transcript.json"),&json!({"segments":[{"id":7,"start":12.5,"end":19.0,"text":content}]})).unwrap();
+    }
+    #[test]
+    fn folder_permissions_filter_cards_and_deck_titles_before_total_and_limit() {
+        let root=tempfile::tempdir().unwrap();
+        let visible=crate::folders::save(root.path(),crate::folders::Folder{id:"english".into(),name:"English".into(),revision:0,overrides:json!({"features":{"cards":true,"semanticSearch":true}})}).unwrap();
+        let hidden=crate::folders::save(root.path(),crate::folders::Folder{id:"work".into(),name:"Work".into(),revision:0,overrides:json!({"features":{"cards":false,"semanticSearch":false}})}).unwrap();
+        let a=crate::cards::dispatch(root.path(),&json!({"command":"card-save","front":"Contrast","back":"Разница","newDeckTitle":"Contrast English","folderID":visible.id})).unwrap();
+        let b=crate::cards::dispatch(root.path(),&json!({"command":"card-save","front":"Contrast","back":"Разница","newDeckTitle":"Contrast Work","folderID":hidden.id})).unwrap();
+        let found=search(root.path(),"contrast","all",1).unwrap();assert_eq!(found["total"],2);assert_eq!(found["hits"].as_array().unwrap().len(),1);assert_eq!(found["hits"][0]["meetingID"],a["meeting"]["id"]);
+        let docs=embedding_corpus(root.path()).unwrap();assert!(!docs.is_empty());assert!(docs.iter().all(|d|d["meetingID"]==a["meeting"]["id"]));
+        let mut enabled=hidden;enabled.overrides=json!({"features":{"cards":true,"semanticSearch":true}});crate::folders::save(root.path(),enabled).unwrap();
+        let found=search(root.path(),"contrast","all",20).unwrap();assert_eq!(found["total"],4);assert!(found["hits"].as_array().unwrap().iter().any(|h|h["meetingID"]==b["meeting"]["id"]));
     }
     #[test]
     fn batch_matches_single_searches_and_synchronizes_once() {
@@ -700,7 +721,7 @@ mod tests {
         assert!(embedding_corpus(root.path()).unwrap().iter().all(|h| h["kind"] != "card" && !h["meetingID"].as_str().unwrap().starts_with("deck-")));
         // Opting out changes visibility, never the canonical data or CRUD access.
         assert_eq!(crate::notes::load_note_snapshot(root.path(), "task").unwrap().kind, "task");
-        atomic_json(&root.path().join("settings.json"), &json!({"features":{"cards":true,"tasks":true}})).unwrap();
+        atomic_json(&root.path().join("settings.json"), &json!({"features":{"cards":true,"tasks":true,"semanticSearch":true}})).unwrap();
         assert_eq!(search(root.path(), "Findmarker", "all", 100).unwrap()["total"], before["total"]);
     }
 

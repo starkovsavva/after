@@ -42,6 +42,7 @@ final class CardsWorkspace: ObservableObject {
     @Published var error: String?
     @Published private var lastReview: CardReviewReceipt?
     var canUndo: Bool { lastReview != nil }
+    var lastReviewMeetingID: String? { lastReview?.meetingID }
     private var generation = UUID()
     private var optionGeneration = UUID()
     func reload(root: URL, meetingID: String?) async {

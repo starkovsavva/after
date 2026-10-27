@@ -93,6 +93,8 @@ struct SpeechSettingsView: View {
     }
     private var cloudSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text("Облачное распознавание — через API-ключ сервиса. Подписка ChatGPT доступна для конспектов, карточек и помощника. Для работы без API-ключа выберите распознавание на Mac.")
+                .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 12) {
                     Label(store.runtimeReady ? "Компоненты аудио готовы" : "Требуется подготовка аудио",

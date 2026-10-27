@@ -33,8 +33,12 @@ pub(super) fn valid_card(card: &Value) -> bool {
 }
 fn library(root: &Path, input: &Value) -> Result<Value> {
     let mut entries = Vec::new(); let mut errors = Vec::new();
+    let profiles=crate::ai::FeatureResolver::new(root)?;
     for meeting in crate::storage::list_meetings(root)? {
         let id = text(&meeting,"id")?;
+        let source=json!({"meetingID":id});
+        if !profiles.in_scope(&source,input) { continue; }
+        if input["respectFeatures"]==true && !profiles.features_for(&source)?.cards { continue; }
         if input["meetingID"].as_str().is_some_and(|wanted| wanted != id) { continue; }
         let result = (|| -> Result<()> {
             let dir = meeting_directory(root,id)?; let _lock = meeting_lock(&dir)?; recover_review(&dir)?;
@@ -61,7 +65,8 @@ fn library(root: &Path, input: &Value) -> Result<Value> {
     }
     Ok(json!({"entries":entries,"errors":errors}))
 }
-fn new_deck(root: &Path, title: &str, card: Value) -> Result<Value> {
+fn new_deck(root: &Path, title: &str, card: Value, folder_id:Option<&str>) -> Result<Value> {
+    if folder_id.is_some() { crate::folders::resolve(root,None,folder_id)?; }
     ensure!(!title.trim().is_empty() && title.len() <= 512, "Укажите название колоды до 512 символов");
     let id = Uuid::new_v4().to_string(); let dir = meeting_directory(root,&id)?;
     fs::create_dir(&dir)?;
@@ -73,7 +78,7 @@ fn new_deck(root: &Path, title: &str, card: Value) -> Result<Value> {
         let mut source = fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(dir.join("cards.tsv"))?;
         source.write_all(b"#separator:tab\n#html:false\n#columns:Front\tBack\tContext\tTags\n")?; source.sync_all()?;
         let meeting = json!({"id":id,"title":title.trim(),"createdAt":now,"source":"cards.tsv","status":"ready","duration":0,"speakerNames":{},"completedTasks":[],"focus":"","recordingTracks":false,"hasVideo":false,"libraryKind":"cards"});
-        atomic_json(&dir.join("meta.json"), &meeting)?;
+        super::publish_deck(root,&dir,&meeting,folder_id)?;
         Ok(json!({"meeting":meeting,"card":card}))
     })();
     if result.is_err() { let _=fs::remove_dir_all(&dir); }
@@ -86,7 +91,7 @@ fn save(root: &Path, input: &Value) -> Result<Value> {
     let kind = input["kind"].as_str().unwrap_or("phrase"); ensure!(["phrase","concept"].contains(&kind), "Неизвестный тип карточки");
     if input["meetingID"].as_str().filter(|s| !s.is_empty()).is_none() {
         ensure!(input["cardID"].as_str().is_none(), "Для правки выберите колоду");
-        return new_deck(root,input["newDeckTitle"].as_str().unwrap_or("Мои карточки"),json!({"id":Uuid::new_v4().to_string(),"kind":kind,"front":front,"back":back,"context":"","segmentIDs":[],"editedAt":Utc::now().timestamp_millis()}));
+        return new_deck(root,input["newDeckTitle"].as_str().unwrap_or("Мои карточки"),json!({"id":Uuid::new_v4().to_string(),"kind":kind,"front":front,"back":back,"context":"","segmentIDs":[],"editedAt":Utc::now().timestamp_millis()}),input["folderID"].as_str());
     }
     let id = text(input,"meetingID")?; let dir = meeting_directory(root,id)?; let _lock = meeting_lock(&dir)?;
     recover_review(&dir)?;

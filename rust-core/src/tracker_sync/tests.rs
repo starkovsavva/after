@@ -622,3 +622,19 @@ fn module_revocation_during_pull_does_not_import_or_request_the_next_page() {
     let journal=load(&database(root.path()).unwrap()).unwrap();
     assert!(journal.bindings.is_empty()); assert!(journal.pending.is_empty());
 }
+
+#[test]
+fn folder_connector_imports_into_its_enabled_scope_without_enabling_the_global_inbox() {
+    let root=tempfile::tempdir().unwrap();
+    let folder=crate::folders::save(root.path(),crate::folders::Folder{id:"english".into(),name:"English".into(),revision:0,overrides:json!({"features":{"tasks":true}})}).unwrap();
+    let c=TrackerConfiguration{id:"folder-google".into(),account:"Synthetic".into(),expires_at:Some(now()+3600.),folder_id:Some(folder.id.clone()),enabled:true,scopes:vec!["scope-1".into()],..Default::default()};
+    request(root.path(),"tracker-configure",&json!({"configuration":c})).unwrap();
+    let c=configuration(&load(&database(root.path()).unwrap()).unwrap(),&c.id).unwrap();
+    let calls=Arc::new(Mutex::new(0usize));let count=calls.clone();
+    let f=Fixture::new(move|r|{assert_eq!(r.method,"GET");*count.lock().unwrap()+=1;ok(json!({"items":[google("g-one","Practice phrases","r1")]}))});
+    request(root.path(),"tracker-sync",&sync_args(&c,&f)).unwrap();
+    let notes=notes::list(root.path()).unwrap().notes;assert_eq!(notes.len(),1);assert_eq!(notes[0].folder_id.as_deref(),Some("english"));assert_eq!(notes[0].folder,"English");
+    assert!(!crate::ai::live_features_for(root.path(),None,None).unwrap().tasks,"An enabled connector folder cannot enable base inbox tasks");
+    let before=*calls.lock().unwrap();let mut disabled=folder;disabled.overrides=json!({"features":{"tasks":false}});crate::folders::save(root.path(),disabled).unwrap();
+    assert!(request(root.path(),"tracker-sync",&sync_args(&c,&f)).is_err());assert_eq!(*calls.lock().unwrap(),before);assert_eq!(notes::list(root.path()).unwrap().notes.len(),1);
+}

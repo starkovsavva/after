@@ -27,7 +27,7 @@ struct SearchView: View {
                 Button("Закрыть") { store.showingSearch = false }
                     .buttonStyle(.borderless).keyboardShortcut(.cancelAction)
             }.padding(22)
-            if store.settings.isEnabled(.semanticSearch) {
+            if store.isFeatureEnabled(.semanticSearch) {
                 Picker("Способ поиска", selection: $byMeaning) {
                     Text("По словам").tag(false); Text("По смыслу").tag(true)
                 }.pickerStyle(.segmented).labelsHidden().frame(width: 230).padding(.horizontal, 22).padding(.bottom, 12)
@@ -37,9 +37,9 @@ struct SearchView: View {
                 Text("Всё").tag("all")
                 Text("Заметки").tag("notes")
                 Text("Транскрипт").tag("transcript")
-                if store.settings.isEnabled(.cards) { Text("Карточки").tag("cards") }
+                if store.isFeatureEnabled(.cards) { Text("Карточки").tag("cards") }
                 Text("Названия").tag("meetings")
-                if byMeaning && store.settings.isEnabled(.tasks) { Text("Задачи").tag("tasks"); Text("Код").tag("code") }
+                if byMeaning && store.isFeatureEnabled(.tasks) { Text("Задачи").tag("tasks"); Text("Код").tag("code") }
             }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Область поиска").tint(Ink.actionFill).padding(.horizontal, 22).padding(.bottom, 16)
             Rectangle().fill(Ink.line).frame(height: 1)
             if let message = byMeaning ? knowledge.error : store.searchError {
@@ -59,14 +59,14 @@ struct SearchView: View {
             .onAppear {
                 queryFocused = true
                 #if DEBUG
-                if releaseSearchPreview && store.settings.isEnabled(.semanticSearch) {
+                if releaseSearchPreview && store.isFeatureEnabled(.semanticSearch) {
                     byMeaning = true; knowledge.seedPreview(ReleasePreviewFixtures.semanticSources)
                     selectedID = knowledge.sources.first?.id
                     return
                 }
                 #endif
                 struct Envelope: Decodable { var config: SemanticSearchConfiguration }
-                if store.settings.isEnabled(.semanticSearch),
+                if store.isFeatureEnabled(.semanticSearch),
                    let data = try? RustBridge.shared.get().request(root: store.root, command: "semantic-config"),
                    let value = try? JSONDecoder().decode(Envelope.self, from: data) { byMeaning = value.config.enabled }
                 else { byMeaning = false }
@@ -75,7 +75,8 @@ struct SearchView: View {
             .onChange(of: store.searchQuery) { _, _ in updateSearch() }
             .onChange(of: store.searchScope) { _, _ in updateSearch() }
             .onChange(of: byMeaning) { _, _ in updateSearch(immediate: true) }
-            .onChange(of: store.settings.features) { _, _ in updateSearch(immediate: true) }
+            .onChange(of: store.visibleFeatures) { _, _ in updateSearch(immediate: true) }
+            .onChange(of: store.folderSelection) { _, _ in updateSearch(immediate: true) }
             .onChange(of: knowledge.sources) { _, hits in selectedID = hits.first?.id }
             .onChange(of: store.searchHits) { _, _ in selectedID = visibleSearchHits.first?.id }
             .onDisappear { store.cancelSearch(); knowledge.cancel() }
@@ -88,11 +89,11 @@ struct SearchView: View {
     #endif
     private func updateSearch(immediate: Bool = false) {
         #if DEBUG
-        if releaseSearchPreview && store.settings.isEnabled(.semanticSearch) { return }
+        if releaseSearchPreview && store.isFeatureEnabled(.semanticSearch) { return }
         #endif
         // Saved scopes and in-flight results must not reopen disabled tools.
-        if !store.settings.isEnabled(.semanticSearch) { byMeaning = false }
-        let scope = store.settings.features.normalizedSearchScope(store.searchScope, byMeaning: byMeaning)
+        if !store.isFeatureEnabled(.semanticSearch) { byMeaning = false }
+        let scope = store.visibleFeatures.normalizedSearchScope(store.searchScope, byMeaning: byMeaning)
         if store.searchScope != scope { store.searchScope = scope }
         if byMeaning { store.cancelSearch(); knowledge.update(store: store, query: store.searchQuery, scope: store.searchScope, immediate: immediate) }
         else { knowledge.cancel(); store.updateSearch(immediate: immediate) }
@@ -224,8 +225,8 @@ struct SearchView: View {
     }
     private var visibleSearchHits: [SearchHit] {
         store.searchHits.filter {
-            store.settings.features.allowsKnowledgeKind($0.kind)
-                && ($0.cardID == nil || store.settings.isEnabled(.cards))
+            store.visibleFeatures.allowsKnowledgeKind($0.kind)
+                && ($0.cardID == nil || store.isFeatureEnabled(.cards))
         }
     }
     private func label(_ kind: String) -> String {

@@ -51,6 +51,12 @@ fn targets(root: &Path, input: &Value, proposal: &Proposal) -> Result<Vec<Value>
             .map(|n| crate::trash::snapshot(root, object_kind, &n.id, false))
             .collect::<Result<Vec<_>>>()?
     };
+    let profiles=crate::ai::FeatureResolver::new(root)?;
+    all.retain(|target| {
+        let id=target["id"].as_str().unwrap_or("");
+        let source=if object_kind=="meeting" {json!({"meetingID":id})}else{json!({"noteID":id})};
+        profiles.in_scope(&source,input) && (object_kind!="task" || profiles.features_for(&source).is_ok_and(|f|f.tasks))
+    });
     let selected = input[if object_kind == "meeting" {
         "meetingID"
     } else if object_kind == "task" {
@@ -80,7 +86,7 @@ fn targets(root: &Path, input: &Value, proposal: &Proposal) -> Result<Vec<Value>
     Ok(all)
 }
 pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result<Value> {
-    check_action_features(root, &proposal.action)?;
+    check_scoped_action_features(root,input, &proposal.action)?;
     let mut candidates = targets(root, input, proposal)?;
     for c in &mut candidates {
         c["selected"] = json!(false);
@@ -96,7 +102,8 @@ pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result
     if candidates.len() == 1 {
         candidates[0]["selected"] = json!(true);
     }
-    let plan = json!({"trashIntent":true,"status":status,"planID":uuid(),"operationID":uuid(),"createdAt":now(),"proposal":proposal,"title":if restore{"Восстановить из Корзины"}else{"Переместить в Корзину"},"detail":if candidates.is_empty(){"Выберите объект или укажите его название. Удаление доступно для одной встречи, заметки или задачи за раз."}else if restore{"Объект вернётся в библиотеку вместе с сохранёнными материалами."}else{"Объект можно будет восстановить в Корзине в течение 30 дней."},"reviewRequired":true,"selectionMode":"single","target":candidates.first().cloned().unwrap_or(Value::Null),"candidates":candidates});
+    let mut plan = json!({"trashIntent":true,"status":status,"planID":uuid(),"operationID":uuid(),"createdAt":now(),"proposal":proposal,"title":if restore{"Восстановить из Корзины"}else{"Переместить в Корзину"},"detail":if candidates.is_empty(){"Выберите объект или укажите его название. Удаление доступно для одной встречи, заметки или задачи за раз."}else if restore{"Объект вернётся в библиотеку вместе с сохранёнными материалами."}else{"Объект можно будет восстановить в Корзине в течение 30 дней."},"reviewRequired":true,"selectionMode":"single","target":candidates.first().cloned().unwrap_or(Value::Null),"candidates":candidates});
+    bind_plan_profile(root,input,&mut plan)?;
     let directory = notes::directory(root)?;
     let _lock = notes::lock(&directory)?;
     let mut data = notes::load(&directory)?;

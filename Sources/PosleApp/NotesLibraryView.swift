@@ -89,7 +89,14 @@ private final class LibraryNoteDocument: ObservableObject {
     }
     @discardableResult func moveToFolder(_ name: String, expectedID: String) -> Bool {
         guard selectedID == expectedID, draft?.trashedAt == nil else { return false }
-        edit { $0.folder = name }
+        let destination: LibraryFolder?
+        if name.isEmpty { destination = nil }
+        else if let existing = notes.folders.first(where: { $0.name == name }) { destination = existing }
+        else {
+            guard let created = notes.saveFolder(LibraryFolder(name: name)) else { return false }
+            destination = created
+        }
+        edit { $0.folder = destination?.name ?? ""; $0.folderID = destination?.id }
         return flush()
     }
     @discardableResult func saveCopy() -> CapturedNote? {
@@ -120,7 +127,7 @@ struct NotesLibraryView: View {
         _document = StateObject(wrappedValue: LibraryNoteDocument.shared(notes: notes))
     }
     private var persisted: CapturedNote? { notes.workspace.notes.first { $0.id == document.selectedID } }
-    private var folders: [String] { Set(notes.workspace.notes.filter { $0.trashedAt == nil }.map(\.folder).filter { !$0.isEmpty }).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+    private var folders: [LibraryFolder] { notes.folders }
     private var visibleNotes: [CapturedNote] {
         let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return notes.workspace.notes.filter { note in
@@ -129,7 +136,8 @@ struct NotesLibraryView: View {
             if filter == "inbox", let meetingID = note.meetingID,
                app.noteMeetings.contains(where: { $0.id == meetingID }) { return false }
             if filter == "pinned" && !note.pinned { return false }
-            if !folder.isEmpty && note.folder != folder { return false }
+            if let selected = app.folderSelection, noteFolderID(note) != selected { return false }
+            if !folder.isEmpty && noteFolderID(note) != folder { return false }
             if search.isEmpty { return true }
             let content = [note.title, note.text, note.tags.map { "#" + $0 }.joined(separator: " "), note.folder,
                            note.attachments.map { $0.name + " " + $0.extractedText }.joined(separator: " ")].joined(separator: "\n")
@@ -169,6 +177,10 @@ struct NotesLibraryView: View {
                 guard document.flush() else { return }
                 folder = ""; selectVisibleNote()
             }
+            .onChange(of: app.folderSelection) { _, _ in
+                guard document.flush() else { return }
+                folder = ""; selectVisibleNote()
+            }
             .onChange(of: folder) { _, _ in
                 guard document.flush() else { return }
                 selectVisibleNote()
@@ -185,8 +197,10 @@ struct NotesLibraryView: View {
                     let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !name.isEmpty else { return }
                     if let noteID = folderNoteID {
-                        if document.moveToFolder(name, expectedID: noteID) { folder = name }
-                    } else { createNote(in: name) }
+                        if document.moveToFolder(name, expectedID: noteID) { app.folderSelection = document.draft?.folderID; folder = "" }
+                    } else if let created = notes.saveFolder(LibraryFolder(name: name)) {
+                        app.folderSelection = created.id; folder = ""; selectVisibleNote()
+                    }
                     newFolder = ""; folderNoteID = nil
                 }.disabled(newFolder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Отмена", role: .cancel) { newFolder = ""; folderNoteID = nil }
@@ -207,7 +221,7 @@ struct NotesLibraryView: View {
     }
     private var noteList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            AppListHeader(title: "Заметки") {
+            AppListHeader(title: notes.folder(app.folderSelection)?.name ?? "Заметки") {
                 Menu {
                     Button("Новая заметка") { createNote() }
                     Button("Новая папка…") { folderNoteID = nil; showFolder = true }
@@ -223,10 +237,10 @@ struct NotesLibraryView: View {
                     Text("Все заметки").tag("all"); Text("Без встречи").tag("inbox")
                     Text("Закреплённые").tag("pinned"); Text("Корзина").tag("trash")
                 }.labelsHidden()
-                if !folders.isEmpty && filter != "trash" {
+                if !folders.isEmpty && filter != "trash" && app.folderSelection == nil {
                     Picker("Папка", selection: $folder) {
                         Text("Все папки").tag("")
-                        ForEach(folders, id: \.self) { Text($0).tag($0) }
+                        ForEach(folders) { Text($0.name).tag($0.id) }
                     }.labelsHidden()
                 }
             }.padding(.horizontal, 12).padding(.bottom, 12)
@@ -272,8 +286,9 @@ struct NotesLibraryView: View {
             }
             let snippet = note.text.split(separator: "\n").dropFirst(note.title.isEmpty ? 1 : 0).joined(separator: " ")
             if !snippet.isEmpty { Text(snippet).font(AppTypography.control).foregroundStyle(.secondary).lineLimit(2) }
-            if !note.folder.isEmpty || !note.tags.isEmpty {
-                Text(([note.folder].filter { !$0.isEmpty } + note.tags.map { "#" + $0 }).joined(separator: " · ")).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
+            let folderName = notes.folder(noteFolderID(note))?.name ?? note.folder
+            if !folderName.isEmpty || !note.tags.isEmpty {
+                Text(([folderName].filter { !$0.isEmpty } + note.tags.map { "#" + $0 }).joined(separator: " · ")).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(11)
             .contentShape(Rectangle())
@@ -320,7 +335,7 @@ struct NotesLibraryView: View {
                     Text(Date(timeIntervalSince1970: draft.updatedAt), style: .date).font(AppTypography.caption).foregroundStyle(.secondary)
                     if let meetingID = draft.meetingID {
                         if let meeting = app.noteMeetings.first(where: { $0.id == meetingID }) {
-                            Button { if document.flush() { app.openCapturedNote(draft) } } label: { Label(meeting.title, systemImage: "waveform").lineLimit(1) }.buttonStyle(.link).font(AppTypography.caption)
+                            Button { if document.flush() { app.openMeeting(meetingID, tab: "notes") } } label: { Label(meeting.title, systemImage: "waveform").lineLimit(1) }.buttonStyle(.link).font(AppTypography.caption)
                         } else {
                             Label("Встреча недоступна", systemImage: "waveform").font(AppTypography.caption).foregroundStyle(.secondary)
                                 .help("Связь с встречей сохранена. После восстановления из Корзины она снова откроется.")
@@ -347,11 +362,11 @@ struct NotesLibraryView: View {
                     Divider()
                     HStack(spacing: 10) {
                         Menu {
-                            Button("Без папки") { document.edit { $0.folder = "" } }
-                            ForEach(folders, id: \.self) { name in Button(name) { document.edit { $0.folder = name } } }
+                            Button(draft.meetingID == nil ? "Без папки" : "Как у встречи") { moveNote(to: nil) }
+                            ForEach(folders) { folder in Button(folder.name) { moveNote(to: folder) } }
                             Divider()
                             Button("Новая папка…") { folderNoteID = draft.id; showFolder = true }
-                        } label: { Label(draft.folder.isEmpty ? "Папка" : draft.folder, systemImage: "folder").lineLimit(1) }.menuStyle(.borderlessButton).frame(maxWidth: 170)
+                        } label: { Label(notes.folder(noteFolderID(draft))?.name ?? (draft.folder.isEmpty ? "Папка" : draft.folder), systemImage: "folder").lineLimit(1) }.menuStyle(.borderlessButton).frame(maxWidth: 170)
                         TextField("#теги через пробел", text: Binding(get: { tagsInput }, set: { value in
                             tagsInput = value
                             let tags = value.split { $0.isWhitespace || $0 == "," }.map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "#")) }.filter { !$0.isEmpty }
@@ -371,16 +386,30 @@ struct NotesLibraryView: View {
         return true
     }
     private func selectVisibleNote() {
+        if let id = notes.selectedNoteID, let requested = visibleNotes.first(where: { $0.id == id }) {
+            _ = select(requested); return
+        }
         if let id = document.selectedID, visibleNotes.contains(where: { $0.id == id }) { return }
         if let first = visibleNotes.first { select(first) } else { _ = document.clear() }
     }
     private func createNote(in targetFolder: String? = nil) {
         guard document.flush() else { return }
-        let destination = targetFolder ?? folder
-        var note = CapturedNote(); note.folder = destination
+        let destinationID = targetFolder ?? (folder.isEmpty ? app.folderSelection : folder)
+        let destination = notes.folder(destinationID)
+        var note = CapturedNote(); note.folderID = destination?.id; note.folder = destination?.name ?? ""
         guard let saved = notes.save(note) else { return }
-        filter = "all"; query = ""; folder = destination
+        filter = "all"; query = ""; folder = app.folderSelection == nil ? (destination?.id ?? "") : ""
         _ = document.select(saved)
+    }
+    private func noteFolderID(_ note: CapturedNote) -> String? {
+        note.folderID ?? note.meetingID.flatMap { notes.context(for: $0).folderID }
+    }
+    private func moveNote(to destination: LibraryFolder?) {
+        guard document.flush() else { return }
+        document.edit { $0.folderID = destination?.id; $0.folder = destination?.name ?? "" }
+        guard document.flush() else { return }
+        if app.folderSelection != nil { app.folderSelection = destination?.id }
+        folder = ""
     }
     private func trash(_ note: CapturedNote) {
         guard document.flush() else { return }

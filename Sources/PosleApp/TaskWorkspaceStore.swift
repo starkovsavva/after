@@ -112,10 +112,12 @@ extension NotesStore {
     @discardableResult
     func createWorkspaceTask(title: String, text: String = "", project: String = "",
                              source: TaskWorkspaceSource = .local, externalURL: String = "",
-                             due: String = "", owner: String = "") -> TaskWorkspace? {
-        taskWorkspaceRequest("task-create", arguments: ["title": title, "text": text, "project": project,
+                             due: String = "", owner: String = "", folderID: String? = nil) -> TaskWorkspace? {
+        var arguments: [String: Any] = ["title": title, "text": text, "project": project,
             "source": source.rawValue, "externalURL": externalURL, "due": due, "owner": owner,
-            "operationID": UUID().uuidString.lowercased()])
+            "operationID": UUID().uuidString.lowercased()]
+        if let folderID { arguments["folderID"] = folderID }
+        return taskWorkspaceRequest("task-create", arguments: arguments)
     }
 
     @discardableResult

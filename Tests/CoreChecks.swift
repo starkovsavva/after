@@ -104,6 +104,26 @@ struct CoreChecks {
         legacyMeetingObject.removeValue(forKey: "generateCards")
         let minimalMeeting = try JSONDecoder().decode(Meeting.self, from: JSONSerialization.data(withJSONObject: legacyMeetingObject))
         expect(minimalMeeting.generateCards == nil, "old meeting has no implicit card opt-in")
+        let legacyWorkspace = try JSONDecoder().decode(NotesWorkspace.self, from: Data("{}".utf8))
+        expect(legacyWorkspace.folders.isEmpty && legacyWorkspace.notes.isEmpty, "legacy workspace acquires no invented folder membership")
+        let overrides = try JSONDecoder().decode(FolderOverrides.self, from: Data(#"{"features":{"cards":true,"tasks":false},"mode":"cloud","cloudProvider":"custom","cloudEndpoint":"https://example.invalid/v1","cloudModel":"folder-model","generateCards":true}"#.utf8))
+        var globalProfile = AppSettings(); globalProfile.features.tasks = true
+        let appliedProfile = overrides.apply(to: globalProfile)
+        expect(appliedProfile.features.cards && !appliedProfile.features.tasks && !appliedProfile.features.assistant, "sparse folder feature overrides distinguish inheritance from explicit false")
+        expect(!globalProfile.features.cards && globalProfile.features.tasks && globalProfile.mode == "local", "folder selection leaves global defaults unchanged")
+        expect(appliedProfile.cloudProvider == "custom" && appliedProfile.cloudModel == "folder-model" && appliedProfile.cloudEndpoint == "https://example.invalid/v1", "folder model stays bound to its exact provider and endpoint")
+        let sparseFolder = String(decoding: try JSONEncoder().encode(overrides), as: UTF8.self)
+        expect(!sparseFolder.contains("apiKey") && !sparseFolder.contains("localModel") && !sparseFolder.contains("assistant"), "folder encoding retains sparse inheritance and no credentials")
+        let folder = LibraryFolder(id: "english", name: "Английский", overrides: overrides)
+        let folderRoundtrip = try JSONDecoder().decode(LibraryFolder.self, from: JSONEncoder().encode(folder))
+        expect(folderRoundtrip == folder, "stable folder profile roundtrip")
+        var context = MeetingContext(meetingID: meeting.id); context.folderID = folder.id
+        let contextRoundtrip = try JSONDecoder().decode(MeetingContext.self, from: JSONEncoder().encode(context))
+        expect(contextRoundtrip.folderID == folder.id, "meeting membership uses stable folder ID")
+        var folderNote = CapturedNote(text: "Lesson notes"); folderNote.folderID = folder.id
+        let noteRoundtrip = try JSONDecoder().decode(CapturedNote.self, from: JSONEncoder().encode(folderNote))
+        expect(noteRoundtrip.folderID == folder.id, "independent note folder identity survives storage")
+        print("PASS: folder profiles, sparse inheritance, model isolation and legacy membership")
         print("PASS: settings migration and external model selection")
         var linked = summary
         linked.overviewClaims = [OverviewClaim(text: "Обсудили поставку.", itemIndices: [0])]

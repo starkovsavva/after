@@ -94,10 +94,12 @@ fn shortlist(root: &Path, input: &Value, proposal: &Proposal) -> Result<Vec<Valu
         .map(crate::search::QueryMatcher::new)
         .collect::<Result<_>>()?;
     let selected = input["taskID"].as_str();
+    let profiles=crate::ai::FeatureResolver::new(root)?;
     let mut ranked: Vec<_> = tasks
         .iter()
         .filter(|task| {
-            project
+            let source=json!({"taskID":task["id"]});
+            profiles.in_scope(&source,input) && profiles.features_for(&source).is_ok_and(|f|f.tasks) && project
                 .as_ref()
                 .is_none_or(|project| task["project"] == project.as_str())
         })
@@ -165,7 +167,9 @@ fn prompt_candidate(task: &Value) -> Value {
     json!({"id":task["id"],"title":short(task["title"].as_str().unwrap_or(""),160),"text":short(task["text"].as_str().unwrap_or(""),400),"status":task["status"],"completed":task["completed"],"materials":materials})
 }
 pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result<Value> {
-    check_action_features(root, &proposal.action)?;
+    check_scoped_action_features(root,input, &proposal.action)?;
+    let profile=crate::ai::profile_for_input(root,input)?;
+    let settings=crate::ai::settings_for_input(root,input)?;
     let candidates = shortlist(root, input, proposal)?;
     let mut prompt = json!({"user_command":input["text"],"task_action":proposal.action,"topic":proposal.query,"addition_text":short(&proposal.text,2000),"task_candidates":candidates.iter().map(prompt_candidate).collect::<Vec<_>>(),"candidate_set_may_be_incomplete":true});
     // Input/output cost is bounded independently of the size of the library.
@@ -212,15 +216,17 @@ pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result
     let reranking: Reranking = if candidates.is_empty() {
         Reranking { matches: vec![], clarification: "В выбранном проекте нет подходящих задач. Уточните название или выберите другой проект.".into() }
     } else {
-        check_action_features(root, &proposal.action)?;
+        check_scoped_action_features(root,input, &proposal.action)?;
+        crate::ai::require_profile_current(root,input,&profile.fingerprint)?;
         serde_json::from_value(crate::ai::generate(
-            &crate::ai::settings(root)?,
+            &settings,
             RERANK_SYSTEM,
             &prompt.to_string(),
             &rerank_schema(),
         )?)
         .context("ИИ вернул неподходящий список задач")?
     };
+    crate::ai::require_profile_current(root,input,&profile.fingerprint)?;
     prepare_ranked(root, input, proposal, &candidates, reranking)
 }
 fn prepare_ranked(
@@ -230,7 +236,7 @@ fn prepare_ranked(
     candidates: &[Value],
     reranking: Reranking,
 ) -> Result<Value> {
-    check_action_features(root, &proposal.action)?;
+    check_scoped_action_features(root,input, &proposal.action)?;
     ensure!(
         reranking.matches.len() <= MAX_CANDIDATES && bounded(&reranking.clarification, 1000),
         "Слишком большой список задач ИИ"
@@ -281,6 +287,7 @@ fn prepare_ranked(
         proposal.text.clone()
     };
     let mut value = json!({"taskIntent":true,"planID":uuid(),"operationID":uuid(),"createdAt":now(),"status":status,"title":match proposal.action.as_str(){"openTask"=>"Открыть задачу","completeTask"=>"Завершить задачу","reopenTask"=>"Открыть задачу заново","appendTaskContexts"=>"Дополнить выбранные задачи",_=>"Добавить мысль к задаче"},"detail":detail,"proposal":proposal,"candidates":matches,"projectID":project,"target":null,"reviewRequired":proposal.action!="openTask","selectionMode":if single{"single"}else{"multiple"},"domainBatchPlanID":null});
+    bind_plan_profile(root,input,&mut value)?;
     if status == "ready" {
         attach_domain_preview(root, &mut value)?;
     }

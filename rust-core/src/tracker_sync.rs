@@ -38,6 +38,7 @@ pub struct TrackerConfiguration {
     pub id: String,
     pub provider: String,
     pub account: String,
+    #[serde(rename="folderID")] pub folder_id:Option<String>,
     pub organization_id: String,
     pub cloud_organization: bool,
     pub iam_token: bool,
@@ -60,6 +61,7 @@ impl Default for TrackerConfiguration {
             id: String::new(),
             provider: "google".into(),
             account: String::new(),
+            folder_id:None,
             organization_id: String::new(),
             cloud_organization: false,
             iam_token: false,
@@ -199,6 +201,11 @@ fn ensure_tasks(root: &Path) -> Result<()> {
     ensure!(crate::ai::live_features(root)?.tasks, "Включите «Задачи и проекты» в настройках → Возможности.");
     Ok(())
 }
+fn connection_tasks(root:&Path,c:&TrackerConfiguration)->Result<()> {
+    ensure!(crate::ai::live_features_for(root,None,c.folder_id.as_deref())?.tasks,"Задачи выключены в папке подключения трекера.");
+    Ok(())
+}
+fn source_tasks(root:&Path,id:&str)->bool { crate::ai::live_features_for_input(root,&json!({"taskID":id})).is_ok_and(|f|f.tasks) }
 fn save_active(root: &Path, db: &Connection, j: &Journal) -> Result<()> {
     ensure_tasks(root)?;
     save(db, j)
@@ -300,6 +307,7 @@ impl std::error::Error for ApiFailure {}
 impl Api {
     fn new(root: &Path, config: TrackerConfiguration, input: &Value) -> Result<Self> {
         ensure_tasks(root)?;
+        connection_tasks(root,&config)?;
         let token = input["token"].as_str().unwrap_or("").trim().to_string();
         ensure!(
             !token.is_empty() && token.len() <= 16_384 && !token.contains(['\r', '\n']),
@@ -399,6 +407,7 @@ impl Api {
         // Never surface reqwest errors containing request URLs or response text:
         // providers can echo credentials or confidential remote content there.
         ensure_tasks(&self.root)?;
+        connection_tasks(&self.root,&self.config)?;
         let response = request.send().map_err(|_| ApiFailure {
             code: 0,
             retry_after: None,
@@ -406,6 +415,7 @@ impl Api {
                 .into(),
         })?;
         ensure_tasks(&self.root)?;
+        connection_tasks(&self.root,&self.config)?;
         let code = response.status().as_u16();
         let pages = response
             .headers()
@@ -908,9 +918,12 @@ fn apply_remote(
     expected: Option<&Fields>,
 ) -> Result<Fields> {
     ensure_tasks(root)?;
+    connection_tasks(root,c)?;
     let dir = notes::directory(root)?;
     let _lock = notes::lock(&dir)?;
     let mut workspace = notes::load(&dir)?;
+    connection_tasks(root,c)?;
+    if workspace.notes.iter().any(|n|n.id==local_id) { ensure!(source_tasks(root,local_id),"Задачи выключены в папке локальной задачи"); }
     if let Some(expected) = expected {
         ensure!(
             fields(&workspace, local_id, &c.provider).as_ref() == Some(expected),
@@ -974,6 +987,7 @@ fn apply_remote(
             title: String::new(),
             content_rtf: String::new(),
             folder: String::new(),
+            folder_id: c.folder_id.clone(),
             tags: vec![],
             pinned: false,
             trashed_at: None,
@@ -984,6 +998,7 @@ fn apply_remote(
             subtasks: vec![],
         }
     };
+    if let Some(folder)=&note.folder_id { note.folder=workspace.folders.iter().find(|f|&f.id==folder).map(|f|f.name.clone()).context("Папка подключения удалена")?; }
     note.title = local.title.clone();
     note.text = local.text.clone();
     note.content_rtf.clear();
@@ -1042,6 +1057,7 @@ fn apply_remote(
     Ok(local)
 }
 fn local_fields(root: &Path, c: &TrackerConfiguration, id: &str) -> Result<Option<Fields>> {
+    ensure!(crate::ai::live_features_for_input(root,&json!({"taskID":id}))?.tasks,"Задачи выключены в профиле этой папки; синхронизация приостановлена.");
     let workspace = notes::list(root)?;
     Ok(fields(&workspace, id, &c.provider))
 }
@@ -1150,6 +1166,7 @@ fn send_pending(
         .iter()
         .filter(|p| {
             p.connection == c.id
+                && source_tasks(root,&p.local_id)
                 && c.scopes.contains(&p.scope)
                 && (!creation_only || p.remote_id.is_none())
         })
@@ -1300,6 +1317,7 @@ fn sync(
     input: &Value,
 ) -> Result<Value> {
     ensure_tasks(root)?;
+    connection_tasks(root,&c)?;
     ensure!(
         c.enabled && !c.paused,
         "Синхронизация выключена или приостановлена"
@@ -1369,6 +1387,7 @@ fn sync(
         .iter()
         .filter(|b| {
             b.connection == c.id
+                && source_tasks(root,&b.local_id)
                 && c.scopes.contains(&b.scope)
                 && !known.contains(&(b.scope.clone(), b.remote_id.clone()))
         })
@@ -1411,6 +1430,7 @@ fn sync(
             .find(|b| b.connection == c.id && b.scope == remote.scope && b.remote_id == remote.id)
             .cloned();
         if let Some(binding) = existing {
+            if !source_tasks(root,&binding.local_id) { continue; }
             if j.pending
                 .iter()
                 .any(|p| p.connection == c.id && p.local_id == binding.local_id)
@@ -1537,7 +1557,7 @@ pub fn request(root: &Path, command: &str, input: &Value) -> Result<Value> {
         let mut c: TrackerConfiguration = serde_json::from_value(input["configuration"].clone())
             .context("Нет параметров подключения")?;
         checked_config(&c)?;
-        if c.enabled { ensure_tasks(root)?; }
+        if c.enabled { ensure_tasks(root)?; connection_tasks(root,&c)?; }
         if c.id.is_empty() {
             c.id = id();
         }
@@ -1573,7 +1593,7 @@ pub fn request(root: &Path, command: &str, input: &Value) -> Result<Value> {
         c.retry_at = None;
         c.requires_auth = false;
         journal.configurations.retain(|v| v.id != c.id);
-        if c.enabled { ensure_tasks(root)?; }
+        if c.enabled { ensure_tasks(root)?; connection_tasks(root,&c)?; }
         journal.configurations.push(c);
         save(&db, &journal)?;
         return Ok(state(&journal));

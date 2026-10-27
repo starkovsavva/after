@@ -8,11 +8,16 @@ extension AppStore {
     /// meeting can have moved to Trash since search generated this note source.
     /// The independent note stays editable and keeps its historical link.
     func openCapturedNote(_ note: CapturedNote) {
+        let destination = note.folderID ?? note.meetingID.flatMap { folderID(for: $0) }
+        // A note may keep its historical meeting link while using another
+        // folder's profile. Reveal that note in its own library scope.
         if let id = note.meetingID,
+           note.folderID == nil || note.folderID == folderID(for: id),
            let meeting: Meeting = self.read(self.meetingDirectory(id).appendingPathComponent("meta.json")),
            meeting.id == id, meeting.libraryKind != "cards" {
             self.openMeeting(id, tab: "notes")
         } else {
+            if folderSelection != nil, folderSelection != destination { folderSelection = destination }
             self.librarySection = "inbox"
             self.pause()
         }
@@ -21,14 +26,14 @@ extension AppStore {
     }
 
     func permitsKnowledgeSource(_ source: KnowledgeSource) -> Bool {
-        guard settings.features.allowsKnowledgeKind(source.kind),
-              source.cardID == nil || settings.isEnabled(.cards),
-              source.taskID == nil || settings.isEnabled(.tasks),
-              source.eventID == nil || settings.isEnabled(.calendar) else { return false }
+        guard availableFeatures.allowsKnowledgeKind(source.kind),
+              source.cardID == nil || availableFeatures.cards,
+              source.taskID == nil || availableFeatures.tasks,
+              source.eventID == nil || availableFeatures.calendar else { return false }
         if let id = source.meetingID {
             guard !id.isEmpty, id.utf8.count <= 128,
                   id.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }) else { return false }
-            if !settings.isEnabled(.cards),
+            if !effectiveSettings(for: id).features.cards,
                let meeting: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")), meeting.libraryKind == "cards" { return false }
         }
         return true

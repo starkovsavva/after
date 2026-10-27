@@ -14,6 +14,7 @@ struct TaskListPane: View {
     @ObservedObject var notes: NotesStore
     let tasks: [TaskWorkspace]
     let hasAnyTasks: Bool
+    var draftKey = "newtask"
     @Binding var query: String
     let select: (TaskWorkspace) -> Void
     let addTask: () -> Void
@@ -23,7 +24,7 @@ struct TaskListPane: View {
             if let id, let task = tasks.first(where: { $0.id == id }) { select(task) }
         })
     }
-    private var newTask: Binding<String> { Binding(get: { notes.captureDrafts["newtask"] ?? "" }, set: { notes.captureDrafts["newtask"] = $0 }) }
+    private var newTask: Binding<String> { Binding(get: { notes.captureDrafts[draftKey] ?? "" }, set: { notes.captureDrafts[draftKey] = $0 }) }
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {

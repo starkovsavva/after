@@ -154,7 +154,27 @@ fn task_tools_enabled(root: &Path) -> bool {
 }
 fn call(root: &Path, name: &str, args: Map<String, Value>) -> Result<Value> {
     ensure!(task_tools_enabled(root), "Включите «Задачи» в настройках → Возможности. Доступ агента настраивается отдельно.");
-    let request = input(root, name, args)?;
+    let mut request = input(root, name, args)?;
+    if request["command"]=="task-list" {
+        let profiles=crate::ai::FeatureResolver::new(root)?;
+        let requested_offset=request["offset"].as_u64().unwrap_or(0) as usize;
+        let limit=request["limit"].as_u64().unwrap_or(200).clamp(1,500) as usize;
+        let mut tasks=Vec::new(); let mut offset=0usize; let mut result=json!({});
+        loop {
+            request["offset"]=json!(offset);request["limit"]=json!(500);
+            let page=crate::request(&request)?;
+            tasks.extend(page["tasks"].as_array().into_iter().flatten().filter(|task| profiles.features_for(&json!({"taskID":task["id"]})).is_ok_and(|f|f.tasks)).cloned());
+            let next=page["nextOffset"].as_u64();result=page;
+            match next {Some(next) if next as usize>offset && offset<10_000=>offset=next as usize,_=>break}
+        }
+        let total=tasks.len();let end=requested_offset.saturating_add(limit).min(total);
+        result["tasks"]=json!(tasks.into_iter().skip(requested_offset).take(limit).collect::<Vec<_>>());
+        result["total"]=json!(total);result["truncated"]=json!(end<total);
+        result["nextOffset"]=if end<total{json!(end)}else{Value::Null};
+        return Ok(result);
+    }
+    ensure!(crate::ai::live_features_for_input(root,&request)?.tasks,"Задачи выключены в профиле этой папки.");
+    if request["command"]!="task-context" { request["requireTaskFeature"]=json!(true); }
     crate::request(&request)
 }
 impl ServerHandler for TaskServer {
@@ -231,6 +251,25 @@ mod tests {
         assert!(created["id"].is_string());
         assert!(call(root.path(), "posle_task_context", json!({"taskID":created["id"]}).as_object().unwrap().clone()).is_err());
         assert!(crate::task_workspace::dispatch(root.path(), &json!({"command":"task-context","taskID":created["id"]})).is_ok());
+    }
+    #[test]
+    fn folder_task_permissions_limit_mcp_catalog_results_context_and_mutations() {
+        let root=tempfile::tempdir().unwrap();
+        let folder=crate::folders::save(root.path(),crate::folders::Folder{id:"english".into(),name:"English".into(),revision:0,overrides:json!({"features":{"tasks":true}})}).unwrap();
+        crate::task_workspace::dispatch(root.path(),&json!({"command":"task-agent-settings","enabled":true,"expectedRevision":0,"operationID":"enable-agent"})).unwrap();
+        let mut ids=Vec::new();
+        for (label,folder_id) in [("Allowed",Some(folder.id.as_str())),("Base",None)] {
+            let task=crate::task_workspace::dispatch(root.path(),&json!({"command":"task-create","title":label,"folderID":folder_id,"operationID":format!("create-{label}")})).unwrap();
+            let task=crate::task_workspace::dispatch(root.path(),&json!({"command":"task-details-update","taskID":task["id"],"expectedRevision":task["revision"],"expectedSourceFingerprint":task["sourceFingerprint"],"patch":{"agentAccess":{"enabled":true}},"operationID":format!("share-{label}")})).unwrap();
+            ids.push(task["id"].clone());
+        }
+        assert!(task_tools_enabled(root.path()),"A folder can enable the MCP catalog without enabling the base inbox");
+        let tasks=call(root.path(),"posle_tasks",json!({"limit":1}).as_object().unwrap().clone()).unwrap();assert_eq!(tasks["total"],1);assert_eq!(tasks["tasks"][0]["id"],ids[0]);assert_eq!(tasks["truncated"],false);
+        assert!(call(root.path(),"posle_task_context",json!({"taskID":ids[0]}).as_object().unwrap().clone()).is_ok());
+        assert!(call(root.path(),"posle_task_context",json!({"taskID":ids[1]}).as_object().unwrap().clone()).is_err());
+        let mut changed=folder;changed.overrides=json!({"features":{"tasks":false}});crate::folders::save(root.path(),changed).unwrap();
+        assert!(!task_tools_enabled(root.path()));assert!(call(root.path(),"posle_tasks",Map::new()).is_err());
+        assert_eq!(crate::notes::list(root.path()).unwrap().notes.len(),2,"Turning off the folder preserves tasks");
     }
     #[test]
     fn mcp_allowlist_cannot_override_root_or_enable_private_access() {

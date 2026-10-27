@@ -14,7 +14,7 @@ struct PosleApp: App {
                 .frame(minWidth: 1040, minHeight: 700)
                 .onAppear { delegate.connect(store) }
                 .onOpenURL { url in
-                    if url.scheme == "posle", url.host == "calendar-task", !store.settings.isEnabled(.calendar) {
+                    if url.scheme == "posle", url.host == "calendar-task", !store.isFeatureEnabled(.calendar) {
                         store.librarySection = "calendar"
                     } else if store.calendar.openLink(url) { store.librarySection = "calendar" }
                     else if url.isFileURL { store.importFile(url) }
@@ -35,7 +35,7 @@ struct PosleApp: App {
                 }.keyboardShortcut("n")
             }
             CommandGroup(after: .newItem) {
-                if store.settings.isEnabled(.assistant) {
+                if store.isFeatureEnabled(.assistant) {
                     Button("Голосовое поручение…") { store.presentVoice() }.keyboardShortcut("m", modifiers: [.command, .shift])
                 }
                 Button("Быстрая заметка…") { store.quickCaptureAction?() }.keyboardShortcut("n", modifiers: [.command, .shift])
@@ -45,7 +45,7 @@ struct PosleApp: App {
             CommandMenu("Встреча") {
                 Button("Конспект") { store.librarySection = "meetings"; store.tab = "summary" }.keyboardShortcut("1")
                 Button("Транскрипт") { store.librarySection = "meetings"; store.tab = "transcript" }.keyboardShortcut("2")
-                if store.settings.isEnabled(.cards) {
+                if store.isFeatureEnabled(.cards) {
                     Button("Карточки встречи") { store.librarySection = "meetings"; store.tab = "cards" }.keyboardShortcut("3")
                 }
                 Button("Заметки встречи") { store.librarySection = "meetings"; store.tab = "notes" }.keyboardShortcut("4")
@@ -154,6 +154,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task {
                 do { try await RecordingNativeChecks.run(); NSApp.terminate(nil) }
                 catch { fputs("Native recording check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-folder-jobs") {
+            Task { @MainActor in
+                do { try await FolderJobNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Folder job check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-folders") {
+            Task {
+                do { try await FolderNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native folder check failed: \(error)\n", stderr); exit(1) }
             }
             return
         }

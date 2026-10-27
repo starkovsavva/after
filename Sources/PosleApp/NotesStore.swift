@@ -90,9 +90,9 @@ final class NotesStore: ObservableObject {
             accept(saved); return saved
         } catch { self.error = error.localizedDescription; return nil }
     }
-    @discardableResult func capture(text: String, kind: String = "note", meetingID: String? = nil, timestamp: Double? = nil, sourceURL: String = "") -> CapturedNote? {
+    @discardableResult func capture(text: String, kind: String = "note", meetingID: String? = nil, timestamp: Double? = nil, sourceURL: String = "", folderID: String? = nil) -> CapturedNote? {
         var note = CapturedNote(text: text)
-        note.kind = kind; note.meetingID = meetingID; note.timestamp = timestamp; note.sourceURL = sourceURL
+        note.kind = kind; note.meetingID = meetingID; note.timestamp = timestamp; note.sourceURL = sourceURL; note.folderID = folderID
         guard let saved = save(note) else { return nil }
         notice = kind == "important" ? "Момент отмечен" : "Заметка сохранена"
         return saved

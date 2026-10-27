@@ -29,7 +29,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
         let mark = NSMenuItem(title: "Отметить важный момент", action: #selector(markFromMenu), keyEquivalent: "")
         mark.target = self; menu.addItem(mark)
         let voice = NSMenuItem(title: "Голосовое поручение…", action: #selector(voiceFromMenu), keyEquivalent: "")
-        voice.target = self; voice.isHidden = store?.settings.isEnabled(.assistant) != true; menu.addItem(voice)
+        voice.target = self; voice.isHidden = store?.isFeatureEnabled(.assistant) != true; menu.addItem(voice)
         menu.addItem(.separator())
         let library = NSMenuItem(title: "Открыть После", action: #selector(openMain), keyEquivalent: "")
         library.target = self; menu.addItem(library)
@@ -66,7 +66,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
         if let bookmarkKey { UnregisterEventHotKey(bookmarkKey) }; bookmarkKey = nil
         if let voiceKey { UnregisterEventHotKey(voiceKey) }; voiceKey = nil
         guard let store, eventHandler != nil else { return }
-        statusItem?.menu?.items.first(where: { $0.action == #selector(voiceFromMenu) })?.isHidden = !store.settings.isEnabled(.assistant)
+        statusItem?.menu?.items.first(where: { $0.action == #selector(voiceFromMenu) })?.isHidden = !store.isFeatureEnabled(.assistant)
         store.notes.hotkeyNotice = nil
         if store.settings.quickCaptureEnabled {
             let alternate = store.settings.quickCaptureShortcut == "controlShiftSpace"
@@ -75,7 +75,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
             let result = RegisterEventHotKey(code, modifiers, EventHotKeyID(signature: 0x50534C45, id: 1), GetApplicationEventTarget(), 0, &captureKey)
             if result != noErr { store.notes.hotkeyNotice = "Сочетание быстрой заметки занято. Выберите другое в настройках или используйте строку меню." }
         }
-        if store.settings.isEnabled(.assistant), store.settings.voiceShortcutEnabled {
+        if store.isFeatureEnabled(.assistant), store.settings.voiceShortcutEnabled {
             let result = RegisterEventHotKey(UInt32(kVK_ANSI_M), UInt32(controlKey | optionKey), EventHotKeyID(signature: 0x50534C45, id: 3), GetApplicationEventTarget(), 0, &voiceKey)
             if result != noErr { store.notes.hotkeyNotice = "Сочетание ⌃⌥M занято. Поручение можно открыть кнопкой микрофона." }
         }
@@ -205,10 +205,10 @@ struct QuickCaptureView: View {
                 .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(focused ? Ink.accent.opacity(0.7) : Ink.line))
             HStack(spacing: 12) {
                 Picker("Тип", selection: Binding(get: {
-                    draft.kind == "task" && !app.settings.isEnabled(.tasks) ? "note" : draft.kind
+                    draft.kind == "task" && !app.isFeatureEnabled(.tasks) ? "note" : draft.kind
                 }, set: { draft.kind = $0 })) {
                     Text("Заметка").tag("note"); Text("Важно").tag("important"); Text("Вопрос").tag("question")
-                    if app.settings.isEnabled(.tasks) { Text("Задача").tag("task") }
+                    if app.isFeatureEnabled(.tasks) { Text("Задача").tag("task") }
                 }
                     .labelsHidden().frame(width: 116).accessibilityLabel("Тип заметки")
                 Picker("Куда сохранить", selection: $draft.meetingID) {
@@ -237,7 +237,7 @@ struct QuickCaptureView: View {
                     .help("Закрыть окно и оставить черновик до выхода из приложения")
                 Button("Сохранить") {
                     let target = destination
-                    if notes.capture(text: draft.text, kind: draft.kind == "task" && !app.settings.isEnabled(.tasks) ? "note" : draft.kind, meetingID: target.meetingID, timestamp: target.timestamp) != nil { draft.saved(); close() }
+                    if notes.capture(text: draft.text, kind: draft.kind == "task" && !app.isFeatureEnabled(.tasks) ? "note" : draft.kind, meetingID: target.meetingID, timestamp: target.timestamp, folderID: target.meetingID == nil ? app.folderSelection : nil) != nil { draft.saved(); close() }
                 }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command])
                     .disabled(draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).help("Сохранить · ⌘↩")
             }

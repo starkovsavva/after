@@ -5,6 +5,7 @@ pub mod chatgpt;
 pub mod models;
 pub mod storage;
 pub mod notes;
+pub mod folders;
 pub mod workspace_repository;
 pub mod cards;
 pub mod trash;
@@ -50,6 +51,7 @@ pub fn request(value: &Value) -> Result<Value> {
     let root = PathBuf::from(value["root"].as_str().context("Нужна папка данных приложения")?);
     if !root.is_absolute() { bail!("Папка данных должна иметь абсолютный путь"); }
     match value["command"].as_str().context("Нет команды ядра")? {
+        command if command.starts_with("folder-") || command == "profile-resolve" => folders::dispatch(&root,value),
         command if command.starts_with("trash-") => trash::dispatch(&root,value),
         command if command.starts_with("tracker-") => tracker_sync::request(&root,command,value),
         command if command.starts_with("semantic-") => semantic::dispatch(&root,value),

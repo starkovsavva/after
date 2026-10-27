@@ -805,3 +805,17 @@ fn assistant_off_never_calls_model_and_revoked_module_citations_are_removed() {
     assert!(!answer["paragraphs"].as_array().unwrap().is_empty());
     assert!(answer["sources"].as_array().unwrap().iter().all(|s| s["kind"] == "note"));
 }
+
+#[test]
+fn folder_search_and_embeddings_respect_each_sources_effective_profile() {
+    let root=tempfile::tempdir().unwrap();
+    atomic_json(&root.path().join("settings.json"),&json!({"features":{}})).unwrap();
+    let folder=crate::folders::save(root.path(),crate::folders::Folder{id:"english".into(),name:"Английский".into(),revision:0,overrides:json!({"features":{"assistant":true,"semanticSearch":true}})}).unwrap();
+    let mut allowed=note(root.path(),"allowed","Пилот запускается в пятницу.");allowed.folder_id=Some(folder.id.clone());crate::notes::save_note(root.path(),allowed).unwrap();
+    note(root.path(),"base","Пилот запускается в понедельник.");
+    let mut request=input("пилот");request["folderID"]=json!(folder.id);
+    let found=lookup(root.path(),&request).unwrap();assert!(!found["sources"].as_array().unwrap().is_empty());assert!(found["sources"].as_array().unwrap().iter().all(|source|source["noteID"]=="allowed"));
+    let answer=answer_with(root.path(),&request,|prompt|Ok(one_answer(prompt,"note"))).unwrap();assert_eq!(answer["sources"][0]["noteID"],"allowed");
+    let(docs,_)=embedding_documents(root.path()).unwrap();assert!(!docs.is_empty());assert!(docs.iter().all(|d|d.source["noteID"]=="allowed"));
+    let global=answer_with(root.path(),&input("пилот"),|_|panic!("global assistant must remain disabled"));assert!(global.is_err());
+}

@@ -11,7 +11,9 @@ fn rank_schema() -> Value {
         "clarification":{"type":"string"},"matches":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,"required":["id","reason"],"properties":{"id":{"type":"string"},"reason":{"type":"string"}}}}}})
 }
 pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result<Value> {
-    check_action_features(root, &proposal.action)?;
+    check_scoped_action_features(root,input, &proposal.action)?;
+    let profile=crate::ai::profile_for_input(root,input)?;
+    let settings=crate::ai::settings_for_input(root,input)?;
     ensure!(
         !proposal.query.trim().is_empty()
             && !proposal.set_due
@@ -27,7 +29,7 @@ pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result
     };
     let found = crate::knowledge::lookup(
         root,
-        &json!({"query":proposal.query,"text":input["text"],"kinds":kinds,"now":input["now"].as_f64().unwrap_or_else(now),"timeZoneOffsetMinutes":input["timeZoneOffsetMinutes"].as_i64().unwrap_or(0),"embeddingAPIKey":input["embeddingAPIKey"],"embeddingConfigFingerprint":input["embeddingConfigFingerprint"]}),
+        &json!({"query":proposal.query,"text":input["text"],"folderID":input["folderID"],"kinds":kinds,"now":input["now"].as_f64().unwrap_or_else(now),"timeZoneOffsetMinutes":input["timeZoneOffsetMinutes"].as_i64().unwrap_or(0),"embeddingAPIKey":input["embeddingAPIKey"],"embeddingConfigFingerprint":input["embeddingConfigFingerprint"]}),
     )?;
     let sources: Vec<Value> = found["sources"]
         .as_array()
@@ -51,22 +53,25 @@ pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result
         );
         prompt["candidates"].as_array_mut().unwrap().pop();
     }
-    check_action_features(root, &proposal.action)?;
+    check_scoped_action_features(root,input, &proposal.action)?;
+    crate::ai::require_profile_current(root,input,&profile.fingerprint)?;
     let ranking = crate::ai::generate(
-        &crate::ai::settings(root)?,
+        &settings,
         RANK_SYSTEM,
         &prompt.to_string(),
         &rank_schema(),
     )?;
-    prepare_ranked(root, proposal, &sources, &ranking)
+    crate::ai::require_profile_current(root,input,&profile.fingerprint)?;
+    prepare_ranked(root, input, proposal, &sources, &ranking)
 }
 fn prepare_ranked(
     root: &Path,
+    input: &Value,
     proposal: &Proposal,
     sources: &[Value],
     ranking: &Value,
 ) -> Result<Value> {
-    check_action_features(root, &proposal.action)?;
+    check_scoped_action_features(root,input, &proposal.action)?;
     let matches = ranking["matches"]
         .as_array()
         .context("Некорректный результат поиска")?;
@@ -116,7 +121,8 @@ fn prepare_ranked(
     } else {
         Value::Null
     };
-    let plan = json!({"libraryIntent":true,"planID":uuid(),"operationID":uuid(),"createdAt":now(),"status":status,"title":"Открыть найденное","detail":detail,"target":target,"candidates":candidates,"action":proposal.action});
+    let mut plan = json!({"libraryIntent":true,"planID":uuid(),"operationID":uuid(),"createdAt":now(),"status":status,"title":"Открыть найденное","detail":detail,"target":target,"candidates":candidates,"action":proposal.action});
+    bind_plan_profile(root,input,&mut plan)?;
     let directory = notes::directory(root)?;
     let _lock = notes::lock(&directory)?;
     let mut workspace = notes::load(&directory)?;
@@ -235,6 +241,7 @@ mod tests {
         let (proposal, source) = setup(root.path());
         let p = prepare_ranked(
             root.path(),
+            &json!({}),
             &proposal,
             &[source.clone()],
             &json!({"matches":[{"id":source["id"],"reason":"Тема API"}],"clarification":""}),
@@ -260,6 +267,7 @@ mod tests {
         let (proposal, source) = setup(root.path());
         assert!(prepare_ranked(
             root.path(),
+            &json!({}),
             &proposal,
             &[source.clone()],
             &json!({"matches":[{"id":"fake","reason":"x"}],"clarification":""})
@@ -268,6 +276,7 @@ mod tests {
         let m = json!({"id":source["id"],"reason":"x"});
         assert!(prepare_ranked(
             root.path(),
+            &json!({}),
             &proposal,
             &[source],
             &json!({"matches":[m.clone(),m],"clarification":""})

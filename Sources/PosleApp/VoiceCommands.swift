@@ -50,6 +50,8 @@ private struct VoiceDraftRecord: Codable {
     var taskID: String?
     var planID: String?
     var operationID: String?
+    var folderID: String? = nil
+    var folderScopeCaptured: Bool? = nil
     var projectID: String? = nil
     var selectedTargetIDs: [String]? = nil
     var reviewText: String? = nil
@@ -167,6 +169,8 @@ final class VoiceCommandController: ObservableObject {
             if let id = draft.noteID { context["noteID"] = id }
             if let id = draft.taskID { context["taskID"] = id }
             if let id = draft.projectID { context["projectID"] = id }
+            if let id = draft.folderID { context["folderID"] = id }
+            else if draft.folderScopeCaptured == true { context["folderID"] = NSNull() }
             previousQuestions = Self.retainedQuestions(draft.previousQuestions ?? [])
             text = draft.text
             if let planID = draft.planID, let operationID = draft.operationID {
@@ -201,11 +205,12 @@ final class VoiceCommandController: ObservableObject {
     }
     func present(taskID: String? = nil, title: String? = nil, projectID: String? = nil) {
         guard let store else { return }
-        guard store.settings.features.assistant else { store.openSettings("features"); return }
+        guard store.isFeatureEnabled(.assistant) else { store.openSettings("features"); return }
         if !hasDraft && !isWorking {
             generation = UUID(); knowledgeAnswer = nil; knowledgeOpeningID = nil
             previousQuestions = []
             text = ""; plan = nil; result = nil; phase = .editing; message = nil; context = [:]
+            if let folderID = store.folderSelection { context["folderID"] = folderID }
             if let taskID { context["taskID"] = taskID; contextLabel = title ?? "Задача" }
             else if store.librarySection == "cards", let id = store.assistantCardMeetingID, let meeting = store.meetings.first(where: { $0.id == id }) {
                 context["meetingID"] = id; contextLabel = meeting.title
@@ -246,7 +251,12 @@ final class VoiceCommandController: ObservableObject {
         let topic = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !topic.isEmpty { previousQuestions.append(topic) }
         previousQuestions = Self.retainedQuestions(previousQuestions)
-        context = [:]; contextLabel = "Продолжение разговора"
+        // Keep the captured folder, including the base library. Object IDs and
+        // old answers are not evidence for a follow-up library question.
+        let folder = context["folderID"]
+        context = [:]
+        if let folder { context["folderID"] = folder }
+        contextLabel = "Продолжение разговора"
         knowledgeAnswer = nil; knowledgeOpeningID = nil; result = nil; plan = nil
         interruptedPlanID = nil; interruptedOperationID = nil
         phase = .editing; text = ""; message = nil; _ = flushDraft()
@@ -260,7 +270,7 @@ final class VoiceCommandController: ObservableObject {
             contextLabel = store?.meetings.first(where: { $0.id == id })?.title ?? "Созданные карточки"
         case "task": context = ["taskID": result.target.id]; contextLabel = result.title
         case "note": context = ["noteID": result.target.id]; contextLabel = result.title
-        case "meeting": context["meetingID"] = result.target.meetingID ?? result.target.id
+        case "meeting": context = ["meetingID": result.target.meetingID ?? result.target.id]
         default: break
         }
         let topic = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -287,7 +297,7 @@ final class VoiceCommandController: ObservableObject {
     }
     func startDictation() {
         guard let store, !isWorking else { return }
-        guard store.settings.features.assistant else { store.openSettings("features"); return }
+        guard store.isFeatureEnabled(.assistant) else { store.openSettings("features"); return }
         guard !store.isTerminating else { message = "Приложение завершает работу."; return }
         guard !store.startingRecording, !store.isRecording, !store.stoppingRecording else {
             message = "Во время записи встречи введите поручение текстом. Микрофон занят записью."; return
@@ -351,9 +361,22 @@ final class VoiceCommandController: ObservableObject {
         store?.beginJob(id: nil); phase = .capturing
     }
     #endif
+    /// Classification and question-only synthesis share the canonical object
+    /// folder. A selected note/task/meeting takes priority over the sidebar.
+    /// Explicit null keeps the base-library scope stable across later UI moves.
+    private func captureFolderScope(_ store: AppStore) throws -> Bool {
+        let data = try JSONSerialization.data(withJSONObject: context, options: [.sortedKeys])
+        let scope = try store.jobProfileScope(meetingID: nil, extra: [], input: data, refresh: true)
+        let (profile, _) = try store.folderProfile(for: scope.meetingID, folderID: scope.folderID)
+        if let folderID = profile.folderID { context["folderID"] = folderID }
+        else { context["folderID"] = NSNull() }
+        return (profile.features ?? store.effectiveSettings(for: scope.meetingID, folderID: scope.folderID).features).assistant
+    }
     func perform() {
         guard let store, !isWorking, !store.busy, !store.stoppingRecording else { return }
-        guard store.settings.features.assistant else { store.openSettings("features"); return }
+        do {
+            guard try captureFolderScope(store) else { store.openSettings("features"); return }
+        } catch { message = error.localizedDescription; return }
         let command = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty, command.utf8.count <= 8_000 else { message = "Сократите поручение или разделите его на несколько."; return }
         if interruptedPlanID != nil && plan == nil {
@@ -396,9 +419,10 @@ final class VoiceCommandController: ObservableObject {
                     let clock = Date()
                     calendarQuestion = command + "\n" + query
                     let snapshot = store.calendar.knowledgeSnapshot(question: calendarQuestion, now: clock)
-                    let question: [String: Any] = ["text": command, "query": query, "questionOnly": true,
+                    var question: [String: Any] = ["text": command, "query": query, "questionOnly": true,
                         "now": clock.timeIntervalSince1970, "timeZoneOffsetMinutes": TimeZone.current.secondsFromGMT(for: clock) / 60,
                         "calendar": try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))]
+                    if let folderID = context["folderID"] { question["folderID"] = folderID }
                     let questionData = try JSONSerialization.data(withJSONObject: question, options: [.sortedKeys])
                     guard let answered = try await store.worker("voice-plan", input: questionData)?.voicePlan,
                           answered.status == "answered" else { throw AppError.message("Не удалось получить ответ по библиотеке.") }
@@ -462,7 +486,7 @@ final class VoiceCommandController: ObservableObject {
     }
     func confirmReview() {
         guard let store, let plan, canConfirmReview, !store.busy else { return }
-        guard store.settings.features.assistant else { store.openSettings("features"); return }
+        guard store.isFeatureEnabled(.assistant) else { store.openSettings("features"); return }
         generation = UUID(); let current = generation
         phase = .applying; store.beginJob(id: nil); store.canCancelJob = false
         store.progressText = "Сохраняю поручение…"
@@ -477,7 +501,7 @@ final class VoiceCommandController: ObservableObject {
     }
     private func apply(_ plan: VoicePlan, generation current: UUID, confirmed: Bool = false) async throws {
         guard let store, let id = plan.planID, let operation = plan.operationID else { throw AppError.message("Поручение не готово к выполнению.") }
-        guard store.settings.features.assistant else { throw AppError.message("Включите помощника в настройках → Возможности.") }
+        guard store.isFeatureEnabled(.assistant) else { throw AppError.message("Включите помощника в настройках → Возможности.") }
         phase = .applying; store.canCancelJob = false
         guard flushDraft() else { throw AppError.message("Не удалось сохранить состояние поручения. Повторите попытку.") }
         let root = store.root
@@ -655,7 +679,7 @@ final class VoiceCommandController: ObservableObject {
         let value = VoiceDraftRecord(text: phase == .result ? "" : text, contextLabel: contextLabel,
             meetingID: context["meetingID"] as? String, noteID: context["noteID"] as? String, taskID: context["taskID"] as? String,
             planID: plan?.planID ?? interruptedPlanID, operationID: plan?.operationID ?? interruptedOperationID,
-            projectID: context["projectID"] as? String, selectedTargetIDs: phase == .reviewing || phase == .applying ? selectedTargetIDs.sorted() : nil,
+            folderID: context["folderID"] as? String, folderScopeCaptured: context.keys.contains("folderID"), projectID: context["projectID"] as? String, selectedTargetIDs: phase == .reviewing || phase == .applying ? selectedTargetIDs.sorted() : nil,
             reviewText: phase == .reviewing || phase == .applying ? reviewText : nil,
             previousQuestions: previousQuestions.isEmpty ? nil : previousQuestions)
         do { try store.write(value, store.root.appendingPathComponent("voice-draft.json")); return true }

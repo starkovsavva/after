@@ -962,7 +962,7 @@ fn disabling_cards_after_preview_prevents_apply_but_preserves_undo_and_crud() {
     crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true}})).unwrap();
     assert!(apply(root.path(), &json!({"planID":p["planID"],"operationID":p["operationID"]})).unwrap_err().to_string().contains("Включите «Карточки»"));
     assert!(crate::storage::list_meetings(root.path()).unwrap().is_empty());
-    crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true,"cards":true}})).unwrap();
+    crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true,"cards":true,"tasks":true,"calendar":true,"semanticSearch":true}})).unwrap();
     let result = applied(root.path(), &p);
     crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{}})).unwrap();
     assert_eq!(undo(root.path(), &json!({"operationID":result["operationID"]})).unwrap()["undone"], true);

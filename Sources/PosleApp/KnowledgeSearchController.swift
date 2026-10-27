@@ -23,9 +23,9 @@ final class KnowledgeSearchController: ObservableObject {
     #endif
     func update(store: AppStore, query: String, scope: String, immediate: Bool) {
         cancel(); sources = []; warnings = []; error = nil
-        guard store.settings.isEnabled(.semanticSearch),
+        guard store.isFeatureEnabled(.semanticSearch),
               !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let features = store.settings.features
+        let features = store.visibleFeatures, folderID = store.folderSelection
         guard features.normalizedSearchScope(scope, byMeaning: true) == scope else { return }
         let current = generation, root = store.root, preview = store.isPreview
         searching = true
@@ -38,10 +38,11 @@ final class KnowledgeSearchController: ObservableObject {
                 if let previous = Self.activeNetwork { _ = try? await previous.value }
                 try Task.checkCancellation()
                 guard current == generation else { return }
-                guard store.settings.features == features else { cancel(); sources = []; return }
+                guard store.visibleFeatures == features && store.folderSelection == folderID else { cancel(); sources = []; return }
                 var args: [String: Any] = ["text": query, "query": query]
                 let kinds = ["notes":["note"], "tasks":["task"], "cards":["card"], "meetings":["meeting"], "transcript":["transcript"], "code":["code"]]
                 args["kinds"] = kinds[scope] ?? features.knowledgeSearchKinds
+                if let folderID { args["folderID"] = folderID }
                 if !preview {
                     struct Envelope: Decodable { var config: SemanticSearchConfiguration; var fingerprint: String }
                     let data = try RustBridge.shared.get().request(root: root, command: "semantic-config")
@@ -63,24 +64,24 @@ final class KnowledgeSearchController: ObservableObject {
                 struct Results: Decodable { var sources: [KnowledgeSource]; var warnings: [String]; var truncated: Bool }
                 let results = try JSONDecoder().decode(Results.self, from: data)
                 guard current == generation, !Task.isCancelled else { return }
-                guard store.settings.features == features else { cancel(); sources = []; return }
+                guard store.visibleFeatures == features && store.folderSelection == folderID else { cancel(); sources = []; return }
                 sources = results.sources.filter { store.permitsKnowledgeSource($0) }; warnings = results.warnings
                 if results.truncated { warnings.append("Показана часть найденных источников. Уточните запрос, чтобы сузить поиск.") }
                 searching = false
             } catch {
                 guard current == generation else { return }
-                guard store.settings.features == features else { cancel(); sources = []; return }
+                guard store.visibleFeatures == features && store.folderSelection == folderID else { cancel(); sources = []; return }
                 searching = false
                 if !(error is CancellationError) { self.error = error.localizedDescription }
             }
         }
     }
     func open(_ source: KnowledgeSource, store: AppStore) {
-        guard store.settings.isEnabled(.semanticSearch), store.permitsKnowledgeSource(source) else {
+        guard store.isFeatureEnabled(.semanticSearch), store.permitsKnowledgeSource(source) else {
             cancel(); sources = []; return
         }
         guard openingID == nil, sources.contains(source) else { return }
-        let features = store.settings.features
+        let features = store.visibleFeatures, folderID = store.folderSelection
         let current = generation, root = store.root; openingID = source.id; error = nil
         work = Task {
             do {
@@ -90,14 +91,14 @@ final class KnowledgeSearchController: ObservableObject {
                     return try JSONDecoder().decode(Validation.self, from: RustBridge.shared.get().request(root: root, command: "knowledge-validate-source", arguments: ["source": object])).valid
                 }.value
                 guard current == generation, !Task.isCancelled, sources.contains(source) else { return }
-                guard store.settings.features == features, store.permitsKnowledgeSource(source) else { cancel(); sources = []; return }
+                guard store.visibleFeatures == features && store.folderSelection == folderID, store.permitsKnowledgeSource(source) else { cancel(); sources = []; return }
                 openingID = nil
                 guard valid else { throw AppError.message("Источник изменился или удалён. Повторите поиск.") }
                 try store.revealKnowledgeSource(source)
                 store.showingSearch = false
             } catch {
                 guard current == generation else { return }
-                guard store.settings.features == features else { cancel(); sources = []; return }
+                guard store.visibleFeatures == features && store.folderSelection == folderID else { cancel(); sources = []; return }
                 openingID = nil; self.error = error.localizedDescription
             }
         }

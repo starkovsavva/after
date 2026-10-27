@@ -7,6 +7,7 @@ struct MeetingView: View {
     let meeting: Meeting
     @State private var rename = false
     @State private var newTitle = ""
+    @State private var folderEditor: FolderEditorTarget?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -16,6 +17,16 @@ struct MeetingView: View {
                         .lineLimit(1).help(meeting.title).textSelection(.enabled)
                     Spacer(minLength: 10)
                     Menu {
+                        Menu("Переместить в папку") {
+                            Button("Без папки") { assignFolder(nil) }
+                            ForEach(store.notes.folders) { folder in
+                                Button(folder.name) { assignFolder(folder.id) }
+                            }
+                        }.disabled(store.busy || store.isRecording)
+                        if let folder = store.notes.folder(for: meeting.id) {
+                            Button("Настройки папки…") { folderEditor = FolderEditorTarget(folder: folder) }
+                        }
+                        Divider()
                         Button("Переименовать") { newTitle = meeting.title; rename = true }.disabled(store.busy || store.isRecording)
                         Button("Распознать заново") { Task { await store.processMeeting(meeting.id) } }.disabled(!store.runtimeReady || store.jobs.contains(objectID: meeting.id, kinds: ["transcribe"]) || meeting.libraryKind == "cards")
                     } label: { Image(systemName: "ellipsis").frame(width: 25, height: 25) }.menuStyle(.borderlessButton).frame(width: 32)
@@ -24,6 +35,10 @@ struct MeetingView: View {
                 HStack(spacing: 16) {
                     Label(Date(timeIntervalSince1970: meeting.createdAt).formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(Locale(identifier: "ru_RU"))), systemImage: "calendar")
                     if meeting.duration > 0 { Label(Exporter.timestamp(meeting.duration), systemImage: "clock") }
+                    if let folder = store.notes.folder(for: meeting.id) {
+                        Button { folderEditor = FolderEditorTarget(folder: folder) } label: { Label(folder.name, systemImage: "folder").lineLimit(1) }
+                            .buttonStyle(.plain).help("Настройки папки «" + folder.name + "»").accessibilityIdentifier("meeting.folder")
+                    }
 
                 }.font(AppTypography.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, AppLayout.contentInset).padding(.top, 22).padding(.bottom, 18)
@@ -33,7 +48,7 @@ struct MeetingView: View {
                     Text("Конспект").tag("summary")
                     Text("Транскрипт").tag("transcript")
                 }
-                if store.settings.isEnabled(.cards) { Text("Карточки").tag("cards") }
+                if store.effectiveSettings(for: meeting.id).features.cards { Text("Карточки").tag("cards") }
             }.pickerStyle(.segmented).labelsHidden()
                 .padding(.horizontal, AppLayout.contentInset).padding(.bottom, 16)
                 .appLayoutAnchor("meeting.tabs")
@@ -49,16 +64,20 @@ struct MeetingView: View {
             else if store.transcript == nil && store.tab != "cards" && !(store.tab == "summary" && store.overviewDrafts[meeting.id] != nil) { unprocessed }
             else if store.tab == "transcript" { TranscriptView() }
             else if store.tab == "cards" {
-                if store.settings.isEnabled(.cards) { CardsView().id(meeting.id) }
+                if store.effectiveSettings(for: meeting.id).features.cards { CardsView().id(meeting.id) }
                 else { OptionalFeatureGate(feature: .cards) }
             }
             else { SummaryView() }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .sheet(item: $folderEditor) { target in FolderSettingsView(folder: target.folder).environmentObject(store) }
             .alert("Название встречи", isPresented: $rename) {
                 TextField("Название", text: $newTitle)
                 Button("Сохранить") { store.updateMeeting(meeting.id) { $0.title = newTitle.isEmpty ? $0.title : newTitle } }
                 Button("Отмена", role: .cancel) {}
             }
+    }
+    private func assignFolder(_ folderID: String?) {
+        if !store.notes.assignMeetingFolder(meeting.id, folderID: folderID) { store.error = store.notes.error }
     }
     private var unprocessed: some View {
         VStack(spacing: 16) {

@@ -205,6 +205,18 @@ fn check_action_modules(features: &crate::ai::AppFeatures, action: &str) -> Resu
     }
     Ok(())
 }
+fn check_scoped_action_features(root:&Path,input:&Value,action:&str)->Result<()> {
+    let features=crate::ai::live_features_for_input(root,input)?;
+    ensure!(features.assistant,"Включите «Помощник» в профиле выбранной папки.");
+    check_action_modules(&features,action)
+}
+fn bind_plan_profile(root:&Path,input:&Value,plan:&mut Value)->Result<()> {
+    let profile=crate::ai::profile_for_input(root,input)?;
+    plan["folderID"]=json!(profile.folder_id);
+    plan["profileFingerprint"]=json!(profile.fingerprint);
+    if plan["meetingID"].is_null() { plan["meetingID"]=input["meetingID"].clone(); }
+    Ok(())
+}
 fn enabled_schema(features: &crate::ai::AppFeatures) -> Value {
     let mut value = schema();
     value["properties"]["action"]["enum"].as_array_mut().unwrap().retain(|action| {
@@ -218,7 +230,16 @@ fn check_saved_plan_features(root: &Path, input: &Value) -> Result<()> {
     let workspace = notes::list(root)?;
     let plan = workspace.voice_plans.iter().find(|p| p["planID"] == input["planID"])
         .or_else(|| workspace.voice_operations.iter().find(|p| p["operationID"] == input["operationID"]).map(|p| &p["plan"]));
-    check_action_features(root, plan.and_then(|p| p["proposal"]["action"].as_str().or_else(|| p["action"].as_str())).unwrap_or(""))
+    if let Some(plan)=plan {
+        check_scoped_action_features(root,plan,plan["proposal"]["action"].as_str().or_else(||plan["action"].as_str()).unwrap_or(""))?;
+        if let Some(fingerprint)=plan["profileFingerprint"].as_str() { crate::ai::require_profile_current(root,plan,fingerprint)?; }
+        let profiles=crate::ai::FeatureResolver::new(root)?;
+        let action=plan["proposal"]["action"].as_str().or_else(||plan["action"].as_str()).unwrap_or("");
+        for target in plan["candidates"].as_array().into_iter().flatten().chain(std::iter::once(&plan["target"])) {
+            if target.is_object() { check_action_modules(&profiles.features_for(target)?,action)?; }
+        }
+    }
+    Ok(())
 }
 fn snapshot_targets(root: &Path, workspace: &NotesWorkspace) -> Result<Vec<Value>> {
     let mut targets = Vec::new();
@@ -245,7 +266,10 @@ fn snapshot_targets(root: &Path, workspace: &NotesWorkspace) -> Result<Vec<Value
     Ok(targets)
 }
 fn scope_task_targets(root: &Path, input: &Value, targets: &mut Vec<Value>) -> Result<()> {
-    if !crate::ai::live_features(root)?.tasks { targets.retain(|t| t["kind"] != "task"); return Ok(()); }
+    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let scoped=profiles.features_for(input)?;
+    targets.retain(|target|profiles.in_scope(target,input) && (target["kind"]!="task" || (scoped.tasks && profiles.features_for(target).is_ok_and(|f|f.tasks))));
+    if !scoped.tasks { return Ok(()); }
     if let Some(project) = input["projectID"].as_str() {
         let scoped = crate::task_workspace::dispatch(
             root,
@@ -269,7 +293,7 @@ fn meeting_context(root: &Path, meeting_id: Option<&str>) -> Result<Value> {
     };
     let directory = crate::storage::meeting_directory(root, id)?;
     let meta = read_json(&directory.join("meta.json"), 1_048_576)?;
-    if !crate::ai::live_features(root)?.cards && meta["libraryKind"] == "cards" { return Ok(Value::Null); }
+    if !crate::ai::live_features_for(root,Some(id),None)?.cards && meta["libraryKind"] == "cards" { return Ok(Value::Null); }
     let summary = read_json(&directory.join("summary.json"), 8 * 1_048_576).unwrap_or(Value::Null);
     let transcript =
         read_json(&directory.join("transcript.json"), 32 * 1_048_576).unwrap_or(Value::Null);
@@ -486,8 +510,13 @@ fn previous_questions(input: &Value) -> Result<Vec<String>> {
     Ok(result)
 }
 pub fn plan(root: &Path, input: &Value) -> Result<Value> {
-    check_action_features(root, "")?;
-    let features = crate::ai::live_features(root)?;
+    // The question phase receives an explicit folder scope only. Stale selected
+    // object IDs are never opened or used as retrieval/permission context.
+    let question_scope=json!({"folderID":input["folderID"]});
+    let operation_scope=if input["questionOnly"]==true {&question_scope}else{input};
+    check_scoped_action_features(root,operation_scope, "")?;
+    let profile=crate::ai::profile_for_input(root,operation_scope)?;
+    let features = crate::ai::live_features_for_input(root,operation_scope)?;
     let response_schema = enabled_schema(&features);
     let text = input["text"]
         .as_str()
@@ -510,6 +539,7 @@ pub fn plan(root: &Path, input: &Value) -> Result<Value> {
                 "text": text, "query": input["query"],
                 "now": input["now"].as_f64().unwrap_or_else(now),
                 "timeZoneOffsetMinutes": input["timeZoneOffsetMinutes"].as_i64().unwrap_or(0),
+                "folderID":input["folderID"],
                 "calendar": input["calendar"], "embeddingAPIKey": input["embeddingAPIKey"], "embeddingConfigFingerprint": input["embeddingConfigFingerprint"]
             }),
         )?;
@@ -557,14 +587,16 @@ pub fn plan(root: &Path, input: &Value) -> Result<Value> {
     }
     ensure!(prompt.to_string().len() + SYSTEM.len() + response_schema.to_string().len() <= 19_400, "Поручение слишком длинное для выбранной модели. Сократите его или начните новый разговор.");
     check_action_features(root, "")?;
-    ensure!(crate::ai::live_features(root)? == features, "Настройки возможностей изменились. Подготовьте поручение заново.");
+    ensure!(crate::ai::live_features_for_input(root,input)? == features, "Настройки возможностей изменились. Подготовьте поручение заново.");
+    crate::ai::require_profile_current(root,input,&profile.fingerprint)?;
     let proposal: Proposal = serde_json::from_value(crate::ai::generate(
-        &crate::ai::settings(root)?,
+        &crate::ai::settings_for_input(root,input)?,
         SYSTEM,
         &prompt.to_string(),
         &response_schema,
     )?)
     .context("ИИ вернул команду неподходящего формата")?;
+    crate::ai::require_profile_current(root,input,&profile.fingerprint)?;
     store_plan(root, input, proposal, targets)
 }
 fn store_plan(
@@ -573,7 +605,7 @@ fn store_plan(
     mut proposal: Proposal,
     mut targets: Vec<Value>,
 ) -> Result<Value> {
-    check_action_features(root, &proposal.action)?;
+    check_scoped_action_features(root,input, &proposal.action)?;
     validate(&proposal)?;
     if proposal.action == "askKnowledge" {
         // A typed read request, not an executable or persisted voice plan.
@@ -695,7 +727,8 @@ fn store_plan(
     } else {
         Value::Null
     };
-    let plan = json!({"planID":uuid(),"operationID":uuid(),"deckID":uuid(),"createdAt":now(),"status":status,"title":title,"detail":detail,"target":target,"candidates":candidates,"proposal":proposal,"meetingID":input["meetingID"]});
+    let mut plan = json!({"planID":uuid(),"operationID":uuid(),"deckID":uuid(),"createdAt":now(),"status":status,"title":title,"detail":detail,"target":target,"candidates":candidates,"proposal":proposal,"meetingID":input["meetingID"]});
+    bind_plan_profile(root,input,&mut plan)?;
     let directory = notes::directory(root)?;
     let _lock = notes::lock(&directory)?;
     let mut workspace = notes::load(&directory)?;
@@ -982,6 +1015,12 @@ fn apply(root: &Path, input: &Value) -> Result<Value> {
             notes::persist(&directory, &workspace)?;
         }
         let (t, h, m) = write_deck(root, &plan, &proposal)?;
+        if let Some(folder)=plan["folderID"].as_str() {
+            let deck=t["meetingID"].as_str().context("Нет ID колоды")?;
+            if !workspace.contexts.iter().any(|c|c.meeting_id==deck) {
+                workspace.contexts.push(serde_json::from_value(json!({"meetingID":deck,"folderID":folder,"revision":1}))?);
+            }
+        }
         target = t;
         deck_hash = json!(h);
         deck_meta_hash = json!(m);
@@ -1012,6 +1051,8 @@ fn apply(root: &Path, input: &Value) -> Result<Value> {
                 &proposal.title,
                 plan["meetingID"].as_str(),
             )?;
+            note.folder_id=plan["folderID"].as_str().map(str::to_owned);
+            if let Some(id)=&note.folder_id { note.folder=workspace.folders.iter().find(|f|&f.id==id).map(|f|f.name.clone()).unwrap_or_default(); }
             note.due = proposal.due.clone();
             note.owner = proposal.owner.clone();
             workspace.notes.push(note);

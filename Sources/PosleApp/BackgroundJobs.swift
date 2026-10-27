@@ -12,6 +12,9 @@ struct JobConfiguration: Codable {
     var extra: [String]
     var input: Data?
     var settings: AppSettings
+    var folderProfile: Data? = nil
+    var folderID: String? = nil
+    var profileMeetingID: String? = nil
 
     /// Speech keeps its separate API-key billing path even when summaries use ChatGPT.
     var chatGPTPlanAccountID: String? {
@@ -156,7 +159,7 @@ actor JobCoordinator {
             "config": json, "resource": resource, "title": title, "paid": paid, "dependencies": []
         ]
         if config.command == "transcribe", config.settings.autoSummary, config.settings.mode == "local" {
-            let summary = JobConfiguration(command: "summarize", meetingID: config.meetingID, extra: [], input: nil, settings: config.settings)
+            let summary = JobConfiguration(command: "summarize", meetingID: config.meetingID, extra: [], input: nil, settings: config.settings, folderProfile: config.folderProfile, folderID: config.folderID, profileMeetingID: config.profileMeetingID)
             enqueue["followUps"] = [["kind": "summarize", "objectID": objectID, "inputRevision": "dependency:$parent",
                 "config": try JSONSerialization.jsonObject(with: JSONEncoder().encode(summary)),
                 "resource": "local-heavy", "title": title.replacingOccurrences(of: "Распознавание", with: "Конспект"), "paid": false]]

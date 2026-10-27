@@ -8,18 +8,21 @@ extension AppStore {
 
     func queuedWorker(_ command: String, id: String?, extra: [String], input: Data?) async throws -> WorkerEvent? {
         guard !isTerminating else { throw CancellationError() }
-        try validateOptionalJob(command)
-        if settings.mode == "cloud", settings.cloudProvider == "chatgpt", Self.chatGPTAICommands.contains(command),
-           disconnectingChatGPTAccounts.contains(settings.chatGPTAccountID) {
+        let scope = try jobProfileScope(meetingID: id, extra: extra, input: input)
+        let (profile, profileData) = try folderProfile(for: scope.meetingID, folderID: scope.folderID)
+        let snapshot = effectiveSettings(for: scope.meetingID, folderID: scope.folderID)
+        try validateOptionalJob(command, features: snapshot.features)
+        if snapshot.mode == "cloud", snapshot.cloudProvider == "chatgpt", Self.chatGPTAICommands.contains(command),
+           disconnectingChatGPTAccounts.contains(snapshot.chatGPTAccountID) {
             throw AppError.message("Выполняется выход из ChatGPT. Повторите после входа в нужный аккаунт.")
         }
         // EventKit evidence is permission-scoped and volatile. Persist only the
         // request; each execution attempt obtains its own authorized snapshot.
         let persistedInput = try Self.persistableJobInput(command: command, input: input)
-        let configuration = JobConfiguration(command: command, meetingID: id, extra: extra, input: persistedInput, settings: settings)
+        let configuration = JobConfiguration(command: command, meetingID: id, extra: extra, input: persistedInput, settings: snapshot, folderProfile: profileData, folderID: profile.folderID, profileMeetingID: scope.meetingID)
         let speech = ["transcribe", "diarize", "finalize", "dictate"].contains(command)
-        let cloud = speech ? ["transcribe", "dictate"].contains(command) && settings.speechMode == "cloud" : settings.mode == "cloud"
-        let resource = ["finalize", "dictate", "diarize"].contains(command) || (command == "transcribe" && settings.diarization) ? "local-heavy" : cloud ? "cloud" : "local-heavy"
+        let cloud = speech ? ["transcribe", "dictate"].contains(command) && snapshot.speechMode == "cloud" : snapshot.mode == "cloud"
+        let resource = ["finalize", "dictate", "diarize"].contains(command) || (command == "transcribe" && snapshot.diarization) ? "local-heavy" : cloud ? "cloud" : "local-heavy"
         let revision = try jobInputRevision(command: command, meetingID: id, input: persistedInput)
         let label: String
         switch command {
@@ -67,7 +70,7 @@ extension AppStore {
         guard var request = try JSONSerialization.jsonObject(with: input) as? [String: Any] else {
             throw AppError.message("Не удалось прочитать запрос голосового поручения.")
         }
-        if !isPreview, settings.features.semanticSearch {
+        if !isPreview, effectiveSettings(for: config.profileMeetingID, folderID: config.folderID).features.semanticSearch {
             struct SemanticSettings: Decodable { var config: SemanticSearchConfiguration; var fingerprint: String }
             let data = try RustBridge.shared.get().request(root: root, command: "semantic-config")
             let envelope = try JSONDecoder().decode(SemanticSettings.self, from: data)
@@ -98,14 +101,16 @@ extension AppStore {
         let config = job.config
         guard Self.queuedCommands.contains(config.command) else { throw AppError.message("Неизвестная фоновая операция.") }
         guard !cancellation.isCancelled else { throw CancellationError() }
-        try validateOptionalJob(config.command)
+        try validateJobProfile(config)
+        try validateOptionalJob(config.command, features: effectiveSettings(for: config.profileMeetingID ?? config.meetingID, folderID: config.folderID).features)
         try validateJobRevision(job)
         let snapshot = config.settings
         let usesLocalRuntime = job.resource == "local-heavy" || ["transcribe", "diarize", "finalize", "dictate"].contains(config.command)
         let lease = usesLocalRuntime ? try await localRuntimeLease.acquire { cancellation.isCancelled } : nil
         defer { if let lease { Task { await localRuntimeLease.release(lease) } } }
         guard !cancellation.isCancelled else { throw CancellationError() }
-        try validateOptionalJob(config.command)
+        try validateJobProfile(config)
+        try validateOptionalJob(config.command, features: effectiveSettings(for: config.profileMeetingID ?? config.meetingID, folderID: config.folderID).features)
         try validateJobRevision(job)
         if ["transcribe", "diarize"].contains(config.command), !runtimeReady {
             throw AppError.message("Запись сохранена. Подготовьте распознавание в настройках и повторите операцию.")
@@ -115,7 +120,8 @@ extension AppStore {
         }
         guard !cancellation.isCancelled else { throw CancellationError() }
         // Preparation may suspend for model startup while the source is being edited.
-        try validateOptionalJob(config.command)
+        try validateJobProfile(config)
+        try validateOptionalJob(config.command, features: effectiveSettings(for: config.profileMeetingID ?? config.meetingID, folderID: config.folderID).features)
         try validateJobRevision(job)
         var arguments = [config.command, "--root", root.path, "--backend", backend.path]
         if let id = config.meetingID { arguments += ["--meeting", meetingDirectory(id).path] }
@@ -124,6 +130,7 @@ extension AppStore {
         var environment = ["PYTHONUNBUFFERED": "1", "HF_HOME": root.appendingPathComponent("cache/huggingface").path,
                            "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL,
                            "POSLE_JOB_SETTINGS": settingsJSON]
+        if let profile = config.folderProfile { environment["POSLE_JOB_FOLDER_PROFILE"] = String(decoding: profile, as: UTF8.self) }
         if snapshot.mode == "cloud", ["summarize", "example", "expand-notes", "voice-plan"].contains(config.command) {
             environment["POSLE_API_KEY"] = try await cloudCredential(for: snapshot)
         }
@@ -162,14 +169,49 @@ extension AppStore {
         return result
     }
 
-    private func validateOptionalJob(_ command: String) throws {
+    func jobProfileScope(meetingID: String?, extra: [String], input: Data?, capturedFolderID: String? = nil, refresh: Bool = false) throws -> (meetingID: String?, folderID: String?) {
+        if let meetingID { return (meetingID, nil) }
+        let request = input.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        if let id = request["meetingID"] as? String { return (id, nil) }
+        let noteID = (request["noteID"] as? String) ?? extra.firstIndex(of: "--note").flatMap { index in extra.indices.contains(index + 1) ? extra[index + 1] : nil }
+        let workspace: NotesWorkspace
+        if refresh, noteID != nil || request["taskID"] != nil {
+            workspace = try JSONDecoder().decode(NotesWorkspace.self, from: RustBridge.shared.get().request(root: root, command: "notes-list"))
+        } else { workspace = notes.workspace }
+        if let noteID, let note = workspace.notes.first(where: { $0.id == noteID }) {
+            if let folderID = note.folderID { return (nil, folderID) }
+            return (note.meetingID, nil)
+        }
+        if let taskID = request["taskID"] as? String, let task = notes.tasks.first(where: { $0.id == taskID }) {
+            if let id = task.noteID, let folderID = workspace.notes.first(where: { $0.id == id })?.folderID { return (nil, folderID) }
+            return (task.meetingID, nil)
+        }
+        // An explicit null is a captured base-library scope, not an invitation
+        // to substitute a different sidebar folder after the command began.
+        if request.keys.contains("folderID") { return (nil, request["folderID"] as? String) }
+        return (nil, refresh ? capturedFolderID : folderSelection)
+    }
+    private func validateJobProfile(_ config: JobConfiguration) throws {
+        guard Self.chatGPTAICommands.contains(config.command) else { return }
+        let scope = try jobProfileScope(meetingID: config.meetingID, extra: config.extra, input: config.input, capturedFolderID: config.folderID, refresh: true)
+        let (current, _) = try folderProfile(for: scope.meetingID, folderID: scope.folderID)
+        if let captured = config.folderProfile {
+            let expected = try JSONDecoder().decode(ResolvedFolderProfile.self, from: captured)
+            guard expected.fingerprint == current.fingerprint else {
+                throw AppError.message("Папка или её настройки изменились. Запустите обработку заново: сохранённые результаты не заменены.")
+            }
+        } else if current.folderID != nil {
+            throw AppError.message("У встречи появилась папка. Запустите обработку заново с её настройками.")
+        }
+    }
+    private func validateOptionalJob(_ command: String, features: AppFeatures) throws {
         let feature: AppFeature?
         switch command {
         case "voice-plan", "dictate": feature = .assistant
         case "example": feature = .cards
         default: feature = nil
         }
-        if let feature, !settings.isEnabled(feature) {
+        if let feature, !features[feature] {
             throw AppError.message("Включите «\(feature.title)» в настройках → Возможности.")
         }
     }

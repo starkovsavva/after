@@ -49,11 +49,11 @@ struct SettingsView: View {
             ("general", "Общие", "gearshape"), ("features", "Возможности", "square.grid.2x2"),
             ("appearance", "Оформление", "paintpalette"), ("record", "Запись", "record.circle"),
             ("speech", "Распознавание речи", "waveform"),
-            ("ai", store.settings.isEnabled(.cards) ? "Конспект и карточки" : "Конспект", "sparkles")
+            ("ai", store.isFeatureEnabled(.cards) ? "Конспект и карточки" : "Конспект", "sparkles")
         ]
-        if store.settings.isEnabled(.semanticSearch) { result.append(("semantic", "Смысловой поиск", "sparkle.magnifyingglass")) }
+        if store.isFeatureEnabled(.semanticSearch) { result.append(("semantic", "Смысловой поиск", "sparkle.magnifyingglass")) }
         result += [("notes", "Заметки и шаблоны", "square.and.pencil"), ("keys", "Горячие клавиши", "keyboard")]
-        if store.settings.isEnabled(.tasks) { result.append(("integrations", "Интеграции", "point.3.connected.trianglepath.dotted")) }
+        if store.isFeatureEnabled(.tasks) { result.append(("integrations", "Интеграции", "point.3.connected.trianglepath.dotted")) }
         result += [("data", "Данные и экспорт", "externaldrive"), ("updates", "Обновления", "arrow.triangle.2.circlepath")]
         return result
     }
@@ -151,10 +151,10 @@ struct SettingsView: View {
         case "notes": notesSettings
         case "keys": shortcutSettings
         case "semantic":
-            if store.settings.isEnabled(.semanticSearch) { SemanticSearchSettings() }
+            if store.isFeatureEnabled(.semanticSearch) { SemanticSearchSettings() }
             else { OptionalFeatureGate(feature: .semanticSearch) }
         case "integrations":
-            if store.settings.isEnabled(.tasks) { IntegrationSettingsView() }
+            if store.isFeatureEnabled(.tasks) { IntegrationSettingsView() }
             else { OptionalFeatureGate(feature: .tasks) }
         case "data": dataSettings
         case "updates": UpdateSettingsView(updates: store.updates)
@@ -168,8 +168,8 @@ struct SettingsView: View {
                 return ["meetings", "inbox", "tasks", "cards"].contains(section) && store.settings.allowsSection(section) ? section : "meetings"
             }, set: { store.settings.startSection = $0 })) {
                 Text("Все встречи").tag("meetings"); Text("Заметки").tag("inbox")
-                if store.settings.isEnabled(.tasks) { Text("Мои задачи").tag("tasks") }
-                if store.settings.isEnabled(.cards) { Text("Карточки").tag("cards") }
+                if store.isFeatureEnabled(.tasks) { Text("Мои задачи").tag("tasks") }
+                if store.isFeatureEnabled(.cards) { Text("Карточки").tag("cards") }
             }
         }
     }
@@ -204,7 +204,7 @@ struct SettingsView: View {
                 Text("⌃⌥N").tag("controlOptionN"); Text("⌃⇧Пробел").tag("controlShiftSpace")
             }.disabled(!store.settings.quickCaptureEnabled)
             Toggle("Отмечать важный момент по ⌃⌥B", isOn: $store.settings.bookmarkShortcutEnabled)
-            if store.settings.isEnabled(.assistant) {
+            if store.isFeatureEnabled(.assistant) {
                 Toggle("Голосовое поручение по ⌃⌥M", isOn: $store.settings.voiceShortcutEnabled)
             }
             LabeledContent("Общий поиск", value: "⌘K")
@@ -214,7 +214,7 @@ struct SettingsView: View {
         }
     }
     private var aiSettings: some View {
-        settingsSection(store.settings.isEnabled(.cards) ? "Конспект и карточки" : "Конспект", "sparkles") {
+        settingsSection(store.isFeatureEnabled(.cards) ? "Конспект и карточки" : "Конспект", "sparkles") {
             Picker("Обработка", selection: $store.settings.mode) {
                 Label("На Mac", systemImage: "laptopcomputer").tag("local")
                 Label("Облако", systemImage: "cloud").tag("cloud")
@@ -296,7 +296,7 @@ struct SettingsView: View {
                             .background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Ink.line))
                             .accessibilityLabel("Фокус конспекта")
-                            .accessibilityHint(store.settings.isEnabled(.cards) ? "Что выписывать из встречи: решения, задачи, детали и темы для карточек" : "Что выписывать из встречи: решения и важные детали")
+                            .accessibilityHint(store.isFeatureEnabled(.cards) ? "Что выписывать из встречи: решения, задачи, детали и темы для карточек" : "Что выписывать из встречи: решения и важные детали")
                             .help("Для новых встреч. Фокус отдельной встречи можно изменить в её конспекте.")
                     }
     }
@@ -319,7 +319,7 @@ struct SettingsView: View {
                     Text(store.settings.localModel.isEmpty ? "Выберите модель" : store.settings.localModel).tag(store.settings.localModel)
                 }
                 ForEach(models) { model in Text(model.name).tag(model.id) }
-            }.accessibilityLabel(store.settings.isEnabled(.cards) ? "Установленная модель для конспекта и карточек" : "Установленная модель для конспекта")
+            }.accessibilityLabel(store.isFeatureEnabled(.cards) ? "Установленная модель для конспекта и карточек" : "Установленная модель для конспекта")
         } else if store.settings.localProvider != "managed" && !store.settings.localModel.isEmpty {
             LabeledContent("Выбрана модель") {
                 Text(store.settings.localModel).lineLimit(1).truncationMode(.middle).textSelection(.enabled)

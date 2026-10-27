@@ -21,8 +21,12 @@ struct CardsWorkspaceView: View {
     @State private var showingMeetings = false
     @State private var importURL: URL?
     @State private var showingImport = false
+    private var scopedEntries: [LibraryCardEntry] {
+        guard meetingID == nil, let folderID = app.folderSelection else { return workspace.entries }
+        return workspace.entries.filter { app.folderID(for: $0.meeting.id) == folderID }
+    }
     private var matching: [LibraryCardEntry] {
-        workspace.entries.filter { entry in
+        scopedEntries.filter { entry in
             (deck.isEmpty || entry.meeting.id == deck) &&
             (query.isEmpty || (entry.card.front + " " + entry.card.back + " " + entry.card.context + " " + entry.meeting.title).localizedCaseInsensitiveContains(query))
         }
@@ -30,8 +34,8 @@ struct CardsWorkspaceView: View {
     private var visible: [LibraryCardEntry] { mode == "study" ? matching.filter(\.isDue) : matching }
     private var current: LibraryCardEntry? { visible.first { $0.id == picked } ?? visible.first }
     private var scopeMeeting: Meeting? { app.meetings.first { $0.id == meetingID } }
-    private var decks: [Meeting] { app.meetings.filter { meeting in workspace.entries.contains { $0.meeting.id == meeting.id } } }
-    private var hasContent: Bool { !workspace.entries.isEmpty }
+    private var decks: [Meeting] { app.meetings.filter { meeting in scopedEntries.contains { $0.meeting.id == meeting.id } } }
+    private var hasContent: Bool { !scopedEntries.isEmpty }
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { _ in
             VStack(spacing: 0) {
@@ -60,6 +64,10 @@ struct CardsWorkspaceView: View {
         }
         .task { await reload() }
         .onReceive(NotificationCenter.default.publisher(for: .posleJobsChanged)) { _ in Task { await reload() } }
+        .onChange(of: app.folderSelection) { _, _ in
+            if !decks.contains(where: { $0.id == deck }) { deck = "" }
+            picked = nil; flipped = false
+        }
         .onChange(of: mode) { _, _ in flipped = previewAnswer; picked = nil }
         .onChange(of: deck) { _, _ in flipped = false; picked = nil; app.assistantCardMeetingID = meetingID ?? (deck.isEmpty ? nil : deck) }
         .onChange(of: query) { _, _ in flipped = false; picked = nil }
@@ -96,7 +104,7 @@ struct CardsWorkspaceView: View {
                         .pickerStyle(.segmented).labelsHidden().frame(width: 225)
                 }
                 Spacer(minLength: 8)
-                if workspace.canUndo {
+                if workspace.canUndo && (app.folderSelection == nil || workspace.lastReviewMeetingID.flatMap { app.folderID(for: $0) } == app.folderSelection) {
                     Button { Task { await workspace.undo(root: app.root, meetingID: meetingID); flipped = false } } label: { Image(systemName: "arrow.uturn.backward").frame(width: 24, height: 24) }
                         .buttonStyle(.plain).help("Отменить последнюю оценку").accessibilityLabel("Отменить последнюю оценку").disabled(workspace.saving)
                 }
@@ -200,14 +208,14 @@ struct CardsWorkspaceView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack { Text("Карточки из встречи").font(AppTypography.modalTitle); Spacer(); Button("Готово") { showingMeetings = false }.keyboardShortcut(.cancelAction) }
             Text("Выберите встречу. Создание карточек включается в контексте её конспекта.").font(AppTypography.body).foregroundStyle(.secondary)
-            List(app.meetings.filter { $0.libraryKind != "cards" }) { meeting in
+            List(app.filteredMeetings) { meeting in
                 Button {
                     showingMeetings = false; app.openMeeting(meeting.id, tab: "summary")
                 } label: {
                     HStack { Text(meeting.title).font(AppTypography.body); Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary) }.padding(.vertical, 8).contentShape(Rectangle())
                 }.buttonStyle(.plain)
             }.frame(height: 260)
-            if app.meetings.allSatisfy({ $0.libraryKind == "cards" }) {
+            if app.filteredMeetings.isEmpty {
                 Button("Открыть встречи") { showingMeetings = false; app.librarySection = "meetings" }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
             }
         }.padding(24).frame(width: 540).appControlDefaults()
@@ -257,6 +265,9 @@ private struct CardImportView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Импорт карточек").font(AppTypography.modalTitle)
+            if let folder = app.notes.folder(app.folderSelection) {
+                Label(folder.name, systemImage: "folder").font(AppTypography.caption).foregroundStyle(.secondary)
+            }
             Text(url.lastPathComponent).font(AppTypography.control).foregroundStyle(.secondary)
             TextField("Название колоды", text: $title).textFieldStyle(.roundedBorder)
             Picker("Разделитель", selection: $separator) { Text("Автоматически").tag("auto"); Text("Табуляция").tag("tab"); Text("Запятая").tag("comma"); Text("Точка с запятой").tag("semicolon") }
@@ -297,11 +308,14 @@ private struct CardImportView: View {
     private func save() {
         saving = true; error = nil
         let root = app.root, path = url.path, selected = separator, name = title, fingerprint = preview?.sourceFingerprint ?? ""
+        let folderID = app.folderSelection
         Task {
             defer { saving = false }
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
-                    let data = try RustBridge.shared.get().request(root: root, command: "cards-import", arguments: ["path": path, "separator": selected, "title": name, "expectedFingerprint": fingerprint])
+                    var arguments: [String: Any] = ["path": path, "separator": selected, "title": name, "expectedFingerprint": fingerprint]
+                    if let folderID { arguments["folderID"] = folderID }
+                    let data = try RustBridge.shared.get().request(root: root, command: "cards-import", arguments: arguments)
                     return try JSONDecoder().decode(CardImportResult.self, from: data)
                 }.value
                 app.notice = "Импортировано карточек: \(result.count)"; imported(result.meeting)

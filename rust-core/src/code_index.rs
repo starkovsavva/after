@@ -279,9 +279,9 @@ fn file_permitted(directory: &Path, relative: &str) -> Result<PathBuf> {
     );
     Ok(wanted)
 }
-pub(crate) fn documents(
-    root: &Path,
-) -> Result<(Vec<crate::semantic::EmbeddingDocument>, Vec<String>)> {
+pub(crate) fn documents(root:&Path)->Result<(Vec<crate::semantic::EmbeddingDocument>,Vec<String>)> { collect_documents(root,false) }
+pub(crate) fn semantic_documents(root:&Path)->Result<(Vec<crate::semantic::EmbeddingDocument>,Vec<String>)> { collect_documents(root,true) }
+fn collect_documents(root: &Path, semantic_only:bool) -> Result<(Vec<crate::semantic::EmbeddingDocument>, Vec<String>)> {
     if !crate::ai::live_features(root)?.tasks { return Ok((vec![], vec![])); }
     let mut out = Vec::new();
     let mut warnings = Vec::new();
@@ -289,6 +289,8 @@ pub(crate) fn documents(
     let mut files = 0usize;
     let mut entries = 0usize;
     for grant in grants(root)? {
+        let scoped=crate::ai::live_features_for_input(root,&json!({"taskID":grant.task_id}))?;
+        if !scoped.tasks || (semantic_only && !scoped.semantic_search) { continue; }
         if !crate::ai::live_features(root)?.tasks { return Ok((vec![], vec![])); }
         let directory = match current_directory(root, &grant) {
             Ok(p) => p,
@@ -375,7 +377,7 @@ pub(crate) fn documents(
     Ok((out, warnings))
 }
 pub(crate) fn source_current(root: &Path, source: &Value) -> Result<bool> {
-    if !crate::ai::live_features(root)?.tasks { return Ok(false); }
+    if !crate::ai::live_features_for_input(root,source)?.tasks { return Ok(false); }
     let (Some(task), Some(material), Some(relative), Some(fp)) = (
         source["taskID"].as_str(),
         source["materialID"].as_str(),
@@ -467,7 +469,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
             let enabled = input["enabled"]
                 .as_bool()
                 .context("Нет выбора индексирования")?;
-            if enabled { ensure!(crate::ai::live_features(root)?.tasks, "Включите «Задачи и проекты» в настройках → Возможности."); }
+            if enabled { ensure!(crate::ai::live_features_for_input(root,input)?.tasks, "Включите «Задачи и проекты» в профиле папки."); }
             let mut all = grants(root)?;
             all.retain(|g| g.task_id != task || g.material_id != id);
             if enabled {
@@ -493,7 +495,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                 ensure!(all.len() < 64, "Не больше 64 папок");
                 all.push(grant);
             }
-            if enabled { ensure!(crate::ai::live_features(root)?.tasks, "Включите «Задачи и проекты» в настройках → Возможности."); }
+            if enabled { ensure!(crate::ai::live_features_for_input(root,input)?.tasks, "Включите «Задачи и проекты» в профиле папки."); }
             crate::storage::atomic_json(&config_path(root), &serde_json::to_value(all)?)?;
             Ok(json!({"enabled":enabled,"rebuildRequired":true}))
         }
@@ -535,7 +537,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
 }
 
 pub(crate) fn cloud_allowed(root: &Path, source: &Value) -> bool {
-    if !crate::ai::live_features(root).is_ok_and(|features| features.tasks) { return false; }
+    if !crate::ai::live_features_for_input(root,source).is_ok_and(|features| features.tasks) { return false; }
     grants(root).is_ok_and(|all| {
         all.iter().any(|g| {
             Some(g.task_id.as_str()) == source["taskID"].as_str()
@@ -545,8 +547,8 @@ pub(crate) fn cloud_allowed(root: &Path, source: &Value) -> bool {
     })
 }
 pub(crate) fn answer_allowed(root: &Path, source: &Value) -> bool {
-    if !crate::ai::live_features(root).is_ok_and(|features| features.tasks) { return false; }
-    let cloud = crate::ai::settings(root)
+    if !crate::ai::live_features_for_input(root,source).is_ok_and(|features| features.tasks) { return false; }
+    let cloud = crate::ai::settings_for_input(root,source)
         .map(|s| s.mode == "cloud")
         .unwrap_or(true);
     !cloud

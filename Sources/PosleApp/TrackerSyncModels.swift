@@ -3,6 +3,7 @@ import Foundation
 struct TrackerSyncConfiguration: Codable, Identifiable, Equatable {
     var id = ""
     var provider = "google"
+    var folderID: String?
     var account = ""
     var organizationId = ""
     var cloudOrganization = false

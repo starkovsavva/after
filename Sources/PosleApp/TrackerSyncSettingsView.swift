@@ -1,6 +1,8 @@
+import PosleCore
 import SwiftUI
 
 struct TrackerSyncSettingsView: View {
+    @EnvironmentObject private var app: AppStore
     @ObservedObject var coordinator: TrackerSyncCoordinator
     @State private var editor: TrackerSyncConfiguration?
     @State private var comparison: TrackerSyncConflict?
@@ -11,8 +13,8 @@ struct TrackerSyncSettingsView: View {
                 Text("Трекеры").font(AppTypography.sectionTitle)
                 Spacer()
                 Menu {
-                    Button("Google Tasks") { editor = TrackerSyncConfiguration() }
-                    Button("Яндекс Трекер") { var next = TrackerSyncConfiguration(); next.provider = "yandex"; editor = next }
+                    Button("Google Tasks") { editor = newConfiguration(provider: "google") }
+                    Button("Яндекс Трекер") { editor = newConfiguration(provider: "yandex") }
                 } label: { Label("Подключить", systemImage: "plus") }
                     .disabled(coordinator.busy).accessibilityIdentifier("tracker.add")
             }
@@ -45,6 +47,8 @@ struct TrackerSyncSettingsView: View {
                         Text(scopeDescription(config)).font(AppTypography.caption).foregroundStyle(.secondary)
                             .lineLimit(2).help(scopeDescription(config))
                     }
+                    Label("Новые задачи: " + (app.notes.folder(config.folderID)?.name ?? (config.folderID == nil ? "без папки" : "удалённая папка")), systemImage: "folder")
+                        .font(AppTypography.caption).foregroundStyle(.secondary)
                     Text(status(config)).font(AppTypography.caption).foregroundStyle(config.requiresAuth || config.error != nil ? Ink.warning : .secondary)
                     if let message = config.error { Text(message).font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled) }
                 }.padding(12).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
@@ -76,11 +80,16 @@ struct TrackerSyncSettingsView: View {
             else if let notice = coordinator.notice { Text(notice).font(AppTypography.caption).foregroundStyle(.secondary) }
         }
         .onAppear { coordinator.reload() }
-        .sheet(item: $editor) { config in TrackerSyncConnectionEditor(coordinator: coordinator, initial: config) }
+        .sheet(item: $editor) { config in TrackerSyncConnectionEditor(coordinator: coordinator, initial: config, folders: app.notes.folders, defaults: app.settings) }
         .sheet(item: $comparison) { conflict in TrackerSyncConflictView(coordinator: coordinator, conflict: conflict) }
         .confirmationDialog("Отключить \(disconnecting?.account ?? "трекер")?", isPresented: Binding(get: { disconnecting != nil }, set: { if !$0 { disconnecting = nil } })) {
             Button("Отключить", role: .destructive) { if let config = disconnecting { coordinator.disconnect(config) }; disconnecting = nil }
         } message: { Text("Локальные задачи и материалы сохранятся. Токен будет удалён из Связки ключей.") }
+    }
+    private func newConfiguration(provider: String) -> TrackerSyncConfiguration {
+        var configuration = TrackerSyncConfiguration()
+        configuration.provider = provider; configuration.folderID = app.folderSelection
+        return configuration
     }
     private func scopeDescription(_ config: TrackerSyncConfiguration) -> String {
         let titles = config.scopes.compactMap { config.scopeTitles[$0] }.filter { !$0.isEmpty }
@@ -112,7 +121,10 @@ private struct TrackerSyncConnectionEditor: View {
     @State private var scopes: [TrackerSyncScope] = []
     @State private var advanced = false
     @State private var savedOnce: Bool
-    init(coordinator: TrackerSyncCoordinator, initial: TrackerSyncConfiguration) {
+    let folders: [LibraryFolder]
+    let defaults: AppSettings
+    init(coordinator: TrackerSyncCoordinator, initial: TrackerSyncConfiguration, folders: [LibraryFolder], defaults: AppSettings) {
+        self.folders = folders; self.defaults = defaults
         self.coordinator = coordinator
         _config = State(initialValue: initial); _savedOnce = State(initialValue: !initial.id.isEmpty)
         _expiry = State(initialValue: initial.expiresAt.map(Date.init(timeIntervalSince1970:)) ?? Date().addingTimeInterval(3_600))
@@ -149,6 +161,24 @@ private struct TrackerSyncConnectionEditor: View {
                         }
                     }
                     Section {
+                        Picker("Новые задачи сохранять в", selection: Binding(get: { config.folderID ?? "" }, set: { config.folderID = $0.isEmpty ? nil : $0 })) {
+                            Text("Без папки · настройки приложения").tag("")
+                            ForEach(folders) { folder in Text(folder.name).tag(folder.id) }
+                            if let id = config.folderID, !folders.contains(where: { $0.id == id }) {
+                                Text("Удалённая папка").tag(id).disabled(true)
+                            }
+                        }.accessibilityIdentifier("tracker.folder")
+                        Text("Выбор действует для новых задач. Уже сохранённые задачи остаются в своих папках.")
+                            .font(AppTypography.caption).foregroundStyle(.secondary)
+                        if let id = config.folderID, !folders.contains(where: { $0.id == id }) {
+                            Text("Папка назначения удалена. Выберите другую папку или «Без папки».")
+                                .font(AppTypography.caption).foregroundStyle(Ink.warning)
+                        } else if !destinationTasksEnabled {
+                            Text("Для синхронизации включите «Задачи и проекты» в настройках выбранной папки или приложения.")
+                                .font(AppTypography.caption).foregroundStyle(Ink.warning)
+                        }
+                    }
+                    Section {
                         Toggle("Синхронизировать автоматически", isOn: $config.enabled)
                         Toggle("Отправлять изменения в трекер", isOn: $config.pushEnabled)
                         Toggle("Приостановить синхронизацию", isOn: $config.paused)
@@ -159,7 +189,7 @@ private struct TrackerSyncConnectionEditor: View {
                         HStack {
                             Text(config.provider == "google" ? "Списки задач" : "Очереди").font(AppTypography.controlStrong)
                             Spacer()
-                            Button("Загрузить списки") { Task { await loadScopes() } }.disabled(coordinator.busy)
+                            Button("Загрузить списки") { Task { await loadScopes() } }.disabled(coordinator.busy || !destinationAvailable)
                         }
                         ForEach(scopes) { scope in
                             Toggle(scope.title, isOn: Binding(get: { config.scopes.contains(scope.id) }, set: { selected in
@@ -189,9 +219,17 @@ private struct TrackerSyncConnectionEditor: View {
                 Spacer()
                 if coordinator.busy { ProgressView().controlSize(.small) }
                 Button("Сохранить") { Task { if await save() { dismiss() } } }
-                    .keyboardShortcut(.defaultAction).disabled(coordinator.busy || config.account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .keyboardShortcut(.defaultAction).disabled(coordinator.busy || !destinationAvailable || config.account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(24).frame(width: 600, height: 700)
+    }
+    private var destinationAvailable: Bool {
+        config.folderID.map { id in folders.contains(where: { $0.id == id }) } ?? true
+    }
+    private var destinationTasksEnabled: Bool {
+        guard let id = config.folderID else { return defaults.features.tasks }
+        guard let folder = folders.first(where: { $0.id == id }) else { return false }
+        return folder.overrides.apply(to: defaults).features.tasks
     }
     private func statusField(_ title: String, key: String) -> some View {
         TextField(title, text: Binding(get: { config.statusMapping[key] ?? "" }, set: { config.statusMapping[key] = $0 }))

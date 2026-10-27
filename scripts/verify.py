@@ -19,7 +19,7 @@ PROFILES = {
     "release": "All profiles plus the real Sparkle SDK on signed disposable fixtures",
 }
 NATIVE = (
-    "feature-ui", "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-sessions", "corrections", "tasks", "task-workspace", "integrations", "trash", "themes", "typography", "guidance", "voice", "copy-transcript", "updates",
+    "folders", "folder-jobs", "feature-ui", "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-sessions", "corrections", "tasks", "task-workspace", "integrations", "trash", "themes", "typography", "guidance", "voice", "copy-transcript", "updates",
     "calendar", "calendar-workspace", "notes", "overview", "jobs", "navigation", "cards", "queue", "source-playback",
 )
 
@@ -130,7 +130,7 @@ class Verification:
         binary = self.swift / "debug/Posle"
         for scenario in NATIVE:
             with tempfile.TemporaryDirectory(prefix="posle-native-check-", dir="/private/tmp") as fixture:
-                if scenario not in ("feature-ui", "recording"):
+                if scenario not in ("folders", "folder-jobs", "feature-ui", "recording"):
                     # Existing scenarios exercise optional workflows deliberately.
                     Path(fixture, "settings.json").write_text(json.dumps({"features": {key: True for key in ("cards", "tasks", "calendar", "assistant", "semanticSearch")}}))
                 env = self.env | {"POSLE_DATA_DIR": fixture, "POSLE_RUST_ENGINE": str(self.engine), "POSLE_RUST_LIBRARY": str(self.library),

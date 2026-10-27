@@ -53,6 +53,7 @@ enum VoiceNativeChecks {
         let port = try String(contentsOf: portFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         store.settings.mode = "local"; store.settings.localProvider = "lmstudio"
         store.settings.localModel = "voice-fixture"; store.settings.localEndpoint = "http://127.0.0.1:\(port)"
+        store.saveSettings()
         let voice = store.voice
         func fixture(_ action: String, text: String = "", title: String = "", query: String = "", due: String = "", setDue: Bool = false, cards: [[String: String]] = [], delay: Double = 0) throws {
             let proposal: [String: Any] = ["action": action, "text": text, "title": title, "query": query,

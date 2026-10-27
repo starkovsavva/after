@@ -450,7 +450,7 @@ fn corpus(root: &Path, c: &Config) -> Result<(Vec<EmbeddingDocument>, Vec<String
     let features = enabled_features(root)?;
     let (mut docs, mut warnings) = crate::knowledge::embedding_documents(root)?;
     if features.tasks {
-        let (code, code_warnings) = crate::code_index::documents(root)?;
+        let (code, code_warnings) = crate::code_index::semantic_documents(root)?;
         docs.extend(code);
         warnings.extend(code_warnings);
     }
@@ -466,7 +466,7 @@ fn corpus(root: &Path, c: &Config) -> Result<(Vec<EmbeddingDocument>, Vec<String
     Ok((docs, warnings))
 }
 fn current(root: &Path, s: &Value) -> bool {
-    if !crate::ai::live_features(root).is_ok_and(|features| features.semantic_search) { return false; }
+    if !crate::ai::live_features_for_input(root,s).is_ok_and(|features| features.semantic_search) { return false; }
     if s["kind"] == "code" {
         crate::code_index::source_current(root, s).unwrap_or(false)
     } else {

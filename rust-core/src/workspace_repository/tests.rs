@@ -31,7 +31,8 @@ fn migration_imports_exactly_once_preserves_original_bytes_and_all_forward_field
         "futureTop":{"keep":true}});
     let original = legacy(root.path(), &data);
     let first = snapshot(root.path()).unwrap();
-    assert_eq!(first.value, data);
+    let mut migrated=data.clone();migrated["folders"]=json!([]);
+    assert_eq!(first.value, migrated);
     assert_eq!(
         fs::read(directory(root.path()).join(BACKUP)).unwrap(),
         original
@@ -557,4 +558,23 @@ fn system_tmp_alias_is_supported_while_the_database_leaf_still_rejects_symlinks(
         crate::notes::list(directory.path()).unwrap().notes[0].text,
         "Same private directory"
     );
+}
+
+
+#[test]
+fn existing_sqlite_payload_migrates_legacy_note_folders_once_with_entity_events() {
+    let root=tempfile::tempdir().unwrap();
+    let first=snapshot(root.path()).unwrap();let mut old=first.value;
+    old.as_object_mut().unwrap().remove("folders");
+    old["notes"]=json!([{"id":"old-note","text":"Фразы","folder":"Английский","createdAt":0,"updatedAt":0,"revision":1,"future":{"kept":true}}]);
+    let old=compare_and_save(root.path(),first.revision,&old).unwrap();
+    let current=crate::notes::list(root.path()).unwrap();
+    assert_eq!(current.folders.len(),1);assert_eq!(current.folders[0].name,"Английский");
+    assert_eq!(current.notes[0].folder_id.as_deref(),Some(current.folders[0].id.as_str()));
+    let migrated=snapshot(root.path()).unwrap();assert!(migrated.revision>old.revision);
+    assert_eq!(migrated.value["notes"][0]["future"]["kept"],true);
+    assert_eq!(snapshot(root.path()).unwrap().revision,migrated.revision);
+    let connection=connection(root.path());
+    assert_eq!(connection.query_row("SELECT COUNT(*) FROM workspace_entities WHERE kind='folder' AND deleted=0",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+    assert!(pending_events(root.path(),"folder-test",100).unwrap().iter().any(|event|event.kind=="workspace.folders-migrated"));
 }

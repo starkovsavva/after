@@ -4,7 +4,7 @@
 //! The SQLite snapshot, entity catalogue, operation receipts and change outbox
 //! are committed together. `notes/workspace.json` is a disposable compatibility
 //! export; it is never imported after the first committed database snapshot.
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{
     params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
@@ -246,6 +246,13 @@ fn marker(directory: &Path) -> Result<()> {
 }
 fn initialize(connection: &mut Connection, directory: &Path) -> Result<WorkspaceSnapshot> {
     if let Some(snapshot) = read_snapshot(connection)? {
+        let mut migrated = snapshot.value.clone();
+        let snapshot = if crate::folders::migrate_legacy(&mut migrated)? {
+            validate(&migrated)?;
+            let transaction=connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let result=commit(&transaction,Some(&snapshot),migrated,"workspace.folders-migrated")?;
+            transaction.commit()?;result
+        } else {snapshot};
         marker(directory)?;
         return Ok(snapshot);
     }
@@ -270,7 +277,9 @@ fn initialize(connection: &mut Connection, directory: &Path) -> Result<Workspace
         None => serde_json::to_value(crate::notes::defaults())?,
     };
     validate(&value)?;
-    let value = canonicalize_aliases(&value);
+    let mut value = canonicalize_aliases(&value);
+    crate::folders::migrate_legacy(&mut value)?;
+    validate(&value)?;
     if let Some(bytes) = &legacy {
         backup(directory, bytes)?;
     }
@@ -306,11 +315,12 @@ fn canonicalize_aliases(value: &Value) -> Value {
                 ("meetingId", "meetingID"),
                 ("sourceUrl", "sourceURL"),
                 ("contentRtf", "contentRTF"),
+                ("folderId", "folderID"),
             ][..],
         ),
         (
             "contexts",
-            &[("meetingId", "meetingID"), ("templateId", "templateID")][..],
+            &[("meetingId", "meetingID"), ("templateId", "templateID"), ("folderId", "folderID")][..],
         ),
     ] {
         for item in value
@@ -394,6 +404,7 @@ fn entities(value: &Value) -> Result<BTreeMap<(String, String), Entity>> {
     let mut result = BTreeMap::new();
     for (section, kind, id_key) in [
         ("notes", "note", "id"),
+        ("folders", "folder", "id"),
         ("templates", "template", "id"),
         ("contexts", "meetingContext", "meetingID"),
         ("taskWorkspaces", "task", "noteID"),
@@ -616,6 +627,24 @@ pub(crate) fn persist_locked(
     transaction.commit()?;
     compatibility_export(directory, &snapshot, snapshot.revision != previous.revision);
     Ok(snapshot)
+}
+
+/// Read the last committed profile state without taking notes::lock. Policy
+/// checks also run inside workspace mutations; recursively acquiring flock
+/// would deadlock. This function never initializes, migrates, or writes SQLite.
+pub(crate) fn read_committed(root: &Path) -> Result<Value> {
+    ensure!(root.is_absolute(), "Нужен абсолютный путь библиотеки");
+    let path=root.join(DATABASE);
+    if ordinary(&path)? {
+        let connection=Connection::open_with_flags(&path,OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        if let Some(snapshot)=read_snapshot(&connection)? { return Ok(snapshot.value); }
+        bail!("В базе отсутствует основное состояние библиотеки");
+    }
+    ensure!(!ordinary(&root.join("notes").join(MARKER))?,"База библиотеки отсутствует. Восстановите core.sqlite из резервной копии.");
+    let legacy=root.join("notes/workspace.json");
+    let value=match read_bytes(&legacy)? { Some(bytes)=>serde_json::from_slice(&bytes).context("Не удалось прочитать библиотеку")?,None=>serde_json::to_value(crate::notes::defaults())? };
+    validate(&value)?;Ok(value)
 }
 
 /// Stable snapshot for integrations. All existing corrections are recovered first.

@@ -765,7 +765,8 @@ fn kind_enabled(features: &crate::ai::AppFeatures, kind: &str) -> bool {
     }
 }
 fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieval> {
-    let features = crate::ai::live_features(root)?;
+    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let features = if input["folderID"].is_string() { profiles.features_for(input)? } else { crate::ai::live_features(root)? };
     ensure!(root.is_absolute(), "Нужен абсолютный путь библиотеки");
     let question = input["text"]
         .as_str()
@@ -852,6 +853,8 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
                     let Some(id) = task["id"].as_str() else {
                         continue;
                     };
+                    let source_features=profiles.features_for(&json!({"taskID":id}))?;
+                    if !source_features.tasks { continue; }
                     let Ok(context) = domain(root, "task-context", json!({"taskID":id})) else {
                         warning(&mut warnings, "Некоторые задачи временно недоступны.");
                         continue;
@@ -1195,6 +1198,10 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
             }
         }
     }
+    candidates.retain(|candidate| {
+        let raw=serde_json::to_value(&candidate.source).unwrap_or(Value::Null);
+        profiles.in_scope(&raw,input) && profiles.features_for(&raw).is_ok_and(|features|kind_enabled(&features,&candidate.source.kind))
+    });
     // Topic matches precede recent generic context. Diversity is maintained by
     // reserving at least one source per available kind before filling the pack.
     candidates.sort_by(|a, b| {
@@ -1302,6 +1309,7 @@ pub(crate) fn embedding_documents(
 ) -> Result<(Vec<crate::semantic::EmbeddingDocument>, Vec<String>)> {
     let features = crate::ai::live_features(root)?;
     if !features.semantic_search { return Ok((vec![], vec![])); }
+    let profiles=crate::ai::FeatureResolver::new(root)?;
     let mut docs = Vec::new();
     let mut warnings = Vec::new();
     let mut derived_cache = HashMap::new();
@@ -1320,7 +1328,8 @@ pub(crate) fn embedding_documents(
             "card" => "card",
             _ => continue,
         };
-        if !kind_enabled(&features, kind) { continue; }
+        let source_features=profiles.features_for(&hit)?;
+        if !source_features.semantic_search || !kind_enabled(&source_features, kind) { continue; }
         let body = hit["text"].as_str().unwrap_or("");
         let mut s = source(
             kind,
@@ -1368,6 +1377,7 @@ pub(crate) fn embedding_documents(
         .into_iter()
         .filter(|n| n.trashed_at.is_none() && n.kind != "task")
     {
+        if !profiles.features_for(&json!({"noteID":note.id}))?.semantic_search { continue; }
         let body = format!(
             "{}\n{}\n{}",
             note.text,
@@ -1420,6 +1430,8 @@ pub(crate) fn embedding_documents(
         let Some(id) = task["id"].as_str() else {
             continue;
         };
+        let source_features=profiles.features_for(&json!({"taskID":id}))?;
+        if !source_features.tasks || !source_features.semantic_search { continue; }
         let Ok(context) = domain(root, "task-context", json!({"taskID":id})) else {
             continue;
         };
@@ -1460,7 +1472,7 @@ pub(crate) fn embedding_documents(
 pub fn answer(root: &Path, input: &Value) -> Result<Value> {
     answer_with(root, input, |prompt| {
         crate::ai::generate(
-            &crate::ai::settings(root)?,
+            &crate::ai::settings_for_input(root,input)?,
             SYSTEM,
             &prompt.to_string(),
             &schema(),
@@ -1472,7 +1484,9 @@ fn answer_with(
     input: &Value,
     mut generate: impl FnMut(&Value) -> Result<Value>,
 ) -> Result<Value> {
-    ensure!(crate::ai::live_features(root)?.assistant, "Включите «Помощник» в настройках → Возможности.");
+    ensure!(crate::ai::live_features_for_input(root,input)?.assistant, "Включите «Помощник» в профиле папки или настройках → Возможности.");
+    let mut model_settings=crate::ai::FeatureResolver::new(root)?.settings_for(input)?;
+    model_settings.features=crate::ai::AppFeatures::default();
     let mut retrieval = retrieve(root, input)?;
     // Retrieval may await an embedding provider. Recheck before sending any
     // evidence to the generative model, including newly revoked cloud grants.
@@ -1489,9 +1503,12 @@ fn answer_with(
     if retrieval.candidates.is_empty() {
         return Ok(fallback(retrieval.warnings, retrieval.truncated));
     }
-    ensure!(crate::ai::live_features(root)?.assistant, "Включите «Помощник» в настройках → Возможности.");
+    ensure!(crate::ai::live_features_for_input(root,input)?.assistant, "Включите «Помощник» в профиле папки или настройках → Возможности.");
     let generated = generate(&prompt)?;
-    ensure!(crate::ai::live_features(root)?.assistant, "Помощник выключен. Ответ не опубликован.");
+    let mut current_settings=crate::ai::FeatureResolver::new(root)?.settings_for(input)?;
+    current_settings.features=crate::ai::AppFeatures::default();
+    ensure!(serde_json::to_value(&current_settings)?==serde_json::to_value(&model_settings)?,"Профиль модели изменился во время ответа. Повторите вопрос.");
+    ensure!(crate::ai::live_features_for_input(root,input)?.assistant, "Помощник выключен. Ответ не опубликован.");
     let draft: Draft = serde_json::from_value(generated)
         .context("Помощник вернул неподходящий формат ответа")?;
     ensure!(
@@ -1569,8 +1586,10 @@ pub fn validate_source(root: &Path, input: &Value) -> Result<Value> {
     Ok(json!({"valid":result}))
 }
 fn current(root: &Path, s: &Source, input: &Value) -> Result<bool> {
-    let features = crate::ai::live_features(root)?;
-    if !kind_enabled(&features, &s.kind) { return Ok(false); }
+    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let raw=serde_json::to_value(s)?;
+    let features = profiles.features_for(&raw)?;
+    if !profiles.in_scope(&raw,input) || !kind_enabled(&features, &s.kind) { return Ok(false); }
     if !root.is_absolute()
         || !bounded(&s.id, 64)
         || !s.id.starts_with("s_")

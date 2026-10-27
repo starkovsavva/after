@@ -164,7 +164,7 @@ private struct CalendarConnection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Image(systemName: "calendar").font(.system(size: 32, weight: .light)).foregroundStyle(Ink.accent)
-            Text(app.settings.isEnabled(.tasks) ? "Встречи и время для задач" : "Ваши встречи и события").font(AppTypography.sectionTitle)
+            Text(app.isFeatureEnabled(.tasks) ? "Встречи и время для задач" : "Ваши встречи и события").font(AppTypography.sectionTitle)
             Text("Подключите календари macOS. Google и Яндекс появятся здесь после добавления аккаунтов.")
                 .font(AppTypography.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
@@ -202,7 +202,7 @@ struct TaskCalendarSummary: View {
     @EnvironmentObject private var app: AppStore
     let task: LibraryTask
     var body: some View {
-        if app.settings.isEnabled(.calendar) { TaskCalendarSummaryContent(calendar: app.calendar, task: task) }
+        if app.isFeatureEnabled(.calendar) { TaskCalendarSummaryContent(calendar: app.calendar, task: task) }
     }
 }
 
@@ -223,7 +223,7 @@ struct TaskCalendarButton: View {
     @EnvironmentObject private var app: AppStore
     let task: LibraryTask
     var body: some View {
-        if app.settings.isEnabled(.calendar) { TaskCalendarAction(calendar: app.calendar, task: task) }
+        if app.isFeatureEnabled(.calendar) { TaskCalendarAction(calendar: app.calendar, task: task) }
     }
 }
 
@@ -268,9 +268,9 @@ struct CalendarEventEditor: View {
     }
     var body: some View {
         Group {
-            if !app.settings.isEnabled(.calendar) {
+            if !app.isFeatureEnabled(.calendar) {
                 disabledFeature(.calendar)
-            } else if !app.settings.isEnabled(.tasks), task != nil || event?.taskID != nil {
+            } else if !app.isFeatureEnabled(.tasks), task != nil || event?.taskID != nil {
                 disabledFeature(.tasks)
             } else { editorContent }
         }

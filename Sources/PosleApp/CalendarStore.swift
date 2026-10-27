@@ -161,6 +161,7 @@ final class CalendarStore: ObservableObject {
     private var eventStore: EKEventStore?
     private var knowledgeNavigation = false
     private weak var notes: NotesStore?
+    var taskIsEnabled: ((LibraryTask) -> Bool)?
     private var cancellables = Set<AnyCancellable>()
     private var featureEnabled: Bool
     private var tasksEnabled: Bool
@@ -501,7 +502,7 @@ final class CalendarStore: ObservableObject {
 
     /// A new block is explicit. A persisted creation intent plus marker recovers an interrupted save.
     @discardableResult func schedule(task: LibraryTask?, title: String, start: Date, end: Date, calendarID: String, expected: CalendarTaskLink? = nil) -> Bool {
-        guard featureEnabled, task == nil || tasksEnabled else { error = "Включите нужную возможность в настройках."; return false }
+        guard featureEnabled, task.map { tasksEnabled && (taskIsEnabled?($0) ?? true) } ?? true else { error = "Включите нужную возможность в настройках."; return false }
         guard !preview, connected, let eventStore, !preferenceLoadFailed else { error = "Сначала подключите календарь."; return false }
         guard end > start, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             error = "Укажите название и время окончания позже начала."; return false
@@ -596,7 +597,7 @@ final class CalendarStore: ObservableObject {
     }
 
     func resolve(task: LibraryTask, useTask: Bool) {
-        guard featureEnabled, tasksEnabled else { return }
+        guard featureEnabled, tasksEnabled, taskIsEnabled?(task) ?? true else { return }
         guard var link = link(for: task), let event = findEvent(link), let eventStore else { return }
         do {
             if useTask {
@@ -618,7 +619,7 @@ final class CalendarStore: ObservableObject {
         guard featureEnabled, tasksEnabled, !preview, !preferenceLoadFailed, let notes else { return }
         let original = links
         for index in links.indices {
-            if let task = links[index].replacement(in: notes.tasks) {
+            if let task = links[index].replacement(in: notes.tasks), taskIsEnabled?(task) ?? true {
                 links[index].taskID = task.id
                 links[index].sourceSignature = CalendarTaskLink.signature(for: task)
             }
@@ -630,6 +631,7 @@ final class CalendarStore: ObservableObject {
         let original = links
         for index in links.indices {
             var link = links[index]
+            if let task = notes.tasks.first(where: { $0.id == link.taskID }), !(taskIsEnabled?(task) ?? true) { continue }
             guard let task = notes.tasks.first(where: { $0.id == link.taskID }) else { continue }
             guard let event = findEvent(link) else {
                 // An empty identifier is a recoverable creation intent, not a deleted event.

@@ -5,7 +5,9 @@ struct TaskCreationSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var notes: NotesStore
     let task: TaskWorkspace?
+    let initialFolderID: String?
     let completion: (TaskWorkspace) -> Void
+    private let draftKey: String
     private let initialValues: [String]
     @State private var editorID = UUID()
     @State private var confirmingDiscard = false
@@ -16,12 +18,14 @@ struct TaskCreationSheet: View {
     @State private var externalURL: String
     @State private var owner: String
     @State private var due: String
-    init(notes: NotesStore, task: TaskWorkspace? = nil, initialProject: String = "", initialSource: TaskWorkspaceSource = .local, completion: @escaping (TaskWorkspace) -> Void) {
-        self.notes = notes; self.task = task; self.completion = completion
-        initialValues = [task?.title ?? notes.captureDrafts["newtask"] ?? "", task?.text ?? "",
+    init(notes: NotesStore, task: TaskWorkspace? = nil, initialProject: String = "", initialSource: TaskWorkspaceSource = .local, initialFolderID: String? = nil, completion: @escaping (TaskWorkspace) -> Void) {
+        self.notes = notes; self.task = task; self.initialFolderID = initialFolderID; self.completion = completion
+        let key = initialFolderID.map { "newtask:folder:" + $0 } ?? "newtask"
+        self.draftKey = key
+        initialValues = [task?.title ?? notes.captureDrafts[key] ?? "", task?.text ?? "",
             task?.project ?? initialProject, (task?.source ?? initialSource).rawValue,
             task?.externalURL ?? "", task?.owner ?? "", task?.due ?? ""]
-        _title = State(initialValue: task?.title ?? notes.captureDrafts["newtask"] ?? "")
+        _title = State(initialValue: task?.title ?? notes.captureDrafts[key] ?? "")
         _text = State(initialValue: task?.text ?? "")
         _project = State(initialValue: task?.project ?? initialProject)
         _source = State(initialValue: task?.source ?? initialSource)
@@ -32,6 +36,9 @@ struct TaskCreationSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             AppPageHeader(title: task == nil ? "Новая задача" : "Изменить задачу", modal: true)
+            if task == nil, let folder = notes.folder(initialFolderID) {
+                Label(folder.name, systemImage: "folder").font(AppTypography.caption).foregroundStyle(.secondary)
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     field("Название") { TextField("Что нужно сделать", text: $title).accessibilityIdentifier("tasks.form.title") }
@@ -68,7 +75,7 @@ struct TaskCreationSheet: View {
                     .disabled(!valid || notes.taskWorkspaceBusy).accessibilityIdentifier("tasks.form.save")
             }
         }.padding(24).frame(width: 540).frame(minHeight: 540, idealHeight: 650).appControlDefaults()
-            .onChange(of: title) { _, value in if task == nil { notes.captureDrafts["newtask"] = value } }
+            .onChange(of: title) { _, value in if task == nil { notes.captureDrafts[draftKey] = value } }
             .interactiveDismissDisabled(dirty)
             .onAppear { registerDraft() }
             .onChange(of: dirty) { _, _ in registerDraft() }
@@ -98,8 +105,8 @@ struct TaskCreationSheet: View {
                 "source": source.rawValue, "externalURL": url, "owner": owner, "due": due])
         } else {
             saved = notes.createWorkspaceTask(title: title, text: text, project: project, source: source,
-                externalURL: url, due: due, owner: owner)
+                externalURL: url, due: due, owner: owner, folderID: initialFolderID)
         }
-        if let saved { if task == nil { notes.captureDrafts.removeValue(forKey: "newtask") }; completion(saved); close() }
+        if let saved { if task == nil { notes.captureDrafts.removeValue(forKey: draftKey) }; completion(saved); close() }
     }
 }

@@ -34,10 +34,13 @@ struct CardEditorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(request.entry == nil ? "Новая карточка" : "Изменить карточку").font(AppTypography.modalTitle)
+            if request.entry == nil, request.meeting == nil, let folder = app.notes.folder(app.folderSelection) {
+                Label(folder.name, systemImage: "folder").font(AppTypography.caption).foregroundStyle(.secondary)
+            }
             if request.entry == nil && request.meeting == nil {
                 Picker("Сохранить в", selection: $destination) {
                     Text("Новая колода").tag("")
-                    ForEach(app.meetings.filter { $0.status == "ready" }) { Text($0.title).tag($0.id) }
+                    ForEach(app.meetings.filter { $0.status == "ready" && (app.folderSelection == nil || app.folderID(for: $0.id) == app.folderSelection) }) { Text($0.title).tag($0.id) }
                 }
                 if destination.isEmpty { TextField("Название колоды", text: $deckTitle).textFieldStyle(.roundedBorder) }
             } else {
@@ -95,12 +98,14 @@ struct CardEditorView: View {
     private func save() {
         guard !saving else { return }; saving = true; error = nil
         let root = app.root, text = front, answer = back, type = kind, target = destination, title = deckTitle, entry = request.entry
+        let folderID = target.isEmpty ? app.folderSelection : nil
         Task {
             defer { saving = false }
             do {
                 let result = try await Task.detached(priority: .userInitiated) {
                     var args: [String: Any] = ["front": text, "back": answer, "kind": type, "newDeckTitle": title]
                     if !target.isEmpty { args["meetingID"] = target }
+                    if let folderID { args["folderID"] = folderID }
                     if let entry { args["cardID"] = entry.card.id; args["expectedFingerprint"] = entry.fingerprint }
                     let data = try RustBridge.shared.get().request(root: root, command: "card-save", arguments: args)
                     return try JSONDecoder().decode(CardSaveResult.self, from: data)

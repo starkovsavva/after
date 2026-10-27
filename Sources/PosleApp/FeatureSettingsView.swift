@@ -14,7 +14,7 @@ struct FeatureSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             Label("Возможности", systemImage: "square.grid.2x2").font(AppTypography.heading)
                 .accessibilityAddTraits(.isHeader)
-            Text("Встречи, заметки, конспекты и транскрипты доступны всегда.")
+            Text("Это настройки по умолчанию. У папок могут быть свои возможности.")
                 .font(AppTypography.control).foregroundStyle(Ink.secondaryText)
             VStack(spacing: 0) {
                 ForEach(Array(features.enumerated()), id: \.offset) { index, feature in

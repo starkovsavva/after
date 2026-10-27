@@ -67,7 +67,7 @@ def transcribe(root: Path, audio: Path, settings: dict, key: str | None, check, 
         cloud_speech.endpoint(settings)
         cloud_speech.request_fields(settings)
         if not key or not isinstance(key, str) or len(key) > 16_000 or any(c in key for c in "\r\n"):
-            raise RuntimeError("Добавьте ключ распознавания в настройках.")
+            raise RuntimeError("Для облачного распознавания нужен API-ключ сервиса. Добавьте его в настройках распознавания речи.")
     check()
     emit("progress", message="Подготавливаю диктовку…", fraction=0.03)
     # Private generated output cannot replace any app data or follow a supplied

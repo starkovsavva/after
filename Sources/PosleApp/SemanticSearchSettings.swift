@@ -46,7 +46,7 @@ final class SemanticIndexController: ObservableObject {
     private var generation = UUID()
     struct Result: Decodable { var complete: Bool?; var indexed: Int?; var total: Int?; var warnings: [String]? }
     func connect(_ app: AppStore) {
-        guard app.settings.features.semanticSearch, !app.isPreview else { return }
+        guard app.availableFeatures.semanticSearch, !app.isPreview else { return }
         if self.app === app && connectedRoot == app.root { requestRefresh(); return }
         // A previous blocking FFI call must drain before a different library can
         // start a provider request. Its result no longer owns this controller.
@@ -60,7 +60,7 @@ final class SemanticIndexController: ObservableObject {
         requestRefresh()
     }
     func requestRefresh() {
-        guard let app, app.settings.features.semanticSearch, !app.isTerminating else { return }
+        guard let app, app.availableFeatures.semanticSearch, !app.isTerminating else { return }
         wantsRefresh = true
         guard work == nil else { return }
         schedule?.cancel()
@@ -77,10 +77,10 @@ final class SemanticIndexController: ObservableObject {
     }
     private func isCurrent(_ app: AppStore, root: URL, generation: UUID) -> Bool {
         self.generation == generation && self.app === app && connectedRoot == root
-            && app.root == root && app.settings.features.semanticSearch && !app.isTerminating
+            && app.root == root && app.availableFeatures.semanticSearch && !app.isTerminating
     }
     private func start() {
-        guard work == nil, let app, app.settings.features.semanticSearch, !app.isTerminating else { return }
+        guard work == nil, let app, app.availableFeatures.semanticSearch, !app.isTerminating else { return }
         let root = app.root, current = generation
         work = Task { [weak self] in
             guard let self else { return }
