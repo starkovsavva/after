@@ -29,13 +29,14 @@ struct VoiceCommandPanel: View {
                     .buttonStyle(.plain).help("Закрыть поручение").accessibilityLabel("Закрыть поручение")
                     .disabled(controller.phase == .applying)
             }
-            Text(controller.knowledgeAnswer == nil ? controller.contextLabel : "По библиотеке").font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(controller.knowledgeAnswer == nil ? controller.contextLabel : controller.text).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2)
             if let answer = controller.knowledgeAnswer {
                 KnowledgeAnswerView(answer: answer, openingID: controller.knowledgeOpeningID, open: controller.openKnowledgeSource)
                 HStack {
                     Button { KnowledgeAnswerView.copy(answer) } label: { Image(systemName: "doc.on.doc").frame(width: 24, height: 24) }
                         .buttonStyle(.plain).help("Скопировать ответ").accessibilityLabel("Скопировать ответ")
                     Spacer()
+                    Button("Уточнить") { controller.continueQuestion(); commandFocused = true }.buttonStyle(.borderless)
                     Button("Новый вопрос") { controller.reset(); commandFocused = true }.buttonStyle(.borderless)
                 }
             } else if let result = controller.result {

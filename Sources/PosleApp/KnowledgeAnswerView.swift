@@ -57,6 +57,7 @@ struct KnowledgeAnswerView: View {
         case "task": return "checklist"
         case "note": return "note.text"
         case "calendar": return "calendar"
+        case "code": return "curlybraces"
         case "card": return "rectangle.on.rectangle"
         case "transcript": return "quote.bubble"
         default: return "doc.text"

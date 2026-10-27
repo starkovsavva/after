@@ -52,6 +52,8 @@ extension AppStore {
             throw AppError.message("Не удалось прочитать запрос голосового поручения.")
         }
         request.removeValue(forKey: "calendar")
+        request.removeValue(forKey: "embeddingAPIKey")
+        request.removeValue(forKey: "embeddingConfigFingerprint")
         return try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
     }
 
@@ -64,12 +66,23 @@ extension AppStore {
         guard var request = try JSONSerialization.jsonObject(with: input) as? [String: Any] else {
             throw AppError.message("Не удалось прочитать запрос голосового поручения.")
         }
+        if !isPreview {
+            struct SemanticSettings: Decodable { var config: SemanticSearchConfiguration; var fingerprint: String }
+            let data = try RustBridge.shared.get().request(root: root, command: "semantic-config")
+            let envelope = try JSONDecoder().decode(SemanticSettings.self, from: data)
+            let semantic = envelope.config
+            if semantic.enabled, let account = semantic.keyAccount {
+                let key = try Keychain.readChecked(account: account)
+                if !key.isEmpty { request["embeddingAPIKey"] = key; request["embeddingConfigFingerprint"] = envelope.fingerprint }
+            }
+        }
         if request["questionOnly"] as? Bool == true {
             guard let question = request["text"] as? String else {
                 throw AppError.message("Нет вопроса помощнику.")
             }
             let now = Date()
-            let snapshot = calendar.knowledgeSnapshot(question: question, now: now)
+            let resolved = (request["query"] as? String).map { question + "\n" + $0 } ?? question
+            let snapshot = calendar.knowledgeSnapshot(question: resolved, now: now)
             request["now"] = now.timeIntervalSince1970
             request["timeZoneOffsetMinutes"] = TimeZone.current.secondsFromGMT(for: now) / 60
             request["calendar"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))

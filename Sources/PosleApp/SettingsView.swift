@@ -47,6 +47,7 @@ struct SettingsView: View {
     private let sections: [(String, String, String)] = [
         ("general", "Общие", "gearshape"), ("appearance", "Оформление", "paintpalette"), ("record", "Запись", "record.circle"),
         ("speech", "Распознавание речи", "waveform"), ("ai", "Конспект и карточки", "sparkles"),
+        ("semantic", "Смысловой поиск", "sparkle.magnifyingglass"),
         ("notes", "Заметки и шаблоны", "square.and.pencil"), ("keys", "Горячие клавиши", "keyboard"),
         ("integrations", "Интеграции", "point.3.connected.trianglepath.dotted"),
         ("data", "Данные и экспорт", "externaldrive"),
@@ -140,7 +141,8 @@ struct SettingsView: View {
         case "record": recordSettings.disabled(store.busy || store.isRecording)
         case "notes": notesSettings
         case "keys": shortcutSettings
-        case "integrations": AgentIntegrationSettings()
+        case "semantic": SemanticSearchSettings()
+        case "integrations": IntegrationSettingsView()
         case "data": dataSettings
         case "updates": UpdateSettingsView(updates: store.updates)
         default: generalSettings

@@ -8,6 +8,7 @@ struct VoiceTarget: Codable, Hashable {
     var kind: String
     var id: String
     var meetingID: String?
+    var source: KnowledgeSource? = nil
 }
 struct VoiceCandidate: Codable, Identifiable {
     var id: String
@@ -52,6 +53,7 @@ private struct VoiceDraftRecord: Codable {
     var projectID: String? = nil
     var selectedTargetIDs: [String]? = nil
     var reviewText: String? = nil
+    var previousQuestions: [String]? = nil
 }
 
 /// Short, explicit microphone sessions. Meeting recording owns its microphone
@@ -143,6 +145,7 @@ final class VoiceCommandController: ObservableObject {
     private var restoringDraft = false
     private var interruptedPlanID: String?
     private var interruptedOperationID: String?
+    private var previousQuestions: [String] = []
     private var generation = UUID()
     #if DEBUG
     private var dictationStopFailureForChecks: Error?
@@ -164,6 +167,7 @@ final class VoiceCommandController: ObservableObject {
             if let id = draft.noteID { context["noteID"] = id }
             if let id = draft.taskID { context["taskID"] = id }
             if let id = draft.projectID { context["projectID"] = id }
+            previousQuestions = Self.retainedQuestions(draft.previousQuestions ?? [])
             text = draft.text
             if let planID = draft.planID, let operationID = draft.operationID {
                 interruptedPlanID = planID; interruptedOperationID = operationID
@@ -199,6 +203,7 @@ final class VoiceCommandController: ObservableObject {
         guard let store else { return }
         if !hasDraft && !isWorking {
             generation = UUID(); knowledgeAnswer = nil; knowledgeOpeningID = nil
+            previousQuestions = []
             text = ""; plan = nil; result = nil; phase = .editing; message = nil; context = [:]
             if let taskID { context["taskID"] = taskID; contextLabel = title ?? "Задача" }
             else if store.librarySection == "meetings", let meeting = store.selected, meeting.libraryKind != "cards" {
@@ -227,8 +232,37 @@ final class VoiceCommandController: ObservableObject {
     func reset() {
         guard !isWorking else { return }
         knowledgeAnswer = nil; knowledgeOpeningID = nil
+        previousQuestions = []
         text = ""; plan = nil; result = nil; interruptedPlanID = nil; interruptedOperationID = nil; phase = .editing; message = nil
         isPresented = false; present()
+    }
+    /// Keep only user topics. Answers and old calendar snapshots never become
+    /// evidence on the next turn; Rust retrieves and verifies originals again.
+    func continueQuestion() {
+        guard !isWorking, knowledgeAnswer != nil else { return }
+        let topic = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !topic.isEmpty { previousQuestions.append(topic) }
+        previousQuestions = Self.retainedQuestions(previousQuestions)
+        context = [:]; contextLabel = "Продолжение разговора"
+        knowledgeAnswer = nil; knowledgeOpeningID = nil; result = nil; plan = nil
+        interruptedPlanID = nil; interruptedOperationID = nil
+        phase = .editing; text = ""; message = nil; _ = flushDraft()
+    }
+    private static func retainedQuestions(_ questions: [String]) -> [String] {
+        var result = questions.suffix(6).compactMap { question -> String? in
+            var bytes = 0
+            let prefix = question.prefix { character in
+                let length = String(character).utf8.count
+                guard bytes + length <= 1500 else { return false }
+                bytes += length; return true
+            }
+            let bounded = String(prefix).trimmingCharacters(in: .whitespacesAndNewlines)
+            return bounded.isEmpty || bounded.contains("\0") ? nil : bounded
+        }
+        // Match the core's UTF-8 limits for Cyrillic, CJK and emoji as well as
+        // ASCII. Drop older topics whole rather than cutting their meaning.
+        while result.reduce(0, { $0 + $1.utf8.count }) > 5000 { result.removeFirst() }
+        return result
     }
     func startDictation() {
         guard let store, !isWorking else { return }
@@ -319,6 +353,7 @@ final class VoiceCommandController: ObservableObject {
         }
         generation = UUID(); let current = generation
         var input = context
+        input["previousQuestions"] = previousQuestions
         input["text"] = command; input["now"] = Date().timeIntervalSince1970
         input["timeZoneOffsetMinutes"] = TimeZone.current.secondsFromGMT() / 60
         phase = .planning; message = nil; result = nil; plan = nil; knowledgeAnswer = nil; knowledgeOpeningID = nil
@@ -329,13 +364,15 @@ final class VoiceCommandController: ObservableObject {
                     throw AppError.message("Не удалось разобрать поручение.")
                 }
                 guard current == generation, !Task.isCancelled else { return }
+                var calendarQuestion = command
                 if planned.status == "question" {
                     // Classification may take minutes. Capture permission and
                     // visible events now, immediately before the read-only
                     // synthesis job; selected context never enters this input.
                     guard let query = planned.query else { throw AppError.message("Не удалось подготовить вопрос по библиотеке.") }
                     let clock = Date()
-                    let snapshot = store.calendar.knowledgeSnapshot(question: command, now: clock)
+                    calendarQuestion = command + "\n" + query
+                    let snapshot = store.calendar.knowledgeSnapshot(question: calendarQuestion, now: clock)
                     let question: [String: Any] = ["text": command, "query": query, "questionOnly": true,
                         "now": clock.timeIntervalSince1970, "timeZoneOffsetMinutes": TimeZone.current.secondsFromGMT(for: clock) / 60,
                         "calendar": try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))]
@@ -348,7 +385,7 @@ final class VoiceCommandController: ObservableObject {
                 plan = planned
                 if planned.status == "answered" {
                     guard let answer = planned.knowledgeAnswer else { throw AppError.message("Не удалось прочитать ответ по библиотеке.") }
-                    let checked = try await validateCalendarAnswer(answer, question: command)
+                    let checked = try await validateCalendarAnswer(answer, question: calendarQuestion)
                     guard current == generation, !Task.isCancelled else { return }
                     knowledgeAnswer = checked; result = nil; plan = nil
                     interruptedPlanID = nil; interruptedOperationID = nil; phase = .result
@@ -433,7 +470,7 @@ final class VoiceCommandController: ObservableObject {
         guard current == generation else { return }
         result = try JSONDecoder().decode(VoiceResult.self, from: data)
         phase = .result; refresh()
-        if plan.action == "openTask" { openResult() }
+        if ["openTask", "openCard", "openNote", "openMeeting"].contains(plan.action ?? "") { openResult() }
     }
     func undo() {
         guard let store, let result, result.canUndo, !store.busy else { return }
@@ -453,6 +490,9 @@ final class VoiceCommandController: ObservableObject {
     }
     func openResult() {
         guard let store, !isWorking, let target = result?.target else { return }
+        if target.kind == "librarySource", let source = target.source {
+            openLibraryResult(source); return
+        }
         switch target.kind {
         case "task": store.openTask(id: target.id)
         case "cards": store.librarySection = "cards"; store.selection = target.meetingID ?? target.id; store.loadSelection()
@@ -461,6 +501,30 @@ final class VoiceCommandController: ObservableObject {
         }
         isPresented = false
     }
+    private func openLibraryResult(_ source: KnowledgeSource) {
+        guard let store, !isWorking, knowledgeOpeningID == nil else { return }
+        let current = generation, root = store.root
+        knowledgeOpeningID = source.id
+        task = Task {
+            do {
+                let value = try JSONSerialization.jsonObject(with: JSONEncoder().encode(source))
+                let valid = try await Task.detached(priority: .userInitiated) {
+                    struct Validation: Decodable { var valid: Bool }
+                    let data = try RustBridge.shared.get().request(root: root, command: "knowledge-validate-source", arguments: ["source": value])
+                    return try JSONDecoder().decode(Validation.self, from: data).valid
+                }.value
+                guard current == generation, isPresented else { return }
+                knowledgeOpeningID = nil
+                guard valid else { throw AppError.message("Источник изменился. Повторите поиск.") }
+                try store.revealKnowledgeSource(source, calendar: nil)
+                dismiss()
+            } catch {
+                guard current == generation, isPresented else { return }
+                knowledgeOpeningID = nil; message = error.localizedDescription
+            }
+        }
+    }
+
     /// The worker's calendar snapshot was taken before the model call. Re-read
     /// EventKit only after it finishes, before exposing any event-derived fact.
     private func validateCalendarAnswer(_ answer: KnowledgeAnswer, question: String) async throws -> KnowledgeAnswer {
@@ -522,29 +586,7 @@ final class VoiceCommandController: ObservableObject {
                 guard current == generation, isPresented, knowledgeAnswer?.sources.contains(source) == true else { return }
                 knowledgeOpeningID = nil
                 guard valid else { message = "Источник изменился или больше недоступен. Задайте вопрос ещё раз."; return }
-                switch source.kind {
-                case "task":
-                    guard let id = source.taskID else { throw AppError.message("Задача больше недоступна.") }
-                    store.openTask(id: id)
-                case "note":
-                    guard let id = source.noteID else { throw AppError.message("Заметка больше недоступна.") }
-                    store.notes.reload()
-                    guard let note = store.notes.notes.first(where: { $0.id == id }) else { throw AppError.message("Заметка больше недоступна.") }
-                    if let meeting = note.meetingID { store.openMeeting(meeting, tab: "notes") }
-                    else { store.librarySection = "inbox"; store.pause() }
-                    store.notes.selectedNoteID = id; store.notes.highlightedNoteID = id
-                case "meeting", "transcript", "summary", "card":
-                    guard let id = source.meetingID else { throw AppError.message("Встреча больше недоступна.") }
-                    store.openMeeting(id, tab: source.kind == "transcript" ? "transcript" : source.kind == "card" ? "cards" : "summary", segmentID: source.kind == "transcript" ? source.segmentID : nil)
-                    store.navigationTarget = AppStore.NavigationTarget(meetingID: id,
-                        kind: source.kind == "summary" ? (source.itemIndex == nil ? "overview" : "item") : source.kind == "meeting" ? "title" : source.kind,
-                        segmentID: source.segmentID, itemIndex: source.itemIndex, cardID: source.cardID)
-                case "calendar":
-                    guard let id = source.eventID, let event = calendar?.events.first(where: { $0.id == id }),
-                          store.calendar.revealKnowledgeEvent(event) else { throw AppError.message("Событие больше недоступно в подключённом календаре.") }
-                    store.librarySection = "calendar"
-                default: throw AppError.message("Этот источник пока нельзя открыть.")
-                }
+                try store.revealKnowledgeSource(source, calendar: calendar)
                 dismiss()
             } catch {
                 guard current == generation, isPresented else { return }
@@ -587,7 +629,8 @@ final class VoiceCommandController: ObservableObject {
             meetingID: context["meetingID"] as? String, noteID: context["noteID"] as? String, taskID: context["taskID"] as? String,
             planID: plan?.planID ?? interruptedPlanID, operationID: plan?.operationID ?? interruptedOperationID,
             projectID: context["projectID"] as? String, selectedTargetIDs: phase == .reviewing || phase == .applying ? selectedTargetIDs.sorted() : nil,
-            reviewText: phase == .reviewing || phase == .applying ? reviewText : nil)
+            reviewText: phase == .reviewing || phase == .applying ? reviewText : nil,
+            previousQuestions: previousQuestions.isEmpty ? nil : previousQuestions)
         do { try store.write(value, store.root.appendingPathComponent("voice-draft.json")); return true }
         catch { message = "Не удалось сохранить поручение. Оставьте панель открытой и повторите сохранение."; return false }
     }

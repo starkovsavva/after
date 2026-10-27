@@ -215,9 +215,23 @@ enum VoiceNativeChecks {
         let answer = try required(voice.knowledgeAnswer, "Read-only library answer: \(voice.message ?? "")")
         try expect(voice.phase == .result && voice.result == nil && voice.plan == nil,
                    "A knowledge answer must not create a mutation result, plan identity, or Undo")
-        let noteSource = try required(answer.sources.first { $0.noteID == noteID }, "Global note citation outside selected project")
+        var noteSource = try required(answer.sources.first { $0.noteID == noteID }, "Global note citation outside selected project")
         try expect(!answer.paragraphs.isEmpty && answer.paragraphs.allSatisfy { !$0.sourceIDs.isEmpty }, "Library facts require real citations")
         try expect(try Data(contentsOf: workspaceURL) == beforeQuestion, "Read-only Q&A changed the notes/tasks/voice workspace")
+        let originalQuestion = voice.text
+        voice.continueQuestion()
+        try expect(voice.phase == .editing && voice.text.isEmpty && voice.contextLabel == "Продолжение разговора", "Follow-up must preserve only the conversation topic")
+        try fixture("askKnowledge", query: "стенд")
+        voice.text = "А какие детали стоит проверить?"
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        let followUp = try required(voice.knowledgeAnswer, "Follow-up answer: \(voice.message ?? "")")
+        let followPrompt = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("fixture-classification-started.json"))) as! [String: Any]
+        try expect((followPrompt["previous_questions"] as? [String]) == [originalQuestion], "Follow-up lost the original USER topic or retained an answer as evidence")
+        try expect((followPrompt["selected_objects"] as? [Any])?.isEmpty == true && followPrompt["meeting"] is NSNull,
+                   "Follow-up inherited a stale selected task, project or meeting")
+        noteSource = try required(followUp.sources.first { $0.noteID == noteID }, "Fresh follow-up source")
+        try expect(try Data(contentsOf: workspaceURL) == beforeQuestion, "Follow-up changed canonical notes/tasks/voice plans")
+        print("PASS: native follow-up retains only bounded user topics and retrieves fresh global evidence")
         voice.openKnowledgeSource(noteSource)
         try await waitUntil { voice.knowledgeOpeningID == nil }
         try expect(!voice.isPresented && store.notes.selectedNoteID == noteID && store.librarySection == "inbox",
@@ -298,6 +312,26 @@ enum VoiceNativeChecks {
         try expect(try Data(contentsOf: workspaceURL) == beforeCalendarQuestion, "Long-tail calendar Q&A modified the task/note workspace")
         print("PASS: 200 nearby calendar events do not hide a later title or explicit-date match through the native Q&A pipeline")
 
+        // The second user question omits the date. The classifier resolves it
+        // from the preceding USER question; native capture and post-answer
+        // validation must use that same resolved period rather than a nearby
+        // default calendar window.
+        for followUp in [false, true] {
+            try fixture("askKnowledge", query: literalDate)
+            var datedFixture = try JSONSerialization.jsonObject(with: Data(contentsOf: knowledgeResponse)) as! [String: Any]
+            datedFixture["knowledgeKinds"] = ["calendar"]
+            try JSONSerialization.data(withJSONObject: datedFixture).write(to: knowledgeResponse)
+            if followUp { voice.continueQuestion(); voice.text = "Во сколько начинается эта встреча?" }
+            else { prepare("Что запланировано на \(literalDate)?") }
+            voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+            let datedAnswer = try required(voice.knowledgeAnswer, "Resolved-date follow-up: \(voice.message ?? "")")
+            try expect(datedAnswer.sources.contains { $0.eventID == "far-astrolabe" } && datedAnswer.paragraphs.contains { !$0.sourceIDs.isEmpty },
+                       "A follow-up lost the far event when only the resolved query retained its calendar date")
+        }
+        voice.reset()
+        try expect(try Data(contentsOf: workspaceURL) == beforeCalendarQuestion, "Resolved-date follow-up changed the workspace")
+        print("PASS: calendar follow-up captures and revalidates the resolved far date without repeating it in the user question")
+
         // Calendar access changes while the classifier is in flight. The
         // second native phase must capture the new permission state before
         // sending any calendar evidence to the synthesis provider.
@@ -371,6 +405,96 @@ enum VoiceNativeChecks {
         try expect(try Data(contentsOf: workspaceURL) == beforeCalendarQuestion, "Question history retry modified notes or tasks")
         print("PASS: question queue persists only the request; History Retry refreshes revoked calendar access without changing its revision")
 
+        // The search controller must reject a source changed after its result
+        // was shown, then navigate only from a fresh result. Debounce cancellation
+        // cannot repopulate a dismissed search sheet.
+        let search = KnowledgeSearchController()
+        store.showingSearch = true; store.librarySection = "tasks"
+        search.update(store: store, query: "стенд", scope: "notes", immediate: true)
+        try await waitUntil { !search.searching }
+        let staleSearchSource = try required(search.sources.first { $0.noteID == noteID }, "Search note source: \(search.error ?? "")")
+        var searchEdited = try required(store.notes.notes.first { $0.id == noteID }, "Search fixture note")
+        searchEdited.text += "\nУточнение после показа результатов поиска."
+        _ = store.notes.save(searchEdited)
+        search.open(staleSearchSource, store: store)
+        try await waitUntil { search.openingID == nil }
+        try expect(search.error != nil && store.showingSearch && store.librarySection == "tasks", "Stale search source navigated despite its changed fingerprint")
+        search.update(store: store, query: "стенд", scope: "notes", immediate: true)
+        try await waitUntil { !search.searching }
+        let freshSearchSource = try required(search.sources.first { $0.noteID == noteID }, "Refreshed search source")
+        search.open(freshSearchSource, store: store)
+        try await waitUntil { search.openingID == nil }
+        try expect(search.error == nil && !store.showingSearch && store.librarySection == "inbox" && store.notes.selectedNoteID == noteID, "Fresh search did not open the exact saved note")
+        search.update(store: store, query: "стенд", scope: "notes", immediate: false)
+        search.cancel()
+        try await Task.sleep(for: .milliseconds(450))
+        try expect(!search.searching && search.sources.isEmpty && search.openingID == nil, "Cancelled debounced search published a late result")
+        print("PASS: native knowledge search rejects stale sources, opens fresh notes and cancels debounced work")
+
+        func libraryFixture(delay: Double = 0) throws {
+            let data = try RustBridge.shared.get().request(root: root, command: "knowledge-search", arguments: ["text": "стенд", "query": "стенд", "kinds": ["note"]])
+            let found = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            let sources = found["sources"] as? [[String: Any]] ?? []
+            let selected = try required(sources.first { $0["noteID"] as? String == noteID }, "Library navigation source")
+            try fixture("openNote", query: "стенд")
+            let file = root.appendingPathComponent("fixture-response.json")
+            var value = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
+            value["reranking"] = ["matches": [["id": selected["id"]!, "reason": "Заметка о доступе к стенду"]], "clarification": ""]
+            value["rerankingDelay"] = delay
+            try JSONSerialization.data(withJSONObject: value).write(to: file)
+        }
+        try libraryFixture()
+        let beforeOpen = try required(store.notes.notes.first { $0.id == noteID }, "Read-only navigation note")
+        store.librarySection = "tasks"
+        prepare("Найди и открой заметку про доступ к стенду")
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy && voice.knowledgeOpeningID == nil }
+        try expect(voice.result?.target.kind == "librarySource" && voice.result?.target.source?.noteID == noteID,
+                   "Two-pass native navigation did not return a typed, validated note source: \(voice.message ?? "")")
+        try expect(!voice.isPresented && store.librarySection == "inbox" && store.notes.selectedNoteID == noteID, "Found note did not open in its native destination")
+        try expect(store.notes.notes.first { $0.id == noteID }?.revision == beforeOpen.revision, "Opening a note changed its content or revision")
+        print("PASS: native assistant retrieves, revalidates and opens the exact note without editing it")
+
+        try libraryFixture(delay: 1)
+        let rankStarted = root.appendingPathComponent("fixture-reranking-started.json")
+        try? FileManager.default.removeItem(at: rankStarted)
+        store.librarySection = "tasks"
+        prepare("Найди заметку про доступ к стенду")
+        voice.perform()
+        try await waitUntil { FileManager.default.fileExists(atPath: rankStarted.path) }
+        var changedDuringRanking = try required(store.notes.notes.first { $0.id == noteID }, "Ranking fixture note")
+        changedDuringRanking.text += "\nИсточник изменился во время выбора."
+        _ = store.notes.save(changedDuringRanking)
+        try await waitUntil { !voice.isWorking && !store.busy && voice.knowledgeOpeningID == nil }
+        try expect(voice.phase == .editing && voice.result == nil && voice.message != nil && store.librarySection == "tasks",
+                   "A note changed during reranking was opened using a stale source")
+        voice.reset()
+        print("PASS: in-flight reranking rejects changed evidence before native source navigation")
+
+        // Restored conversations may contain long multibyte questions from an
+        // older build. The real planner must receive the newest whole topics
+        // within the same byte limits used by Rust, without replaying answers.
+        let multibyteTopics = (0..<6).map { "Вопрос \($0): " + String(repeating: "🧠", count: 400) }
+        _ = try RustBridge.shared.get().request(root: root, command: "write", arguments: ["path": "voice-draft.json", "value": [
+            "text": "Что известно про стенд? " + String(repeating: "🧠", count: 400),
+            "contextLabel": "Продолжение разговора", "previousQuestions": multibyteTopics
+        ]])
+        let restoredConversation = VoiceCommandController(); restoredConversation.connect(store); restoredConversation.present()
+        try fixture("askKnowledge", query: "стенд")
+        restoredConversation.perform(); try await waitUntil { !restoredConversation.isWorking && !store.busy }
+        try expect(restoredConversation.knowledgeAnswer != nil, "Restored multibyte history failed the actual planner: \(restoredConversation.message ?? "")")
+        let multibytePrompt = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("fixture-classification-started.json"))) as! [String: Any]
+        let retained = multibytePrompt["previous_questions"] as? [String] ?? []
+        try expect(!retained.isEmpty && retained.count <= 6 && retained.allSatisfy { $0.utf8.count <= 1500 } && retained.reduce(0, { $0 + $1.utf8.count }) <= 5000,
+                   "Restored history exceeded per-topic or total UTF-8 limits")
+        try expect(retained.last?.hasPrefix("Вопрос 5:") == true, "Conversation budget dropped the newest user topic")
+        restoredConversation.continueQuestion(); restoredConversation.text = "А что проверить дальше?"; _ = restoredConversation.flushDraft()
+        let continuedDraft = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("voice-draft.json"))) as! [String: Any]
+        let continuedTopics = continuedDraft["previousQuestions"] as? [String] ?? []
+        try expect(continuedTopics.allSatisfy { $0.utf8.count <= 1500 } && continuedTopics.reduce(0, { $0 + $1.utf8.count }) <= 5000,
+                   "Appending a multibyte user question exceeded durable history limits")
+        restoredConversation.reset(); restoredConversation.dismiss()
+        print("PASS: restored and continued emoji conversations stay within core UTF-8 budgets")
+
         let count = store.notes.notes.count
         try fixture("unsupported", text: "Уточните, какую заметку нужно изменить.")
         prepare("Поменяй там всё")
@@ -408,7 +532,7 @@ enum VoiceNativeChecks {
         try expect(reopened.voice.text == longDraft && !reopened.voice.isWorking, "Reopen must preserve full draft without truncation or microphone access")
         voice.reset(); _ = voice.flushDraft()
         print("PASS: crash recovery keeps committed operation identity; long drafts survive reopening intact")
-        print("17 native voice E2E groups passed")
+        print("23 native voice E2E groups passed")
     }
     private static func notesDraftCheck(store: AppStore) throws {
         store.notes.captureDrafts["taskappend:pending"] = "Не потерять уточнение задачи"

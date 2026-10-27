@@ -6,7 +6,7 @@ enum GuidancePresentation: String, Identifiable {
     case gettingStarted, whatsNew
     var id: String { rawValue }
 }
-enum GuidanceAction { case record, importFile, speechSettings, cards, aiSettings, tasks, integrations }
+enum GuidanceAction { case record, importFile, speechSettings, cards, aiSettings, tasks, integrations, semantic }
 
 private struct GuidancePreferences: Codable {
     var introSeen = false
@@ -42,7 +42,7 @@ final class GuidanceController: ObservableObject {
     private var pendingAction: GuidanceAction?
     private var consideredStartup = false
     // Bump only when a release introduces something worth teaching.
-    private let featureRelease = "0.13"
+    private let featureRelease = "0.14"
     var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development" }
 
     func configure(root: URL, preview: Bool) {
@@ -131,12 +131,12 @@ struct GuidanceSheet: View {
                 Button("Выбрать локальную или облачную модель") { controller.complete(with: .speechSettings) }.buttonStyle(.borderless)
             } else {
                 HStack {
-                    feature("Контекст задачи", "Прикрепляйте мысли, заметки, фрагменты встреч и папки. Результаты работы сохраняются в истории.", "checklist")
-                    Button("Открыть") { controller.complete(with: .tasks) }.buttonStyle(.bordered)
+                    feature("Поиск по смыслу", "Находите карточки, заметки и фрагменты кода, даже если помните их другими словами.", "sparkle.magnifyingglass")
+                    Button("Настроить") { controller.complete(with: .semantic) }.buttonStyle(.bordered)
                 }
-                feature("Поручения голосом", "Открывайте и завершайте задачи. Дополняйте связанные задачи одним поручением с проверкой списка перед сохранением.", "mic")
+                feature("Разговор с помощником", "Уточняйте предыдущий вопрос и просите открыть найденную карточку, заметку или встречу.", "bubble.left.and.bubble.right")
                 HStack {
-                    feature("Работа с агентом", "Codex может принять задачу, оставить отчёт с артефактами и завершить работу через MCP.", "point.3.connected.trianglepath.dotted")
+                    feature("Подключённые трекеры", "Обменивайтесь задачами с Google Tasks и Яндекс Трекером. Конфликты выбираете вы.", "arrow.triangle.2.circlepath")
                     Button("Настроить") { controller.complete(with: .integrations) }.buttonStyle(.bordered)
                 }
             }

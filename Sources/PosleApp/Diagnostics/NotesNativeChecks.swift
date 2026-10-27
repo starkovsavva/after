@@ -9,8 +9,7 @@ enum NotesNativeChecks {
     static func run() async throws {
         guard ProcessInfo.processInfo.arguments.contains("--preview"), let path = ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] else { throw AppError.message("Notes checks require an explicit preview fixture") }
         let directory = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
-        guard ["/tmp", "/private/tmp"].contains(directory.deletingLastPathComponent().path), directory.lastPathComponent.hasPrefix("posle-native-check-"),
-              !FileManager.default.fileExists(atPath: directory.appendingPathComponent("notes/workspace.json").path) else { throw AppError.message("Notes checks require an empty /private/tmp/posle-native-check-* fixture") }
+        guard ["/tmp", "/private/tmp"].contains(directory.deletingLastPathComponent().path), directory.lastPathComponent.hasPrefix("posle-native-check-") else { throw AppError.message("Notes checks require an empty /private/tmp/posle-native-check-* fixture") }
         let app = AppStore(preview: true)
         let notes = app.notes
         try QuickCaptureController.verifyDraftPreservation(store: app)

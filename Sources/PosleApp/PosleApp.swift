@@ -151,6 +151,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-integrations") {
+            Task {
+                do { try await IntegrationNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native integrations check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-task-workspace") {
             Task {
                 do { try await TaskWorkspaceNativeChecks.run(); NSApp.terminate(nil) }
@@ -268,6 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             #if DEBUG
             if ["voice", "voice-result", "voice-answer"].contains(screen) { previewStore.voice.seedPreview(screen) }
+            ReleasePreviewFixtures.prepare(previewStore, screen: screen)
             #endif
             if screen == "notes" { previewStore.librarySection = "meetings"; previewStore.tab = "notes" }
             if screen == "welcome" { previewStore.selection = nil; previewStore.meetings = []; previewStore.loadSelection() }
@@ -298,6 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "insight-editor":
                 content = AnyView(SummaryInsightEditor(meetingID: previewStore.selection ?? "", itemIndex: 0).environmentObject(previewStore))
             case "settings": content = AnyView(SettingsView(section: option("--settings-section") ?? "general").environmentObject(previewStore))
+            case "tracker-sync": content = AnyView(SettingsView(section: "integrations").environmentObject(previewStore))
             case "note-editor":
                 if let note = previewStore.notes.notes.first(where: { $0.meetingID == previewStore.selection }) { content = AnyView(NoteEditorView(notes: previewStore.notes, note: note).environmentObject(previewStore)) }
                 else { content = AnyView(NotesInboxView(notes: previewStore.notes).environmentObject(previewStore)) }
@@ -310,7 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Text("Источники").font(AppTypography.heading)
                     ScrollView { SourceQuotes(ids: ids, snapshot: previewStore.transcript?.segments, meetingID: previewStore.selection) { _, _ in } }
                 }.padding(20).environmentObject(previewStore))
-            case "search":
+            case "search", "search-semantic":
                 previewStore.showingSearch = true; previewStore.searchQuery = option("--preview-query") ?? "доступ"
                 content = AnyView(SearchView().environmentObject(previewStore))
             default: content = AnyView(MainView().environmentObject(previewStore))
@@ -325,8 +334,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let provider = option("--cloud-provider") { previewStore.settings.mode = "cloud"; previewStore.settings.switchCloudProvider(provider) }
             if let speechMode = option("--speech-mode") { previewStore.settings.speechMode = speechMode }
             let dark = option("--appearance") == "dark"
-            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : screen == "search" ? 760 : screen == "settings" ? 900 : ["getting-started", "whats-new", "transcript-editor", "insight-editor"].contains(screen) ? 620 : screen == "record" ? 560 : screen == "speakers" ? 560 : screen.hasPrefix("sources") ? 470 : 1260
-            let defaultHeight: Double = screen == "note-editor" ? 650 : screen == "quick-note" ? 280 : screen == "search" ? 650 : screen == "settings" ? 760 : ["getting-started", "whats-new", "transcript-editor", "insight-editor"].contains(screen) ? 480 : screen == "record" ? 660 : screen == "speakers" ? 430 : screen.hasPrefix("sources") ? 460 : 820
+            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : ["search", "search-semantic"].contains(screen) ? 760 : ["settings", "tracker-sync"].contains(screen) ? 900 : ["getting-started", "whats-new", "transcript-editor", "insight-editor"].contains(screen) ? 620 : screen == "record" ? 560 : screen == "speakers" ? 560 : screen.hasPrefix("sources") ? 470 : 1260
+            let defaultHeight: Double = screen == "note-editor" ? 650 : screen == "quick-note" ? 280 : ["search", "search-semantic"].contains(screen) ? 650 : ["settings", "tracker-sync"].contains(screen) ? 760 : ["getting-started", "whats-new", "transcript-editor", "insight-editor"].contains(screen) ? 480 : screen == "record" ? 660 : screen == "speakers" ? 430 : screen.hasPrefix("sources") ? 460 : 820
             let width = option("--width").flatMap(Double.init) ?? defaultWidth
             let height = option("--height").flatMap(Double.init) ?? defaultHeight
             let view = NSHostingView(rootView: content

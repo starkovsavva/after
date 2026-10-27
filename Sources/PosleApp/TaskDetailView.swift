@@ -10,6 +10,7 @@ struct TaskDetailView: View {
     @State private var tab = "materials"
     @State private var editing = false
     @State private var access = false
+    @State private var exporting = false
     @State private var context: TaskSnapshotPresentation?
     var body: some View {
         VStack(spacing: 0) {
@@ -18,10 +19,7 @@ struct TaskDetailView: View {
                     heading
                     properties
                     if !description.isEmpty { Text(description).font(AppTypography.body).lineSpacing(5).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
-                    if task.source != .local {
-                        Text("Связано ссылкой. Изменения в «После» не обновляют оригинал.")
-                            .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
+                    TrackerSyncTaskStatus(coordinator: app.trackerSync, taskID: task.id, hasExternalLink: task.source != .local)
                     tabs
                     if tab == "materials" { TaskMaterialsView(notes: notes, task: task).environmentObject(app) }
                     else { TaskHistoryView(task: task) }
@@ -37,6 +35,7 @@ struct TaskDetailView: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .sheet(isPresented: $editing) { TaskCreationSheet(notes: notes, task: task) { _ in } }
             .sheet(isPresented: $access) { TaskAgentAccessSheet(notes: notes, taskID: task.id) }
+            .sheet(isPresented: $exporting) { TrackerSyncExportSheet(coordinator: app.trackerSync, taskID: task.id, taskTitle: task.title) }
             .sheet(item: $context) { TaskSnapshotSheet(snapshot: $0.snapshot, title: "Контекст для агента") }
     }
     private var heading: some View {
@@ -56,6 +55,8 @@ struct TaskDetailView: View {
                         if let snapshot = notes.taskContext(task) { context = TaskSnapshotPresentation(snapshot: snapshot) }
                     }.disabled(!task.agentAccess.enabled)
                     Divider()
+                    Button("Отправить в трекер…") { exporting = true }
+                        .disabled(app.trackerSync.busy)
                     Button("Дополнить голосом…") { app.voice.present(taskID: task.id, title: task.title) }
                 } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
                     .menuStyle(.borderlessButton).fixedSize().help("Действия с задачей")

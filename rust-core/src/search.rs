@@ -435,6 +435,25 @@ fn query_index(connection: &Connection, root: &Path, request: &SearchRequest, le
     Ok(json!({"total":total,"truncated":total as usize>hits.len(),"hits":hits,"warnings":warnings}))
 }
 
+/// Bounded corpus projection for the disposable semantic index. It shares the
+/// existing synchronization/fingerprints rather than duplicating JSON parsing.
+pub(crate) fn embedding_corpus(root: &Path) -> Result<Vec<Value>> {
+    ensure!(root.is_absolute(), "Папка данных должна иметь абсолютный путь");
+    private_directory(root)?;
+    let cache=root.join("cache"); private_directory(&cache)?;
+    let folder=cache.join("search"); private_directory(&folder)?;
+    let lock=regular_private(&folder.join(".index.lock"))?; lock.lock()?;
+    let database=folder.join("index.sqlite"); drop(regular_private(&database)?);
+    for suffix in ["-journal","-wal","-shm"] { let p=folder.join(format!("index.sqlite{suffix}")); if fs::symlink_metadata(&p).is_ok() { drop(regular_private(&p)?); } }
+    let (mut db,_)=open_index(&database)?; sync(&mut db,root,&Lexicon::new())?;
+    let mut statement=db.prepare("SELECT key,meeting_id,title,kind,text,refs,item_index,card_id,fingerprint FROM documents ORDER BY created_at DESC,key LIMIT 10000")?;
+    let rows=statement.query_map([],|r| {
+        let refs:String=r.get(5)?;
+        Ok(json!({"id":r.get::<_,String>(0)?,"meetingID":r.get::<_,String>(1)?,"meetingTitle":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"text":r.get::<_,String>(4)?,"segmentIDs":serde_json::from_str::<Vec<u64>>(&refs).unwrap_or_default(),"itemIndex":r.get::<_,Option<i64>>(6)?,"cardID":r.get::<_,Option<String>>(7)?,"sourceFingerprint":r.get::<_,String>(8)?}))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// Revalidate a result before navigation without opening the derived index.
 pub fn validate(root: &Path, id: &str, fingerprint: &str) -> Result<Value> {
     ensure!(root.is_absolute() && valid_id(id), "Некорректный путь встречи");

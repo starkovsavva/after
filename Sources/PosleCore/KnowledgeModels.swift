@@ -32,14 +32,20 @@ public struct KnowledgeSource: Codable, Hashable, Identifiable {
     public var itemIndex: Int?
     public var cardID: String?
     public var eventID: String?
+    public var materialID: String?
+    public var relativePath: String?
+    public var lineStart: Int?
+    public var lineEnd: Int?
     public var sourceFingerprint: String
     public init(id: String, kind: String, title: String, excerpt: String, taskID: String? = nil,
                 noteID: String? = nil, meetingID: String? = nil, segmentID: Int? = nil,
                 itemIndex: Int? = nil, cardID: String? = nil, eventID: String? = nil,
+                materialID: String? = nil, relativePath: String? = nil, lineStart: Int? = nil, lineEnd: Int? = nil,
                 sourceFingerprint: String) {
         self.id = id; self.kind = kind; self.title = title; self.excerpt = excerpt
         self.taskID = taskID; self.noteID = noteID; self.meetingID = meetingID
         self.segmentID = segmentID; self.itemIndex = itemIndex; self.cardID = cardID
+        self.materialID = materialID; self.relativePath = relativePath; self.lineStart = lineStart; self.lineEnd = lineEnd
         self.eventID = eventID; self.sourceFingerprint = sourceFingerprint
     }
 }

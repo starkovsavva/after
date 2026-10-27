@@ -14,6 +14,7 @@ Each component retains its original license and notices in the installed runtime
 - [Whisper](https://github.com/openai/whisper), MIT; selected model weights and tokenizer retain upstream notices.
 - Catalog conversions [Whisper Large v3 Turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo) and [Whisper Small MLX](https://huggingface.co/mlx-community/whisper-small-mlx): see the selected model cards and upstream license notices. Catalog weights use pinned repository revisions recorded in `backend/models.py`.
 - [Ollama](https://github.com/ollama/ollama), MIT. Optional local runtime.
+- [Qwen3 Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B), Apache-2.0. Optional multilingual embedding weights downloaded through the selected local runtime.
 - [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-9B), Apache-2.0; see the selected model's full model card and license.
 - [CPython](https://www.python.org/), Python Software Foundation License. Private speech runtime from [python-build-standalone](https://github.com/astral-sh/python-build-standalone), installed separately from a pinned archive; upstream notices remain in that runtime.
 - [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg), BSD-2-Clause. The separately downloaded FFmpeg binary retains its upstream licensing.
@@ -30,12 +31,13 @@ and transitive dependencies are recorded in `rust-core/Cargo.lock`.
 - [reqwest 0.12](https://github.com/seanmonstar/reqwest), MIT OR Apache-2.0; blocking, JSON and native TLS support.
 - [serde](https://github.com/serde-rs/serde), MIT OR Apache-2.0.
 - [sha2](https://github.com/RustCrypto/hashes), MIT OR Apache-2.0.
-- [rusqlite](https://github.com/rusqlite/rusqlite), MIT; bundled SQLite (public domain) with FTS5 for the private, rebuildable search index.
+- [rusqlite](https://github.com/rusqlite/rusqlite), MIT; bundled SQLite (public domain) for canonical workspace transactions, durable jobs and rebuildable FTS/vector indexes.
 - [rust-stemmers](https://github.com/CurrySoftware/rust-stemmers), MIT / BSD-3-Clause; Russian and English word forms for search.
 - [unicode-normalization](https://github.com/unicode-rs/unicode-normalization), (MIT OR Apache-2.0) AND Unicode-3.0.
 - [serde_json](https://github.com/serde-rs/json), MIT OR Apache-2.0.
 - [uuid](https://github.com/uuid-rs/uuid), MIT OR Apache-2.0.
 - [rmcp 3.8.0](https://github.com/modelcontextprotocol/rust-sdk), MIT. Official MCP SDK; local stdio transport.
+- [ignore 0.4.25](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore), Unlicense OR MIT. Gitignore-aware traversal of explicitly selected folders.
 - [tokio](https://github.com/tokio-rs/tokio), MIT. Runtime for the MCP transport.
 
 Optional cloud APIs are subject to the selected provider's terms, data policies and billing.

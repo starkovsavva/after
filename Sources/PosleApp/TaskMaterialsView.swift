@@ -9,6 +9,8 @@ struct TaskMaterialsView: View {
     let task: TaskWorkspace
     @State private var attachment: TaskAttachmentKind?
     @State private var editingNote: CapturedNote?
+    @State private var indexing: [String: Bool] = [:]
+    @State private var cloudIndexing: [String: Bool] = [:]
     private var materials: [TaskMaterial] { task.materials.filter { !$0.isWorkspace } }
     private var workspaces: [TaskMaterial] { task.materials.filter(\.isWorkspace) }
     var body: some View {
@@ -42,6 +44,8 @@ struct TaskMaterialsView: View {
             }
             if let legacy = notes.legacyTask(for: task) { TaskSubtasksView(notes: notes, task: legacy) }
         }
+        .onAppear(perform: loadIndexing)
+        .onChange(of: task.id) { _, _ in loadIndexing() }
         .sheet(item: $attachment) { kind in TaskAttachmentSheet(notes: notes, task: task, kind: kind).environmentObject(app) }
         .sheet(item: $editingNote, onDismiss: { notes.reload(); notes.loadTaskWorkspaces() }) { NoteEditorView(notes: notes, note: $0).environmentObject(app) }
     }
@@ -71,12 +75,42 @@ struct TaskMaterialsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(material.title).font(AppTypography.controlStrong)
                         Text(material.path ?? material.url ?? "").font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        if let id = material.id, indexing[id] == true {
+                            Text(cloudIndexing[id] == true ? "В базе знаний · разрешено облако" : "В базе знаний · только на Mac").font(AppTypography.caption).foregroundStyle(.secondary)
+                        }
                     }
                     Spacer(minLength: 0)
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).disabled(material.available == false)
+            if material.path != nil, let id = material.id {
+                Menu {
+                    Toggle("Индексировать содержимое", isOn: Binding(get: { indexing[id] == true }, set: { setIndexing(material, enabled: $0, cloud: cloudIndexing[id] == true) }))
+                    Toggle("Разрешить отправку ИИ в облаке", isOn: Binding(get: { cloudIndexing[id] == true }, set: { setIndexing(material, enabled: indexing[id] == true, cloud: $0) })).disabled(indexing[id] != true)
+                    Divider()
+                    Text("Учитываются gitignore и .posleignore. Скрытые файлы, ключи и .env пропускаются.")
+                } label: { Image(systemName: indexing[id] == true ? "doc.text.magnifyingglass" : "ellipsis.circle").frame(width: 24, height: 24) }
+                    .menuStyle(.borderlessButton).fixedSize().help("Индексация папки").accessibilityLabel("Индексация " + material.title).accessibilityIdentifier("tasks.code-index." + id)
+            }
             detach(material)
         }.padding(.vertical, 9)
+    }
+    private func loadIndexing() {
+        struct Grant: Decodable { var taskID: String; var materialID: String; var allowCloud: Bool }
+        struct Envelope: Decodable { var grants: [Grant] }
+        do {
+            let data = try RustBridge.shared.get().request(root: app.root, command: "code-index-grants")
+            let grants = try JSONDecoder().decode(Envelope.self, from: data).grants.filter { $0.taskID == task.id }
+            indexing = Dictionary(uniqueKeysWithValues: grants.map { ($0.materialID, true) })
+            cloudIndexing = Dictionary(uniqueKeysWithValues: grants.map { ($0.materialID, $0.allowCloud) })
+        } catch { notes.error = error.localizedDescription }
+    }
+    private func setIndexing(_ material: TaskMaterial, enabled: Bool, cloud: Bool) {
+        guard let id = material.id else { return }
+        do {
+            _ = try RustBridge.shared.get().request(root: app.root, command: "code-index-grant", arguments: ["taskID": task.id, "materialID": id, "enabled": enabled, "allowCloud": cloud])
+            indexing[id] = enabled; cloudIndexing[id] = cloud
+            SemanticIndexController.shared.connect(app); SemanticIndexController.shared.requestRefresh()
+        } catch { notes.error = error.localizedDescription }
     }
     private func detach(_ material: TaskMaterial) -> some View {
         Button { notes.unlinkTaskMaterial(material, from: task) } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }

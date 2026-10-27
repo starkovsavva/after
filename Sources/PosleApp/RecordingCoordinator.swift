@@ -93,6 +93,8 @@ extension AppStore {
     func prepareForTermination() async {
         guard !isTerminating else { return }
         isTerminating = true
+        SemanticIndexController.shared.stop()
+        trackerSync.stop()
         processAfterRecording = false
         cancellationRequested = true
         runner.cancel()

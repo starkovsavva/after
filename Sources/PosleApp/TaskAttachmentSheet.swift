@@ -101,7 +101,7 @@ struct TaskAttachmentSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             TextField("Название", text: $title).textFieldStyle(.roundedBorder)
             TextField(kind == .repository ? "https://github.com/…" : "https://…", text: $url).textFieldStyle(.roundedBorder)
-            Text(kind == .repository ? "Сохранится адрес репозитория или ссылка на выбранную папку. Файлы не читаются и не копируются." : "Ссылка появится среди материалов задачи.")
+            Text(kind == .repository ? "Сохранится адрес репозитория или ссылка на выбранную папку. Поиск по содержимому папки можно включить отдельно в меню материала." : "Ссылка появится среди материалов задачи.")
                 .font(AppTypography.control).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }

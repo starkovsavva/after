@@ -204,8 +204,8 @@ fn item_save(root: &Path, directory: &Path, notes_dir: &Path, value: &Value) -> 
     if before["items"][index]["kind"] != "action" {
         return atomic_json(&directory.join("summary.json"), &summary);
     }
-    let before_workspace = read(&notes_dir.join("workspace.json"))?;
     let mut workspace = crate::notes::load(notes_dir)?;
+    let before_workspace = Some(crate::workspace_repository::load_locked(notes_dir)?.value);
     let old = &before["items"][index];
     let new = &summary["items"][index];
     let old_signature = crate::notes::task_signature(old);
@@ -318,8 +318,17 @@ fn finish_transaction(
         serde_json::from_value(journal["afterWorkspace"].clone())?;
     crate::notes::validate_workspace(&workspace)?;
     if notes_changed {
-        let current = read(&notes_dir.join("workspace.json"))?;
-        ensure!(matches_either(&current,&journal["beforeWorkspace"],&journal["afterWorkspace"]),"После прерывания задача изменилась. История правки сохранена; автоматическое восстановление остановлено.");
+        let current_snapshot = crate::workspace_repository::load_locked(notes_dir)?;
+        let current = current_snapshot.value;
+        let normalized = |value: &Value| -> Result<Value> {
+            if value.is_null() { return Ok(Value::Null); }
+            let workspace: crate::notes::NotesWorkspace = serde_json::from_value(value.clone())?;
+            Ok(serde_json::to_value(workspace)?)
+        };
+        let current = Some(normalized(&current)?);
+        let originally_absent = journal["beforeWorkspace"].is_null() && current_snapshot.revision == 1
+            && current.as_ref() == Some(&serde_json::to_value(crate::notes::defaults())?);
+        ensure!(originally_absent || matches_either(&current,&normalized(&journal["beforeWorkspace"])? ,&normalized(&journal["afterWorkspace"])?),"После прерывания задача изменилась. История правки сохранена; автоматическое восстановление остановлено.");
     }
     if notes_changed {
         crate::notes::persist(notes_dir, &workspace)?;

@@ -149,10 +149,13 @@ struct TasksWorkspaceView: View {
         selectFirstIfNeeded()
     }
     private func currentFileStamp() -> String {
-        let path = notes.root.appendingPathComponent("notes/workspace.json").path
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return "missing" }
-        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        return "\(modified):\(attributes[.size] as? UInt64 ?? 0)"
+        // WAL commits may leave the main database mtime unchanged.
+        ["core.sqlite", "core.sqlite-wal"].map { name in
+            let path = notes.root.appendingPathComponent(name).path
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return name + ":missing" }
+            let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            return "\(name):\(modified):\(attributes[.size] as? UInt64 ?? 0)"
+        }.joined(separator: "|")
     }
     private func consumeTaskNavigation() -> Bool {
         guard let id = notes.pendingTaskNavigationID else { return false }

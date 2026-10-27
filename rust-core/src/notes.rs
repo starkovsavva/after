@@ -1,5 +1,5 @@
-//! User-authored notes, attachments and meeting preparation. Source JSON is
-//! private and changed under a process-wide file lock. Per-entity revisions
+//! User-authored notes, attachments and meeting preparation. Canonical SQLite
+//! snapshots are changed under a process-wide file lock. Per-entity revisions
 //! prevent a quick-capture panel from silently overwriting a newer editor save.
 use anyhow::{bail, ensure, Context, Result};
 use chrono::Utc;
@@ -12,7 +12,6 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-const MAX_WORKSPACE: u64 = 32 * 1_048_576;
 const MAX_ATTACHMENT: u64 = 25 * 1_048_576;
 const MAX_TEXT: usize = 100_000;
 const MAX_NOTES: usize = 10_000;
@@ -75,7 +74,7 @@ pub struct NotesWorkspace {
     #[serde(default, skip_serializing_if = "Vec::is_empty")] pub task_operations: Vec<Value>,
     #[serde(default)] pub task_integration: crate::task_workspace::TaskIntegration,
 }
-fn defaults() -> NotesWorkspace {
+pub(crate) fn defaults() -> NotesWorkspace {
     let templates = [
         ("purchases", "Закупки", "Цель встречи\n\nВопросы\n• Цена и скидки\n• Минимальная партия\n• Доставка\n• Оплата\n\nДоговорённости\n\nЧто уточнить", "Точные цены, валюты, скидки, объёмы, сроки доставки и оплаты. Отдельно — условия и открытые вопросы."),
         ("interview", "Собеседование", "Роль и контекст\n\nМои вопросы\n\nСильные ответы\n\nПробелы и что повторить\n\nСледующие шаги", "Вопросы собеседования, ответы, пробелы в знаниях и темы для повторения. Не додумывай оценки кандидата."),
@@ -120,20 +119,13 @@ pub(crate) fn lock(directory: &Path) -> Result<File> {
 }
 pub(crate) fn load(directory: &Path) -> Result<NotesWorkspace> {
     crate::corrections::recover_notes_transaction(directory)?;
-    let path = directory.join("workspace.json");
-    if fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) { return Ok(defaults()); }
-    let mut bytes = Vec::new(); regular(&path,MAX_WORKSPACE)?.take(MAX_WORKSPACE+1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() as u64 <= MAX_WORKSPACE, "Библиотека заметок слишком большая");
-    let data: NotesWorkspace = serde_json::from_slice(&bytes).context("Не удалось прочитать заметки. Исходный файл сохранён.")?;
-    validate_workspace(&data)?;
-    Ok(data)
+    let snapshot = crate::workspace_repository::load_locked(directory)?;
+    serde_json::from_value(snapshot.value).context("Не удалось прочитать заметки. База сохранена.")
 }
 pub(crate) fn persist(directory: &Path, data: &NotesWorkspace) -> Result<()> {
     validate_workspace(data)?;
-    let path = directory.join("workspace.json");
-    if let Ok(info) = fs::symlink_metadata(&path) { ensure!(info.is_file() && !info.file_type().is_symlink(), "Некорректный файл заметок"); }
-    ensure!(serde_json::to_vec(data)?.len() as u64 <= MAX_WORKSPACE, "Библиотека заметок слишком большая");
-    crate::storage::atomic_json(&path,data)
+    crate::workspace_repository::persist_locked(directory, data)?;
+    Ok(())
 }
 fn bounded(value: &str, max: usize, label: &str) -> Result<()> {
     ensure!(value.len() <= max && !value.contains('\0'), "Слишком длинное или некорректное поле: {label}"); Ok(())
@@ -637,7 +629,7 @@ mod tests {
         assert_eq!(fs::read_to_string(source).unwrap(),"private");
     }
     #[test] fn bad_or_oversized_json_cannot_be_overwritten() {
-        let root=tempfile::tempdir().unwrap(); list(root.path()).unwrap(); let path=root.path().join("notes/workspace.json"); fs::write(&path,b"{broken").unwrap();
+        let root=tempfile::tempdir().unwrap(); directory(root.path()).unwrap(); let path=root.path().join("notes/workspace.json"); fs::write(&path,b"{broken").unwrap();
         assert!(save_note(root.path(),note("Новая")).is_err()); assert_eq!(fs::read(&path).unwrap(),b"{broken");
         File::create(&path).unwrap().set_len(MAX_WORKSPACE+1).unwrap(); assert!(list(root.path()).is_err());
         let root=tempfile::tempdir().unwrap(); let mut draft=note("x"); draft.text="x".repeat(MAX_TEXT+1); assert!(save_note(root.path(),draft).is_err());

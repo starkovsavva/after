@@ -4,11 +4,15 @@ pub mod chatgpt;
 pub mod models;
 pub mod storage;
 pub mod notes;
+pub mod workspace_repository;
 pub mod cards;
 pub mod voice;
 pub mod task_workspace;
 pub mod mcp;
 pub mod search;
+pub mod semantic;
+pub mod code_index;
+pub mod tracker_sync;
 pub mod knowledge;
 pub mod worker;
 pub mod jobs;
@@ -44,6 +48,9 @@ pub fn request(value: &Value) -> Result<Value> {
     let root = PathBuf::from(value["root"].as_str().context("Нужна папка данных приложения")?);
     if !root.is_absolute() { bail!("Папка данных должна иметь абсолютный путь"); }
     match value["command"].as_str().context("Нет команды ядра")? {
+        command if command.starts_with("tracker-") => tracker_sync::request(&root,command,value),
+        command if command.starts_with("semantic-") => semantic::dispatch(&root,value),
+        command if command.starts_with("code-index-") => code_index::dispatch(&root,value),
         command if ["notes-list", "note-save", "note-delete", "note-trash", "note-restore", "context-save", "template-save", "template-delete", "note-attach", "attachment-path", "attachment-remove", "attachment-text", "notes-search", "notes-tasks", "notes-task-complete", "notes-brief", "note-search-validate", "note-expansion-validate", "note-expansion-valid"].contains(&command) => notes::dispatch(&root, value),
         "voice-plan" | "voice-inspect" | "voice-choose" | "voice-apply" | "voice-undo" | "voice-recover" | "task-update" | "task-materialize" | "task-append" => voice::dispatch(&root, value),
         command if command.starts_with("task-") => task_workspace::dispatch(&root, value),
@@ -51,6 +58,7 @@ pub fn request(value: &Value) -> Result<Value> {
         command if command.starts_with("job-") => jobs::dispatch(&root, value),
         "meeting-content-snapshot" | "transcript-segment-save" | "summary-item-save" => corrections::dispatch(&root, value),
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),
+        "knowledge-search" => knowledge::lookup(&root, value),
         "knowledge-validate-source" => knowledge::validate_source(&root, value),
         "search-validate" => search::validate(&root, value["meetingID"].as_str().context("Нет ID встречи")?, value["sourceFingerprint"].as_str().unwrap_or("")),
         "search" => search::search(&root, value["query"].as_str().unwrap_or(""), value["scope"].as_str().unwrap_or("all"), value["limit"].as_u64().unwrap_or(60).min(100) as usize),

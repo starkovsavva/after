@@ -11,6 +11,7 @@ final class AppStore: ObservableObject {
     @Published var librarySection = "meetings"
     let notes: NotesStore
     let calendar: CalendarStore
+    let trackerSync: TrackerSyncCoordinator
     let updates = AppUpdateController()
     let voice = VoiceCommandController()
     let jobs: BackgroundJobsController
@@ -159,6 +160,7 @@ final class AppStore: ObservableObject {
         jobs = BackgroundJobsController(root: dataRoot)
         notes = NotesStore(root: dataRoot)
         calendar = CalendarStore(root: dataRoot, preview: preview)
+        trackerSync = TrackerSyncCoordinator(root: dataRoot)
         do {
             try FileManager.default.createDirectory(at: root.appendingPathComponent("meetings"), withIntermediateDirectories: true,
                                                    attributes: [.posixPermissions: 0o700])
@@ -176,6 +178,7 @@ final class AppStore: ObservableObject {
         } catch { self.error = error.localizedDescription }
         calendar.bindNotes(notes)
         voice.connect(self)
+        SemanticIndexController.shared.connect(self)
         jobsSubscription = jobs.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         if let executor { jobs.connect(executor) }
         else {
@@ -183,6 +186,14 @@ final class AppStore: ObservableObject {
                 guard let self else { throw CancellationError() }
                 return try await self.executeBackgroundJob(job, cancellation: cancellation, event: event)
             }
+        }
+        if !preview {
+            trackerSync.start(isIdle: { [weak self] in
+                guard let self else { return false }
+                return !self.isTerminating && !self.startingRecording && !self.isRecording && !self.stoppingRecording && !self.busy && self.jobs.activeCount == 0
+            }, onChange: { [weak self] in
+                self?.notes.reload(); self?.notes.loadTasks(); self?.notes.loadTaskWorkspaces()
+            })
         }
         recorder.levels = { [weak self] microphone, system in
             Task { @MainActor in self?.audioLevels.receive(microphone: microphone, system: system) }

@@ -64,8 +64,11 @@ class Handler(BaseHTTPRequestHandler):
                                'sourceIDs': [source['id'] for source in mixed]}]
             content = fixture.get('knowledge', {'title': 'Найдено в библиотеке', 'paragraphs': paragraphs})
         else:
-            if not reranking:
-                prompt = json.loads(body['messages'][-1]['content'])
+            prompt = json.loads(body['messages'][-1]['content'])
+            if reranking:
+                (root / 'fixture-reranking-started.json').write_text(json.dumps(prompt))
+                time.sleep(min(float(fixture.get('rerankingDelay', 0)), 3))
+            else:
                 (root / 'fixture-classification-started.json').write_text(json.dumps(prompt))
                 time.sleep(min(float(fixture.get('classificationDelay', 0)), 3))
             content = fixture.get('reranking') if reranking else fixture.get('content', fixture.get('proposal'))

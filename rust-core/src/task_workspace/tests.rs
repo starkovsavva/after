@@ -80,8 +80,10 @@ fn legacy_workspace_status_and_note_editor_remain_compatible() {
     ] {
         saved.as_object_mut().unwrap().remove(key);
     }
-    storage::atomic_json(&dir.join("workspace.json"), &saved).unwrap();
-    assert!(!notes::list(root.path()).unwrap().task_integration.enabled);
+    let legacy_root = tempfile::tempdir().unwrap();
+    let legacy_directory = notes::directory(legacy_root.path()).unwrap();
+    storage::atomic_json(&legacy_directory.join("workspace.json"), &saved).unwrap();
+    assert!(!notes::list(legacy_root.path()).unwrap().task_integration.enabled);
 }
 #[test]
 fn references_are_live_excluded_materials_are_private_and_folders_are_not_read() {

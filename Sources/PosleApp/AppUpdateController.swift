@@ -43,7 +43,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     }
     private var workInProgress: Bool {
         guard let store else { return false }
-        return store.startingRecording || store.isRecording || store.stoppingRecording || store.isTerminating || store.busy || store.jobs.activeCount > 0 || store.notes.attachmentBusy || store.voice.isWorking || ChatGPTAccount.shared.isConnecting || ChatGPTAccount.shared.isLoadingModels || ChatGPTAccount.shared.isRefreshing || ChatGPTAccount.shared.isSigningOut || !store.disconnectingChatGPTAccounts.isEmpty
+        return store.startingRecording || store.isRecording || store.stoppingRecording || store.isTerminating || store.busy || store.trackerSync.busy || SemanticIndexController.shared.running || store.jobs.activeCount > 0 || store.notes.attachmentBusy || store.voice.isWorking || ChatGPTAccount.shared.isConnecting || ChatGPTAccount.shared.isLoadingModels || ChatGPTAccount.shared.isRefreshing || ChatGPTAccount.shared.isSigningOut || !store.disconnectingChatGPTAccounts.isEmpty
     }
     private var editorOpen: Bool {
         guard let store else { return false }

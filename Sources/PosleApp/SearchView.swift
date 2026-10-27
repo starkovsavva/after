@@ -6,6 +6,8 @@ struct SearchView: View {
     @EnvironmentObject private var store: AppStore
     @FocusState private var queryFocused: Bool
     @State private var selectedID: String?
+    @State private var byMeaning = false
+    @StateObject private var knowledge = KnowledgeSearchController()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,7 +19,7 @@ struct SearchView: View {
                     .onSubmit { openSelected() }
                     .onKeyPress(.downArrow) { move(1); return .handled }
                     .onKeyPress(.upArrow) { move(-1); return .handled }
-                if store.searching || store.searchOpeningID != nil { ProgressView().controlSize(.small) }
+                if byMeaning ? knowledge.searching || knowledge.openingID != nil : store.searching || store.searchOpeningID != nil { ProgressView().controlSize(.small) }
                 if !store.searchQuery.isEmpty {
                     Button { store.searchQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                         .buttonStyle(.plain).accessibilityLabel("Очистить поиск")
@@ -25,34 +27,105 @@ struct SearchView: View {
                 Button("Закрыть") { store.showingSearch = false }
                     .buttonStyle(.borderless).keyboardShortcut(.cancelAction)
             }.padding(22)
+            Picker("Способ поиска", selection: $byMeaning) {
+                Text("По словам").tag(false); Text("По смыслу").tag(true)
+            }.pickerStyle(.segmented).labelsHidden().frame(width: 230).padding(.horizontal, 22).padding(.bottom, 12)
+                .accessibilityIdentifier("search.mode")
             Picker("Область поиска", selection: $store.searchScope) {
                 Text("Всё").tag("all")
                 Text("Заметки").tag("notes")
                 Text("Транскрипт").tag("transcript")
                 Text("Карточки").tag("cards")
                 Text("Названия").tag("meetings")
+                if byMeaning { Text("Задачи").tag("tasks"); Text("Код").tag("code") }
             }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Область поиска").tint(Ink.actionFill).padding(.horizontal, 22).padding(.bottom, 16)
             Rectangle().fill(Ink.line).frame(height: 1)
-            if let message = store.searchError {
+            if let message = byMeaning ? knowledge.error : store.searchError {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "exclamationmark.circle").foregroundStyle(Ink.warning)
                     Text(message).font(AppTypography.control).frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Повторить") { store.updateSearch(immediate: true) }.buttonStyle(.borderless)
+                    Button("Повторить") { updateSearch(immediate: true) }.buttonStyle(.borderless)
                 }.padding(14).background(Ink.warning.opacity(0.07))
             }
-            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+            Group { if byMeaning { meaningContent } else { content } }.frame(maxWidth: .infinity, maxHeight: .infinity)
             Rectangle().fill(Ink.line).frame(height: 1)
             HStack {
                 Spacer()
                 Text("↑ ↓ выбрать · Return открыть · Esc закрыть").foregroundStyle(.secondary)
             }.font(AppTypography.caption).padding(.horizontal, 22).padding(.vertical, 13)
         }.frame(width: 760, height: 650).background(Ink.paper).tint(Ink.accent).appControlDefaults()
-            .onAppear { queryFocused = true; store.updateSearch(immediate: true) }
-            .onChange(of: store.searchQuery) { _, _ in store.updateSearch() }
-            .onChange(of: store.searchScope) { _, _ in store.updateSearch() }
+            .onAppear {
+                queryFocused = true
+                #if DEBUG
+                if releaseSearchPreview {
+                    byMeaning = true; knowledge.seedPreview(ReleasePreviewFixtures.semanticSources)
+                    selectedID = knowledge.sources.first?.id
+                    return
+                }
+                #endif
+                struct Envelope: Decodable { var config: SemanticSearchConfiguration }
+                if let data = try? RustBridge.shared.get().request(root: store.root, command: "semantic-config"), let value = try? JSONDecoder().decode(Envelope.self, from: data) { byMeaning = value.config.enabled }
+                updateSearch(immediate: true)
+            }
+            .onChange(of: store.searchQuery) { _, _ in updateSearch() }
+            .onChange(of: store.searchScope) { _, _ in updateSearch() }
+            .onChange(of: byMeaning) { _, meaning in
+                if !meaning && ["tasks", "code"].contains(store.searchScope) { store.searchScope = "all" }
+                updateSearch(immediate: true)
+            }
+            .onChange(of: knowledge.sources) { _, hits in selectedID = hits.first?.id }
             .onChange(of: store.searchHits) { _, hits in selectedID = hits.first?.id }
-            .onDisappear { store.cancelSearch() }
+            .onDisappear { store.cancelSearch(); knowledge.cancel() }
     }
+
+    #if DEBUG
+    private var releaseSearchPreview: Bool {
+        store.isPreview && ProcessInfo.processInfo.arguments.contains("--preview-semantic-search")
+    }
+    #endif
+    private func updateSearch(immediate: Bool = false) {
+        #if DEBUG
+        if releaseSearchPreview { return }
+        #endif
+        // The last scope survives closing the sheet. A disabled semantic mode
+        // has no Tasks/Code segments, including its initial onAppear path.
+        if !byMeaning && ["tasks", "code"].contains(store.searchScope) { store.searchScope = "all" }
+        if byMeaning { store.cancelSearch(); knowledge.update(store: store, query: store.searchQuery, scope: store.searchScope, immediate: immediate) }
+        else { knowledge.cancel(); store.updateSearch(immediate: immediate) }
+    }
+    @ViewBuilder private var meaningContent: some View {
+        if store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            placeholder("Найдите по смыслу", "Опишите, что помните: например, выражение о возвращении к вопросу.", icon: "sparkle.magnifyingglass")
+        } else if knowledge.searching && knowledge.sources.isEmpty {
+            ProgressView("Ищу в библиотеке…").font(AppTypography.control)
+        } else if knowledge.sources.isEmpty && knowledge.error == nil {
+            placeholder("Ничего не найдено", "Уточните тему или проверьте, обновлён ли смысловой индекс.", icon: "magnifyingglass")
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 5) {
+                        ForEach(knowledge.sources) { source in
+                            Button { selectedID = source.id; knowledge.open(source, store: store) } label: {
+                                HStack(alignment: .top, spacing: 12) {
+                                    Image(systemName: meaningIcon(source.kind)).foregroundStyle(Ink.accent).frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 7) {
+                                        Text(source.title).font(AppTypography.controlStrong).lineLimit(2)
+                                        Text(source.excerpt).font(AppTypography.control).lineLimit(3).foregroundStyle(.secondary)
+                                        Text(meaningLabel(source.kind)).font(AppTypography.caption).foregroundStyle(.secondary)
+                                    }.frame(maxWidth: .infinity, alignment: .leading)
+                                    if knowledge.openingID == source.id { ProgressView().controlSize(.mini) }
+                                    else if selectedID == source.id { Image(systemName: "return").font(AppTypography.caption).foregroundStyle(Ink.accent) }
+                                }.padding(13).background(selectedID == source.id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 8)).contentShape(Rectangle())
+                            }.buttonStyle(.plain).id(source.id).disabled(knowledge.openingID != nil).accessibilityAddTraits(selectedID == source.id ? .isSelected : [])
+                        }
+                        ForEach(knowledge.warnings, id: \.self) { Text($0).font(AppTypography.caption).foregroundStyle(Ink.warning).padding(10) }
+                    }.padding(12)
+                }.onChange(of: selectedID) { _, id in if let id { proxy.scrollTo(id, anchor: .center) } }
+            }
+        }
+    }
+    private func meaningIcon(_ kind: String) -> String { ["task":"checklist","note":"note.text","code":"curlybraces","card":"rectangle.on.rectangle","meeting":"rectangle.stack","transcript":"quote.bubble"][kind] ?? "doc.text" }
+    private func meaningLabel(_ kind: String) -> String { ["task":"Задача","note":"Заметка","code":"Код","card":"Карточка","meeting":"Встреча","transcript":"Реплика","summary":"Конспект"][kind] ?? "Источник" }
 
     @ViewBuilder private var content: some View {
         if store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -131,11 +204,17 @@ struct SearchView: View {
         }.padding(35).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private func move(_ direction: Int) {
+        if byMeaning {
+            let sources = knowledge.sources; guard !sources.isEmpty else { return }
+            let current = sources.firstIndex { $0.id == selectedID } ?? (direction > 0 ? -1 : sources.count)
+            selectedID = sources[min(max(current + direction, 0), sources.count - 1)].id; return
+        }
         guard !store.searchHits.isEmpty else { return }
         let current = store.searchHits.firstIndex(where: { $0.id == selectedID }) ?? (direction > 0 ? -1 : store.searchHits.count)
         selectedID = store.searchHits[min(max(current + direction, 0), store.searchHits.count - 1)].id
     }
     private func openSelected() {
+        if byMeaning { if let source = knowledge.sources.first(where: { $0.id == selectedID }) { knowledge.open(source, store: store) }; return }
         if let hit = store.searchHits.first(where: { $0.id == selectedID }) { store.openSearchHit(hit) }
     }
     private func label(_ kind: String) -> String {

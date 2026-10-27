@@ -62,6 +62,7 @@ struct MainView: View {
             case .cards: store.librarySection = "cards"
             case .tasks: store.librarySection = "tasks"
             case .integrations: store.openSettings("integrations")
+            case .semantic: store.openSettings("semantic")
             case nil: break
             }
         }) { _ in GuidanceSheet(controller: guide) }

@@ -918,3 +918,12 @@ fn read_only_knowledge_intent_rejects_write_flags_before_any_answer_or_mutation(
             && workspace.voice_operations.is_empty()
     );
 }
+
+#[test]
+fn conversation_topics_are_bounded_and_are_not_evidence_or_actions() {
+    assert_eq!(previous_questions(&json!({})).unwrap(),Vec::<String>::new());
+    assert_eq!(previous_questions(&json!({"previousQuestions":["Какие задачи по пилоту?"]})).unwrap().len(),1);
+    assert!(previous_questions(&json!({"previousQuestions":[{"action":"completeTask"}]})).is_err());
+    assert!(previous_questions(&json!({"previousQuestions":["x".repeat(1501)]})).is_err());
+    assert!(previous_questions(&json!({"previousQuestions":vec!["x";7]})).is_err());
+}
