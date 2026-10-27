@@ -6,27 +6,34 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.12.3</title>
-      <sparkle:version>18</sparkle:version>
-      <sparkle:shortVersionString>0.12.3</sparkle:shortVersionString>
+      <title>После 0.13.0</title>
+      <sparkle:version>19</sparkle:version>
+      <sparkle:shortVersionString>0.13.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Mon, 26 Oct 2026 22:13:47 GMT</pubDate>
-      <description sparkle:format="markdown"># 0.12.3
+      <pubDate>Tue, 27 Oct 2026 09:07:52 GMT</pubDate>
+      <description sparkle:format="markdown"># 0.13.0
 
-- **Видео.** Исправлено раннее завершение видеодорожки при неподвижном экране: последний кадр сохраняется до конца звука.
-- **Запись.** Отсутствие видеокадров больше не считается успешной записью видео. Исходный звук сохраняется.
-- **Доступ macOS.** Сообщения различают отказ в разрешении, недоступный экран и сбой ScreenCaptureKit. Добавлена поддержка сборок с постоянной личной подписью Apple.
+- **Помощник.** Вопросы по библиотеке и подключённому календарю, ответы со ссылками на источники и проверкой актуальности данных.
+
+- **Задачи.** Список и доска, четыре статуса, проекты, сроки и ответственные.
+- **Материалы.** Мысли, заметки, файлы, фрагменты встреч, папки и репозитории у задачи. Черновики мыслей сохраняются при переключении и перезапуске.
+- **История.** Снимки контекста, отчёты и результаты агента. Изменение исходной заметки не переписывает сохранённый снимок.
+- **Поручения.** Открытие, завершение, возврат в работу и дополнение задач голосом или текстом. Для нескольких задач — предпросмотр и отмена изменений.
+- **MCP.** Агент получает выбранные задачи и материалы, берёт задачу в работу, сохраняет отчёт и завершает её с проверкой актуального контекста. Доступ выключен по умолчанию.
+- **Внешние задачи.** Ссылки на Яндекс Трекер и Google Tasks с локальными статусом и материалами. Автоматической синхронизации нет.
+- **Логотип.** Новый знак с закатом для «После».
+- **Надёжность.** Проверка компонентов перед запуском; повторная подготовка сохраняет записи и кеш моделей.
 </description>
-      <posle:sourceRevision>f4d1c88795219da4b01dac007eb74d3f7c0a7f0e</posle:sourceRevision>
-      <posle:archiveSHA256>d500c832d9282f6b17ce7d4d325022a7cca78aeab17abf73667111ddd6dbf347</posle:archiveSHA256>
-      <posle:sourceSHA256>fe117fa5692210bc4121112018f94895d8de3aa8a1abd74fd760faba1ec68290</posle:sourceSHA256>
-      <posle:packageSHA256>9c3de2a3cf545a23e9c9519f16bc58edb6c9c69ae926229e2e4d849353cf724f</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.12.3/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="WcFfbKPpVqWG2Hmxo+CcIEqz8E3WnJurrbADnF5PVEAKSRcTDi84nZHs6c/zDtBemGnnF6r94Yqr5yNe572RDw==" length="15251757" type="application/octet-stream" />
+      <posle:sourceRevision>b08b7c491a866bbe3b14c0b740cceaffc6a3ef07</posle:sourceRevision>
+      <posle:archiveSHA256>5e9897e6bc294591c3f44d56ed15f3113685c4ccbb7a6bd8a1c1e834619afa9f</posle:archiveSHA256>
+      <posle:sourceSHA256>0b367970bc812a76a6d8fc9ab6666d98fbdb5adcfb2c42023fb1d2d25415d602</posle:sourceSHA256>
+      <posle:packageSHA256>609ed52c6d6fdf54630d055286ef800f3a4f520a04375484d3a94c5809a38545</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.13.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="cvnnaMkWHyaTeQMn+eUDvI5U43QBmsiE9u2bCLMHqCBLLSNO3GJQhpV/P88VaOS3J+qFMiPrRi/nSdX833n6Dw==" length="19702666" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 4H6Uci1z5RG+xfRIi1fybVcCVYzxFfC0LUom79P5pekFNXXDqZoardRo8xYpSX13mwnLadgsPOMkd04maMdhAA==
-length: 2260
+edSignature: bIp4CKnGn2nqpHlvq9pgG7V3rsT5jEsxtQhkBQyjn+Ad89tZv9hW3VWNvOyxFeryho9wEiM9v3hJQSsH9kS8Cg==
+length: 3521
 -->
