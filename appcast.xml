@@ -6,31 +6,30 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.17.0</title>
-      <sparkle:version>23</sparkle:version>
-      <sparkle:shortVersionString>0.17.0</sparkle:shortVersionString>
+      <title>После 0.17.1</title>
+      <sparkle:version>24</sparkle:version>
+      <sparkle:shortVersionString>0.17.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Tue, 27 Oct 2026 16:05:41 GMT</pubDate>
-      <description sparkle:format="markdown">- **Настройки папок.** Возможности, язык, приоритеты конспекта, контекст о себе, генерация карточек и модель отдельно для каждой папки.
-- **Наследование.** Папка использует общие настройки или свой выбор. Явный выбор генерации карточек во встрече имеет приоритет.
-- **Рабочий контекст.** Встречи, заметки, задачи и колоды выбранной папки. Новые материалы сохраняются туда же; «Все папки» возвращает общий обзор.
-- **Трекеры.** Папка назначения новых задач Google Tasks и Яндекс Трекера. Уже импортированные задачи остаются на месте.
-- **Карточки.** Исправлена проверка источников для карточек с вопросом по-русски и ответом по-английски.
-- **Распознавание речи.** В настройках уточнено: подписка ChatGPT работает с текстом; облачное распознавание требует API-ключ, локальное работает без него.
-- **Сохранность.** Удаление папки сохраняет материалы. Изменения профиля проверяются перед публикацией фоновых результатов.
+      <pubDate>Tue, 27 Oct 2026 19:00:22 GMT</pubDate>
+      <description sparkle:format="markdown">- **Папки.** Заметная кнопка создания, короткий диалог названия, переименование двойным кликом и выбор встреч из библиотеки.
+- **Перемещение.** Папка встречи видна в заголовке. При переносе открывается папка назначения; переключение папок сохраняет доступный раздел задач или карточек.
+- **Названия встреч.** Редактирование прямо в заголовке: двойной клик, Return для сохранения, Escape для отмены. Черновики и параллельные изменения защищены от потери.
+- **Быстрые заметки.** Черновик сохраняет исходную папку после переключения разделов. Недоступное назначение требует явного выбора.
+- **Контекст.** Исправлены подписи облачной обработки, ссылки на встречи другой папки и сохранение папки при копировании заметки.
+- **Редактор.** Подсказка пустой заметки выровнена с кареткой при изменении размера текста.
 
-![Настройки папки Английский](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.0/docs/screenshots/folder-profile.png)
+![Папки в библиотеке](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.1/docs/screenshots/folders.png)
 </description>
-      <posle:sourceRevision>3119654b95c87fd9c81ea882d8195babf3cf714a</posle:sourceRevision>
-      <posle:archiveSHA256>0f4390ae5e0c502e8af8a004e4b2934f822b750fb78d7691bd401d47e9228a03</posle:archiveSHA256>
-      <posle:sourceSHA256>4a46eb10b0dad933784a1020aff22844a6d457e41d2d0af76fa17e49dcc8eb44</posle:sourceSHA256>
-      <posle:packageSHA256>e2d1535b2aa810ac76ed52ed51be168edbb0ea6938ca383c585339485d2e430d</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.0/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="Ve7hB6OhE5I5LWyb+AFJK/8d1+18Wx4mlHe5GNaqEFiGaStJb7nEQ4yOMmzHboyEqGgZn5PUpGoWq7LA3z1MAA==" length="24027599" type="application/octet-stream" />
+      <posle:sourceRevision>69f21d68be5c80d323c863c085dbe174a4db700b</posle:sourceRevision>
+      <posle:archiveSHA256>edaca8d0de943df1c56575b475a09c9dcca4a5fc1c77002a716b8ba2821a3ab7</posle:archiveSHA256>
+      <posle:sourceSHA256>0d7c29026e418c86ad217f7d01e21862f193c4fb965b9e2f439246967b1d92eb</posle:sourceSHA256>
+      <posle:packageSHA256>2824d0e3084de609f28e9ec3f56bf6ec4067c8a21969f3272a837b95955dd62f</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.1/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="rzCSIlyZpGqr20qR3TrQZiL+Dt279n0+6zH7nSNJnEDqYKN/dFC+EByidmN92ZdemgnRZtdiMY4Ie2tDa/DpBA==" length="24174692" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: KN9cTa9rK906ZHU8RLZEigIBFnYi9pkSkmyQUQHn80m1SHnHD1nJoFZSTlfm8IqubyVHzf/RHYNLmm8uOSwKBw==
-length: 3343
+edSignature: wh/uUcz77oxoxymdgTuOSYSriJMC58qViV8cY4wFkxOgrkzbITDU6w8WpAU/hAWyL4jBJ4AR79xlD8XV1f4WCQ==
+length: 3138
 -->
