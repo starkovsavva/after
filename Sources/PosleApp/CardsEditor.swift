@@ -19,6 +19,7 @@ struct CardEditorView: View {
     @State private var saving = false
     @State private var error: String?
     @State private var confirmingDiscard = false
+    @State private var editorClosed = false
     init(request: CardEditorRequest, saved: @escaping (CardSaveResult) -> Void) {
         self.request = request; self.saved = saved
         _front = State(initialValue: request.entry?.card.front ?? "")
@@ -72,19 +73,25 @@ struct CardEditorView: View {
             }
         }.padding(24).frame(width: 540).appControlDefaults().disabled(saving)
             .interactiveDismissDisabled(dirty || saving)
-            .onAppear { registerDraft() }
+            .onAppear { editorClosed = false; registerDraft() }
             .onChange(of: dirty) { _, _ in registerDraft() }
-            .onDisappear { UnsavedEditorRegistry.remove(id: request.id) }
+            .onDisappear { editorClosed = true; UnsavedEditorRegistry.remove(id: request.id) }
             .confirmationDialog("Закрыть без сохранения?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-                Button("Закрыть без сохранения", role: .destructive) { UnsavedEditorRegistry.remove(id: request.id); dismiss() }.accessibilityIdentifier("cards.edit.discard")
+                Button("Закрыть без сохранения", role: .destructive) { finish() }.accessibilityIdentifier("cards.edit.discard")
                 Button("Продолжить правку", role: .cancel) {}
             }
     }
     private func registerDraft() {
+        guard !editorClosed else { return }
         let title = request.entry.map { "Карточка «\($0.card.front.prefix(60))»" } ?? "Новая карточка"
         UnsavedEditorRegistry.set(id: request.id, title: title, dirty: dirty)
     }
-    private func close() { if dirty { confirmingDiscard = true } else { dismiss() } }
+    private func finish() {
+        editorClosed = true
+        UnsavedEditorRegistry.remove(id: request.id)
+        dismiss()
+    }
+    private func close() { if dirty { confirmingDiscard = true } else { finish() } }
     private func save() {
         guard !saving else { return }; saving = true; error = nil
         let root = app.root, text = front, answer = back, type = kind, target = destination, title = deckTitle, entry = request.entry
@@ -98,7 +105,7 @@ struct CardEditorView: View {
                     let data = try RustBridge.shared.get().request(root: root, command: "card-save", arguments: args)
                     return try JSONDecoder().decode(CardSaveResult.self, from: data)
                 }.value
-                saved(result); dismiss()
+                finish(); saved(result)
             } catch { self.error = error.localizedDescription }
         }
     }
