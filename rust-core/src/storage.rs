@@ -21,7 +21,7 @@ const ALLOWED_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "m4a", "mp3", "wav", "aiff", "aif", "caf", "flac", "ogg", "webm", "mkv", "aac",
 ];
 const MUTABLE_META_FIELDS: &[&str] = &[
-    "title", "focus", "meetingPurpose", "status", "duration", "speakerNames", "completedTasks",
+    "title", "focus", "meetingPurpose", "generateCards", "status", "duration", "speakerNames", "completedTasks",
     "recordingTracks", "hasVideo", "error",
 ];
 
@@ -175,6 +175,7 @@ fn validate_patch(patch: &Map<String, Value>) -> Result<()> {
             "title" => value.as_str().is_some_and(|text| !text.trim().is_empty()),
             "focus" => value.is_string(),
             "meetingPurpose" => value.is_null() || value.as_str().is_some_and(|text| text.chars().count() <= 300),
+            "generateCards" => value.is_null() || value.is_boolean(),
             "status" => value.as_str().is_some_and(|status| ["imported", "recording", "processing", "transcribed", "ready"].contains(&status)),
             "duration" => value.as_f64().is_some_and(|duration| duration.is_finite() && duration >= 0.0),
             "speakerNames" => value.as_object().is_some_and(|names| names.values().all(Value::is_string)),
@@ -455,6 +456,20 @@ mod tests {
         assert_eq!(update_meta(&root,id,&json!({"meetingPurpose":null})).unwrap()["meetingPurpose"],Value::Null);
     }
 
+    #[test]
+    fn card_generation_is_optional_user_metadata_and_never_inferred_from_existing_cards() {
+        let temp=TestDirectory::new(); let meta=temp.meeting(); let root=temp.0.join("data");
+        let id=meta["id"].as_str().unwrap();
+        assert!(list_meetings(&root).unwrap()[0]["generateCards"].is_null());
+        for flag in [json!(true),json!(false),Value::Null] {
+            let updated=update_meta(&root,id,&json!({"generateCards":flag})).unwrap();
+            assert_eq!(updated["generateCards"],flag);
+            assert_eq!(list_meetings(&root).unwrap()[0]["generateCards"],flag);
+            assert_eq!(updated["source"],meta["source"]);
+        }
+        assert!(update_meta(&root,id,&json!({"generateCards":"true"})).is_err());
+        assert!(update_meta(&root,id,&json!({"generateCards":1})).is_err());
+    }
     #[test]
     fn overview_cas_preserves_cards_evidence_unknown_fields_and_review_history() {
         let temp = TestDirectory::new(); let meta = temp.meeting(); let root = temp.0.join("data");

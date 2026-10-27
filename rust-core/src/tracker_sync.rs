@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const MAX_ITEMS: usize = 9_000;
@@ -195,6 +195,14 @@ fn load(db: &Connection) -> Result<Journal> {
         None => Ok(Journal::default()),
     }
 }
+fn ensure_tasks(root: &Path) -> Result<()> {
+    ensure!(crate::ai::live_features(root)?.tasks, "Включите «Задачи и проекты» в настройках → Возможности.");
+    Ok(())
+}
+fn save_active(root: &Path, db: &Connection, j: &Journal) -> Result<()> {
+    ensure_tasks(root)?;
+    save(db, j)
+}
 fn save(db: &Connection, j: &Journal) -> Result<()> {
     let text = serde_json::to_string(j)?;
     ensure!(
@@ -267,6 +275,7 @@ fn checked_config(c: &TrackerConfiguration) -> Result<()> {
     Ok(())
 }
 struct Api {
+    root: PathBuf,
     client: Client,
     base: Url,
     config: TrackerConfiguration,
@@ -289,7 +298,8 @@ impl std::fmt::Display for ApiFailure {
 }
 impl std::error::Error for ApiFailure {}
 impl Api {
-    fn new(config: TrackerConfiguration, input: &Value) -> Result<Self> {
+    fn new(root: &Path, config: TrackerConfiguration, input: &Value) -> Result<Self> {
+        ensure_tasks(root)?;
         let token = input["token"].as_str().unwrap_or("").trim().to_string();
         ensure!(
             !token.is_empty() && token.len() <= 16_384 && !token.contains(['\r', '\n']),
@@ -323,6 +333,7 @@ impl Api {
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Ok(Self {
+            root: root.into(),
             client,
             base,
             config,
@@ -387,12 +398,14 @@ impl Api {
         }
         // Never surface reqwest errors containing request URLs or response text:
         // providers can echo credentials or confidential remote content there.
+        ensure_tasks(&self.root)?;
         let response = request.send().map_err(|_| ApiFailure {
             code: 0,
             retry_after: None,
             message: "Трекер не ответил. Изменение сохранено; результат проверим перед повтором."
                 .into(),
         })?;
+        ensure_tasks(&self.root)?;
         let code = response.status().as_u16();
         let pages = response
             .headers()
@@ -894,6 +907,7 @@ fn apply_remote(
     local_id: &str,
     expected: Option<&Fields>,
 ) -> Result<Fields> {
+    ensure_tasks(root)?;
     let dir = notes::directory(root)?;
     let _lock = notes::lock(&dir)?;
     let mut workspace = notes::load(&dir)?;
@@ -1023,6 +1037,7 @@ fn apply_remote(
     }
     workspace.task_operations.push(json!({"operationID":receipt_id,"namespace":"tracker","createdAt":now(),"request":{"command":"tracker-import","connectionID":c.id,"remoteID":remote.id,"remoteRevision":remote.revision},"fingerprint":digest(&serde_json::to_string(remote)?),"result":{"localID":local_id,"fields":local},"undone":false}));
     // The receipt and canonical imported task commit in one SQLite transaction.
+    ensure_tasks(root)?;
     notes::persist(&dir, &workspace)?;
     Ok(local)
 }
@@ -1105,6 +1120,7 @@ fn register_error(j: &mut Journal, c: &TrackerConfiguration, error: &anyhow::Err
     }
 }
 fn canonical_intent(root: &Path, p: &Pending) -> Result<()> {
+    ensure_tasks(root)?;
     let dir = notes::directory(root)?;
     let _lock = notes::lock(&dir)?;
     let mut workspace = notes::load(&dir)?;
@@ -1117,6 +1133,7 @@ fn canonical_intent(root: &Path, p: &Pending) -> Result<()> {
         return Ok(());
     }
     workspace.task_operations.push(json!({"operationID":operation_id,"namespace":"tracker","fingerprint":digest(&serde_json::to_string(p)?),"request":{"command":"tracker-write","connectionID":p.connection,"localID":p.local_id,"scope":p.scope,"remoteID":p.remote_id},"result":{"queued":true},"createdAt":now(),"undone":false}));
+    ensure_tasks(root)?;
     notes::persist(&dir, &workspace)?;
     Ok(())
 }
@@ -1161,11 +1178,11 @@ fn send_pending(
                     &binding.remote,
                     "Локальная задача удалена; внешняя копия сохранена",
                 )?;
-                save(db, j)?;
+                save_active(root, db, j)?;
             } else if !pending.sent {
                 // A local trash action before the first POST cancels creation.
                 j.pending.remove(index);
-                save(db, j)?;
+                save_active(root, db, j)?;
             } else {
                 bail!("Локальная задача удалена, а результат отправки ещё не подтверждён. Проверьте внешний список; повторное создание остановлено.");
             }
@@ -1175,7 +1192,7 @@ fn send_pending(
         // operation must first be reconciled, then the newer edit gets queued.
         if !pending.sent && current_local.as_ref() != Some(&pending.desired) {
             j.pending.remove(index);
-            save(db, j)?;
+            save_active(root, db, j)?;
             continue;
         }
         canonical_intent(root, &pending)?;
@@ -1217,7 +1234,7 @@ fn send_pending(
                 pending.sent = true;
                 pending.attempts = pending.attempts.saturating_add(1);
                 j.pending[index] = pending.clone();
-                save(db, j)?;
+                save_active(root, db, j)?;
                 api.patch(&pending, &current)
             } else {
                 if pending.sent {
@@ -1237,7 +1254,7 @@ fn send_pending(
                 pending.sent = true;
                 pending.attempts = pending.attempts.saturating_add(1);
                 j.pending[index] = pending.clone();
-                save(db, j)?;
+                save_active(root, db, j)?;
                 let remote = api.create(&pending)?;
                 if remote.fields == provider_fields(pending.desired.clone(), &c.provider) {
                     Ok(remote)
@@ -1253,11 +1270,11 @@ fn send_pending(
                 let local = pending.desired.clone();
                 bind(j, c, remote, pending.local_id.clone(), local);
                 j.pending.retain(|p| p.id != pending.id);
-                save(db, j)?;
+                save_active(root, db, j)?;
             }
             Err(error) => {
                 register_error(j, c, &error, pending.attempts);
-                save(db, j)?;
+                save_active(root, db, j)?;
                 return Err(error);
             }
         }
@@ -1282,6 +1299,7 @@ fn sync(
     c: TrackerConfiguration,
     input: &Value,
 ) -> Result<Value> {
+    ensure_tasks(root)?;
     ensure!(
         c.enabled && !c.paused,
         "Синхронизация выключена или приостановлена"
@@ -1293,11 +1311,11 @@ fn sync(
             "Синхронизация ожидает повторной попытки"
         );
     }
-    let api = match Api::new(c.clone(), input) {
+    let api = match Api::new(root, c.clone(), input) {
         Ok(api) => api,
         Err(error) => {
             register_error(j, &c, &error, 0);
-            save(db, j)?;
+            save_active(root, db, j)?;
             return Err(error);
         }
     };
@@ -1328,7 +1346,7 @@ fn sync(
             }
             Err(error) => {
                 register_error(j, &c, &error, 1);
-                save(db, j)?;
+                save_active(root, db, j)?;
                 return Err(error);
             }
         }
@@ -1378,7 +1396,7 @@ fn sync(
             }
             Err(error) => {
                 register_error(j, &c, &error, 1);
-                save(db, j)?;
+                save_active(root, db, j)?;
                 return Err(error);
             }
         }
@@ -1468,9 +1486,9 @@ fn sync(
             let local = apply_remote(root, &c, &remote, &local_id, None)?;
             bind(j, &c, remote, local_id, local);
         }
-        save(db, j)?;
+        save_active(root, db, j)?;
     }
-    save(db, j)?;
+    save_active(root, db, j)?;
     if c.push_enabled {
         send_pending(root, db, j, &api, false)?;
     }
@@ -1480,13 +1498,14 @@ fn sync(
         config.error = None;
         config.requires_auth = false;
     }
-    save(db, j)?;
+    save_active(root, db, j)?;
     Ok(state(j))
 }
 
 /// Only the native settings/idle coordinator calls this bridge. Credentials are
 /// passed in memory for one invocation and are never returned in state/errors.
 pub fn request(root: &Path, command: &str, input: &Value) -> Result<Value> {
+    if ["tracker-scopes", "tracker-sync", "tracker-export"].contains(&command) || (command == "tracker-resolve" && input["resolution"] != "unlink") { ensure_tasks(root)?; }
     // Reading committed state never waits for the network-session flock. The
     // settings panel can open while a slow provider is being paginated.
     if command == "tracker-state" {
@@ -1518,6 +1537,7 @@ pub fn request(root: &Path, command: &str, input: &Value) -> Result<Value> {
         let mut c: TrackerConfiguration = serde_json::from_value(input["configuration"].clone())
             .context("Нет параметров подключения")?;
         checked_config(&c)?;
+        if c.enabled { ensure_tasks(root)?; }
         if c.id.is_empty() {
             c.id = id();
         }
@@ -1553,6 +1573,7 @@ pub fn request(root: &Path, command: &str, input: &Value) -> Result<Value> {
         c.retry_at = None;
         c.requires_auth = false;
         journal.configurations.retain(|v| v.id != c.id);
+        if c.enabled { ensure_tasks(root)?; }
         journal.configurations.push(c);
         save(&db, &journal)?;
         return Ok(state(&journal));
@@ -1562,7 +1583,7 @@ pub fn request(root: &Path, command: &str, input: &Value) -> Result<Value> {
         .context("Нет ID подключения")?;
     let c = configuration(&journal, connection)?;
     match command {
-        "tracker-scopes" => Api::new(c, input)?.scopes(),
+        "tracker-scopes" => Api::new(root, c, input)?.scopes(),
         "tracker-sync" => sync(root, &db, &mut journal, c, input),
         "tracker-disconnect" => {
             ensure!(
@@ -1620,6 +1641,7 @@ pub fn request(root: &Path, command: &str, input: &Value) -> Result<Value> {
                 sent: false,
                 attempts: 0,
             });
+            if command != "tracker-resolve" || input["resolution"] != "unlink" { ensure_tasks(root)?; }
             save(&db, &journal)?;
             Ok(state(&journal))
         }
@@ -1653,7 +1675,7 @@ pub fn request(root: &Path, command: &str, input: &Value) -> Result<Value> {
                     .pending
                     .retain(|p| !(p.connection == connection && p.local_id == binding.local_id));
             } else {
-                let api = Api::new(c.clone(), input)?;
+                let api = Api::new(root, c.clone(), input)?;
                 let remote = api.get(&binding.scope, &binding.remote_id)?;
                 let local = local_fields(root, &c, &binding.local_id)?;
                 ensure!(
@@ -1694,6 +1716,7 @@ pub fn request(root: &Path, command: &str, input: &Value) -> Result<Value> {
                 }
             }
             journal.conflicts.retain(|v| v.id != conflict_id);
+            if command != "tracker-resolve" || input["resolution"] != "unlink" { ensure_tasks(root)?; }
             save(&db, &journal)?;
             Ok(state(&journal))
         }

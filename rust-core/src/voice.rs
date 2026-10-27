@@ -190,6 +190,36 @@ fn validate(proposal: &Proposal) -> Result<()> {
     }
     Ok(())
 }
+/// Optional modules are a live capability boundary, not a job-settings snapshot.
+fn check_action_features(root: &Path, action: &str) -> Result<()> {
+    let features = crate::ai::live_features(root)?;
+    ensure!(features.assistant, "Включите «Помощник» в настройках → Возможности.");
+    check_action_modules(&features, action)
+}
+fn check_action_modules(features: &crate::ai::AppFeatures, action: &str) -> Result<()> {
+    if action.ends_with("Cards") || action == "openCard" {
+        ensure!(features.cards, "Включите «Карточки» в настройках → Возможности.");
+    }
+    if action.contains("Task") {
+        ensure!(features.tasks, "Включите «Задачи» в настройках → Возможности.");
+    }
+    Ok(())
+}
+fn enabled_schema(features: &crate::ai::AppFeatures) -> Value {
+    let mut value = schema();
+    value["properties"]["action"]["enum"].as_array_mut().unwrap().retain(|action| {
+        check_action_modules(features, action.as_str().unwrap_or("")).is_ok()
+    });
+    if !features.cards { value["properties"]["cards"]["maxItems"] = json!(0); }
+    value
+}
+fn check_saved_plan_features(root: &Path, input: &Value) -> Result<()> {
+    check_action_features(root, "")?;
+    let workspace = notes::list(root)?;
+    let plan = workspace.voice_plans.iter().find(|p| p["planID"] == input["planID"])
+        .or_else(|| workspace.voice_operations.iter().find(|p| p["operationID"] == input["operationID"]).map(|p| &p["plan"]));
+    check_action_features(root, plan.and_then(|p| p["proposal"]["action"].as_str().or_else(|| p["action"].as_str())).unwrap_or(""))
+}
 fn snapshot_targets(root: &Path, workspace: &NotesWorkspace) -> Result<Vec<Value>> {
     let mut targets = Vec::new();
     for note in workspace
@@ -200,6 +230,7 @@ fn snapshot_targets(root: &Path, workspace: &NotesWorkspace) -> Result<Vec<Value
         targets.push(json!({"id":format!("manual:{}",note.id),"kind":"note","noteID":note.id,"revision":note.revision,"title":if note.title.trim().is_empty(){short(note.text.lines().find(|line|!line.trim().is_empty()).unwrap_or("Заметка"),90)}else{note.title.clone()},"text":short(&note.text,4000),"meetingID":note.meeting_id}));
     }
     // tasks() acquires the same workspace lock; assemble it outside this lock.
+    if !crate::ai::live_features(root)?.tasks { return Ok(targets); }
     let tasks = notes::tasks(root)?;
     for task in tasks["tasks"].as_array().context("Нет списка задач")? {
         let text = task["text"].as_str().unwrap_or("");
@@ -214,6 +245,7 @@ fn snapshot_targets(root: &Path, workspace: &NotesWorkspace) -> Result<Vec<Value
     Ok(targets)
 }
 fn scope_task_targets(root: &Path, input: &Value, targets: &mut Vec<Value>) -> Result<()> {
+    if !crate::ai::live_features(root)?.tasks { targets.retain(|t| t["kind"] != "task"); return Ok(()); }
     if let Some(project) = input["projectID"].as_str() {
         let scoped = crate::task_workspace::dispatch(
             root,
@@ -237,6 +269,7 @@ fn meeting_context(root: &Path, meeting_id: Option<&str>) -> Result<Value> {
     };
     let directory = crate::storage::meeting_directory(root, id)?;
     let meta = read_json(&directory.join("meta.json"), 1_048_576)?;
+    if !crate::ai::live_features(root)?.cards && meta["libraryKind"] == "cards" { return Ok(Value::Null); }
     let summary = read_json(&directory.join("summary.json"), 8 * 1_048_576).unwrap_or(Value::Null);
     let transcript =
         read_json(&directory.join("transcript.json"), 32 * 1_048_576).unwrap_or(Value::Null);
@@ -453,6 +486,9 @@ fn previous_questions(input: &Value) -> Result<Vec<String>> {
     Ok(result)
 }
 pub fn plan(root: &Path, input: &Value) -> Result<Value> {
+    check_action_features(root, "")?;
+    let features = crate::ai::live_features(root)?;
+    let response_schema = enabled_schema(&features);
     let text = input["text"]
         .as_str()
         .context("Продиктуйте команду")?
@@ -488,8 +524,8 @@ pub fn plan(root: &Path, input: &Value) -> Result<Value> {
     // context. Content outside the selected meeting is not sent to a model.
     let selected:Vec<_>=targets.iter().filter(|t|input["noteID"].as_str().is_some_and(|id|t["noteID"]==id)||input["taskID"].as_str().is_some_and(|id|t["id"]==id||t["noteID"]==id)).take(2).map(|t|json!({"kind":t["kind"],"title":short(t["title"].as_str().unwrap_or(""),150),"text":short(t["text"].as_str().unwrap_or(""),4500),"excerptsOnly":true})).collect();
     let previous = previous_questions(input)?;
-    let mut prompt = json!({"user_command":text,"previous_questions":previous,"selected_objects":selected,"selected_card_scope":{"meetingID":input["meetingID"],"description":"Existing cards in this selected meeting/deck can be rewritten, moved to 30-day trash or restored; the app resolves actual IDs."},"meeting":context});
-    let budget = 19_000usize.saturating_sub(SYSTEM.len() + schema().to_string().len());
+    let mut prompt = json!({"enabled_features":features,"disabled_feature_rule":"Never propose actions for disabled modules. Return unsupported explaining Settings → Возможности. When cards=false, cards must be empty and do not generate any card content.","user_command":text,"previous_questions":previous,"selected_objects":selected,"selected_card_scope":if features.cards {json!({"meetingID":input["meetingID"],"description":"Existing cards in this selected meeting/deck can be rewritten, moved to 30-day trash or restored; the app resolves actual IDs."})} else { Value::Null },"meeting":context});
+    let budget = 19_000usize.saturating_sub(SYSTEM.len() + response_schema.to_string().len());
     while prompt.to_string().len() > budget {
         let transcript = prompt["meeting"]["transcript"].as_str().unwrap_or("");
         if !transcript.is_empty() {
@@ -519,12 +555,14 @@ pub fn plan(root: &Path, input: &Value) -> Result<Value> {
             break;
         }
     }
-    ensure!(prompt.to_string().len() + SYSTEM.len() + schema().to_string().len() <= 19_400, "Поручение слишком длинное для выбранной модели. Сократите его или начните новый разговор.");
+    ensure!(prompt.to_string().len() + SYSTEM.len() + response_schema.to_string().len() <= 19_400, "Поручение слишком длинное для выбранной модели. Сократите его или начните новый разговор.");
+    check_action_features(root, "")?;
+    ensure!(crate::ai::live_features(root)? == features, "Настройки возможностей изменились. Подготовьте поручение заново.");
     let proposal: Proposal = serde_json::from_value(crate::ai::generate(
         &crate::ai::settings(root)?,
         SYSTEM,
         &prompt.to_string(),
-        &schema(),
+        &response_schema,
     )?)
     .context("ИИ вернул команду неподходящего формата")?;
     store_plan(root, input, proposal, targets)
@@ -535,6 +573,7 @@ fn store_plan(
     mut proposal: Proposal,
     mut targets: Vec<Value>,
 ) -> Result<Value> {
+    check_action_features(root, &proposal.action)?;
     validate(&proposal)?;
     if proposal.action == "askKnowledge" {
         // A typed read request, not an executable or persisted voice plan.
@@ -684,6 +723,7 @@ fn stored_plan<'a>(workspace: &'a NotesWorkspace, id: &str) -> Result<&'a Value>
     Ok(p)
 }
 fn choose(root: &Path, input: &Value) -> Result<Value> {
+    check_saved_plan_features(root, input)?;
     if trash_intents::owns(root, input)? { return trash_intents::choose(root, input); }
     if library_intents::owns(root, input)? { return library_intents::choose(root, input); }
     if task_intents::owns(root, input)? {
@@ -865,6 +905,7 @@ fn reserve_operation_slot(workspace: &mut NotesWorkspace) -> Result<()> {
     Ok(())
 }
 fn apply(root: &Path, input: &Value) -> Result<Value> {
+    check_saved_plan_features(root, input)?;
     if card_intents::owns(root,input)? { return card_intents::apply(root,input); }
     if trash_intents::owns(root,input)? { return trash_intents::apply(root,input); }
     if library_intents::owns(root, input)? { return library_intents::apply(root, input); }
@@ -915,6 +956,7 @@ fn apply(root: &Path, input: &Value) -> Result<Value> {
         "Сначала подготовьте и уточните команду"
     );
     let mut proposal: Proposal = serde_json::from_value(plan["proposal"].clone())?;
+    check_action_features(root, &proposal.action)?;
     validate(&proposal)?;
     let apply_request_hash = legacy_confirmation(input, &plan, &mut proposal)?;
     let _source_lock = if plan["target"]["noteID"].is_null()
@@ -1326,6 +1368,13 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
         Some("task-materialize") => task_update(root, input, true),
         _ => bail!("Неизвестная голосовая команда"),
     }
+}
+
+#[cfg(test)]
+fn enabled_test_root() -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true,"cards":true,"tasks":true,"calendar":true,"semanticSearch":true}})).unwrap();
+    root
 }
 
 #[cfg(test)]

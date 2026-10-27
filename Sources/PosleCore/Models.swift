@@ -12,6 +12,7 @@ public struct Meeting: Codable, Identifiable, Hashable {
     public var focus: String
     /// Optional framing supplied by the user, never transcript evidence.
     public var meetingPurpose: String? = nil
+    public var generateCards: Bool? = nil
     public var recordingTracks: Bool = false
     public var hasVideo: Bool = false
     public var recordingAudioQuality: String?
@@ -147,6 +148,7 @@ public struct SearchHit: Decodable, Identifiable, Hashable {
     public var sourceFingerprint: String
     public var noteID: String? = nil
     public var noteRevision: Int? = nil
+    public var noteKind: String? = nil
 }
 
 public struct SearchResponse: Decodable {
@@ -226,9 +228,10 @@ public struct AppSettings: Codable {
     public var language = "ru"
     public var diarization = true
     public var speakerCount = 0
+    public var features = AppFeatures()
     public var autoSummary = true
     public var summaryUserContext = ""
-    public var focus = "Решения, задачи, ответственные, сроки, точные цифры, требования и риски. Полезные английские фразы и важные понятия для запоминания."
+    public var focus = "Решения, задачи, ответственные, сроки, точные цифры, требования и риски. "
     public init() {}
 
     public var resolvedLocalEndpoint: String {
@@ -297,7 +300,7 @@ public struct AppSettings: Codable {
         case startSection, recordSystemAudio, recordVideo, quickCaptureEnabled, bookmarkShortcutEnabled, voiceShortcutEnabled, quickCaptureShortcut, notesAutoTimestamp, notesSaveToActiveMeeting, defaultTemplateID
         case mode, localModel, localProvider, localEndpoint, asrModelPath, asrModelFormat
         case speechMode, speechLocalModel, speechCloudProvider, speechCloudEndpoint, speechCloudModel, speechResponseFormat, speechLanguage
-        case cloudModel, cloudProvider, cloudEndpoint, cloudAPI, cloudOutput, cloudReasoning, chatGPTAccountID, cloudProfiles, language, diarization, speakerCount, autoSummary, focus, summaryUserContext
+        case cloudModel, cloudProvider, cloudEndpoint, cloudAPI, cloudOutput, cloudReasoning, chatGPTAccountID, cloudProfiles, language, diarization, speakerCount, autoSummary, focus, summaryUserContext, features
     }
 
     // Defaults are applied per field, so adding settings never resets an existing setup.
@@ -341,6 +344,7 @@ public struct AppSettings: Codable {
         language = try values.decodeIfPresent(String.self, forKey: .language) ?? language
         diarization = try values.decodeIfPresent(Bool.self, forKey: .diarization) ?? diarization
         speakerCount = try values.decodeIfPresent(Int.self, forKey: .speakerCount) ?? speakerCount
+        features = try values.decodeIfPresent(AppFeatures.self, forKey: .features) ?? AppFeatures()
         autoSummary = try values.decodeIfPresent(Bool.self, forKey: .autoSummary) ?? autoSummary
         focus = try values.decodeIfPresent(String.self, forKey: .focus) ?? focus
         summaryUserContext = try values.decodeIfPresent(String.self, forKey: .summaryUserContext) ?? summaryUserContext

@@ -476,7 +476,7 @@ pub fn search_hits(root:&Path,query:&str) -> Result<Vec<Value>> {
         let content=format!("{} {} {} {} {} {} {} {}",note.title,note.folder,note.tags.join(" "),note.text,note.owner,note.due,note.source_url,note.attachments.iter().map(|a|format!("{} {}",a.name,a.extracted_text)).collect::<Vec<_>>().join(" "));
         let snippet=crate::search::query_excerpt(&content,query)?;
         hits.push(json!({"id":format!("manual:{}",note.id),"meetingID":note.meeting_id.clone().unwrap_or_default(),"meetingTitle":title,
-            "createdAt":note.created_at,"kind":"manual","text":note.text,"snippet":snippet,"segmentIDs":[],"itemIndex":null,"cardID":null,
+            "createdAt":note.created_at,"kind":"manual","noteKind":note.kind,"text":note.text,"snippet":snippet,"segmentIDs":[],"itemIndex":null,"cardID":null,
             "start":note.timestamp,"sourceFingerprint":format!("note:{}",note.revision),"noteID":note.id,"noteRevision":note.revision}));
     }
     Ok(hits)

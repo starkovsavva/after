@@ -53,7 +53,7 @@ fn library(root: &Path, input: &Value) -> Result<Value> {
                     errors.push(format!("{}: не удалось прочитать карточку или её историю", meeting["title"].as_str().unwrap_or("Встреча")));
                     continue;
                 }
-                entries.push(json!({"meeting":meeting,"card":card,"sourceStale":summary["sourceStale"].as_bool().unwrap_or(false),"fingerprint":fingerprint(card),"suspended":card["suspended"].as_bool().unwrap_or(false),"exampleIsStale":!examples[text(card,"id")?].is_null() && examples[text(card,"id")?]["cardFingerprint"].as_str().map(|hash|hash!=fingerprint(card)).unwrap_or(card.get("editedAt").is_some()),"review":reviews[text(card,"id")?],"reviewFingerprint":fingerprint(&reviews[text(card,"id")?]),"example":examples[text(card,"id")?]}));
+                entries.push(json!({"meeting":meeting,"card":card,"sourceStale":summary["sourceStale"].as_bool().unwrap_or(false) || summary["cardsSourceStale"].as_bool().unwrap_or(false),"fingerprint":fingerprint(card),"suspended":card["suspended"].as_bool().unwrap_or(false),"exampleIsStale":!examples[text(card,"id")?].is_null() && examples[text(card,"id")?]["cardFingerprint"].as_str().map(|hash|hash!=fingerprint(card)).unwrap_or(card.get("editedAt").is_some()),"review":reviews[text(card,"id")?],"reviewFingerprint":fingerprint(&reviews[text(card,"id")?]),"example":examples[text(card,"id")?]}));
             }
             Ok(())
         })();
@@ -203,6 +203,12 @@ mod tests {
         let mut summary=regular_json(&dir.join("summary.json")).unwrap(); summary["sourceStale"]=json!(true); atomic_json(&dir.join("summary.json"),&summary).unwrap();
         atomic_json(&dir.join("examples.json"),&json!({created["card"]["id"].as_str().unwrap():{"example":"Old practice","translation":"Старый пример","explanation":""}})).unwrap();
         let e=entry(temp.path()); assert_eq!(e["sourceStale"],true); assert_eq!(e["exampleIsStale"],true); assert_eq!(e["card"],created["card"]); assert!(e["review"].is_null());
+    }
+    #[test] fn retained_cards_have_a_source_warning_even_when_new_notes_are_current() {
+        let temp=tempfile::tempdir().unwrap(); let created=deck(temp.path()); let dir=meeting_directory(temp.path(),created["meeting"]["id"].as_str().unwrap()).unwrap();
+        let mut summary=regular_json(&dir.join("summary.json")).unwrap(); summary["cardsSourceStale"]=json!(true); summary["sourceStale"]=json!(false);
+        atomic_json(&dir.join("summary.json"),&summary).unwrap();
+        let e=entry(temp.path()); assert_eq!(e["sourceStale"],true); assert_eq!(e["card"],created["card"]);
     }
     #[test] fn concurrent_stale_windows_cannot_rate_twice() {
         let temp=tempfile::tempdir().unwrap(); deck(temp.path()); let mut a=args(&entry(temp.path())); a["rating"]=json!(3);

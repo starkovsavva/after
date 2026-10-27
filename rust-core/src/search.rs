@@ -14,7 +14,7 @@ use std::path::Path;
 use std::time::Duration;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
-const INDEX_VERSION: i64 = 3;
+const INDEX_VERSION: i64 = 4;
 const MAX_META: u64 = 1_048_576;
 const MAX_SUMMARY: u64 = 8 * 1_048_576;
 const MAX_TRANSCRIPT: u64 = 64 * 1_048_576;
@@ -213,7 +213,7 @@ fn initialize(connection: &Connection) -> Result<()> {
     if version != INDEX_VERSION {
         connection.execute_batch("BEGIN IMMEDIATE; DROP TABLE IF EXISTS documents_fts; DROP TABLE IF EXISTS documents; DROP TABLE IF EXISTS sources; COMMIT;")?;
     }
-    connection.execute_batch("CREATE TABLE IF NOT EXISTS sources (meeting_id TEXT PRIMARY KEY, stamp TEXT NOT NULL, warnings TEXT NOT NULL);
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS sources (meeting_id TEXT PRIMARY KEY, stamp TEXT NOT NULL, warnings TEXT NOT NULL, library_kind TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS documents (
         rowid INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, meeting_id TEXT NOT NULL, title TEXT NOT NULL,
         created_at REAL NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, refs TEXT NOT NULL,
@@ -313,7 +313,7 @@ fn sync(connection: &mut Connection, root: &Path, lexicon: &Lexicon) -> Result<V
             let rowid = transaction.last_insert_rowid();
             transaction.execute("INSERT INTO documents_fts(rowid,body,stems) VALUES(?1,?2,?3)", params![rowid,body,stems])?;
         }
-        transaction.execute("INSERT INTO sources(meeting_id,stamp,warnings) VALUES(?1,?2,?3)",params![id,before,serde_json::to_string(&meeting_warnings)?])?;
+        transaction.execute("INSERT INTO sources(meeting_id,stamp,warnings,library_kind) VALUES(?1,?2,?3,?4)",params![id,before,serde_json::to_string(&meeting_warnings)?,meta["libraryKind"].as_str().unwrap_or("")])?;
         seen.insert(id);
         warnings.extend(meeting_warnings);
     }
@@ -404,10 +404,14 @@ pub(crate) fn search_batch(root: &Path, requests: &[(String, String, usize)]) ->
 
 fn query_index(connection: &Connection, root: &Path, request: &SearchRequest, lexicon: &Lexicon, mut warnings: Vec<String>) -> Result<Value> {
     let SearchRequest { query, scope, limit, expression, terms } = request;
-    let filter = match scope.as_str() {
+    let scope_filter = match scope.as_str() {
         "notes" => "d.kind IN ('overview','item')", "transcript" => "d.kind='transcript'",
         "cards" => "d.kind='card'", "meetings" => "d.kind='title'", _=>"1=1",
     };
+    let features = crate::ai::live_features(root)?;
+    // Apply optional-module visibility in SQL before COUNT/LIMIT. The cache
+    // retains all originals so re-enabling a module does not require migration.
+    let filter = format!("({scope_filter}) AND {}", if features.cards { "1=1" } else { "d.kind<>'card' AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.meeting_id=d.meeting_id AND s.library_kind='cards')" });
     let count_sql = format!("SELECT COUNT(*) FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter}");
     let mut total: i64 = connection.query_row(&count_sql, [expression], |row|row.get(0))?;
     let sql = format!("SELECT d.key,d.meeting_id,d.title,d.created_at,d.kind,d.text,d.refs,d.start,d.item_index,d.card_id,d.fingerprint,d.excerpt_text FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter} ORDER BY bm25(documents_fts,1.0,0.8) * CASE d.kind WHEN 'title' THEN 4.0 WHEN 'overview' THEN 2.8 WHEN 'item' THEN 2.4 WHEN 'card' THEN 1.2 ELSE 1.0 END ASC,d.created_at DESC,d.meeting_id ASC,d.key ASC LIMIT ?2");
@@ -421,7 +425,7 @@ fn query_index(connection: &Connection, root: &Path, request: &SearchRequest, le
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
     if ["all","notes"].contains(&scope.as_str()) {
         let manual = match crate::notes::search_hits(root,query) {
-            Ok(hits)=>hits,
+            Ok(hits)=>hits.into_iter().filter(|hit| features.tasks || hit["noteKind"] != "task").collect::<Vec<_>>(),
             Err(_)=>{ warnings.push("Ручные заметки недоступны для поиска. Проверьте библиотеку заметок.".into()); vec![] }
         };
         total += manual.len() as i64;
@@ -446,7 +450,10 @@ pub(crate) fn embedding_corpus(root: &Path) -> Result<Vec<Value>> {
     let database=folder.join("index.sqlite"); drop(regular_private(&database)?);
     for suffix in ["-journal","-wal","-shm"] { let p=folder.join(format!("index.sqlite{suffix}")); if fs::symlink_metadata(&p).is_ok() { drop(regular_private(&p)?); } }
     let (mut db,_)=open_index(&database)?; sync(&mut db,root,&Lexicon::new())?;
-    let mut statement=db.prepare("SELECT key,meeting_id,title,kind,text,refs,item_index,card_id,fingerprint FROM documents ORDER BY created_at DESC,key LIMIT 10000")?;
+    let enabled = crate::ai::live_features(root)?.cards;
+    let filter = if enabled { "1=1" } else { "kind<>'card' AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.meeting_id=documents.meeting_id AND s.library_kind='cards')" };
+    let sql = format!("SELECT key,meeting_id,title,kind,text,refs,item_index,card_id,fingerprint FROM documents WHERE {filter} ORDER BY created_at DESC,key LIMIT 10000");
+    let mut statement=db.prepare(&sql)?;
     let rows=statement.query_map([],|r| {
         let refs:String=r.get(5)?;
         Ok(json!({"id":r.get::<_,String>(0)?,"meetingID":r.get::<_,String>(1)?,"meetingTitle":r.get::<_,String>(2)?,"kind":r.get::<_,String>(3)?,"text":r.get::<_,String>(4)?,"segmentIDs":serde_json::from_str::<Vec<u64>>(&refs).unwrap_or_default(),"itemIndex":r.get::<_,Option<i64>>(6)?,"cardID":r.get::<_,Option<String>>(7)?,"sourceFingerprint":r.get::<_,String>(8)?}))
@@ -465,6 +472,7 @@ pub fn validate(root: &Path, id: &str, fingerprint: &str) -> Result<Value> {
     let directory = root.join("meetings").join(id);
     let Some(meta) = snapshot(&directory.join("meta.json"), MAX_META).ok().flatten() else { return Ok(json!({"valid":false})); };
     if meta["id"].as_str() != Some(id) { return Ok(json!({"valid":false})); }
+    if !crate::ai::live_features(root)?.cards && meta["libraryKind"] == "cards" { return Ok(json!({"valid":false})); }
     let current = format!("{:x}", Sha256::digest(source_stamp(&directory).as_bytes()));
     Ok(json!({"valid":current == fingerprint}))
 }
@@ -473,6 +481,11 @@ pub fn validate(root: &Path, id: &str, fingerprint: &str) -> Result<Value> {
 mod tests {
     use super::*;
     use crate::storage::atomic_json;
+    fn enabled_root() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        atomic_json(&root.path().join("settings.json"), &json!({"features":{"cards":true,"tasks":true}})).unwrap();
+        root
+    }
     fn meeting(root: &Path, id:&str, title:&str) -> std::path::PathBuf {
         let dir=root.join("meetings").join(id);
         atomic_json(&dir.join("meta.json"),&json!({"id":id,"title":title,"createdAt":123.0,"source":"source.mp3"})).unwrap();
@@ -483,7 +496,7 @@ mod tests {
     }
     #[test]
     fn batch_matches_single_searches_and_synchronizes_once() {
-        let root = tempfile::tempdir().unwrap();
+        let root = enabled_root();
         let dir = meeting(root.path(), "one", "Migration planning");
         transcript(&dir, "Planning migration milestones and checking migration dependencies");
         atomic_json(&dir.join("summary.json"), &json!({
@@ -511,7 +524,7 @@ mod tests {
     }
     #[test]
     fn batch_synchronizes_source_changes_between_calls() {
-        let root = tempfile::tempdir().unwrap();
+        let root = enabled_root();
         let dir = meeting(root.path(), "one", "Batch source");
         transcript(&dir, "Original evidence");
         let requests = [("original".into(), "transcript".into(), 10), ("replacement".into(), "transcript".into(), 10)];
@@ -528,7 +541,7 @@ mod tests {
     }
     #[test]
     fn invalid_batches_and_empty_queries_do_not_open_the_index() {
-        let root = tempfile::tempdir().unwrap();
+        let root = enabled_root();
         let valid = ("normal".into(), "all".into(), 10);
         for invalid in [("normal".into(), "unknown".into(), 10), ("x".repeat(513), "all".into(), 10)] {
             assert!(search_batch(root.path(), &[valid.clone(), invalid]).is_err());
@@ -543,7 +556,7 @@ mod tests {
         assert!(!root.path().join("cache").exists());
     }
     #[test] fn corrupt_derived_index_is_rebuilt_without_touching_source_notes() {
-        let root=tempfile::tempdir().unwrap(); let directory=meeting(root.path(),"one","Поставка");
+        let root=enabled_root(); let directory=meeting(root.path(),"one","Поставка");
         transcript(&directory,"Поставка контрольногоМаркер завтра");
         assert_eq!(search(root.path(),"контрольногоМаркер","all",20).unwrap()["total"],1);
         let original=fs::read(directory.join("transcript.json")).unwrap();
@@ -555,7 +568,7 @@ mod tests {
         assert_eq!(fs::metadata(index).unwrap().permissions().mode()&0o777,0o600);
     }
     #[test] fn russian_english_numbers_prefix_and_scope() {
-        let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one","Бюджеты команды");
+        let root=enabled_root(); let dir=meeting(root.path(),"one","Бюджеты команды");
         transcript(&dir,"Обсудили бюджеты, отчёты и running migrations для версии 2026.");
         atomic_json(&dir.join("summary.json"),&json!({"overview":"Проверка бюджета","items":[{"text":"Отчёты проверены","owner":"Анна","due":"в пятницу","segmentIDs":[7]}],"cards":[{"id":"c1","front":"Running migrations","back":"Запуск миграций","context":"running migrations","segmentIDs":[7]}]})).unwrap();
         for query in ["БЮДЖЕТ", "отчет", "run", "migrating", "2026", "миграц"] {
@@ -568,7 +581,7 @@ mod tests {
         assert_eq!(search(root.path(),"бюджет","meetings",60).unwrap()["hits"][0]["kind"],"title");
     }
     #[test] fn replacement_corruption_deletion_and_valid_navigation() {
-        let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one","Исследование"); transcript(&dir,"Первоначальный протокол");
+        let root=enabled_root(); let dir=meeting(root.path(),"one","Исследование"); transcript(&dir,"Первоначальный протокол");
         atomic_json(&dir.join("summary.json"),&json!({"overview":"Обзор первоначального протокола","items":[{"text":"Старое правило","segmentIDs":[7]},{"text":"Несуществующая ссылка","segmentIDs":[999]}]})).unwrap();
         let result=search(root.path(),"правило","all",60).unwrap();
         assert_eq!(result["hits"][0]["segmentIDs"],json!([7])); assert_eq!(result["hits"][0]["start"],12.5);
@@ -584,7 +597,7 @@ mod tests {
         assert_eq!(search(root.path(),"исследование","all",60).unwrap()["total"],0);
     }
     #[test] fn query_operators_are_data_and_empty_query_is_safe() {
-        let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one","Normal title"); transcript(&dir,"normal token");
+        let root=enabled_root(); let dir=meeting(root.path(),"one","Normal title"); transcript(&dir,"normal token");
         for query in ["\" OR 1=1 --", "normal* NOT token", "body:normal", "'; DROP TABLE documents;--", "\0"] {
             search(root.path(),query,"all",60).unwrap();
         }
@@ -594,7 +607,7 @@ mod tests {
     }
     #[test] fn symlinks_and_damaged_entry_do_not_leak_or_block_library() {
         use std::os::unix::fs::symlink;
-        let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one","Ordinary meeting"); transcript(&dir,"Allowed text");
+        let root=enabled_root(); let dir=meeting(root.path(),"one","Ordinary meeting"); transcript(&dir,"Allowed text");
         let outside=tempfile::tempdir().unwrap(); fs::write(outside.path().join("secret.json"),br#"{"overview":"private token"}"#).unwrap();
         symlink(outside.path().join("secret.json"),dir.join("summary.json")).unwrap();
         let bad=meeting(root.path(),"bad","Broken"); fs::write(bad.join("meta.json"),b"{bad").unwrap();
@@ -606,14 +619,14 @@ mod tests {
         assert_eq!(fs::metadata(root.path().join("cache/search")).unwrap().permissions().mode() & 0o777,0o700);
     }
     #[test] fn concurrent_index_sync_is_serialized_and_deterministic() {
-        let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one","Concurrent meeting"); transcript(&dir,"Concurrent content");
+        let root=enabled_root(); let dir=meeting(root.path(),"one","Concurrent meeting"); transcript(&dir,"Concurrent content");
         let mut threads=Vec::new();
         for _ in 0..5 { let path=root.path().to_owned(); threads.push(std::thread::spawn(move||search(&path,"concurrent","all",1).unwrap())); }
         for thread in threads { let result=thread.join().unwrap(); assert_eq!(result["total"],2); assert_eq!(result["hits"].as_array().unwrap().len(),1); assert_eq!(result["truncated"],true); }
     }
 
     #[test] fn navigation_fingerprint_and_exact_text_are_preserved() {
-        let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one","Exact meeting"); transcript(&dir,"Recorded fact");
+        let root=enabled_root(); let dir=meeting(root.path(),"one","Exact meeting"); transcript(&dir,"Recorded fact");
         atomic_json(&dir.join("summary.json"),&json!({"overview":"  Exact overview  ","items":[{"text":"  Exact note  ","owner":"Owner","due":"Friday","segmentIDs":[7]}],"cards":[{"id":"c1","front":"Front","back":"","context":"Recorded fact","segmentIDs":[7]}]})).unwrap();
         let result=search(root.path(),"Owner","all",60).unwrap();
         assert_eq!(result["hits"][0]["text"],"  Exact note  ");
@@ -630,7 +643,7 @@ mod tests {
         assert_eq!(validate(root.path(),"one",fp).unwrap()["valid"],false);
     }
     #[test] fn duplicate_segment_ids_and_oversized_json_cannot_keep_stale_refs() {
-        let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one","Valid title"); transcript(&dir,"Allowed evidence");
+        let root=enabled_root(); let dir=meeting(root.path(),"one","Valid title"); transcript(&dir,"Allowed evidence");
         atomic_json(&dir.join("summary.json"),&json!({"items":[{"text":"Grounded note","segmentIDs":[7]}]})).unwrap();
         assert_eq!(search(root.path(),"Grounded","all",60).unwrap()["total"],1);
         atomic_json(&dir.join("transcript.json"),&json!({"segments":[{"id":7,"start":0.0,"end":1.0,"text":"Duplicate first"},{"id":7,"start":2.0,"end":3.0,"text":"Duplicate second"}]})).unwrap();
@@ -642,7 +655,7 @@ mod tests {
     }
     #[test] fn index_sidecar_symlink_is_rejected_without_touching_target() {
         use std::os::unix::fs::symlink;
-        let root=tempfile::tempdir().unwrap(); meeting(root.path(),"one","Index title");
+        let root=enabled_root(); meeting(root.path(),"one","Index title");
         search(root.path(),"Index","all",60).unwrap();
         let outside=tempfile::tempdir().unwrap(); let target=outside.path().join("untouched"); fs::write(&target,b"keep").unwrap();
         symlink(&target,root.path().join("cache/search/index.sqlite-journal")).unwrap();
@@ -651,11 +664,44 @@ mod tests {
     }
 
     #[test] fn snippets_unicode_and_equivalent_accents() {
-        let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one","Café Задачи");
+        let root=enabled_root(); let dir=meeting(root.path(),"one","Café Задачи");
         transcript(&dir,&format!("{} Ёжики выполнили согласованные задачи {}","начало ".repeat(100),"дальше ".repeat(100)));
         let result=search(root.path(),"ежик","transcript",60).unwrap();
         assert!(result["hits"][0]["snippet"].as_str().unwrap().contains("Ёжики"));
         assert!(result["hits"][0]["snippet"].as_str().unwrap().chars().count()<=240);
         assert_eq!(search(root.path(),"Cafe\u{301}","all",60).unwrap()["total"],1);
     }
+    #[test]
+    fn disabled_modules_filter_cards_decks_and_task_notes_before_count_and_limit() {
+        let root = enabled_root();
+        let dir = meeting(root.path(), "recording", "Обычная встреча");
+        transcript(&dir, "Findmarker");
+        atomic_json(&dir.join("summary.json"), &json!({"cards":[{"id":"c","front":"Findmarker","back":"Meaning","context":"","segmentIDs":[7]}]})).unwrap();
+        for i in 0..10 {
+            let id = format!("deck-{i}"); let dir = root.path().join("meetings").join(&id);
+            atomic_json(&dir.join("meta.json"), &json!({"id":id,"title":"Findmarker","createdAt":999.0,"libraryKind":"cards","source":"cards.tsv"})).unwrap();
+            atomic_json(&dir.join("summary.json"), &json!({"cards":[{"id":"c","front":"Findmarker","back":"Meaning","context":"","segmentIDs":[]}]})).unwrap();
+        }
+        for (id, kind) in [("note","note"),("task","task")] {
+            crate::notes::save_note(root.path(), serde_json::from_value(json!({"id":id,"kind":kind,"text":"Findmarker","createdAt":1000.0,"updatedAt":1000.0,"revision":0})).unwrap()).unwrap();
+        }
+        let before = search(root.path(), "Findmarker", "all", 100).unwrap();
+        assert_eq!(before["total"], 24);
+        let deck = before["hits"].as_array().unwrap().iter().find(|h| h["meetingID"] == "deck-0").unwrap();
+        atomic_json(&root.path().join("settings.json"), &json!({"features":{}})).unwrap();
+        let hidden = search(root.path(), "Findmarker", "all", 1).unwrap();
+        assert_eq!(hidden["total"], 2);
+        assert_eq!(hidden["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(hidden["hits"][0]["noteID"], "note");
+        assert_eq!(hidden["truncated"], true);
+        assert_eq!(search(root.path(), "Findmarker", "cards", 1).unwrap()["total"], 0);
+        assert_eq!(search(root.path(), "Findmarker", "meetings", 1).unwrap()["total"], 0);
+        assert_eq!(validate(root.path(), "deck-0", deck["sourceFingerprint"].as_str().unwrap()).unwrap()["valid"], false);
+        assert!(embedding_corpus(root.path()).unwrap().iter().all(|h| h["kind"] != "card" && !h["meetingID"].as_str().unwrap().starts_with("deck-")));
+        // Opting out changes visibility, never the canonical data or CRUD access.
+        assert_eq!(crate::notes::load_note_snapshot(root.path(), "task").unwrap().kind, "task");
+        atomic_json(&root.path().join("settings.json"), &json!({"features":{"cards":true,"tasks":true}})).unwrap();
+        assert_eq!(search(root.path(), "Findmarker", "all", 100).unwrap()["total"], before["total"]);
+    }
+
 }

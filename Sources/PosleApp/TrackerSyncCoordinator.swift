@@ -18,6 +18,7 @@ final class TrackerSyncCoordinator: ObservableObject {
     private var changed: () -> Void = {}
     private var lastAttempt: [String: Date] = [:]
     private var generation = 0
+    private var featureEnabled = false
     #if DEBUG
     private var releasePreview = false
     func seedPreview(_ value: TrackerSyncState) {
@@ -32,6 +33,7 @@ final class TrackerSyncCoordinator: ObservableObject {
     }
     init(root: URL) { self.root = root }
     func start(isIdle: @escaping () -> Bool, onChange: @escaping () -> Void) {
+        featureEnabled = true
         self.isIdle = isIdle; changed = onChange
         guard timer == nil else { return }
         reload()
@@ -39,7 +41,7 @@ final class TrackerSyncCoordinator: ObservableObject {
             Task { @MainActor [weak self] in await self?.tick() }
         }
     }
-    func stop() { timer?.invalidate(); timer = nil; generation += 1 }
+    func stop() { featureEnabled = false; timer?.invalidate(); timer = nil; generation += 1 }
     func reload() {
         #if DEBUG
         if releasePreview { return }
@@ -61,7 +63,8 @@ final class TrackerSyncCoordinator: ObservableObject {
     }
     /// A refresh token is optional for a manually supplied access token. When
     /// provided, refresh uses the user's own OAuth Desktop client and Keychain.
-    private func authenticated(_ config: TrackerSyncConfiguration) async throws -> (TrackerSyncConfiguration, Credentials) {
+    private func authenticated(_ config: TrackerSyncConfiguration, generation expected: Int) async throws -> (TrackerSyncConfiguration, Credentials) {
+        try checkEnabled(expected)
         var credentials = try credentials(config)
         guard config.provider == "google", (config.expiresAt ?? 0) < Date().timeIntervalSince1970 + 90 else { return (config, credentials) }
         guard !credentials.refreshToken.isEmpty, !credentials.clientID.isEmpty else {
@@ -76,6 +79,7 @@ final class TrackerSyncCoordinator: ObservableObject {
         let session = URLSession(configuration: .ephemeral, delegate: TrackerSyncNoRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let (data, response) = try await session.data(for: request)
+        try checkEnabled(expected)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200, data.count < 65_536,
               let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let token = value["access_token"] as? String, !token.isEmpty,
@@ -90,12 +94,15 @@ final class TrackerSyncCoordinator: ObservableObject {
         state = try JSONDecoder().decode(TrackerSyncState.self, from: data2)
         return (state.configurations.first(where: { $0.id == config.id }) ?? config, credentials)
     }
+    private func checkEnabled(_ expected: Int) throws {
+        guard featureEnabled, expected == generation else { throw CancellationError() }
+    }
     private func form(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? ""
     }
     private func object<T: Encodable>(_ value: T) throws -> Any { try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) }
     func save(_ draft: TrackerSyncConfiguration, token: String, refreshToken: String, clientID: String, clientSecret: String) async -> Bool {
-        guard !busy else { return false }; busy = true; defer { busy = false }
+        guard featureEnabled, !busy else { return false }; busy = true; defer { busy = false }
         do {
             var config = draft
             if config.id.isEmpty { config.id = UUID().uuidString.lowercased() }
@@ -121,22 +128,29 @@ final class TrackerSyncCoordinator: ObservableObject {
         } catch { reload(); self.error = error.localizedDescription; return false }
     }
     func scopes(_ config: TrackerSyncConfiguration) async -> [TrackerSyncScope] {
-        guard !busy else { return [] }; busy = true; defer { busy = false }
+        guard featureEnabled, !busy else { return [] }; let currentGeneration = generation; busy = true; defer { busy = false }
         do {
-            let (config, credential) = try await authenticated(config)
+            let (config, credential) = try await authenticated(config, generation: currentGeneration)
+            try checkEnabled(currentGeneration)
             let root = root
             let data = try await Task.detached(priority: .utility) {
                 try RustBridge.shared.get().request(root: root, command: "tracker-scopes", arguments: ["connectionID": config.id, "token": credential.accessToken])
             }.value
             struct Response: Decodable { var scopes: [TrackerSyncScope] }
+            try checkEnabled(currentGeneration)
             error = nil; return try JSONDecoder().decode(Response.self, from: data).scopes
-        } catch { self.error = error.localizedDescription; return [] }
+        } catch is CancellationError { return [] }
+        catch {
+            guard featureEnabled, currentGeneration == generation else { return [] }
+            self.error = error.localizedDescription; return []
+        }
     }
     func synchronize(_ config: TrackerSyncConfiguration, manual: Bool = true) async {
-        guard !busy else { return }; busy = true; lastAttempt[config.id] = Date(); defer { busy = false }
+        guard featureEnabled, !busy else { return }; busy = true; lastAttempt[config.id] = Date(); defer { busy = false }
         let currentGeneration = generation
         do {
-            let (config, credential) = try await authenticated(config)
+            let (config, credential) = try await authenticated(config, generation: currentGeneration)
+            try checkEnabled(currentGeneration)
             let root = root
             let data = try await Task.detached(priority: .utility) {
                 try RustBridge.shared.get().request(root: root, command: "tracker-sync", arguments: ["connectionID": config.id, "token": credential.accessToken, "force": manual])
@@ -144,7 +158,11 @@ final class TrackerSyncCoordinator: ObservableObject {
             guard currentGeneration == generation else { return }
             state = try JSONDecoder().decode(TrackerSyncState.self, from: data); error = nil
             notice = "Задачи синхронизированы"; changed()
-        } catch { reload(); self.error = error.localizedDescription; changed() }
+        } catch is CancellationError {}
+        catch {
+            guard featureEnabled, currentGeneration == generation else { return }
+            reload(); self.error = error.localizedDescription; changed()
+        }
     }
     func disconnect(_ config: TrackerSyncConfiguration) {
         guard !busy else { return }
@@ -155,19 +173,26 @@ final class TrackerSyncCoordinator: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
     func resolve(_ conflict: TrackerSyncConflict, resolution: String) async {
-        guard !busy, let config = state.configurations.first(where: { $0.id == conflict.connection }) else { return }
+        guard featureEnabled, !busy, let config = state.configurations.first(where: { $0.id == conflict.connection }) else { return }
+        let currentGeneration = generation
         busy = true; defer { busy = false }
         do {
-            let (config, credential) = try await authenticated(config)
+            let (config, credential) = try await authenticated(config, generation: currentGeneration)
+            try checkEnabled(currentGeneration)
             let root = root
             let data = try await Task.detached(priority: .utility) {
                 try RustBridge.shared.get().request(root: root, command: "tracker-resolve", arguments: ["connectionID": config.id, "conflictID": conflict.id, "fingerprint": conflict.fingerprint, "resolution": resolution, "token": credential.accessToken])
             }.value
+            try checkEnabled(currentGeneration)
             state = try JSONDecoder().decode(TrackerSyncState.self, from: data); error = nil; changed()
-        } catch { reload(); self.error = error.localizedDescription }
+        } catch is CancellationError {}
+        catch {
+            guard featureEnabled, currentGeneration == generation else { return }
+            reload(); self.error = error.localizedDescription
+        }
     }
     func export(taskID: String, connection: TrackerSyncConfiguration, scope: String) {
-        guard !busy else { return }
+        guard featureEnabled, !busy else { return }
         do {
             let data = try RustBridge.shared.get().request(root: root, command: "tracker-export", arguments: ["connectionID": connection.id, "taskID": taskID, "scope": scope])
             state = try JSONDecoder().decode(TrackerSyncState.self, from: data); error = nil; notice = "Задача добавлена в очередь отправки"

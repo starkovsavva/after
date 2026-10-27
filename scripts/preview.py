@@ -13,7 +13,7 @@ def save(name, data):
 
 save("meta.json", {"id": "demo-product", "title": "Запуск пилота", "createdAt": time.time(),
      "source": "source.mp3", "status": "ready", "duration": 1840, "speakerNames": {"speaker_1": "Анна", "speaker_2": "Майкл"},
-     "completedTasks": [], "focus": "Решения, сроки, бюджет и полезные английские выражения.", "recordingTracks": False, "hasVideo": False})
+     "completedTasks": [], "generateCards": True, "focus": "Решения, сроки, бюджет и полезные английские выражения.", "recordingTracks": False, "hasVideo": False})
 save("transcript.json", {"duration": 1840, "warnings": [], "model": "demo", "segments": [
     {"id": 0, "start": 65, "end": 78, "speaker": "speaker_1", "text": "Давайте начнём с пилота на 25 участников. Бюджет на первый месяц — 80 тысяч рублей, превышать его пока не будем.", "overlap": False},
     {"id": 1, "start": 190, "end": 201, "speaker": "speaker_2", "text": "Let's circle back to the onboarding flow on Friday. I can put together a first draft before then.", "overlap": False},
@@ -39,6 +39,7 @@ save("summary.json", {"overview": "Команда договорилась на�
 save("examples.json", {"demo-circle-back": {"example": "Can we circle back to the budget after we review the timeline?",
      "translation": "Можем вернуться к бюджету после того, как обсудим сроки?", "explanation": "Circle back to something — вернуться к уже затронутой теме. Удобная фраза для рабочих встреч."}})
 (root / "settings.json").write_text(json.dumps({"mode": "local", "localModel": "qwen3.5:9b-q4_K_M", "cloudModel": "gpt-4.1-mini",
+    "features": {key: True for key in ("cards", "tasks", "calendar", "assistant", "semanticSearch")},
     "language": "ru", "diarization": True, "speakerCount": 0, "autoSummary": True,
     "focus": "Решения, задачи, сроки и важные детали."}, ensure_ascii=False), encoding="utf-8")
 # A second, explicitly invented meeting exercises search across the whole library.
@@ -46,7 +47,7 @@ directory = root / "meetings" / "demo-access"
 directory.mkdir(parents=True, exist_ok=True)
 save("meta.json", {"id": "demo-access", "title": "Доступы к стенду", "createdAt": time.time() - 86400,
      "source": "source.mp3", "status": "ready", "duration": 620, "speakerNames": {"speaker_1": "Алекс"},
-     "completedTasks": [], "focus": "Доступы и сроки.", "recordingTracks": False, "hasVideo": False})
+     "completedTasks": [], "generateCards": True, "focus": "Доступы и сроки.", "recordingTracks": False, "hasVideo": False})
 save("transcript.json", {"duration": 620, "warnings": [], "model": "demo", "segments": [
     {"id": 0, "start": 0, "end": 11, "speaker": "speaker_1", "text": "Выдадим временный доступ к тестовому стенду до четверга. Доступ к персональным данным для пилота не нужен.", "overlap": False},
     {"id": 1, "start": 75, "end": 90, "speaker": "speaker_1", "text": "Please follow up with the team before the pilot starts.", "overlap": False}

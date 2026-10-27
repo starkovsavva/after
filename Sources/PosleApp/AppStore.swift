@@ -31,6 +31,7 @@ final class AppStore: ObservableObject {
     @Published var settings = AppSettings() {
         didSet {
             if !Self.sameCloudCheckConfiguration(settings, oldValue) { clearCloudConnectionResult() }
+            if featureLifecycleReady, settings.features != oldValue.features { applyFeatureChanges(previous: oldValue.features) }
         }
     }
     @Published var busy = false
@@ -122,6 +123,7 @@ final class AppStore: ObservableObject {
     private var confirmingCloudSpeech = false
     static let stoppedProcessingMessage = "Обработка остановлена. Запись сохранена."
     private var preview: Bool
+    private var featureLifecycleReady = false
 
     var selected: Meeting? { meetings.first { $0.id == selection } }
     var selectedDirectory: URL? { selection.map { meetingDirectory($0) } }
@@ -160,7 +162,9 @@ final class AppStore: ObservableObject {
         root = dataRoot
         jobs = BackgroundJobsController(root: dataRoot)
         notes = NotesStore(root: dataRoot)
-        calendar = CalendarStore(root: dataRoot, preview: preview)
+        let initialSettings = (try? Data(contentsOf: dataRoot.appendingPathComponent("settings.json")))
+            .flatMap { try? JSONDecoder().decode(AppSettings.self, from: $0) } ?? AppSettings()
+        calendar = CalendarStore(root: dataRoot, preview: preview, featureEnabled: initialSettings.features.calendar, tasksEnabled: initialSettings.features.tasks)
         trackerSync = TrackerSyncCoordinator(root: dataRoot)
         do {
             try FileManager.default.createDirectory(at: root.appendingPathComponent("meetings"), withIntermediateDirectories: true,
@@ -170,7 +174,7 @@ final class AppStore: ObservableObject {
             // Finish only previously committed, explicitly authorized operations.
             do { _ = try RustBridge.shared.get().request(root: root, command: "voice-recover") }
             catch { self.error = "Не удалось завершить прерванное поручение: \(error.localizedDescription)" }
-            librarySection = ["meetings", "inbox", "tasks", "cards"].contains(settings.startSection) ? settings.startSection : "meetings"
+            librarySection = ["meetings", "inbox", "tasks", "cards"].contains(settings.startSection) && settings.allowsSection(settings.startSection) ? settings.startSection : "meetings"
             runtimeReady = FileManager.default.isExecutableFile(atPath: python.path)
                 && FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime/ready-v2").path)
             reloadLibrary()
@@ -179,7 +183,6 @@ final class AppStore: ObservableObject {
         } catch { self.error = error.localizedDescription }
         calendar.bindNotes(notes)
         voice.connect(self)
-        SemanticIndexController.shared.connect(self)
         jobsSubscription = jobs.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         if let executor { jobs.connect(executor) }
         else {
@@ -188,14 +191,8 @@ final class AppStore: ObservableObject {
                 return try await self.executeBackgroundJob(job, cancellation: cancellation, event: event)
             }
         }
-        if !preview {
-            trackerSync.start(isIdle: { [weak self] in
-                guard let self else { return false }
-                return !self.isTerminating && !self.startingRecording && !self.isRecording && !self.stoppingRecording && !self.busy && self.jobs.activeCount == 0
-            }, onChange: { [weak self] in
-                self?.notes.reload(); self?.notes.loadTasks(); self?.notes.loadTaskWorkspaces()
-            })
-        }
+        featureLifecycleReady = true
+        applyFeatureChanges()
         recorder.levels = { [weak self] microphone, system in
             Task { @MainActor in self?.audioLevels.receive(microphone: microphone, system: system) }
         }
@@ -206,6 +203,29 @@ final class AppStore: ObservableObject {
                 await self.stopRecording()
             }
         }
+    }
+
+    private func applyFeatureChanges(previous: AppFeatures? = nil) {
+        if !settings.allowsSection(librarySection) { librarySection = "meetings" }
+        if !settings.features.cards, tab == "cards" { tab = "summary" }
+        if !settings.features.assistant { voice.dismiss() }
+        calendar.setFeatureEnabled(settings.features.calendar, tasksEnabled: settings.features.tasks)
+        if !preview, settings.features.semanticSearch {
+            SemanticIndexController.shared.connect(self)
+            SemanticIndexController.shared.requestRefresh()
+        } else if !preview { SemanticIndexController.shared.stop() }
+        if previous?.tasks != settings.features.tasks {
+            trackerSync.stop()
+            if !preview, settings.features.tasks {
+                trackerSync.start(isIdle: { [weak self] in
+                    guard let self else { return false }
+                    return self.settings.features.tasks && !self.isTerminating && !self.startingRecording && !self.isRecording && !self.stoppingRecording && !self.busy && self.jobs.activeCount == 0
+                }, onChange: { [weak self] in
+                    self?.notes.reload(); self?.notes.loadTasks(); self?.notes.loadTaskWorkspaces()
+                })
+            }
+        }
+        if showingSearch { updateSearch(immediate: true) }
     }
 
     func meetingDirectory(_ id: String) -> URL { root.appendingPathComponent("meetings/\(id)") }
@@ -243,7 +263,7 @@ final class AppStore: ObservableObject {
     }
     func loadSelection() {
         loadedSelectionID = selection
-        if selected?.libraryKind == "cards" { tab = "cards" }
+        if selected?.libraryKind == "cards", settings.features.cards { tab = "cards" }
         navigationTarget = nil
         pause()
         if let observer = playerObserver { player?.removeTimeObserver(observer) }; playerObserver = nil
@@ -319,6 +339,7 @@ final class AppStore: ObservableObject {
         return selected?.completedTasks.contains(item.id) == true
     }
     func toggleTask(_ item: Insight) {
+        guard settings.features.tasks else { openSettings("features"); return }
         guard let id = selection, let index = summary?.items.firstIndex(where: { $0.id == item.id }) else { return }
         do {
             _ = try RustBridge.shared.get().request(root: root, command: "notes-task-complete", arguments: [
@@ -898,9 +919,11 @@ final class AppStore: ObservableObject {
         } catch { notes.error = error.localizedDescription }
     }
     func openMeeting(_ id: String, tab: String = "summary", segmentID: Int? = nil, timestamp: Double? = nil) {
+        guard tab != "cards" || settings.features.cards else { openSettings("features"); return }
         guard let meeting: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")) else {
             error = "Встреча больше недоступна."; return
         }
+        guard meeting.libraryKind != "cards" || settings.features.cards else { openSettings("features"); return }
         if let i = meetings.firstIndex(where: { $0.id == id }) { meetings[i] = meeting } else { meetings.insert(meeting, at: 0) }
         librarySection = "meetings"; libraryFilter = ""; selection = id; loadSelection(); self.tab = tab
         if let segmentID { openSegment(segmentID) }
@@ -960,7 +983,7 @@ final class AppStore: ObservableObject {
                     return try JSONDecoder().decode(SearchResponse.self, from: data)
                 }.value
                 guard let self, !Task.isCancelled, self.searchGeneration == generation, self.showingSearch else { return }
-                self.searchHits = response.hits; self.searchTotal = response.total; self.searchTruncated = response.truncated
+                self.searchHits = response.hits.filter { ($0.kind != "card" || self.settings.features.cards) && ($0.noteKind != "task" || self.settings.features.tasks) }; self.searchTotal = response.total; self.searchTruncated = response.truncated
                 self.searchWarnings = response.warnings; self.searching = false
             } catch is CancellationError {} catch {
                 guard let self, self.searchGeneration == generation, self.showingSearch else { return }
@@ -969,6 +992,7 @@ final class AppStore: ObservableObject {
         }
     }
     func openSearchHit(_ hit: SearchHit) {
+        guard (hit.kind != "card" || settings.features.cards), (hit.noteKind != "task" || settings.features.tasks) else { openSettings("features"); return }
         guard searchOpeningID == nil else { return }
         let generation = searchGeneration, root = self.root
         searchOpeningID = hit.id; searchError = nil
@@ -1000,11 +1024,13 @@ final class AppStore: ObservableObject {
         }
     }
     private func navigateToSearchHit(_ hit: SearchHit) {
+        guard (hit.kind != "card" || settings.features.cards), (hit.noteKind != "task" || settings.features.tasks) else { openSettings("features"); return }
         if let noteID = hit.noteID {
             notes.reload()
             guard let note = notes.workspace.notes.first(where: { $0.id == noteID && $0.revision == hit.noteRevision }) else {
                 updateSearch(immediate: true); searchError = "Заметка изменилась. Выберите актуальный результат."; return
             }
+            guard note.kind != "task" || settings.features.tasks else { openSettings("features"); return }
             if let meetingID = note.meetingID, let meeting: Meeting = read(meetingDirectory(meetingID).appendingPathComponent("meta.json")), meeting.libraryKind != "cards" { openMeeting(meetingID, tab: "notes") }
             else { librarySection = "inbox"; pause() }
             notes.selectedNoteID = note.id; notes.highlightedNoteID = note.id
@@ -1014,6 +1040,7 @@ final class AppStore: ObservableObject {
         guard let freshMeeting: Meeting = read(directory.appendingPathComponent("meta.json")) else {
             updateSearch(immediate: true); searchError = "Встреча больше недоступна. Результаты обновляются."; return
         }
+        guard freshMeeting.libraryKind != "cards" || settings.features.cards else { openSettings("features"); return }
         let freshTranscript: Transcript? = read(directory.appendingPathComponent("transcript.json"))
         let freshSummary: Summary? = read(directory.appendingPathComponent("summary.json"))
         let valid: Bool

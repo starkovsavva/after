@@ -285,6 +285,7 @@ mod tests {
         assert_eq!(fs::metadata(&directory).unwrap().permissions().mode()&0o777,0o700); assert!(!directory.join("transcript.json").exists()); assert_eq!(fs::read(&path).unwrap(),bytes);
         let summary:Value=serde_json::from_slice(&fs::read(directory.join("summary.json")).unwrap()).unwrap(); let card_id=summary["cards"][0]["id"].as_str().unwrap();
         assert_eq!(crate::storage::review(root.path(),id,card_id,3).unwrap()["count"],1);
+        crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"features":{"cards":true}})).unwrap();
         let results=crate::search::search(root.path(),"Hello","cards",60).unwrap();
         assert_eq!(results["total"],1); assert_eq!(results["hits"][0]["cardID"],card_id);
         assert!(results["hits"][0]["segmentIDs"].as_array().unwrap().is_empty());

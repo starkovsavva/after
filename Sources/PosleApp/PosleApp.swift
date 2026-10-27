@@ -14,7 +14,9 @@ struct PosleApp: App {
                 .frame(minWidth: 1040, minHeight: 700)
                 .onAppear { delegate.connect(store) }
                 .onOpenURL { url in
-                    if store.calendar.openLink(url) { store.librarySection = "calendar" }
+                    if url.scheme == "posle", url.host == "calendar-task", !store.settings.isEnabled(.calendar) {
+                        store.librarySection = "calendar"
+                    } else if store.calendar.openLink(url) { store.librarySection = "calendar" }
                     else if url.isFileURL { store.importFile(url) }
                 }
         }
@@ -33,7 +35,9 @@ struct PosleApp: App {
                 }.keyboardShortcut("n")
             }
             CommandGroup(after: .newItem) {
-                Button("Голосовое поручение…") { store.presentVoice() }.keyboardShortcut("m", modifiers: [.command, .shift])
+                if store.settings.isEnabled(.assistant) {
+                    Button("Голосовое поручение…") { store.presentVoice() }.keyboardShortcut("m", modifiers: [.command, .shift])
+                }
                 Button("Быстрая заметка…") { store.quickCaptureAction?() }.keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("Отметить важный момент") { store.bookmarkAction?() }
                 Button("Поиск по библиотеке…") { store.openGlobalSearch() }.keyboardShortcut("k")
@@ -41,7 +45,9 @@ struct PosleApp: App {
             CommandMenu("Встреча") {
                 Button("Конспект") { store.librarySection = "meetings"; store.tab = "summary" }.keyboardShortcut("1")
                 Button("Транскрипт") { store.librarySection = "meetings"; store.tab = "transcript" }.keyboardShortcut("2")
-                Button("Карточки встречи") { store.librarySection = "meetings"; store.tab = "cards" }.keyboardShortcut("3")
+                if store.settings.isEnabled(.cards) {
+                    Button("Карточки встречи") { store.librarySection = "meetings"; store.tab = "cards" }.keyboardShortcut("3")
+                }
                 Button("Заметки встречи") { store.librarySection = "meetings"; store.tab = "notes" }.keyboardShortcut("4")
             }
             CommandGroup(replacing: .help) {
@@ -148,6 +154,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task {
                 do { try await RecordingNativeChecks.run(); NSApp.terminate(nil) }
                 catch { fputs("Native recording check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-feature-ui") {
+            Task {
+                do { try await FeatureUINativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native feature UI check failed: \(error)\n", stderr); exit(1) }
             }
             return
         }

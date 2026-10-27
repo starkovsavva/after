@@ -20,7 +20,22 @@ extension AppStore {
         self.notes.highlightedNoteID = note.id
     }
 
+    func permitsKnowledgeSource(_ source: KnowledgeSource) -> Bool {
+        guard settings.features.allowsKnowledgeKind(source.kind),
+              source.cardID == nil || settings.isEnabled(.cards),
+              source.taskID == nil || settings.isEnabled(.tasks),
+              source.eventID == nil || settings.isEnabled(.calendar) else { return false }
+        if let id = source.meetingID {
+            guard !id.isEmpty, id.utf8.count <= 128,
+                  id.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }) else { return false }
+            if !settings.isEnabled(.cards),
+               let meeting: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")), meeting.libraryKind == "cards" { return false }
+        }
+        return true
+    }
+
     func revealKnowledgeSource(_ source: KnowledgeSource, calendar: KnowledgeCalendarSnapshot? = nil) throws {
+        guard permitsKnowledgeSource(source) else { throw AppError.message("Этот раздел выключен. Включите его в настройках → Возможности.") }
         switch source.kind {
         case "task":
             guard let id = source.taskID else { throw AppError.message("Задача больше недоступна.") }

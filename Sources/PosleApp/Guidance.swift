@@ -6,7 +6,7 @@ enum GuidancePresentation: String, Identifiable {
     case gettingStarted, whatsNew
     var id: String { rawValue }
 }
-enum GuidanceAction { case record, importFile, speechSettings, cards, aiSettings, tasks, integrations, semantic, trash }
+enum GuidanceAction { case record, importFile, speechSettings, cards, aiSettings, tasks, integrations, semantic, trash, features }
 
 private struct GuidancePreferences: Codable {
     var introSeen = false
@@ -42,7 +42,7 @@ final class GuidanceController: ObservableObject {
     private var pendingAction: GuidanceAction?
     private var consideredStartup = false
     // Bump only when a release introduces something worth teaching.
-    private let featureRelease = "0.15"
+    private let featureRelease = "0.16"
     var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development" }
 
     func configure(root: URL, preview: Bool) {
@@ -121,7 +121,7 @@ struct GuidanceSheet: View {
                     .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Закрыть")
             }
             if controller.presentation == .gettingStarted {
-                Text("Запишите звонок или добавьте готовое аудио. После соберёт конспект, задачи и полезные выражения со ссылками на реплики.")
+                Text("Запишите звонок или добавьте готовое аудио. После соберёт транскрипт и конспект со ссылками на реплики. Дополнительные возможности можно включить в настройках.")
                     .font(AppTypography.body).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 12) {
                     Button { controller.complete(with: .record) } label: { Label("Записать встречу", systemImage: "record.circle") }
@@ -130,7 +130,10 @@ struct GuidanceSheet: View {
                 }
                 Button("Выбрать локальную или облачную модель") { controller.complete(with: .speechSettings) }.buttonStyle(.borderless)
             } else {
-                feature("Карточки под вашу задачу", "Просите помощника изменить существующие карточки. Перед сохранением можно проверить новые стороны и выбрать карточки.", "rectangle.on.rectangle")
+                HStack {
+                    feature("Только нужные возможности", "Встречи, заметки, конспекты и транскрипты доступны сразу. Карточки, задачи, календарь, помощник и смысловой поиск включаются отдельно.", "square.grid.2x2")
+                    Button("Выбрать") { controller.complete(with: .features) }.buttonStyle(.bordered)
+                }
                 HStack {
                     feature("Корзина на 30 дней", "Встречи, заметки, задачи и карточки можно восстановить после удаления.", "trash")
                     Button("Открыть") { controller.complete(with: .trash) }.buttonStyle(.bordered)

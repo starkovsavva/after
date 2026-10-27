@@ -166,7 +166,14 @@ struct CardsWorkspaceView: View {
                 Button("Повторить загрузку") { Task { await reload() } }.buttonStyle(.bordered)
             } else if !hasContent {
                 Text("Карточек пока нет").font(AppTypography.heading)
-                Text(embedded ? "Создайте карточку вручную или получите её вместе с конспектом встречи." : "Сохраняйте фразы и понятия из встреч и повторяйте их здесь.").font(AppTypography.body).foregroundStyle(.secondary)
+                if embedded, scopeMeeting?.libraryKind != "cards" {
+                    Text(scopeMeeting?.generateCards == true
+                         ? "Создайте карточку вручную или обновите конспект: генерация для этой встречи включена."
+                         : "Создайте карточку вручную. Для генерации откройте «Конспект → Контекст встречи» и включите «Создавать карточки для этой встречи».")
+                        .font(AppTypography.body).foregroundStyle(.secondary)
+                } else {
+                    Text("Сохраняйте фразы и понятия из встреч и повторяйте их здесь.").font(AppTypography.body).foregroundStyle(.secondary)
+                }
                 HStack(spacing: 12) {
                     Button("Создать карточку") { editor = CardEditorRequest(meeting: scopeMeeting) }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
                     Button(embedded ? "Открыть конспект" : "Взять из встречи…") {
@@ -192,7 +199,7 @@ struct CardsWorkspaceView: View {
     private var meetingPicker: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack { Text("Карточки из встречи").font(AppTypography.modalTitle); Spacer(); Button("Готово") { showingMeetings = false }.keyboardShortcut(.cancelAction) }
-            Text("Карточки создаются вместе с конспектом. Выберите встречу, чтобы посмотреть или подготовить их.").font(AppTypography.body).foregroundStyle(.secondary)
+            Text("Выберите встречу. Создание карточек включается в контексте её конспекта.").font(AppTypography.body).foregroundStyle(.secondary)
             List(app.meetings.filter { $0.libraryKind != "cards" }) { meeting in
                 Button {
                     showingMeetings = false; app.openMeeting(meeting.id, tab: "summary")

@@ -21,7 +21,10 @@ struct NotesWorkspaceView: View {
     @ObservedObject var notes: NotesStore
     let meeting: Meeting
     private var text: Binding<String> { Binding(get: { notes.captureDrafts[meeting.id] ?? "" }, set: { notes.captureDrafts[meeting.id] = $0 }) }
-    private var kind: Binding<String> { Binding(get: { notes.captureKinds[meeting.id] ?? "note" }, set: { notes.captureKinds[meeting.id] = $0 }) }
+    private var kind: Binding<String> { Binding(get: {
+        let value = notes.captureKinds[meeting.id] ?? "note"
+        return value == "task" && !app.settings.isEnabled(.tasks) ? "note" : value
+    }, set: { notes.captureKinds[meeting.id] = $0 }) }
     @State private var editing: CapturedNote?
     @State private var showingContext = false
     var body: some View {
@@ -57,24 +60,25 @@ struct NotesWorkspaceView: View {
     private var contextLine: some View {
         let context = notes.context(for: meeting.id)
         return HStack(spacing: 14) {
-            if !context.project.isEmpty {
+            if app.settings.isEnabled(.tasks), !context.project.isEmpty {
                 Button { openContext(context.project, mode: "project") } label: {
                     HStack(spacing: 7) { Image(systemName: "folder"); Text(context.project).lineLimit(1).truncationMode(.middle) }
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }.buttonStyle(.plain).foregroundStyle(Ink.accent).help("Встречи проекта «\(context.project)»")
             }
-            if !context.person.isEmpty {
+            if app.settings.isEnabled(.tasks), !context.person.isEmpty {
                 Button { openContext(context.person, mode: "person") } label: {
                     HStack(spacing: 7) { Image(systemName: "person"); Text(context.person).lineLimit(1).truncationMode(.middle) }
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }.buttonStyle(.plain).foregroundStyle(Ink.accent).help("Встречи с \(context.person)")
             }
-            if context.project.isEmpty && context.person.isEmpty {
+            if app.settings.isEnabled(.tasks), context.project.isEmpty && context.person.isEmpty {
                 Button("Добавить проект или человека") { showingContext = true }.buttonStyle(.borderless)
             }
             Spacer(minLength: 0)
             Button { showingContext = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 24, height: 24) }
-                .buttonStyle(.plain).help("Проект, человек и шаблон").accessibilityLabel("Изменить проект, человека и шаблон встречи")
+                .buttonStyle(.plain).help(app.settings.isEnabled(.tasks) ? "Проект, человек и шаблон" : "Шаблон заметок")
+                .accessibilityLabel(app.settings.isEnabled(.tasks) ? "Изменить проект, человека и шаблон встречи" : "Выбрать шаблон заметок встречи")
         }.font(AppTypography.control).frame(height: 24)
     }
     private func openContext(_ label: String, mode: String) {
@@ -87,7 +91,10 @@ struct NotesInboxView: View {
     @ObservedObject var notes: NotesStore
     var draftKey = "inbox"
     private var text: Binding<String> { Binding(get: { notes.captureDrafts[draftKey] ?? "" }, set: { notes.captureDrafts[draftKey] = $0 }) }
-    private var kind: Binding<String> { Binding(get: { notes.captureKinds[draftKey] ?? "note" }, set: { notes.captureKinds[draftKey] = $0 }) }
+    private var kind: Binding<String> { Binding(get: {
+        let value = notes.captureKinds[draftKey] ?? "note"
+        return value == "task" && !app.settings.isEnabled(.tasks) ? "note" : value
+    }, set: { notes.captureKinds[draftKey] = $0 }) }
     @State private var query = ""
     @State private var editing: CapturedNote?
     private var inbox: [CapturedNote] {
@@ -124,6 +131,7 @@ struct NotesInboxView: View {
 }
 
 private struct NoteComposer: View {
+    @EnvironmentObject private var app: AppStore
     @Binding var text: String
     @Binding var kind: String
     let placeholder: String
@@ -143,7 +151,7 @@ private struct NoteComposer: View {
             }
             HStack(spacing: 10) {
                 Picker("Тип заметки", selection: $kind) {
-                    ForEach(["note", "important", "question", "task"], id: \.self) { value in Label(noteKindTitle(value), systemImage: noteKindIcon(value)).tag(value) }
+                    ForEach(app.settings.isEnabled(.tasks) ? ["note", "important", "question", "task"] : ["note", "important", "question"], id: \.self) { value in Label(noteKindTitle(value), systemImage: noteKindIcon(value)).tag(value) }
                 }.labelsHidden().frame(width: 130).accessibilityLabel("Тип заметки")
                 Button { expanded.toggle(); focused = true } label: {
                     Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").frame(width: 24, height: 24)
@@ -170,7 +178,7 @@ private struct NoteRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 9) {
-                if note.kind == "task" {
+                if note.kind == "task" && app.settings.isEnabled(.tasks) {
                     Button { var value = note; value.completed.toggle(); _ = notes.save(value) } label: {
                         Image(systemName: note.completed ? "checkmark.circle.fill" : "circle").foregroundStyle(note.completed ? Ink.green : .secondary).frame(width: 24, height: 24)
                     }.buttonStyle(.plain).accessibilityLabel(note.completed ? "Вернуть задачу в работу" : "Завершить задачу")
@@ -186,7 +194,7 @@ private struct NoteRow: View {
                 Menu {
                     Button("Редактировать", action: edit)
                     Button("Копировать текст") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(note.text, forType: .string) }
-                    if note.kind != "task" { Button("Сделать задачей") { var value = note; value.kind = "task"; _ = notes.save(value) } }
+                    if app.settings.isEnabled(.tasks), note.kind != "task" { Button("Сделать задачей") { var value = note; value.kind = "task"; _ = notes.save(value) } }
                     if note.meetingID != nil { Button("Во входящие") { var value = note; value.meetingID = nil; value.timestamp = nil; _ = notes.save(value) } }
                     Button("Удалить заметку", role: .destructive) { notes.delete(note) }
                 } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
@@ -246,7 +254,11 @@ struct NoteEditorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Picker("Тип", selection: $session.draft.kind) { ForEach(["note", "important", "question", "task"], id: \.self) { Text(noteKindTitle($0)).tag($0) } }.frame(width: 190)
+                        if app.settings.isEnabled(.tasks) || session.draft.kind != "task" {
+                            Picker("Тип", selection: $session.draft.kind) {
+                                ForEach(app.settings.isEnabled(.tasks) ? ["note", "important", "question", "task"] : ["note", "important", "question"], id: \.self) { Text(noteKindTitle($0)).tag($0) }
+                            }.frame(width: 190)
+                        }
                         Spacer()
                         if let time = session.draft.timestamp { Text(Exporter.timestamp(time)).font(AppTypography.control).monospacedDigit().foregroundStyle(Ink.accent) }
                     }
@@ -263,7 +275,7 @@ struct NoteEditorView: View {
                         ForEach(app.noteMeetings) { Text($0.title).tag($0.id) }
                     }
                     if showingSource || !session.draft.sourceURL.isEmpty { TextField("Ссылка", text: $session.draft.sourceURL).textFieldStyle(.roundedBorder).accessibilityLabel("Ссылка на источник") }
-                    if session.draft.kind == "task" {
+                    if app.settings.isEnabled(.tasks), session.draft.kind == "task" {
                         HStack { TextField("Кто делает", text: $session.draft.owner); TextField("Срок, например до пятницы", text: $session.draft.due) }.textFieldStyle(.roundedBorder)
                     }
                     Divider()
@@ -415,9 +427,11 @@ private struct MeetingContextEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Контекст встречи").font(AppTypography.modalTitle)
-            TextField("Проект", text: $context.project).textFieldStyle(.roundedBorder)
-            TextField("Человек", text: $context.person).textFieldStyle(.roundedBorder)
+            Text(app.settings.isEnabled(.tasks) ? "Контекст встречи" : "Шаблон заметок").font(AppTypography.modalTitle)
+            if app.settings.isEnabled(.tasks) {
+                TextField("Проект", text: $context.project).textFieldStyle(.roundedBorder)
+                TextField("Человек", text: $context.person).textFieldStyle(.roundedBorder)
+            }
             Picker("Шаблон", selection: $selectedTemplate) {
                 Text("Без шаблона").tag(""); ForEach(notes.templates) { Text($0.name).tag($0.id) }
             }

@@ -282,12 +282,14 @@ fn file_permitted(directory: &Path, relative: &str) -> Result<PathBuf> {
 pub(crate) fn documents(
     root: &Path,
 ) -> Result<(Vec<crate::semantic::EmbeddingDocument>, Vec<String>)> {
+    if !crate::ai::live_features(root)?.tasks { return Ok((vec![], vec![])); }
     let mut out = Vec::new();
     let mut warnings = Vec::new();
     let mut bytes = 0usize;
     let mut files = 0usize;
     let mut entries = 0usize;
     for grant in grants(root)? {
+        if !crate::ai::live_features(root)?.tasks { return Ok((vec![], vec![])); }
         let directory = match current_directory(root, &grant) {
             Ok(p) => p,
             Err(_) => {
@@ -299,6 +301,7 @@ pub(crate) fn documents(
             }
         };
         for entry in walker(&directory) {
+            if !crate::ai::live_features(root)?.tasks { return Ok((vec![], vec![])); }
             entries += 1;
             if entries > 20_000 {
                 warnings.push("Достигнут лимит обхода папок: уточните .posleignore.".into());
@@ -372,6 +375,7 @@ pub(crate) fn documents(
     Ok((out, warnings))
 }
 pub(crate) fn source_current(root: &Path, source: &Value) -> Result<bool> {
+    if !crate::ai::live_features(root)?.tasks { return Ok(false); }
     let (Some(task), Some(material), Some(relative), Some(fp)) = (
         source["taskID"].as_str(),
         source["materialID"].as_str(),
@@ -463,6 +467,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
             let enabled = input["enabled"]
                 .as_bool()
                 .context("Нет выбора индексирования")?;
+            if enabled { ensure!(crate::ai::live_features(root)?.tasks, "Включите «Задачи и проекты» в настройках → Возможности."); }
             let mut all = grants(root)?;
             all.retain(|g| g.task_id != task || g.material_id != id);
             if enabled {
@@ -488,6 +493,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                 ensure!(all.len() < 64, "Не больше 64 папок");
                 all.push(grant);
             }
+            if enabled { ensure!(crate::ai::live_features(root)?.tasks, "Включите «Задачи и проекты» в настройках → Возможности."); }
             crate::storage::atomic_json(&config_path(root), &serde_json::to_value(all)?)?;
             Ok(json!({"enabled":enabled,"rebuildRequired":true}))
         }
@@ -529,6 +535,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
 }
 
 pub(crate) fn cloud_allowed(root: &Path, source: &Value) -> bool {
+    if !crate::ai::live_features(root).is_ok_and(|features| features.tasks) { return false; }
     grants(root).is_ok_and(|all| {
         all.iter().any(|g| {
             Some(g.task_id.as_str()) == source["taskID"].as_str()
@@ -538,6 +545,7 @@ pub(crate) fn cloud_allowed(root: &Path, source: &Value) -> bool {
     })
 }
 pub(crate) fn answer_allowed(root: &Path, source: &Value) -> bool {
+    if !crate::ai::live_features(root).is_ok_and(|features| features.tasks) { return false; }
     let cloud = crate::ai::settings(root)
         .map(|s| s.mode == "cloud")
         .unwrap_or(true);
@@ -556,6 +564,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
     fn task(root: &Path, folder: &Path) -> (String, String) {
+        crate::storage::atomic_json(&root.join("settings.json"), &json!({"features":{"tasks":true}})).unwrap();
         let t=crate::task_workspace::dispatch(root,&json!({"command":"task-create","title":"Review source","operationID":uuid::Uuid::new_v4().to_string()})).unwrap();
         let t=crate::task_workspace::dispatch(root,&json!({"command":"task-material-link","taskID":t["id"],"expectedRevision":t["revision"],"operationID":uuid::Uuid::new_v4().to_string(),"material":{"kind":"repository","title":"Example project","path":folder}})).unwrap();
         (
@@ -657,7 +666,7 @@ mod tests {
         fs::write(code.join("file.rs"), "fn recovery() {}\n").unwrap();
         let (t, m) = task(&root, &code);
         grant(&root, &t, &m, true);
-        crate::storage::atomic_json(&root.join("settings.json"), &json!({"mode":"cloud"})).unwrap();
+        crate::storage::atomic_json(&root.join("settings.json"), &json!({"mode":"cloud","features":{"tasks":true,"assistant":true}})).unwrap();
         let input = json!({"text":"recovery","query":"recovery","kinds":["code"]});
         let lookup = crate::knowledge::lookup(&root, &input).unwrap();
         assert_eq!(
@@ -688,4 +697,22 @@ mod tests {
         assert!(dispatch(&root, &json!({"command":"code-index-open","source":old})).is_err());
         assert!(dispatch(&root,&json!({"command":"code-index-grant","taskID":t,"materialID":"arbitrary","enabled":true,"path":"/arbitrary"})).is_err());
     }
+    #[test]
+    fn disabling_tasks_stops_folder_reads_and_rejects_old_routes_without_revoking_grants() {
+        let temp = tempfile::tempdir().unwrap(); let base = temp.path().canonicalize().unwrap();
+        let root=base.join("library"); let code=base.join("project"); fs::create_dir_all(&code).unwrap();
+        fs::write(code.join("main.rs"),"fn recovery() {}\n").unwrap();
+        let (t,m)=task(&root,&code); grant(&root,&t,&m,true);
+        let before=documents(&root).unwrap(); let source=before.0[0].source.clone();
+        crate::storage::atomic_json(&root.join("settings.json"),&json!({"features":{}})).unwrap();
+        assert!(documents(&root).unwrap().0.is_empty());
+        assert!(!source_current(&root,&source).unwrap());
+        assert!(dispatch(&root,&json!({"command":"code-index-open","source":source})).is_err());
+        assert!(!cloud_allowed(&root,&source)); assert!(!answer_allowed(&root,&source));
+        assert_eq!(grants(&root).unwrap().len(),1);
+        crate::storage::atomic_json(&root.join("settings.json"),&json!({"features":{"tasks":true}})).unwrap();
+        assert_eq!(documents(&root).unwrap().0.len(),before.0.len());
+        assert!(source_current(&root,&source).unwrap());
+    }
+
 }

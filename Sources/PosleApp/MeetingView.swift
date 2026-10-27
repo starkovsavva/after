@@ -33,7 +33,7 @@ struct MeetingView: View {
                     Text("Конспект").tag("summary")
                     Text("Транскрипт").tag("transcript")
                 }
-                Text("Карточки").tag("cards")
+                if store.settings.isEnabled(.cards) { Text("Карточки").tag("cards") }
             }.pickerStyle(.segmented).labelsHidden()
                 .padding(.horizontal, AppLayout.contentInset).padding(.bottom, 16)
                 .appLayoutAnchor("meeting.tabs")
@@ -48,7 +48,10 @@ struct MeetingView: View {
             if store.tab == "notes" { NotesWorkspaceView(notes: store.notes, meeting: meeting) }
             else if store.transcript == nil && store.tab != "cards" && !(store.tab == "summary" && store.overviewDrafts[meeting.id] != nil) { unprocessed }
             else if store.tab == "transcript" { TranscriptView() }
-            else if store.tab == "cards" { CardsView().id(meeting.id) }
+            else if store.tab == "cards" {
+                if store.settings.isEnabled(.cards) { CardsView().id(meeting.id) }
+                else { OptionalFeatureGate(feature: .cards) }
+            }
             else { SummaryView() }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .alert("Название встречи", isPresented: $rename) {

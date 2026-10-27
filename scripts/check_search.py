@@ -133,6 +133,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="posle-search-ffi-") as temporary:
         root = Path(temporary) / "library"
         root.mkdir(mode=0o700)
+        write_json(root / "settings.json", {"features": {"cards": True, "tasks": True}})
         generate(root, arguments.meetings, arguments.segments)
         original = source_hashes(root)
         start = time.perf_counter()
@@ -216,7 +217,7 @@ def main():
         write_json(external / "meta.json", {"id": "linked", "title": "секретныйкорпус", "createdAt": 1.0, "source": "source.mp3"})
         (root / "meetings" / "linked").symlink_to(external, target_is_directory=True)
         write_json(root / "models" / "corpus.json", {"overview": "секретныйкорпус"})
-        write_json(root / "settings.json", {"ignoredCanary": "секретныйкорпус"})
+        write_json(root / "settings.json", {"ignoredCanary": "секретныйкорпус", "features": {"cards": True, "tasks": True}})
         (damaged / "summary.json").unlink()
         (damaged / "summary.json").symlink_to(external / "meta.json")
         assert core.search(root, "секретныйкорпус")["total"] == 0

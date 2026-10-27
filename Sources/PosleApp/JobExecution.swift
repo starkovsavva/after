@@ -8,6 +8,7 @@ extension AppStore {
 
     func queuedWorker(_ command: String, id: String?, extra: [String], input: Data?) async throws -> WorkerEvent? {
         guard !isTerminating else { throw CancellationError() }
+        try validateOptionalJob(command)
         if settings.mode == "cloud", settings.cloudProvider == "chatgpt", Self.chatGPTAICommands.contains(command),
            disconnectingChatGPTAccounts.contains(settings.chatGPTAccountID) {
             throw AppError.message("Выполняется выход из ChatGPT. Повторите после входа в нужный аккаунт.")
@@ -66,7 +67,7 @@ extension AppStore {
         guard var request = try JSONSerialization.jsonObject(with: input) as? [String: Any] else {
             throw AppError.message("Не удалось прочитать запрос голосового поручения.")
         }
-        if !isPreview {
+        if !isPreview, settings.features.semanticSearch {
             struct SemanticSettings: Decodable { var config: SemanticSearchConfiguration; var fingerprint: String }
             let data = try RustBridge.shared.get().request(root: root, command: "semantic-config")
             let envelope = try JSONDecoder().decode(SemanticSettings.self, from: data)
@@ -97,12 +98,14 @@ extension AppStore {
         let config = job.config
         guard Self.queuedCommands.contains(config.command) else { throw AppError.message("Неизвестная фоновая операция.") }
         guard !cancellation.isCancelled else { throw CancellationError() }
+        try validateOptionalJob(config.command)
         try validateJobRevision(job)
         let snapshot = config.settings
         let usesLocalRuntime = job.resource == "local-heavy" || ["transcribe", "diarize", "finalize", "dictate"].contains(config.command)
         let lease = usesLocalRuntime ? try await localRuntimeLease.acquire { cancellation.isCancelled } : nil
         defer { if let lease { Task { await localRuntimeLease.release(lease) } } }
         guard !cancellation.isCancelled else { throw CancellationError() }
+        try validateOptionalJob(config.command)
         try validateJobRevision(job)
         if ["transcribe", "diarize"].contains(config.command), !runtimeReady {
             throw AppError.message("Запись сохранена. Подготовьте распознавание в настройках и повторите операцию.")
@@ -112,6 +115,7 @@ extension AppStore {
         }
         guard !cancellation.isCancelled else { throw CancellationError() }
         // Preparation may suspend for model startup while the source is being edited.
+        try validateOptionalJob(config.command)
         try validateJobRevision(job)
         var arguments = [config.command, "--root", root.path, "--backend", backend.path]
         if let id = config.meetingID { arguments += ["--meeting", meetingDirectory(id).path] }
@@ -156,6 +160,18 @@ extension AppStore {
             refreshResults(id)
         }
         return result
+    }
+
+    private func validateOptionalJob(_ command: String) throws {
+        let feature: AppFeature?
+        switch command {
+        case "voice-plan", "dictate": feature = .assistant
+        case "example": feature = .cards
+        default: feature = nil
+        }
+        if let feature, !settings.isEnabled(feature) {
+            throw AppError.message("Включите «\(feature.title)» в настройках → Возможности.")
+        }
     }
 
     private func validateJobRevision(_ job: BackgroundJob) throws {

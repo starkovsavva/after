@@ -24,7 +24,8 @@ struct MainView: View {
                 VStack(spacing: 0) {
                     ZStack(alignment: .topTrailing) {
                         Group {
-                            if store.librarySection == "inbox" { NotesLibraryView(notes: store.notes) }
+                            if let feature = unavailableFeature { OptionalFeatureGate(feature: feature) }
+                            else if store.librarySection == "inbox" { NotesLibraryView(notes: store.notes) }
                             else if store.librarySection == "tasks" { NotesTasksView(notes: store.notes) }
                             else if store.librarySection == "calendar" { CalendarView() }
                             else if store.librarySection == "contexts" { NotesContextsView(notes: store.notes) }
@@ -66,6 +67,7 @@ struct MainView: View {
             case .integrations: store.openSettings("integrations")
             case .semantic: store.openSettings("semantic")
             case .trash: store.librarySection = "trash"
+            case .features: store.openSettings("features")
             case nil: break
             }
         }) { _ in GuidanceSheet(controller: guide) }
@@ -86,9 +88,11 @@ struct MainView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            VoiceCommandOverlay(controller: store.voice).environmentObject(store)
-                .padding(.trailing, 20)
-                .padding(.bottom, store.librarySection == "meetings" && store.transcript != nil ? 64 : 20)
+            if store.settings.isEnabled(.assistant) {
+                VoiceCommandOverlay(controller: store.voice).environmentObject(store)
+                    .padding(.trailing, 20)
+                    .padding(.bottom, store.librarySection == "meetings" && store.transcript != nil ? 64 : 20)
+            }
         }
         .sheet(isPresented: $store.showingCaptureDrafts) {
             VStack(spacing: 0) {
@@ -107,7 +111,18 @@ struct MainView: View {
         .alert("Переместить встречу в Корзину?", isPresented: $confirmDelete) {
             Button("Отмена", role: .cancel) {}
             Button("В Корзину", role: .destructive) { store.trashSelected() }
-        } message: { Text("Запись, конспект и карточки этой встречи можно будет восстановить в Корзине приложения в течение 30 дней.") }
+        } message: { Text("Встречу и все её материалы можно будет восстановить в Корзине приложения в течение 30 дней.") }
+    }
+
+    private var unavailableFeature: AppFeature? {
+        let feature: AppFeature?
+        switch store.librarySection {
+        case "tasks", "contexts": feature = .tasks
+        case "cards": feature = .cards
+        case "calendar": feature = .calendar
+        default: feature = nil
+        }
+        return feature.flatMap { store.settings.isEnabled($0) ? nil : $0 }
     }
 
     private var sidebar: some View {
@@ -124,14 +139,17 @@ struct MainView: View {
             VStack(spacing: 2) {
                 libraryButton("meetings", "Встречи", "waveform")
                 libraryButton("inbox", "Заметки", "note.text")
-                libraryButton("tasks", "Задачи", "checklist")
-                libraryButton("cards", "Карточки", "rectangle.on.rectangle")
-                libraryButton("calendar", "Календарь", "calendar")
+                if store.settings.isEnabled(.tasks) { libraryButton("tasks", "Задачи", "checklist") }
+                if store.settings.isEnabled(.cards) { libraryButton("cards", "Карточки", "rectangle.on.rectangle") }
+                if store.settings.isEnabled(.calendar) { libraryButton("calendar", "Календарь", "calendar") }
             }.padding(.horizontal, 8)
-            Text("Библиотека").font(AppTypography.captionStrong).foregroundStyle(.secondary)
-                .padding(.horizontal, 18).padding(.top, 24).padding(.bottom, 7)
-            libraryButton("contexts", "Проекты и люди", "folder").padding(.horizontal, 8)
+            if store.settings.isEnabled(.tasks) {
+                Text("Библиотека").font(AppTypography.captionStrong).foregroundStyle(.secondary)
+                    .padding(.horizontal, 18).padding(.top, 24).padding(.bottom, 7)
+                libraryButton("contexts", "Проекты и люди", "folder").padding(.horizontal, 8)
+            }
             libraryButton("trash", "Корзина", "trash").padding(.horizontal, 8)
+                .padding(.top, store.settings.isEnabled(.tasks) ? 0 : 20)
             Spacer(minLength: 12)
             if ProcessInfo.processInfo.arguments.contains("--preview") && !ProcessInfo.processInfo.arguments.contains("--snapshot") {
                 Text("Демонстрационные данные").font(AppTypography.caption).foregroundStyle(Ink.warning).padding(.horizontal, 18).padding(.bottom, 8)
@@ -158,7 +176,8 @@ struct MainView: View {
             }.font(AppTypography.control).padding(.horizontal, 10).frame(height: 34)
                 .background(store.librarySection == id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityAddTraits(store.librarySection == id ? .isSelected : [])
+        }.buttonStyle(.plain).accessibilityIdentifier("library." + id)
+            .accessibilityAddTraits(store.librarySection == id ? .isSelected : [])
     }
 
     private var meetingGroups: [(String, [Meeting])] {
@@ -256,9 +275,11 @@ struct MainView: View {
                 .buttonStyle(.plain).appLayoutAnchor("toolbar.note").help("Быстрая заметка · ⇧⌘N").accessibilityLabel("Быстрая заметка")
             Button { store.chooseFile() } label: { Image(systemName: "arrow.down.doc").frame(width: 28, height: 28) }
                 .disabled(store.startingRecording).buttonStyle(.plain).appLayoutAnchor("toolbar.file").help("Импорт аудио или видео · ⌘O").accessibilityLabel("Импорт аудио или видео")
-            Button { store.presentVoice() } label: { Image(systemName: "mic").frame(width: 28, height: 28) }
-                .buttonStyle(.plain).help("Голосовое поручение · ⇧⌘M").accessibilityLabel("Голосовое поручение")
-                .accessibilityIdentifier("voice.open")
+            if store.settings.isEnabled(.assistant) {
+                Button { store.presentVoice() } label: { Image(systemName: "mic").frame(width: 28, height: 28) }
+                    .buttonStyle(.plain).help("Голосовое поручение · ⇧⌘M").accessibilityLabel("Голосовое поручение")
+                    .accessibilityIdentifier("voice.open")
+            }
             Divider().frame(height: 18).padding(.horizontal, 3)
             Button {
                 if store.isRecording { Task { await store.stopRecording() } }
@@ -316,7 +337,9 @@ struct MainView: View {
                         if let directory = store.selectedDirectory { NSWorkspace.shared.open(directory.appendingPathComponent("video.mp4")) }
                     }
                 }
-                Button("Карточки для Anki (.tsv)") { store.export(true) }.disabled(store.summary?.cards.isEmpty ?? true)
+                if store.settings.isEnabled(.cards) {
+                    Button("Карточки для Anki (.tsv)") { store.export(true) }.disabled(store.summary?.cards.isEmpty ?? true)
+                }
                 Divider()
                 Button("Показать файлы встречи") { if let directory = store.selectedDirectory { NSWorkspace.shared.open(directory) } }
                 Button("Переместить в Корзину", role: .destructive) { confirmDelete = true }.disabled(store.busy || store.isRecording)

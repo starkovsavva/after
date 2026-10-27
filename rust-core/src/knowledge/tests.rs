@@ -4,6 +4,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
+fn enabled_root() -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true,"cards":true,"tasks":true,"calendar":true,"semanticSearch":true}})).unwrap();
+    root
+}
 fn input(query: &str) -> Value {
     json!({"text":"Что известно о пилоте и какие ближайшие дела?","query":query,"now":1_793_145_600.0,"timeZoneOffsetMinutes":180})
 }
@@ -36,7 +41,7 @@ fn one_answer(prompt: &Value, kind: &str) -> Value {
 
 #[test]
 fn real_retrieval_covers_all_kinds_and_preserves_canonical_files() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let n = note(root.path(), "note-one", "Пилот начинается в пятницу.");
     let t = task(root.path(), "Проверить пилот");
     let dir = meeting(root.path());
@@ -103,7 +108,7 @@ fn real_retrieval_covers_all_kinds_and_preserves_canonical_files() {
 
 #[test]
 fn model_cannot_invent_citations_omit_evidence_or_expand_output() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     note(root.path(), "one", "Пилот начинается в пятницу.");
     for draft in [
         json!({"title":"Ответ","paragraphs":[{"text":"Факт","sourceIDs":["fabricated"]}]}),
@@ -123,7 +128,7 @@ fn model_cannot_invent_citations_omit_evidence_or_expand_output() {
 
 #[test]
 fn absent_sources_skip_model_and_do_not_claim_the_library_is_empty() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let mut called = false;
     let result = answer_with(root.path(), &input("неизвестно"), |_| {
         called = true;
@@ -144,7 +149,7 @@ fn absent_sources_skip_model_and_do_not_claim_the_library_is_empty() {
 #[test]
 fn trash_external_folders_account_files_and_drafts_are_not_evidence() {
     use std::os::unix::fs::symlink;
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let outside = tempfile::tempdir().unwrap();
     let trashed = note(root.path(), "trash-one", "Пилот СЕКРЕТ_ИЗ_КОРЗИНЫ");
     crate::notes::trash_note(root.path(), &trashed.id, trashed.revision, false).unwrap();
@@ -175,7 +180,7 @@ fn trash_external_folders_account_files_and_drafts_are_not_evidence() {
 #[test]
 fn changed_or_trashed_note_cannot_survive_a_slow_model_response() {
     for trash in [false, true] {
-        let root = tempfile::tempdir().unwrap();
+        let root = enabled_root();
         let n = note(root.path(), "one", "Пилот начинается в пятницу.");
         let result = answer_with(root.path(), &input("пилот"), |p| {
             if trash {
@@ -200,7 +205,7 @@ fn changed_or_trashed_note_cannot_survive_a_slow_model_response() {
 
 #[test]
 fn changed_linked_thought_invalidates_task_citation_without_mutating_task() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let n = note(root.path(), "thought", "Пилот: согласовать пятницу");
     let t = task(root.path(), "Пилот");
     let linked=domain(root.path(),"task-material-link",json!({"taskID":t["id"],"expectedRevision":t["revision"],"operationID":uuid::Uuid::new_v4().to_string(),"material":{"kind":"note","title":"Мысль","noteID":n.id,"shared":false}})).unwrap();
@@ -220,7 +225,7 @@ fn changed_linked_thought_invalidates_task_citation_without_mutating_task() {
 
 #[test]
 fn meeting_changes_and_nonexistent_or_unbounded_routes_are_rejected() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let dir = meeting(root.path());
     let found = retrieve(root.path(), &input("пилот")).unwrap();
     let transcript = found
@@ -269,7 +274,7 @@ fn meeting_changes_and_nonexistent_or_unbounded_routes_are_rejected() {
 
 #[test]
 fn calendar_coverage_permissions_caps_and_fresh_occurrence_validation_are_explicit() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let mut args = input("пилот");
     args["calendar"] = calendar();
     let result = answer_with(root.path(), &args, |p| Ok(one_answer(p, "calendar"))).unwrap();
@@ -313,7 +318,7 @@ fn calendar_coverage_permissions_caps_and_fresh_occurrence_validation_are_explic
 
 #[test]
 fn query_and_prompt_budgets_are_unicode_safe_and_drop_unsupplied_sources() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     for i in 0..45 {
         note(
             root.path(),
@@ -351,12 +356,12 @@ fn query_and_prompt_budgets_are_unicode_safe_and_drop_unsupplied_sources() {
 
 #[test]
 fn public_answer_uses_existing_settings_and_localhost_ai_stack() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     note(root.path(), "one", "Пилот начинается в пятницу.");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
-    atomic_json(&root.path().join("settings.json"),&json!({"mode":"local","localProvider":"lmstudio","localEndpoint":format!("http://{address}"),"localModel":"fixture-model"})).unwrap();
+    atomic_json(&root.path().join("settings.json"),&json!({"features":{"assistant":true,"cards":true,"tasks":true,"calendar":true,"semanticSearch":true},"mode":"local","localProvider":"lmstudio","localEndpoint":format!("http://{address}"),"localModel":"fixture-model"})).unwrap();
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut generated = false;
@@ -431,7 +436,7 @@ fn stamped_summary(root: &Path) -> std::path::PathBuf {
 #[test]
 fn explicit_stale_dependencies_are_not_reborn_as_fresh_file_stamps() {
     for state in ["sourceStale", "overviewStale", "fingerprintMismatch"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = enabled_root();
         let dir = stamped_summary(root.path());
         let before = retrieve(root.path(), &input("пилот")).unwrap();
         let virtual_task = before
@@ -517,7 +522,7 @@ fn explicit_stale_dependencies_are_not_reborn_as_fresh_file_stamps() {
 
 #[test]
 fn dependency_changes_during_generation_remove_the_whole_cited_paragraph() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let dir = stamped_summary(root.path());
     let result = answer_with(root.path(), &input("пилот"), |p| {
         let mut summary = safe_json(&dir.join("summary.json"), 8 * 1_048_576).unwrap();
@@ -532,7 +537,7 @@ fn dependency_changes_during_generation_remove_the_whole_cited_paragraph() {
 
 #[test]
 fn long_task_tail_keeps_matching_constraint_and_current_structured_fields() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let marker = "НЕУДАЛЯЕМЫЙ_АРХИВ";
     let body = format!(
         "{} Нельзя удалять {marker} до отдельного согласования.",
@@ -566,7 +571,7 @@ fn long_task_tail_keeps_matching_constraint_and_current_structured_fields() {
 
 #[test]
 fn legacy_summary_dependency_uncertainty_is_explicit_not_a_verified_quote() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     meeting(root.path());
     let found = retrieve(root.path(), &input("пилот")).unwrap();
     assert!(found
@@ -583,7 +588,7 @@ fn legacy_summary_dependency_uncertainty_is_explicit_not_a_verified_quote() {
 
 #[test]
 fn calendar_query_and_explicit_day_are_selected_before_the_128_limit() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let now = 1_793_145_600.0;
     let mut snapshot = calendar();
     snapshot["coverageStart"] = json!(now - 86_400.0);
@@ -634,7 +639,7 @@ fn calendar_query_and_explicit_day_are_selected_before_the_128_limit() {
 
 #[test]
 fn calendar_relative_period_and_partial_coverage_are_not_silently_broadened() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let mut args = input("");
     args["calendar"] = calendar();
     args["text"] = json!("Что у меня послезавтра?");
@@ -669,7 +674,7 @@ fn calendar_relative_period_and_partial_coverage_are_not_silently_broadened() {
 
 #[test]
 fn fts_bm25_ranks_survive_batch_fusion_instead_of_becoming_recency_order() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     for i in 0..18 {
         let dir = root.path().join("meetings").join(format!("rank-{i}"));
         atomic_json(&dir.join("meta.json"),&json!({"id":format!("rank-{i}"),"title":format!("Разговор {i}"),"createdAt":i as f64,"source":"source.mp3"})).unwrap();
@@ -710,7 +715,7 @@ fn fts_bm25_ranks_survive_batch_fusion_instead_of_becoming_recency_order() {
 
 #[test]
 fn calendar_event_uses_endpoint_offsets_across_dst_with_canonical_epochs() {
-    let root = tempfile::tempdir().unwrap();
+    let root = enabled_root();
     let begin = chrono::DateTime::parse_from_rfc3339("2026-10-25T00:30:00Z")
         .unwrap()
         .timestamp() as f64;
@@ -758,4 +763,45 @@ fn calendar_event_uses_endpoint_offsets_across_dst_with_canonical_epochs() {
         .warnings
         .iter()
         .any(|warning| warning.contains("часовым поясом")));
+}
+
+#[test]
+fn disabled_optional_kinds_are_absent_and_saved_routes_become_invalid() {
+    let root = enabled_root();
+    note(root.path(), "n-opt", "Пилот и следующий шаг");
+    task(root.path(), "Пилот: проверить");
+    meeting(root.path());
+    let mut args = input("пилот"); args["calendar"] = calendar();
+    let before = lookup(root.path(), &args).unwrap();
+    let disabled: Vec<_> = before["sources"].as_array().unwrap().iter().filter(|s| ["card","task","calendar"].contains(&s["kind"].as_str().unwrap_or(""))).cloned().collect();
+    for kind in ["card","task","calendar"] { assert!(disabled.iter().any(|s| s["kind"] == kind), "missing {kind}"); }
+    atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true}})).unwrap();
+    let after = lookup(root.path(), &args).unwrap();
+    assert!(after["sources"].as_array().unwrap().iter().all(|s| !["card","task","calendar","code"].contains(&s["kind"].as_str().unwrap_or(""))));
+    assert!(after["sources"].as_array().unwrap().iter().any(|s| s["kind"] == "note"));
+    for source in disabled { assert_eq!(validate_source(root.path(), &json!({"source":source,"calendar":calendar(),"now":args["now"],"timeZoneOffsetMinutes":180})).unwrap()["valid"], false); }
+    assert!(embedding_documents(root.path()).unwrap().0.is_empty());
+    assert!(!root.path().join("cache/semantic.sqlite").exists());
+    // Disabled calendar data is ignored rather than validated or persisted.
+    args["calendar"] = json!({"connected":true,"events":"invalid-event-snapshot"});
+    assert!(lookup(root.path(), &args).is_ok());
+}
+#[test]
+fn assistant_off_never_calls_model_and_revoked_module_citations_are_removed() {
+    let root = tempfile::tempdir().unwrap();
+    note(root.path(), "n-kept", "Пилот начинается в пятницу.");
+    let mut called = false;
+    let result = answer_with(root.path(), &input("пилот"), |_| { called = true; unreachable!() });
+    assert!(result.unwrap_err().to_string().contains("Включите «Помощник»"));
+    assert!(!called);
+    atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true,"tasks":true}})).unwrap();
+    task(root.path(), "Проверить пилот");
+    let answer = answer_with(root.path(), &input("пилот"), |prompt| {
+        let paragraphs: Vec<_> = prompt["sources"].as_array().unwrap().iter().filter(|s| ["note","task"].contains(&s["kind"].as_str().unwrap_or(""))).map(|s| json!({"text":s["excerpt"],"sourceIDs":[s["id"]]})).collect();
+        assert!(prompt["sources"].as_array().unwrap().iter().any(|s| s["kind"] == "task"));
+        atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true}})).unwrap();
+        Ok(json!({"title":"Пилот","paragraphs":paragraphs}))
+    }).unwrap();
+    assert!(!answer["paragraphs"].as_array().unwrap().is_empty());
+    assert!(answer["sources"].as_array().unwrap().iter().all(|s| s["kind"] == "note"));
 }

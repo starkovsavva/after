@@ -84,6 +84,9 @@ def run(engine, library):
         first = Client(core)
         second = None
         try:
+            require(first.request("tools/list", {})["tools"] == [], "Task tools exposed before opt-in")
+            first.tool("posle_tasks", error=True)
+            (core.root / "settings.json").write_text(json.dumps({"features": {"tasks": True}}))
             tools = first.request("tools/list", {})["tools"]
             require(len(tools) == 7 and len({tool["name"] for tool in tools}) == 7, "MCP tool catalog")
             first.tool("posle_tasks", error=True)
@@ -138,7 +141,11 @@ def run(engine, library):
             first.tool("posle_task_context", taskID=task_id, error=True)
             first.tool("posle_task_report", error=True, **report_arguments)
             first.tool("posle_tasks", root="/tmp/other", error=True)
-            print("PASS: real MCP initialization, tools, private access, immutable context, claim retries/concurrency, artifacts, stale completion and revocation")
+            (core.root / "settings.json").write_text(json.dumps({"features": {}}))
+            require(first.request("tools/list", {})["tools"] == [], "Task tools survived module opt-out")
+            first.tool("posle_task_context", taskID=task_id, error=True)
+            require(core.request("task-get", taskID=task_id)["id"] == task_id, "Module opt-out deleted a task")
+            print("PASS: real MCP initialization, optional module opt-in/out, tools, private access, immutable context, claim retries/concurrency, artifacts, stale completion and revocation")
         finally:
             if second:
                 second.close()

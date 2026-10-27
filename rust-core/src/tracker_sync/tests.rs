@@ -119,6 +119,7 @@ fn ok(value: Value) -> Option<(u16, Vec<(String, String)>, Value)> {
     Some((200, vec![], value))
 }
 fn config(root: &Path, provider: &str, push: bool) -> TrackerConfiguration {
+    crate::storage::atomic_json(&root.join("settings.json"), &json!({"features":{"tasks":true}})).unwrap();
     let c = TrackerConfiguration {
         id: format!("connection-{provider}"),
         provider: provider.into(),
@@ -512,7 +513,7 @@ fn yandex_headers_pagination_due_dates_and_status_transition() {
 fn imported_revision_receipt_preserves_later_local_edit_after_cache_crash() {
     let root = tempfile::tempdir().unwrap();
     let c = config(root.path(), "google", false);
-    let api = Api::new(c.clone(), &json!({"token":"fixture"})).unwrap();
+    let api = Api::new(root.path(), c.clone(), &json!({"token":"fixture"})).unwrap();
     let remote = api
         .remote("scope-1", &google("one", "Remote", "v1"))
         .unwrap();
@@ -589,4 +590,35 @@ fn trashed_local_task_with_queued_update_creates_visible_conflict() {
     let conflict = &state["conflicts"][0];
     request(root.path(),"tracker-resolve",&json!({"connectionID":c.id,"conflictID":conflict["id"],"fingerprint":conflict["fingerprint"],"resolution":"unlink"})).unwrap();
     assert!(load(&db).unwrap().pending.is_empty());
+}
+
+#[test]
+fn module_off_blocks_tracker_network_and_preserves_local_tasks_and_connections() {
+    let root=tempfile::tempdir().unwrap(); let c=config(root.path(),"google",false);
+    let local=created(root.path());
+    let calls=Arc::new(Mutex::new(0)); let seen=calls.clone();
+    let fixture=Fixture::new(move |_| { *seen.lock().unwrap()+=1; ok(json!({"items":[]})) });
+    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"features":{}})).unwrap();
+    for command in ["tracker-sync","tracker-scopes"] {
+        assert!(request(root.path(),command,&sync_args(&c,&fixture)).unwrap_err().to_string().contains("Включите"));
+    }
+    assert_eq!(*calls.lock().unwrap(),0);
+    assert_eq!(notes::list(root.path()).unwrap().notes[0].id,local);
+    assert_eq!(request(root.path(),"tracker-state",&json!({})).unwrap()["configurations"].as_array().unwrap().len(),1);
+    request(root.path(),"tracker-disconnect",&json!({"connectionID":c.id,"expectedRevision":c.revision})).unwrap();
+}
+#[test]
+fn module_revocation_during_pull_does_not_import_or_request_the_next_page() {
+    let root=tempfile::tempdir().unwrap(); let c=config(root.path(),"google",false);
+    let changed=root.path().to_owned(); let calls=Arc::new(Mutex::new(0)); let seen=calls.clone();
+    let fixture=Fixture::new(move |_| {
+        *seen.lock().unwrap()+=1;
+        crate::storage::atomic_json(&changed.join("settings.json"),&json!({"features":{}})).unwrap();
+        ok(json!({"items":[google("one","Remote","v1")],"nextPageToken":"next"}))
+    });
+    assert!(request(root.path(),"tracker-sync",&sync_args(&c,&fixture)).unwrap_err().to_string().contains("Включите"));
+    assert_eq!(*calls.lock().unwrap(),1);
+    assert!(notes::list(root.path()).unwrap().notes.is_empty());
+    let journal=load(&database(root.path()).unwrap()).unwrap();
+    assert!(journal.bindings.is_empty()); assert!(journal.pending.is_empty());
 }

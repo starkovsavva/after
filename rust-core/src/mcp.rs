@@ -149,7 +149,11 @@ fn input(root: &Path, name: &str, args: Map<String, Value>) -> Result<Value> {
     value["agentOnly"] = json!(true);
     Ok(value)
 }
+fn task_tools_enabled(root: &Path) -> bool {
+    crate::ai::live_features(root).is_ok_and(|features| features.tasks)
+}
 fn call(root: &Path, name: &str, args: Map<String, Value>) -> Result<Value> {
+    ensure!(task_tools_enabled(root), "Включите «Задачи» в настройках → Возможности. Доступ агента настраивается отдельно.");
     let request = input(root, name, args)?;
     crate::request(&request)
 }
@@ -160,6 +164,7 @@ impl ServerHandler for TaskServer {
             .with_instructions(INSTRUCTIONS)
     }
     fn get_tool(&self, name: &str) -> Option<Tool> {
+        if !task_tools_enabled(&self.root) { return None; }
         SPECS
             .iter()
             .find(|s| s.name == name)
@@ -172,7 +177,7 @@ impl ServerHandler for TaskServer {
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult::with_all_items(
-            SPECS.iter().copied().map(definition).collect(),
+            if task_tools_enabled(&self.root) { SPECS.iter().copied().map(definition).collect() } else { vec![] },
         ))
     }
     async fn call_tool(
@@ -211,6 +216,22 @@ pub fn run_stdio(root: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disabled_tasks_hide_and_reject_mcp_without_deleting_local_data() {
+        let root = tempfile::tempdir().unwrap();
+        let server = TaskServer { root: root.path().into() };
+        assert!(!task_tools_enabled(root.path()));
+        assert!(server.get_tool("posle_tasks").is_none());
+        assert!(call(root.path(), "posle_tasks", Map::new()).unwrap_err().to_string().contains("Включите «Задачи»"));
+        crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"tasks":true}})).unwrap();
+        assert!(server.get_tool("posle_tasks").is_some());
+        crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"tasks":false}})).unwrap();
+        assert!(server.get_tool("posle_tasks").is_none());
+        let created = crate::task_workspace::dispatch(root.path(), &json!({"command":"task-create","title":"Локальная задача","text":"Сохранить данные","operationID":"local-create"})).unwrap();
+        assert!(created["id"].is_string());
+        assert!(call(root.path(), "posle_task_context", json!({"taskID":created["id"]}).as_object().unwrap().clone()).is_err());
+        assert!(crate::task_workspace::dispatch(root.path(), &json!({"command":"task-context","taskID":created["id"]})).is_ok());
+    }
     #[test]
     fn mcp_allowlist_cannot_override_root_or_enable_private_access() {
         let root = Path::new("/tmp/posle-mcp-unit");

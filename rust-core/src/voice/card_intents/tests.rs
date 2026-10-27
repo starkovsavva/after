@@ -19,7 +19,7 @@ fn setup(root: &Path) -> Value {
 }
 #[test]
 fn selected_meeting_scope_never_includes_another_deck() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::voice::enabled_test_root();
     let a = setup(temp.path());
     setup(temp.path());
     let candidates = selected_cards(
@@ -49,7 +49,7 @@ fn rewrite_rejects_missing_duplicates_and_invented_ids() {
 }
 #[test]
 fn bulk_preview_requires_confirmation_exact_supplied_ids_and_truthful_result() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::voice::enabled_test_root();
     let deck = setup(temp.path());
     let input = json!({"meetingID":deck["meeting"]["id"],"text":"Поменяй карточки: вопрос на русском, ответ на английском"});
     let p = proposal("rewriteCards");
@@ -77,7 +77,7 @@ fn bulk_preview_requires_confirmation_exact_supplied_ids_and_truthful_result() {
 }
 #[test]
 fn trash_and_restore_are_actual_reviewed_domain_actions() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::voice::enabled_test_root();
     let deck = setup(temp.path());
     let input = json!({"meetingID":deck["meeting"]["id"],"text":"Удали существующие карточки"});
     let p = prepare(temp.path(), &input, &proposal("trashCards")).unwrap();
@@ -107,7 +107,7 @@ mod provider_checks {
     use std::net::TcpListener;
     #[test]
     fn real_planner_then_rewrite_proposes_selected_ids_without_writing_before_review() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::voice::enabled_test_root();
         let deck=domain(temp.path(),"card-save",json!({"front":"follow up","back":"вернуться к вопросу","newDeckTitle":"Рабочий английский"})).unwrap();
         domain(
             temp.path(),
@@ -161,7 +161,7 @@ mod provider_checks {
             }
             bodies
         });
-        crate::storage::atomic_json(&temp.path().join("settings.json"),&json!({"mode":"local","localProvider":"lmstudio","localModel":"card-local-test","localEndpoint":format!("http://{address}")})).unwrap();
+        crate::storage::atomic_json(&temp.path().join("settings.json"),&json!({"features":{"assistant":true,"cards":true,"tasks":true,"calendar":true,"semanticSearch":true},"mode":"local","localProvider":"lmstudio","localModel":"card-local-test","localEndpoint":format!("http://{address}")})).unwrap();
         let plan=crate::voice::plan(temp.path(),&json!({"text":"Переделай все карточки: вопрос на русском, ответ на английском","meetingID":scope})).unwrap();
         assert_eq!(plan["action"], "rewriteCards");
         assert_eq!(plan["reviewRequired"], true);

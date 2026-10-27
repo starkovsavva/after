@@ -11,6 +11,7 @@ fn rank_schema() -> Value {
         "clarification":{"type":"string"},"matches":{"type":"array","maxItems":20,"items":{"type":"object","additionalProperties":false,"required":["id","reason"],"properties":{"id":{"type":"string"},"reason":{"type":"string"}}}}}})
 }
 pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result<Value> {
+    check_action_features(root, &proposal.action)?;
     ensure!(
         !proposal.query.trim().is_empty()
             && !proposal.set_due
@@ -50,6 +51,7 @@ pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result
         );
         prompt["candidates"].as_array_mut().unwrap().pop();
     }
+    check_action_features(root, &proposal.action)?;
     let ranking = crate::ai::generate(
         &crate::ai::settings(root)?,
         RANK_SYSTEM,
@@ -64,6 +66,7 @@ fn prepare_ranked(
     sources: &[Value],
     ranking: &Value,
 ) -> Result<Value> {
+    check_action_features(root, &proposal.action)?;
     let matches = ranking["matches"]
         .as_array()
         .context("Некорректный результат поиска")?;
@@ -169,6 +172,7 @@ pub(super) fn choose(root: &Path, input: &Value) -> Result<Value> {
     Ok(result)
 }
 pub(super) fn apply(root: &Path, input: &Value) -> Result<Value> {
+    check_saved_plan_features(root, input)?;
     let workspace = notes::list(root)?;
     let plan = stored_plan(
         &workspace,
@@ -227,7 +231,7 @@ mod tests {
     }
     #[test]
     fn open_never_changes_object_and_revalidates_even_on_retry() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::voice::enabled_test_root();
         let (proposal, source) = setup(root.path());
         let p = prepare_ranked(
             root.path(),
@@ -252,7 +256,7 @@ mod tests {
     }
     #[test]
     fn invented_routes_and_duplicate_candidates_are_rejected() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::voice::enabled_test_root();
         let (proposal, source) = setup(root.path());
         assert!(prepare_ranked(
             root.path(),

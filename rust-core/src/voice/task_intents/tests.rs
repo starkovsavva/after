@@ -63,7 +63,7 @@ fn context_string(root: &Path, task: &Value) -> String {
 
 #[test]
 fn navigation_is_typed_and_does_not_materialize_or_modify_tasks() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let task = task(root.path(), "Пилот: проверить договор", "Пилот", false);
     let before = notes::list(root.path()).unwrap();
     let plan = ranked(root.path(), "openTask", "", &[task.clone()]);
@@ -87,7 +87,7 @@ fn navigation_is_typed_and_does_not_materialize_or_modify_tasks() {
 }
 #[test]
 fn batch_preview_requires_confirmation_allows_only_subset_and_edited_text_with_idempotent_undo() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let a = task(root.path(), "Пилот: договор", "Пилот", false);
     let b = task(root.path(), "Пилот: оплата", "Пилот", false);
     let complete = task(root.path(), "Пилот: первый созвон", "Пилот", true);
@@ -146,7 +146,7 @@ fn batch_preview_requires_confirmation_allows_only_subset_and_edited_text_with_i
 }
 #[test]
 fn stale_batch_conflict_is_atomic_and_later_edit_prevents_unsafe_undo() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let a = task(root.path(), "Пилот: договор", "Пилот", false);
     let b = task(root.path(), "Пилот: оплата", "Пилот", false);
     let plan = ranked(
@@ -187,7 +187,7 @@ fn stale_batch_conflict_is_atomic_and_later_edit_prevents_unsafe_undo() {
 }
 #[test]
 fn ambiguous_completion_never_applies_without_single_choice_and_confirmation() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let a = task(root.path(), "Пилот: договор", "Пилот", false);
     let b = task(root.path(), "Пилот: оплата", "Пилот", false);
     let plan = ranked(root.path(), "completeTask", "", &[a.clone(), b.clone()]);
@@ -227,7 +227,7 @@ fn ambiguous_completion_never_applies_without_single_choice_and_confirmation() {
 }
 #[test]
 fn model_cannot_invent_targets_cross_scope_or_duplicate_ids() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let a = task(root.path(), "Пилот: договор", "Пилот", false);
     let outside = task(root.path(), "Личное", "Личное", false);
     let proposal = proposal("appendTaskContexts", "Проверить цену");
@@ -285,7 +285,7 @@ fn model_cannot_invent_targets_cross_scope_or_duplicate_ids() {
 }
 #[test]
 fn candidate_scope_is_bounded_and_selected_task_does_not_broaden_deictic_command() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let selected = task(root.path(), "Пилот: договор", "Пилот", false);
     task(
         root.path(),
@@ -317,7 +317,7 @@ fn candidate_scope_is_bounded_and_selected_task_does_not_broaden_deictic_command
 
 #[test]
 fn russian_and_english_morphology_keep_older_relevant_tasks_in_the_shortlist() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let russian = task(root.path(), "Согласование договора", "Пилот", false);
     let english = task(root.path(), "Payment processing", "Пилот", false);
     for i in 0..30 {
@@ -339,7 +339,7 @@ fn russian_and_english_morphology_keep_older_relevant_tasks_in_the_shortlist() {
 
 #[test]
 fn linked_note_edits_invalidate_reranking_and_prepared_batch_even_without_task_revision_change() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let task = task(root.path(), "Пилот: договор", "Пилот", false);
     let mut note = empty_note(
         "note",
@@ -406,7 +406,7 @@ fn linked_note_edits_invalidate_reranking_and_prepared_batch_even_without_task_r
 fn real_two_pass_provider_pipeline_reranks_only_bounded_project_candidates_without_mutating() {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let target = task(root.path(), "Согласовать договор пилота", "Пилот", false);
     task(
         root.path(),
@@ -463,7 +463,7 @@ fn real_two_pass_provider_pipeline_reranks_only_bounded_project_candidates_witho
         }
         bodies
     });
-    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"mode":"local","localProvider":"lmstudio","localModel":"voice-local-test","localEndpoint":format!("http://{address}")})).unwrap();
+    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"features":{"assistant":true,"cards":true,"tasks":true,"calendar":true,"semanticSearch":true},"mode":"local","localProvider":"lmstudio","localModel":"voice-local-test","localEndpoint":format!("http://{address}")})).unwrap();
     let planned = super::super::plan(
         root.path(),
         &json!({"text":"Открой задачу про договор пилота","projectID":"Пилот"}),
@@ -493,7 +493,7 @@ fn real_two_pass_provider_pipeline_reranks_only_bounded_project_candidates_witho
 
 #[test]
 fn domain_commit_before_voice_receipt_recovers_by_exact_operation_without_duplicate_context() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let task = task(root.path(), "Пилот: договор", "Пилот", false);
     let plan = ranked(
         root.path(),
@@ -540,7 +540,7 @@ fn domain_commit_before_voice_receipt_recovers_by_exact_operation_without_duplic
 
 #[test]
 fn inspecting_an_unconfirmed_preview_never_applies_or_creates_a_commit_receipt() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let task = task(root.path(), "Пилот: договор", "Пилот", false);
     let plan = ranked(root.path(), "completeTask", "", &[task.clone()]);
     let before = notes::list(root.path()).unwrap();
@@ -566,7 +566,7 @@ fn inspecting_an_unconfirmed_preview_never_applies_or_creates_a_commit_receipt()
 
 #[test]
 fn restore_observes_domain_undo_that_committed_after_the_initial_receipt_read() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let task = task(root.path(), "Пилот: договор", "Пилот", false);
     let plan = ranked(
         root.path(),

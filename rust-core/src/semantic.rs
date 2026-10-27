@@ -436,11 +436,24 @@ pub(crate) fn chunk_source(
     }
     docs
 }
+fn enabled_features(root: &Path) -> Result<crate::ai::AppFeatures> {
+    let features = crate::ai::live_features(root)?;
+    ensure!(features.semantic_search, "Включите «Смысловой поиск» в настройках → Возможности.");
+    Ok(features)
+}
+fn unchanged_features(root: &Path, expected: &crate::ai::AppFeatures) -> Result<()> {
+    let current = enabled_features(root)?;
+    ensure!(current.cards == expected.cards && current.tasks == expected.tasks, "Настройки возможностей изменились: обновление индекса остановлено.");
+    Ok(())
+}
 fn corpus(root: &Path, c: &Config) -> Result<(Vec<EmbeddingDocument>, Vec<String>)> {
+    let features = enabled_features(root)?;
     let (mut docs, mut warnings) = crate::knowledge::embedding_documents(root)?;
-    let (code, code_warnings) = crate::code_index::documents(root)?;
-    docs.extend(code);
-    warnings.extend(code_warnings);
+    if features.tasks {
+        let (code, code_warnings) = crate::code_index::documents(root)?;
+        docs.extend(code);
+        warnings.extend(code_warnings);
+    }
     if !is_local(&endpoint(c)?) {
         docs.retain(|d| d.cloud_allowed);
     }
@@ -453,6 +466,7 @@ fn corpus(root: &Path, c: &Config) -> Result<(Vec<EmbeddingDocument>, Vec<String
     Ok((docs, warnings))
 }
 fn current(root: &Path, s: &Value) -> bool {
+    if !crate::ai::live_features(root).is_ok_and(|features| features.semantic_search) { return false; }
     if s["kind"] == "code" {
         crate::code_index::source_current(root, s).unwrap_or(false)
     } else {
@@ -469,6 +483,7 @@ fn generation(c: &Config, docs: &[EmbeddingDocument]) -> String {
     ]))
 }
 fn refresh(root: &Path, input: &Value) -> Result<Value> {
+    let feature_snapshot = enabled_features(root)?;
     let c = config(root)?;
     ensure!(c.enabled, "Сначала включите смысловой поиск");
     if input["paused"] == true {
@@ -486,6 +501,7 @@ fn refresh(root: &Path, input: &Value) -> Result<Value> {
     let (docs, warnings) = corpus(root, &c)?;
     let m = manifest(&c);
     let g = generation(&c, &docs);
+    unchanged_features(root, &feature_snapshot)?;
     let mut db = connection(root)?;
     db.execute(
         "INSERT OR IGNORE INTO generations(id,manifest) VALUES(?1,?2)",
@@ -500,6 +516,7 @@ fn refresh(root: &Path, input: &Value) -> Result<Value> {
     // indexing must not accumulate abandoned private text or unbounded vectors.
     transaction.execute("DELETE FROM vectors WHERE generation<>?1 AND generation<>COALESCE((SELECT value FROM state WHERE key='active'),'')",[&g])?;
     transaction.execute("DELETE FROM generations WHERE id<>?1 AND id<>COALESCE((SELECT value FROM state WHERE key='active'),'')",[&g])?;
+    unchanged_features(root, &feature_snapshot)?;
     transaction.commit()?;
     let present: HashSet<String> = db
         .prepare("SELECT id FROM vectors WHERE generation=?1")?
@@ -513,6 +530,7 @@ fn refresh(root: &Path, input: &Value) -> Result<Value> {
         .collect::<Vec<_>>();
     let mut added = 0;
     for pending_batch in missing.chunks(8) {
+        unchanged_features(root, &feature_snapshot)?;
         // Revocation applies before each new network request, not merely before
         // committing returned vectors. An in-flight batch cannot grant later ones.
         ensure!(
@@ -534,7 +552,9 @@ fn refresh(root: &Path, input: &Value) -> Result<Value> {
             continue;
         }
         let texts = batch.iter().map(|d| d.text.clone()).collect::<Vec<_>>();
+        unchanged_features(root, &feature_snapshot)?;
         let vectors = embed(&c, &texts, false, key)?;
+        unchanged_features(root, &feature_snapshot)?;
         ensure!(
             manifest(&config(root)?) == m && config(root)?.enabled,
             "Настройки поиска изменились: пакет отменён"
@@ -546,6 +566,7 @@ fn refresh(root: &Path, input: &Value) -> Result<Value> {
                 added += 1;
             }
         }
+        unchanged_features(root, &feature_snapshot)?;
         transaction.commit()?;
     }
     let count = db.query_row(
@@ -567,6 +588,7 @@ fn refresh(root: &Path, input: &Value) -> Result<Value> {
         )?;
         tx.execute("DELETE FROM vectors WHERE generation<>?1", [&g])?;
         tx.execute("DELETE FROM generations WHERE id<>?1", [&g])?;
+        unchanged_features(root, &feature_snapshot)?;
         tx.commit()?;
         // Delivery is acknowledged only after the derived generation is durable.
         // Changes arriving after this snapshot keep their own pending event.
@@ -589,6 +611,7 @@ pub fn search(
     key: &str,
     binding: Option<&str>,
 ) -> Result<Value> {
+    if !crate::ai::live_features(root)?.semantic_search { return Ok(json!({"hits":[],"enabled":false})); }
     let c = config(root)?;
     if !c.enabled {
         return Ok(json!({"hits":[],"enabled":false}));
@@ -606,7 +629,9 @@ pub fn search(
     if m != manifest(&c) {
         return Ok(json!({"hits":[],"enabled":true,"needsRefresh":true}));
     }
+    enabled_features(root)?;
     let q = embed(&c, &[query.into()], true, key)?.remove(0);
+    enabled_features(root)?;
     ensure!(
         config(root)?.enabled && manifest(&config(root)?) == m,
         "Настройки поиска изменились"
@@ -647,6 +672,7 @@ pub fn search(
     Ok(json!({"hits":hits,"enabled":true,"generation":g,"model":c.model}))
 }
 pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
+    if ["semantic-check", "semantic-models", "semantic-pull"].contains(&input["command"].as_str().unwrap_or("")) { enabled_features(root)?; }
     ensure!(root.is_absolute(), "Нужен абсолютный путь библиотеки");
     match input["command"].as_str().unwrap_or("") {
         "semantic-config" => {
@@ -696,10 +722,12 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                 supplied_binding(input, input.get("config").is_some(), &binding),
             )?;
             if c.provider == "ollama" {
+                enabled_features(root)?;
                 c.model_revision = ollama_revision(&c, key)?;
             } else if c.model_revision.is_empty() || c.model_revision.starts_with("confirmed-") {
                 c.model_revision = format!("confirmed-{}", uuid::Uuid::new_v4());
             }
+            enabled_features(root)?;
             let probe = embed_request(
                 &c,
                 &["Connection test / Проверка подключения".into()],
@@ -707,6 +735,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                 key,
                 true,
             )?;
+            enabled_features(root)?;
             c.dimensions = probe[0].len();
             Ok(json!({"config":c,"fingerprint":manifest(&c),"connected":true}))
         }
@@ -732,7 +761,9 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                     "models"
                 },
             )?;
+            enabled_features(root)?;
             let data = response(authenticated(client(10)?.get(url), key)?.send()?)?;
+            enabled_features(root)?;
             Ok(
                 json!({"models":if c.provider=="ollama"{data["models"].clone()}else{data["data"].clone()}}),
             )
@@ -759,6 +790,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                 key,
                 supplied_binding(input, input.get("config").is_some(), &binding),
             )?;
+            enabled_features(root)?;
             let data = response(
                 authenticated(
                     client(600)?
@@ -768,6 +800,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                 )?
                 .send()?,
             )?;
+            enabled_features(root)?;
             ensure!(
                 data["status"] == "success",
                 "Ollama не подтвердила скачивание"

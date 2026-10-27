@@ -27,17 +27,19 @@ struct SearchView: View {
                 Button("Закрыть") { store.showingSearch = false }
                     .buttonStyle(.borderless).keyboardShortcut(.cancelAction)
             }.padding(22)
-            Picker("Способ поиска", selection: $byMeaning) {
-                Text("По словам").tag(false); Text("По смыслу").tag(true)
-            }.pickerStyle(.segmented).labelsHidden().frame(width: 230).padding(.horizontal, 22).padding(.bottom, 12)
-                .accessibilityIdentifier("search.mode")
+            if store.settings.isEnabled(.semanticSearch) {
+                Picker("Способ поиска", selection: $byMeaning) {
+                    Text("По словам").tag(false); Text("По смыслу").tag(true)
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 230).padding(.horizontal, 22).padding(.bottom, 12)
+                    .accessibilityIdentifier("search.mode")
+            }
             Picker("Область поиска", selection: $store.searchScope) {
                 Text("Всё").tag("all")
                 Text("Заметки").tag("notes")
                 Text("Транскрипт").tag("transcript")
-                Text("Карточки").tag("cards")
+                if store.settings.isEnabled(.cards) { Text("Карточки").tag("cards") }
                 Text("Названия").tag("meetings")
-                if byMeaning { Text("Задачи").tag("tasks"); Text("Код").tag("code") }
+                if byMeaning && store.settings.isEnabled(.tasks) { Text("Задачи").tag("tasks"); Text("Код").tag("code") }
             }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Область поиска").tint(Ink.actionFill).padding(.horizontal, 22).padding(.bottom, 16)
             Rectangle().fill(Ink.line).frame(height: 1)
             if let message = byMeaning ? knowledge.error : store.searchError {
@@ -57,24 +59,25 @@ struct SearchView: View {
             .onAppear {
                 queryFocused = true
                 #if DEBUG
-                if releaseSearchPreview {
+                if releaseSearchPreview && store.settings.isEnabled(.semanticSearch) {
                     byMeaning = true; knowledge.seedPreview(ReleasePreviewFixtures.semanticSources)
                     selectedID = knowledge.sources.first?.id
                     return
                 }
                 #endif
                 struct Envelope: Decodable { var config: SemanticSearchConfiguration }
-                if let data = try? RustBridge.shared.get().request(root: store.root, command: "semantic-config"), let value = try? JSONDecoder().decode(Envelope.self, from: data) { byMeaning = value.config.enabled }
+                if store.settings.isEnabled(.semanticSearch),
+                   let data = try? RustBridge.shared.get().request(root: store.root, command: "semantic-config"),
+                   let value = try? JSONDecoder().decode(Envelope.self, from: data) { byMeaning = value.config.enabled }
+                else { byMeaning = false }
                 updateSearch(immediate: true)
             }
             .onChange(of: store.searchQuery) { _, _ in updateSearch() }
             .onChange(of: store.searchScope) { _, _ in updateSearch() }
-            .onChange(of: byMeaning) { _, meaning in
-                if !meaning && ["tasks", "code"].contains(store.searchScope) { store.searchScope = "all" }
-                updateSearch(immediate: true)
-            }
+            .onChange(of: byMeaning) { _, _ in updateSearch(immediate: true) }
+            .onChange(of: store.settings.features) { _, _ in updateSearch(immediate: true) }
             .onChange(of: knowledge.sources) { _, hits in selectedID = hits.first?.id }
-            .onChange(of: store.searchHits) { _, hits in selectedID = hits.first?.id }
+            .onChange(of: store.searchHits) { _, _ in selectedID = visibleSearchHits.first?.id }
             .onDisappear { store.cancelSearch(); knowledge.cancel() }
     }
 
@@ -85,11 +88,12 @@ struct SearchView: View {
     #endif
     private func updateSearch(immediate: Bool = false) {
         #if DEBUG
-        if releaseSearchPreview { return }
+        if releaseSearchPreview && store.settings.isEnabled(.semanticSearch) { return }
         #endif
-        // The last scope survives closing the sheet. A disabled semantic mode
-        // has no Tasks/Code segments, including its initial onAppear path.
-        if !byMeaning && ["tasks", "code"].contains(store.searchScope) { store.searchScope = "all" }
+        // Saved scopes and in-flight results must not reopen disabled tools.
+        if !store.settings.isEnabled(.semanticSearch) { byMeaning = false }
+        let scope = store.settings.features.normalizedSearchScope(store.searchScope, byMeaning: byMeaning)
+        if store.searchScope != scope { store.searchScope = scope }
         if byMeaning { store.cancelSearch(); knowledge.update(store: store, query: store.searchQuery, scope: store.searchScope, immediate: immediate) }
         else { knowledge.cancel(); store.updateSearch(immediate: immediate) }
     }
@@ -130,19 +134,19 @@ struct SearchView: View {
     @ViewBuilder private var content: some View {
         if store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             placeholder("Поиск по библиотеке", "Например: бюджет, доступы или follow up.", icon: "text.magnifyingglass")
-        } else if store.searching && store.searchHits.isEmpty {
+        } else if store.searching && visibleSearchHits.isEmpty {
             VStack(spacing: 12) { ProgressView(); Text("Ищу во всех встречах…").font(AppTypography.control).foregroundStyle(.secondary) }
-        } else if store.searchHits.isEmpty && store.searchError == nil {
+        } else if visibleSearchHits.isEmpty && store.searchError == nil {
             placeholder("Ничего не найдено", "Попробуйте другое слово или сократите запрос.", icon: "magnifyingglass")
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 5) {
                         HStack {
-                            Text(store.searchTruncated ? "Показаны первые \(store.searchHits.count) из \(store.searchTotal) результатов" : "Результатов: \(store.searchTotal)")
+                            Text(store.searchTruncated ? "Показаны первые \(visibleSearchHits.count) результатов" : "Результатов: \(visibleSearchHits.count)")
                             Spacer()
                         }.font(AppTypography.caption).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.vertical, 8)
-                        ForEach(store.searchHits) { hit in
+                        ForEach(visibleSearchHits) { hit in
                             Button { selectedID = hit.id; store.openSearchHit(hit) } label: { row(hit) }
                                 .buttonStyle(.plain).id(hit.id).disabled(store.searchOpeningID != nil)
                                 .accessibilityAddTraits(selectedID == hit.id ? .isSelected : [])
@@ -209,13 +213,20 @@ struct SearchView: View {
             let current = sources.firstIndex { $0.id == selectedID } ?? (direction > 0 ? -1 : sources.count)
             selectedID = sources[min(max(current + direction, 0), sources.count - 1)].id; return
         }
-        guard !store.searchHits.isEmpty else { return }
-        let current = store.searchHits.firstIndex(where: { $0.id == selectedID }) ?? (direction > 0 ? -1 : store.searchHits.count)
-        selectedID = store.searchHits[min(max(current + direction, 0), store.searchHits.count - 1)].id
+        guard !visibleSearchHits.isEmpty else { return }
+        let hits = visibleSearchHits
+        let current = hits.firstIndex(where: { $0.id == selectedID }) ?? (direction > 0 ? -1 : hits.count)
+        selectedID = hits[min(max(current + direction, 0), hits.count - 1)].id
     }
     private func openSelected() {
         if byMeaning { if let source = knowledge.sources.first(where: { $0.id == selectedID }) { knowledge.open(source, store: store) }; return }
-        if let hit = store.searchHits.first(where: { $0.id == selectedID }) { store.openSearchHit(hit) }
+        if let hit = visibleSearchHits.first(where: { $0.id == selectedID }) { store.openSearchHit(hit) }
+    }
+    private var visibleSearchHits: [SearchHit] {
+        store.searchHits.filter {
+            store.settings.features.allowsKnowledgeKind($0.kind)
+                && ($0.cardID == nil || store.settings.isEnabled(.cards))
+        }
     }
     private func label(_ kind: String) -> String {
         ["title": "Название встречи", "overview": "Краткий конспект", "item": "Факт из конспекта", "transcript": "Исходная реплика", "card": "Карточка", "manual": "Моя заметка"][kind] ?? "Встреча"

@@ -165,6 +165,7 @@ fn prompt_candidate(task: &Value) -> Value {
     json!({"id":task["id"],"title":short(task["title"].as_str().unwrap_or(""),160),"text":short(task["text"].as_str().unwrap_or(""),400),"status":task["status"],"completed":task["completed"],"materials":materials})
 }
 pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result<Value> {
+    check_action_features(root, &proposal.action)?;
     let candidates = shortlist(root, input, proposal)?;
     let mut prompt = json!({"user_command":input["text"],"task_action":proposal.action,"topic":proposal.query,"addition_text":short(&proposal.text,2000),"task_candidates":candidates.iter().map(prompt_candidate).collect::<Vec<_>>(),"candidate_set_may_be_incomplete":true});
     // Input/output cost is bounded independently of the size of the library.
@@ -211,6 +212,7 @@ pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result
     let reranking: Reranking = if candidates.is_empty() {
         Reranking { matches: vec![], clarification: "В выбранном проекте нет подходящих задач. Уточните название или выберите другой проект.".into() }
     } else {
+        check_action_features(root, &proposal.action)?;
         serde_json::from_value(crate::ai::generate(
             &crate::ai::settings(root)?,
             RERANK_SYSTEM,
@@ -228,6 +230,7 @@ fn prepare_ranked(
     candidates: &[Value],
     reranking: Reranking,
 ) -> Result<Value> {
+    check_action_features(root, &proposal.action)?;
     ensure!(
         reranking.matches.len() <= MAX_CANDIDATES && bounded(&reranking.clarification, 1000),
         "Слишком большой список задач ИИ"
@@ -579,6 +582,7 @@ fn restore_receipt(
     Ok(Some(result))
 }
 pub(super) fn apply(root: &Path, input: &Value) -> Result<Value> {
+    check_saved_plan_features(root, input)?;
     let workspace = notes::list(root)?;
     let plan_id = input["planID"].as_str().context("Нет команды")?;
     let operation = input["operationID"].as_str().context("Нет операции")?;

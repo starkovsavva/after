@@ -43,10 +43,16 @@ final class SemanticIndexController: ObservableObject {
     private var schedule: Task<Void, Never>?
     private var wantsRefresh = false
     private var connectedRoot: URL?
+    private var generation = UUID()
     struct Result: Decodable { var complete: Bool?; var indexed: Int?; var total: Int?; var warnings: [String]? }
     func connect(_ app: AppStore) {
-        guard !app.isPreview, connectedRoot != app.root else { return }
+        guard app.settings.features.semanticSearch, !app.isPreview else { return }
+        if self.app === app && connectedRoot == app.root { requestRefresh(); return }
+        // A previous blocking FFI call must drain before a different library can
+        // start a provider request. Its result no longer owns this controller.
+        generation = UUID(); schedule?.cancel(); schedule = nil; work?.cancel()
         self.app = app; connectedRoot = app.root
+        indexed = 0; total = 0; message = ""; failed = false
         subscriptions.removeAll()
         app.notes.objectWillChange.debounce(for: .seconds(2), scheduler: RunLoop.main).sink { [weak self] _ in self?.requestRefresh() }.store(in: &subscriptions)
         NotificationCenter.default.publisher(for: .posleJobsChanged).sink { [weak self] _ in self?.requestRefresh() }.store(in: &subscriptions)
@@ -54,25 +60,43 @@ final class SemanticIndexController: ObservableObject {
         requestRefresh()
     }
     func requestRefresh() {
+        guard let app, app.settings.features.semanticSearch, !app.isTerminating else { return }
         wantsRefresh = true
         guard work == nil else { return }
         schedule?.cancel()
-        schedule = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 700_000_000)
-            guard !Task.isCancelled, let self else { return }
+        let current = generation, root = app.root
+        schedule = Task { [weak self, weak app] in
+            do { try await Task.sleep(nanoseconds: 700_000_000) } catch { return }
+            guard !Task.isCancelled, let self, let app, self.isCurrent(app, root: root, generation: current) else { return }
             self.start()
         }
     }
-    func stop() { schedule?.cancel(); work?.cancel(); wantsRefresh = false }
+    func stop() {
+        generation = UUID(); schedule?.cancel(); schedule = nil; work?.cancel(); wantsRefresh = false
+        subscriptions.removeAll(); connectedRoot = nil; app = nil
+    }
+    private func isCurrent(_ app: AppStore, root: URL, generation: UUID) -> Bool {
+        self.generation == generation && self.app === app && connectedRoot == root
+            && app.root == root && app.settings.features.semanticSearch && !app.isTerminating
+    }
     private func start() {
-        guard work == nil, let app, !app.isTerminating else { return }
-        let root = app.root
+        guard work == nil, let app, app.settings.features.semanticSearch, !app.isTerminating else { return }
+        let root = app.root, current = generation
         work = Task { [weak self] in
             guard let self else { return }
-            defer { self.running = false; self.work = nil }
+            defer {
+                self.running = false; self.work = nil
+                // stop→connect may occur while blocking FFI is draining. Resume
+                // the new owner's requested work after the old call has ended.
+                if self.wantsRefresh { self.requestRefresh() }
+            }
             do {
+                guard self.isCurrent(app, root: root, generation: current) else { throw CancellationError() }
+                try Task.checkCancellation()
                 struct Settings: Decodable { var config: SemanticSearchConfiguration; var fingerprint: String }
                 let settingsData = try await Task.detached(priority: .utility) { try RustBridge.shared.get().request(root: root, command: "semantic-config") }.value
+                guard self.isCurrent(app, root: root, generation: current) else { throw CancellationError() }
+                try Task.checkCancellation()
                 let snapshot = try JSONDecoder().decode(Settings.self, from: settingsData)
                 let config = snapshot.config
                 let fingerprint = snapshot.fingerprint
@@ -80,17 +104,20 @@ final class SemanticIndexController: ObservableObject {
                 let key = try config.keyAccount.map { try Keychain.readChecked(account: $0) } ?? ""
                 self.running = true; self.failed = false
                 repeat {
-                    if app.isTerminating { throw CancellationError() }
+                    guard self.isCurrent(app, root: root, generation: current) else { throw CancellationError() }
                     try Task.checkCancellation()
                     self.wantsRefresh = false
                     while app.isRecording || app.startingRecording || app.stoppingRecording || app.busy || app.jobs.activeCount > 0 || ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical {
-                        if app.isTerminating { throw CancellationError() }
+                        guard self.isCurrent(app, root: root, generation: current) else { throw CancellationError() }
                         self.message = "Продолжим после записи и обработки"
                         try await Task.sleep(nanoseconds: 2_000_000_000)
                     }
                     try Task.checkCancellation()
+                    guard self.isCurrent(app, root: root, generation: current) else { throw CancellationError() }
                     self.message = "Обновляем смысловой индекс…"
                     let data = try await Task.detached(priority: .utility) { try RustBridge.shared.get().request(root: root, command: "semantic-refresh", arguments: ["maxDocuments": 8, "apiKey": key, "configFingerprint": fingerprint]) }.value
+                    guard self.isCurrent(app, root: root, generation: current) else { throw CancellationError() }
+                    try Task.checkCancellation()
                     let result = try JSONDecoder().decode(Result.self, from: data)
                     self.indexed = result.indexed ?? 0; self.total = result.total ?? 0
                     if let warning = result.warnings?.first { self.message = warning }
@@ -98,8 +125,11 @@ final class SemanticIndexController: ObservableObject {
                     if result.complete != true { self.wantsRefresh = true }
                     if self.wantsRefresh { try await Task.sleep(nanoseconds: 250_000_000) }
                 } while self.wantsRefresh && !Task.isCancelled
-            } catch is CancellationError { self.message = "Обновление индекса приостановлено" }
-            catch { self.failed = true; self.message = error.localizedDescription }
+            } catch is CancellationError {
+                if self.isCurrent(app, root: root, generation: current) { self.message = "Обновление индекса приостановлено" }
+            } catch {
+                if self.isCurrent(app, root: root, generation: current) { self.failed = true; self.message = error.localizedDescription }
+            }
         }
     }
 }

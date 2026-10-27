@@ -68,7 +68,7 @@ private struct CalendarWorkspace: View {
             .confirmationDialog("Отключить календарь от «После»?", isPresented: $disconnecting, titleVisibility: .visible) {
                 Button("Отключить") { calendar.disconnect() }
                 Button("Отмена", role: .cancel) { }
-            } message: { Text("События и связи с задачами сохранятся. Синхронизация продолжится после подключения.") }
+            } message: { Text("События сохранятся. Синхронизация продолжится после подключения.") }
     }
     private var navigation: some View {
         HStack(spacing: 10) {
@@ -159,11 +159,12 @@ private struct CalendarCreationDraft: Identifiable {
 }
 
 private struct CalendarConnection: View {
+    @EnvironmentObject private var app: AppStore
     @ObservedObject var calendar: CalendarStore
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Image(systemName: "calendar").font(.system(size: 32, weight: .light)).foregroundStyle(Ink.accent)
-            Text("Встречи и время для задач").font(AppTypography.sectionTitle)
+            Text(app.settings.isEnabled(.tasks) ? "Встречи и время для задач" : "Ваши встречи и события").font(AppTypography.sectionTitle)
             Text("Подключите календари macOS. Google и Яндекс появятся здесь после добавления аккаунтов.")
                 .font(AppTypography.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
@@ -200,7 +201,9 @@ private struct CalendarAccountHelp: View {
 struct TaskCalendarSummary: View {
     @EnvironmentObject private var app: AppStore
     let task: LibraryTask
-    var body: some View { TaskCalendarSummaryContent(calendar: app.calendar, task: task) }
+    var body: some View {
+        if app.settings.isEnabled(.calendar) { TaskCalendarSummaryContent(calendar: app.calendar, task: task) }
+    }
 }
 
 private struct TaskCalendarSummaryContent: View {
@@ -219,7 +222,9 @@ private struct TaskCalendarSummaryContent: View {
 struct TaskCalendarButton: View {
     @EnvironmentObject private var app: AppStore
     let task: LibraryTask
-    var body: some View { TaskCalendarAction(calendar: app.calendar, task: task) }
+    var body: some View {
+        if app.settings.isEnabled(.calendar) { TaskCalendarAction(calendar: app.calendar, task: task) }
+    }
 }
 
 private struct TaskCalendarAction: View {
@@ -262,6 +267,22 @@ struct CalendarEventEditor: View {
         link?.missing != true && link?.conflict != true && (event == nil || event?.writable == true)
     }
     var body: some View {
+        Group {
+            if !app.settings.isEnabled(.calendar) {
+                disabledFeature(.calendar)
+            } else if !app.settings.isEnabled(.tasks), task != nil || event?.taskID != nil {
+                disabledFeature(.tasks)
+            } else { editorContent }
+        }
+    }
+    private func disabledFeature(_ feature: AppFeature) -> some View {
+        OptionalFeatureGate(feature: feature).frame(width: 520, height: 320)
+            .overlay(alignment: .topTrailing) {
+                Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
+                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Закрыть").padding(18)
+            }
+    }
+    private var editorContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 Text(currentTask != nil ? "Задача в календаре" : event == nil ? "Новое событие" : "Событие").font(AppTypography.modalTitle)

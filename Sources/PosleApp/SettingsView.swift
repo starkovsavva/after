@@ -44,15 +44,19 @@ struct SettingsView: View {
     @State private var section = "general"
     @State private var showingTemplates = false
     init(section: String = "general") { _section = State(initialValue: section) }
-    private let sections: [(String, String, String)] = [
-        ("general", "Общие", "gearshape"), ("appearance", "Оформление", "paintpalette"), ("record", "Запись", "record.circle"),
-        ("speech", "Распознавание речи", "waveform"), ("ai", "Конспект и карточки", "sparkles"),
-        ("semantic", "Смысловой поиск", "sparkle.magnifyingglass"),
-        ("notes", "Заметки и шаблоны", "square.and.pencil"), ("keys", "Горячие клавиши", "keyboard"),
-        ("integrations", "Интеграции", "point.3.connected.trianglepath.dotted"),
-        ("data", "Данные и экспорт", "externaldrive"),
-        ("updates", "Обновления", "arrow.triangle.2.circlepath")
-    ]
+    private var sections: [(String, String, String)] {
+        var result = [
+            ("general", "Общие", "gearshape"), ("features", "Возможности", "square.grid.2x2"),
+            ("appearance", "Оформление", "paintpalette"), ("record", "Запись", "record.circle"),
+            ("speech", "Распознавание речи", "waveform"),
+            ("ai", store.settings.isEnabled(.cards) ? "Конспект и карточки" : "Конспект", "sparkles")
+        ]
+        if store.settings.isEnabled(.semanticSearch) { result.append(("semantic", "Смысловой поиск", "sparkle.magnifyingglass")) }
+        result += [("notes", "Заметки и шаблоны", "square.and.pencil"), ("keys", "Горячие клавиши", "keyboard")]
+        if store.settings.isEnabled(.tasks) { result.append(("integrations", "Интеграции", "point.3.connected.trianglepath.dotted")) }
+        result += [("data", "Данные и экспорт", "externaldrive"), ("updates", "Обновления", "arrow.triangle.2.circlepath")]
+        return result
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -63,16 +67,20 @@ struct SettingsView: View {
             }.padding(22)
             Divider()
             HStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 5) {
-                    ForEach(sections, id: \.0) { id, title, icon in
-                        Button { section = id } label: {
-                            Label(title, systemImage: icon).font(AppTypography.control)
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 11).padding(.vertical, 11)
-                                .background(section == id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 6))
-                                .foregroundStyle(Color.primary)
-                        }.buttonStyle(.plain).accessibilityAddTraits(section == id ? .isSelected : [])
-                    }
-                    Spacer()
+                VStack(alignment: .leading, spacing: 0) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(sections, id: \.0) { id, title, icon in
+                                Button { section = id } label: {
+                                    Label(title, systemImage: icon).font(AppTypography.control)
+                                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 11).padding(.vertical, 11)
+                                        .background(section == id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 6))
+                                        .foregroundStyle(Color.primary)
+                                }.buttonStyle(.plain).accessibilityIdentifier("settings." + id)
+                                    .accessibilityAddTraits(section == id ? .isSelected : [])
+                            }
+                        }
+                    }.scrollIndicators(.hidden)
                     Text((Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String).map { "После \($0)" } ?? "После")
                         .font(AppTypography.caption).foregroundStyle(.secondary).padding(10)
                 }.padding(12).frame(width: 215).background(Ink.soft)
@@ -103,7 +111,7 @@ struct SettingsView: View {
                 Button("Готово") { store.saveSettings(); dismiss() }.buttonStyle(.borderedProminent)
                     .tint(Ink.actionFill).keyboardShortcut(.defaultAction)
             }.padding(.horizontal, 16).frame(height: AppLayout.statusHeight)
-        }.frame(width: 900, height: 690).tint(Ink.accent).appControlDefaults()
+        }.frame(width: 900, height: 690).background(Ink.paper).tint(Ink.accent).appControlDefaults()
             .preferredColorScheme(theme.colorScheme)
             .sheet(isPresented: $showingTemplates) {
                 VStack(spacing: 16) {
@@ -135,14 +143,19 @@ struct SettingsView: View {
     }
     @ViewBuilder private var settingsContent: some View {
         switch section {
+        case "features": FeatureSettingsView()
         case "appearance": ThemeSettingsView(theme: theme)
         case "speech": SpeechSettingsView().disabled(store.busy || store.isRecording)
         case "ai": aiSettings.disabled(store.busy || store.isRecording)
         case "record": recordSettings.disabled(store.busy || store.isRecording)
         case "notes": notesSettings
         case "keys": shortcutSettings
-        case "semantic": SemanticSearchSettings()
-        case "integrations": IntegrationSettingsView()
+        case "semantic":
+            if store.settings.isEnabled(.semanticSearch) { SemanticSearchSettings() }
+            else { OptionalFeatureGate(feature: .semanticSearch) }
+        case "integrations":
+            if store.settings.isEnabled(.tasks) { IntegrationSettingsView() }
+            else { OptionalFeatureGate(feature: .tasks) }
         case "data": dataSettings
         case "updates": UpdateSettingsView(updates: store.updates)
         default: generalSettings
@@ -150,9 +163,13 @@ struct SettingsView: View {
     }
     private var generalSettings: some View {
         settingsSection("Общие", "gearshape") {
-            Picker("При запуске открывать", selection: $store.settings.startSection) {
+            Picker("При запуске открывать", selection: Binding(get: {
+                let section = store.settings.startSection
+                return ["meetings", "inbox", "tasks", "cards"].contains(section) && store.settings.allowsSection(section) ? section : "meetings"
+            }, set: { store.settings.startSection = $0 })) {
                 Text("Все встречи").tag("meetings"); Text("Заметки").tag("inbox")
-                Text("Мои задачи").tag("tasks"); Text("Карточки").tag("cards")
+                if store.settings.isEnabled(.tasks) { Text("Мои задачи").tag("tasks") }
+                if store.settings.isEnabled(.cards) { Text("Карточки").tag("cards") }
             }
         }
     }
@@ -187,7 +204,9 @@ struct SettingsView: View {
                 Text("⌃⌥N").tag("controlOptionN"); Text("⌃⇧Пробел").tag("controlShiftSpace")
             }.disabled(!store.settings.quickCaptureEnabled)
             Toggle("Отмечать важный момент по ⌃⌥B", isOn: $store.settings.bookmarkShortcutEnabled)
-            Toggle("Голосовое поручение по ⌃⌥M", isOn: $store.settings.voiceShortcutEnabled)
+            if store.settings.isEnabled(.assistant) {
+                Toggle("Голосовое поручение по ⌃⌥M", isOn: $store.settings.voiceShortcutEnabled)
+            }
             LabeledContent("Общий поиск", value: "⌘K")
             LabeledContent("Добавить запись", value: "⌘O")
             LabeledContent("Новая заметка или запись", value: "⌘N")
@@ -195,7 +214,7 @@ struct SettingsView: View {
         }
     }
     private var aiSettings: some View {
-        settingsSection("Конспект и карточки", "sparkles") {
+        settingsSection(store.settings.isEnabled(.cards) ? "Конспект и карточки" : "Конспект", "sparkles") {
             Picker("Обработка", selection: $store.settings.mode) {
                 Label("На Mac", systemImage: "laptopcomputer").tag("local")
                 Label("Облако", systemImage: "cloud").tag("cloud")
@@ -277,7 +296,7 @@ struct SettingsView: View {
                             .background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Ink.line))
                             .accessibilityLabel("Фокус конспекта")
-                            .accessibilityHint("Что выписывать из встречи: решения, задачи, детали и темы для карточек")
+                            .accessibilityHint(store.settings.isEnabled(.cards) ? "Что выписывать из встречи: решения, задачи, детали и темы для карточек" : "Что выписывать из встречи: решения и важные детали")
                             .help("Для новых встреч. Фокус отдельной встречи можно изменить в её конспекте.")
                     }
     }
@@ -300,7 +319,7 @@ struct SettingsView: View {
                     Text(store.settings.localModel.isEmpty ? "Выберите модель" : store.settings.localModel).tag(store.settings.localModel)
                 }
                 ForEach(models) { model in Text(model.name).tag(model.id) }
-            }.accessibilityLabel("Установленная модель для конспекта и карточек")
+            }.accessibilityLabel(store.settings.isEnabled(.cards) ? "Установленная модель для конспекта и карточек" : "Установленная модель для конспекта")
         } else if store.settings.localProvider != "managed" && !store.settings.localModel.isEmpty {
             LabeledContent("Выбрана модель") {
                 Text(store.settings.localModel).lineLimit(1).truncationMode(.middle).textSelection(.enabled)

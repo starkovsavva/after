@@ -29,6 +29,7 @@ struct CoreChecks {
 
         var meeting = Meeting(title: "Встреча / Meeting", source: "source.mov")
         meeting.speakerNames["speaker_1"] = "Аня"
+        meeting.generateCards = true
         meeting.meetingPurpose = "Синк с руководителем о прогрессе"
         meeting.completedTasks = ["commitment-1"]; meeting.recordingTracks = true; meeting.hasVideo = true
         meeting.recordingAudioQuality = "high"; meeting.recordingVideoQuality = "native"; meeting.recordingDisplayUUID = "display-fixture"
@@ -91,6 +92,18 @@ struct CoreChecks {
         expect(recordingSettings.recordAudioQuality == .high && recordingSettings.recordVideoQuality == .native && recordingSettings.recordDisplayUUID == "stable-display-uuid", "recording profiles and stable monitor selection survive reopen")
         let futureSettings = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"recordAudioQuality":"future-profile","recordVideoQuality":"8k","localModel":"keep-model","focus":"Keep details"}"#.utf8))
         expect(futureSettings.recordAudioQuality == .standard && futureSettings.recordVideoQuality == .compact && futureSettings.localModel == "keep-model" && futureSettings.focus == "Keep details", "unknown future profiles fall back without resetting unrelated settings")
+        expect(minimal.features == AppFeatures() && settings.features == AppFeatures(), "base-only defaults also apply to legacy settings")
+        let partialFeatures = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"features":{"cards":true},"localModel":"keep-model"}"#.utf8))
+        expect(partialFeatures.features.cards && !partialFeatures.features.assistant && !partialFeatures.features.tasks, "partial opt-in never enables unrelated features")
+        var chosenFeatures = partialFeatures
+        chosenFeatures.features.tasks = true
+        let featureCopy = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(chosenFeatures))
+        expect(featureCopy.features == chosenFeatures.features && featureCopy.localModel == "keep-model", "feature choices round trip without changing models")
+        expect(!minimal.allowsSection("cards") && !minimal.allowsSection("contexts") && minimal.allowsSection("inbox"), "section policy keeps notes and hides optional projects")
+        expect(copy.generateCards == true && legacyMeeting.generateCards == true, "explicit per-meeting cards opt-in survives metadata changes")
+        legacyMeetingObject.removeValue(forKey: "generateCards")
+        let minimalMeeting = try JSONDecoder().decode(Meeting.self, from: JSONSerialization.data(withJSONObject: legacyMeetingObject))
+        expect(minimalMeeting.generateCards == nil, "old meeting has no implicit card opt-in")
         print("PASS: settings migration and external model selection")
         var linked = summary
         linked.overviewClaims = [OverviewClaim(text: "Обсудили поставку.", itemIndices: [0])]

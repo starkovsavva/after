@@ -162,6 +162,8 @@ final class CalendarStore: ObservableObject {
     private var knowledgeNavigation = false
     private weak var notes: NotesStore?
     private var cancellables = Set<AnyCancellable>()
+    private var featureEnabled: Bool
+    private var tasksEnabled: Bool
     private var refreshing = false
     private var pendingRefresh = false
     private var eventChanges: NSObjectProtocol?
@@ -169,8 +171,9 @@ final class CalendarStore: ObservableObject {
     private var preferenceLoadFailed = false
     private var viewPreferenceLoadFailed = false
 
-    init(root: URL, preview: Bool = false) {
+    init(root: URL, preview: Bool = false, featureEnabled: Bool = true, tasksEnabled: Bool = true) {
         self.root = root; self.preview = preview
+        self.featureEnabled = featureEnabled; self.tasksEnabled = tasksEnabled
         if preview { return }
         do {
             let url = try stateURL()
@@ -198,19 +201,34 @@ final class CalendarStore: ObservableObject {
         }
         permissionDenied = [.denied, .restricted, .writeOnly].contains(EKEventStore.authorizationStatus(for: .event))
         // Existing explicit opt-in survives restart, but never asks the OS for access here.
-        if preferences.enabled && EKEventStore.authorizationStatus(for: .event) == .fullAccess { activate() }
+        if featureEnabled && preferences.enabled && EKEventStore.authorizationStatus(for: .event) == .fullAccess { activate() }
         activation = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+    }
+
+    /// Suspend the optional workflow without changing its saved connection or links.
+    func setFeatureEnabled(_ enabled: Bool, tasksEnabled: Bool) {
+        let resumeTasks = tasksEnabled && !self.tasksEnabled
+        self.tasksEnabled = tasksEnabled
+        guard enabled != featureEnabled else {
+            if enabled && resumeTasks { notes?.loadTasks(); refresh() }
+            return
+        }
+        featureEnabled = enabled
+        if !enabled {
+            connected = false; calendars = []; events = []; eventStore = nil
+            if let eventChanges { NotificationCenter.default.removeObserver(eventChanges); self.eventChanges = nil }
+        } else if !preview && preferences.enabled { activate() }
     }
 
     func bindNotes(_ notes: NotesStore) {
         self.notes = notes
         notes.$tasks.dropFirst().debounce(for: .milliseconds(180), scheduler: RunLoop.main).sink { [weak self] _ in self?.migrateTaskIdentities(); self?.reconcileTasks() }.store(in: &cancellables)
         notes.$workspace.dropFirst().debounce(for: .milliseconds(180), scheduler: RunLoop.main).sink { [weak self, weak notes] _ in
-            if self?.connected == true { notes?.loadTasks() }
+            if self?.connected == true, self?.tasksEnabled == true { notes?.loadTasks() }
         }.store(in: &cancellables)
-        if connected { notes.loadTasks(); refresh() }
+        if connected { if tasksEnabled { notes.loadTasks() }; refresh() }
     }
 
     @discardableResult func openLink(_ url: URL) -> Bool {
@@ -229,7 +247,7 @@ final class CalendarStore: ObservableObject {
     }
 
     func connect() async {
-        guard !requesting, !preview else { return }
+        guard featureEnabled, !requesting, !preview else { return }
         guard !preferenceLoadFailed else { error = "Сначала восстановите файл calendar-state.json: новые связи не будут записаны поверх повреждённых."; return }
         requesting = true; defer { requesting = false }
         do {
@@ -237,6 +255,7 @@ final class CalendarStore: ObservableObject {
             guard let eventStore else { return }
             let granted = try await eventStore.requestFullAccessToEvents()
             permissionDenied = !granted
+            guard featureEnabled else { return }
             guard granted else { error = "Разрешите «После» доступ к календарям в настройках macOS."; return }
             preferences.enabled = true; try persist(); activate(); error = nil
         } catch { self.error = error.localizedDescription }
@@ -250,7 +269,7 @@ final class CalendarStore: ObservableObject {
     }
 
     private func activate() {
-        guard !preview, !preferenceLoadFailed, EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return }
+        guard featureEnabled, !preview, !preferenceLoadFailed, EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return }
         if eventStore == nil { eventStore = EKEventStore() }
         connected = true; permissionDenied = false
         if eventChanges == nil {
@@ -262,7 +281,7 @@ final class CalendarStore: ObservableObject {
     }
 
     func refresh() {
-        guard !preview else { return }
+        guard featureEnabled, !preview else { return }
         guard preferences.enabled else { return }
         guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
             connected = false; calendars = []; events = []; permissionDenied = true; return
@@ -286,7 +305,7 @@ final class CalendarStore: ObservableObject {
             selectedCalendarID = eventStore.defaultCalendarForNewEvents.flatMap { $0.allowsContentModifications ? $0.calendarIdentifier : nil }
                 ?? calendars.first(where: \.writable)?.id ?? ""
         }
-        notes?.loadTasks(); reconcileTasks()
+        if tasksEnabled { notes?.loadTasks(); reconcileTasks() }
         // Match the exact visible interval. A week can cross a month boundary,
         // and the month grid includes its leading/trailing week days.
         let period = displayPeriod
@@ -373,7 +392,7 @@ final class CalendarStore: ObservableObject {
     }
 
     private func knowledgeEvents(start: Date, end: Date) -> [CalendarAgendaEvent]? {
-        guard connected else { return nil }
+        guard featureEnabled, connected else { return nil }
         if preview {
             return events.filter { (visibleCalendarIDs?.contains($0.calendarID) ?? true) && $0.start < end && ($0.end > start || $0.start >= start) }
         }
@@ -482,6 +501,7 @@ final class CalendarStore: ObservableObject {
 
     /// A new block is explicit. A persisted creation intent plus marker recovers an interrupted save.
     @discardableResult func schedule(task: LibraryTask?, title: String, start: Date, end: Date, calendarID: String, expected: CalendarTaskLink? = nil) -> Bool {
+        guard featureEnabled, task == nil || tasksEnabled else { error = "Включите нужную возможность в настройках."; return false }
         guard !preview, connected, let eventStore, !preferenceLoadFailed else { error = "Сначала подключите календарь."; return false }
         guard end > start, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             error = "Укажите название и время окончания позже начала."; return false
@@ -545,6 +565,7 @@ final class CalendarStore: ObservableObject {
     }
 
     @discardableResult func edit(event item: CalendarAgendaEvent, title: String, start: Date, end: Date, calendarID: String) -> Bool {
+        guard featureEnabled, item.taskID == nil || tasksEnabled else { error = "Включите нужную возможность в настройках."; return false }
         if let taskID = item.taskID, let task = task(for: taskID) {
             return schedule(task: task, title: title, start: start, end: end, calendarID: calendarID, expected: link(for: task))
         }
@@ -575,6 +596,7 @@ final class CalendarStore: ObservableObject {
     }
 
     func resolve(task: LibraryTask, useTask: Bool) {
+        guard featureEnabled, tasksEnabled else { return }
         guard var link = link(for: task), let event = findEvent(link), let eventStore else { return }
         do {
             if useTask {
@@ -593,7 +615,7 @@ final class CalendarStore: ObservableObject {
     }
 
     private func migrateTaskIdentities() {
-        guard !preview, !preferenceLoadFailed, let notes else { return }
+        guard featureEnabled, tasksEnabled, !preview, !preferenceLoadFailed, let notes else { return }
         let original = links
         for index in links.indices {
             if let task = links[index].replacement(in: notes.tasks) {
@@ -604,7 +626,7 @@ final class CalendarStore: ObservableObject {
         if links != original { do { try persist() } catch { links = original; self.error = error.localizedDescription } }
     }
     private func reconcileTasks() {
-        guard connected, !preview, !preferenceLoadFailed, let notes, let eventStore, !links.isEmpty else { return }
+        guard featureEnabled, tasksEnabled, connected, !preview, !preferenceLoadFailed, let notes, let eventStore, !links.isEmpty else { return }
         let original = links
         for index in links.indices {
             var link = links[index]

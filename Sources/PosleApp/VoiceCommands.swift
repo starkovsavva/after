@@ -201,6 +201,7 @@ final class VoiceCommandController: ObservableObject {
     }
     func present(taskID: String? = nil, title: String? = nil, projectID: String? = nil) {
         guard let store else { return }
+        guard store.settings.features.assistant else { store.openSettings("features"); return }
         if !hasDraft && !isWorking {
             generation = UUID(); knowledgeAnswer = nil; knowledgeOpeningID = nil
             previousQuestions = []
@@ -286,6 +287,7 @@ final class VoiceCommandController: ObservableObject {
     }
     func startDictation() {
         guard let store, !isWorking else { return }
+        guard store.settings.features.assistant else { store.openSettings("features"); return }
         guard !store.isTerminating else { message = "Приложение завершает работу."; return }
         guard !store.startingRecording, !store.isRecording, !store.stoppingRecording else {
             message = "Во время записи встречи введите поручение текстом. Микрофон занят записью."; return
@@ -351,6 +353,7 @@ final class VoiceCommandController: ObservableObject {
     #endif
     func perform() {
         guard let store, !isWorking, !store.busy, !store.stoppingRecording else { return }
+        guard store.settings.features.assistant else { store.openSettings("features"); return }
         let command = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty, command.utf8.count <= 8_000 else { message = "Сократите поручение или разделите его на несколько."; return }
         if interruptedPlanID != nil && plan == nil {
@@ -459,6 +462,7 @@ final class VoiceCommandController: ObservableObject {
     }
     func confirmReview() {
         guard let store, let plan, canConfirmReview, !store.busy else { return }
+        guard store.settings.features.assistant else { store.openSettings("features"); return }
         generation = UUID(); let current = generation
         phase = .applying; store.beginJob(id: nil); store.canCancelJob = false
         store.progressText = "Сохраняю поручение…"
@@ -473,6 +477,7 @@ final class VoiceCommandController: ObservableObject {
     }
     private func apply(_ plan: VoicePlan, generation current: UUID, confirmed: Bool = false) async throws {
         guard let store, let id = plan.planID, let operation = plan.operationID else { throw AppError.message("Поручение не готово к выполнению.") }
+        guard store.settings.features.assistant else { throw AppError.message("Включите помощника в настройках → Возможности.") }
         phase = .applying; store.canCancelJob = false
         guard flushDraft() else { throw AppError.message("Не удалось сохранить состояние поручения. Повторите попытку.") }
         let root = store.root

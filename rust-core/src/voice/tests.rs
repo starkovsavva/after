@@ -44,7 +44,7 @@ fn note(root: &Path, title: &str, text: &str, kind: &str) -> CapturedNote {
 }
 #[test]
 fn create_apply_retry_and_undo_are_idempotent() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let p = planned(
         root.path(),
         json!({}),
@@ -63,7 +63,7 @@ fn create_apply_retry_and_undo_are_idempotent() {
 }
 #[test]
 fn append_preserves_previous_text_and_history_and_rejects_stale_apply_and_undo() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let n = note(root.path(), "Договор", "Старый текст", "task");
     let input = json!({"taskID":format!("manual:{}",n.id)});
     let p = planned(
@@ -92,7 +92,7 @@ fn append_preserves_previous_text_and_history_and_rejects_stale_apply_and_undo()
 }
 #[test]
 fn repeated_semantic_addition_does_not_duplicate_content() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let n = note(root.path(), "Договор", "Основной текст", "task");
     let input = json!({"taskID":n.id});
     let p = planned(
@@ -113,7 +113,7 @@ fn repeated_semantic_addition_does_not_duplicate_content() {
 }
 #[test]
 fn ambiguous_targets_require_valid_explicit_choice() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let a = note(root.path(), "Договор поставки", "Договор поставки", "task");
     let b = note(root.path(), "Договор аренды", "Договор аренды", "task");
     let mut proposal = proposed("appendTask", "Проверить оплату");
@@ -145,7 +145,7 @@ fn ambiguous_targets_require_valid_explicit_choice() {
 }
 #[test]
 fn exact_existing_task_is_extended_without_duplicate_but_partial_title_is_not_merged() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let n = note(
         root.path(),
         "Проверить договор",
@@ -171,7 +171,7 @@ fn exact_existing_task_is_extended_without_duplicate_but_partial_title_is_not_me
 }
 #[test]
 fn summary_task_materialization_is_stable_and_deduplicates_after_reordering() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let id = fixture(root.path());
     let request = json!({"taskID":id});
     let n = task_update(root.path(), &request, true).unwrap();
@@ -203,7 +203,7 @@ fn summary_task_materialization_is_stable_and_deduplicates_after_reordering() {
 }
 #[test]
 fn source_regeneration_between_plan_and_apply_is_rejected() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let id = fixture(root.path());
     let p = planned(
         root.path(),
@@ -223,7 +223,7 @@ fn source_regeneration_between_plan_and_apply_is_rejected() {
 }
 #[test]
 fn card_deck_uses_review_storage_and_safe_undo_rejects_reviewed_cards() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let mut proposal = proposed("createCards", "");
     proposal.title = "Фразы о сроках".into();
     proposal.cards = vec![ProposedCard {
@@ -251,7 +251,7 @@ fn card_deck_uses_review_storage_and_safe_undo_rejects_reviewed_cards() {
 }
 #[test]
 fn unsupported_forged_and_invalid_plans_never_mutate_notes() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let mut proposal = proposed("unsupported", "Уточните название");
     let p = planned(root.path(), json!({}), proposal.clone());
     assert_eq!(p["status"], "unsupported");
@@ -298,7 +298,7 @@ fn dates_resolve_in_user_timezone_and_preserve_unrecognized_literal() {
 }
 #[test]
 fn concurrent_same_operation_has_one_effect() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let p = planned(
         root.path(),
         json!({}),
@@ -322,7 +322,7 @@ fn concurrent_same_operation_has_one_effect() {
 }
 #[test]
 fn typed_task_append_is_exact_and_patch_validation_preserves_existing_data() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let n = note(root.path(), "Договор", "Проверить договор", "task");
     let input = json!({"command":"task-append","taskID":n.id,"expectedRevision":n.revision,"text":"Проверить оплату"});
     let saved = dispatch(root.path(), &input).unwrap();
@@ -344,7 +344,7 @@ fn typed_task_append_is_exact_and_patch_validation_preserves_existing_data() {
 }
 #[test]
 fn operation_id_cannot_be_reused_with_another_plan() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let a = planned(root.path(), json!({}), proposed("createNote", "A"));
     let b = planned(root.path(), json!({}), proposed("createNote", "B"));
     applied(root.path(), &a);
@@ -357,7 +357,7 @@ fn operation_id_cannot_be_reused_with_another_plan() {
 }
 #[test]
 fn interrupted_card_publication_recovers_exact_authorized_deck_without_network() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let mut proposal = proposed("createCards", "");
     proposal.cards = vec![ProposedCard {
         kind: "concept".into(),
@@ -395,7 +395,7 @@ fn interrupted_card_publication_recovers_exact_authorized_deck_without_network()
 }
 #[test]
 fn canonical_summary_completion_checks_current_source_before_mutation() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let id = fixture(root.path());
     let saved = task_update(root.path(), &json!({"taskID":id}), true).unwrap();
     notes::complete_task(root.path(), "meeting", 0, "Проверить договор", true).unwrap();
@@ -416,7 +416,7 @@ fn canonical_summary_completion_checks_current_source_before_mutation() {
 fn real_planner_provider_route_sends_only_selected_context_and_validates_schema() {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     fixture(root.path());
     let selected = note(
         root.path(),
@@ -477,7 +477,7 @@ fn real_planner_provider_route_sends_only_selected_context_and_validates_schema(
         }
         requests
     });
-    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"mode":"local","localProvider":"lmstudio","localModel":"qwen-test","localEndpoint":format!("http://{address}")})).unwrap();
+    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"features":{"assistant":true,"cards":true,"tasks":true,"calendar":true,"semanticSearch":true},"mode":"local","localProvider":"lmstudio","localModel":"qwen-test","localEndpoint":format!("http://{address}")})).unwrap();
     let p=crate::request(&json!({"root":root.path(),"command":"voice-plan","text":"Создай заметку запросить договор","meetingID":"meeting","noteID":selected.id})).unwrap();
     assert_eq!(p["status"], "ready");
     let requests = server.join().unwrap();
@@ -499,7 +499,7 @@ fn real_planner_provider_route_sends_only_selected_context_and_validates_schema(
 
 #[test]
 fn inspect_restores_prepared_or_committed_operation_without_reexecution() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let p = planned(
         root.path(),
         json!({}),
@@ -529,7 +529,7 @@ fn inspect_restores_prepared_or_committed_operation_without_reexecution() {
 
 #[test]
 fn renamed_card_deck_cannot_be_undone_over_a_later_user_edit() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let mut proposal = proposed("createCards", "");
     proposal.cards = vec![ProposedCard {
         kind: "concept".into(),
@@ -554,7 +554,7 @@ fn renamed_card_deck_cannot_be_undone_over_a_later_user_edit() {
 
 #[test]
 fn summary_ids_follow_source_signature_and_deduplicate_identical_actions() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let original = fixture(root.path());
     let path = root.path().join("meetings/meeting/summary.json");
     let mut summary = read_json(&path, 8 * 1_048_576).unwrap();
@@ -588,7 +588,7 @@ fn summary_ids_follow_source_signature_and_deduplicate_identical_actions() {
 
 #[test]
 fn explicit_source_and_summary_checkbox_refs_reject_stale_identity_without_mutation() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let id = fixture(root.path());
     for command in ["task-materialize", "task-update", "task-append"] {
         let input = json!({"command":command,"taskID":id,"text":"Дополнение","patch":{"completed":true},"expectedSource":{"meetingID":"meeting","text":"Проверить договор","segmentIDs":[999]}});
@@ -606,7 +606,7 @@ fn explicit_source_and_summary_checkbox_refs_reject_stale_identity_without_mutat
 
 #[test]
 fn notes_public_response_omits_journal_and_stored_targets_omit_task_history() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let note = note(root.path(), "Договор", "Текст договора", "task");
     let p = planned(
         root.path(),
@@ -639,7 +639,7 @@ fn notes_public_response_omits_journal_and_stored_targets_omit_task_history() {
 
 #[test]
 fn prepared_voice_plan_follows_exact_source_after_summary_reordering() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let id = fixture(root.path());
     let p = planned(
         root.path(),
@@ -687,7 +687,7 @@ fn new_voice_deadlines_use_command_local_date_and_preserve_unrecognized_wording(
 
 #[test]
 fn voice_deadline_update_on_old_task_is_frozen_at_command_time_not_source_time() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let task_id = fixture(root.path());
     let at = Utc
         .with_ymd_and_hms(2026, 10, 25, 23, 30, 0)
@@ -718,7 +718,7 @@ fn voice_deadline_update_on_old_task_is_frozen_at_command_time_not_source_time()
 
 #[test]
 fn changing_only_owner_does_not_reinterpret_legacy_source_deadline() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     fixture(root.path());
     let path = root.path().join("meetings/meeting/summary.json");
     let mut source = read_json(&path, 1_048_576).unwrap();
@@ -743,7 +743,7 @@ fn changing_only_owner_does_not_reinterpret_legacy_source_deadline() {
 
 #[test]
 fn legacy_task_actions_cannot_bypass_review_or_change_a_committed_addition() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let task = note(root.path(), "Договор", "Исходный текст", "task");
     let p = planned(
         root.path(),
@@ -793,7 +793,7 @@ fn legacy_task_actions_cannot_bypass_review_or_change_a_committed_addition() {
 fn knowledge_intent_uses_global_original_question_and_never_creates_an_executable_plan() {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let reference = note(
         root.path(),
         "Доступ к стенду",
@@ -853,7 +853,7 @@ fn knowledge_intent_uses_global_original_question_and_never_creates_an_executabl
         }
         requests
     });
-    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"mode":"local","localProvider":"lmstudio","localModel":"knowledge-fixture","localEndpoint":format!("http://{address}")})).unwrap();
+    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"features":{"assistant":true,"cards":true,"tasks":true,"calendar":true,"semanticSearch":true},"mode":"local","localProvider":"lmstudio","localModel":"knowledge-fixture","localEndpoint":format!("http://{address}")})).unwrap();
     let question = "Что нужно для доступа к стенду?";
     let classified = plan(root.path(),&json!({"text":question,"taskID":format!("manual:{}",selected.id),"projectID":"Изолированный проект","now":1_800_000_000,"timeZoneOffsetMinutes":180,
         "calendar":{"connected":true,"events":[{"title":"PRIVATE_CALENDAR_MUST_NOT_ENTER_CLASSIFIER"}]}})).unwrap();
@@ -901,7 +901,7 @@ fn knowledge_intent_uses_global_original_question_and_never_creates_an_executabl
 
 #[test]
 fn read_only_knowledge_intent_rejects_write_flags_before_any_answer_or_mutation() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::voice::enabled_test_root();
     let mut proposal = proposed("askKnowledge", "");
     proposal.set_completed = true;
     assert!(store_plan(
@@ -926,4 +926,48 @@ fn conversation_topics_are_bounded_and_are_not_evidence_or_actions() {
     assert!(previous_questions(&json!({"previousQuestions":[{"action":"completeTask"}]})).is_err());
     assert!(previous_questions(&json!({"previousQuestions":["x".repeat(1501)]})).is_err());
     assert!(previous_questions(&json!({"previousQuestions":vec!["x";7]})).is_err());
+}
+
+#[test]
+fn optional_assistant_defaults_off_before_loading_a_model_or_library() {
+    let root = tempfile::tempdir().unwrap();
+    let error = plan(root.path(), &json!({"text":"Создай заметку"})).unwrap_err();
+    assert!(error.to_string().contains("Включите «Помощник»"));
+    assert!(!root.path().join("notes").exists());
+    assert!(!root.path().join("meetings").exists());
+}
+#[test]
+fn optional_modules_reject_typed_proposals_and_remove_generation_actions() {
+    let root = tempfile::tempdir().unwrap();
+    crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true}})).unwrap();
+    let features = crate::ai::live_features(root.path()).unwrap();
+    let schema = enabled_schema(&features);
+    for action in ["createCards", "rewriteCards", "trashCards", "restoreCards", "openCard", "createTask", "appendTaskContexts", "completeTask", "trashTask", "restoreTask"] {
+        assert!(!schema["properties"]["action"]["enum"].as_array().unwrap().contains(&json!(action)), "disabled action {action}");
+        let error = store_plan(root.path(), &json!({}), proposed(action, "Новый текст"), vec![]).unwrap_err();
+        assert!(error.to_string().contains("Включите"), "{error}");
+    }
+    assert_eq!(schema["properties"]["cards"]["maxItems"], 0);
+    assert!(!root.path().join("notes").exists());
+    let note = store_plan(root.path(), &json!({}), proposed("createNote", "Можно записывать мысли"), vec![]).unwrap();
+    assert_eq!(note["status"], "ready");
+    assert!(apply(root.path(), &json!({"planID":note["planID"],"operationID":note["operationID"]})).is_ok());
+}
+#[test]
+fn disabling_cards_after_preview_prevents_apply_but_preserves_undo_and_crud() {
+    let root = enabled_test_root();
+    let mut proposal = proposed("createCards", "");
+    proposal.cards.push(ProposedCard { kind:"phrase".into(), front:"Уточнить позже".into(), back:"follow up".into(), context:String::new() });
+    let p = planned(root.path(), json!({}), proposal);
+    crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true}})).unwrap();
+    assert!(apply(root.path(), &json!({"planID":p["planID"],"operationID":p["operationID"]})).unwrap_err().to_string().contains("Включите «Карточки»"));
+    assert!(crate::storage::list_meetings(root.path()).unwrap().is_empty());
+    crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"assistant":true,"cards":true}})).unwrap();
+    let result = applied(root.path(), &p);
+    crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{}})).unwrap();
+    assert_eq!(undo(root.path(), &json!({"operationID":result["operationID"]})).unwrap()["undone"], true);
+    assert!(crate::storage::list_meetings(root.path()).unwrap().is_empty());
+    let mut restored_note = empty_note("note", "Сохранить заметку", "Мысли", None).unwrap();
+    restored_note.revision = 0;
+    assert!(notes::save_note(root.path(), restored_note).is_ok());
 }

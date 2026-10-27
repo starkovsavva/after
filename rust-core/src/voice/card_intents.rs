@@ -107,6 +107,7 @@ fn rewritten(candidates: &[Value], output: &Value) -> Result<Vec<Value>> {
     Ok(changes)
 }
 pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result<Value> {
+    check_action_features(root, &proposal.action)?;
     let candidates = selected_cards(root, input, proposal)?;
     if candidates.is_empty() {
         return Ok(
@@ -155,6 +156,7 @@ pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result
                     <= 19_400,
                 "Карточки слишком длинные для пакетной правки. Измените их по одной."
             );
+            check_action_features(root, &proposal.action)?;
             let output = crate::ai::generate(
                 &crate::ai::settings(root)?,
                 REWRITE_SYSTEM,
@@ -175,6 +177,7 @@ fn store_prepared(
     candidates: &[Value],
     changes: Vec<Value>,
 ) -> Result<Value> {
+    check_action_features(root, &proposal.action)?;
     let label = match proposal.action.as_str() {
         "rewriteCards" => "Изменить карточки",
         "trashCards" => "Переместить карточки в корзину",
@@ -255,6 +258,7 @@ pub(super) fn owns_operation(root: &Path, input: &Value) -> Result<bool> {
         .any(|o| o["operationID"] == input["operationID"] && o["cardIntent"] == true))
 }
 pub(super) fn apply(root: &Path, input: &Value) -> Result<Value> {
+    check_saved_plan_features(root, input)?;
     ensure!(
         input["confirmed"] == true,
         "Сначала проверьте карточки и подтвердите изменение"

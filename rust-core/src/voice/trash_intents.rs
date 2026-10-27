@@ -80,6 +80,7 @@ fn targets(root: &Path, input: &Value, proposal: &Proposal) -> Result<Vec<Value>
     Ok(all)
 }
 pub(super) fn prepare(root: &Path, input: &Value, proposal: &Proposal) -> Result<Value> {
+    check_action_features(root, &proposal.action)?;
     let mut candidates = targets(root, input, proposal)?;
     for c in &mut candidates {
         c["selected"] = json!(false);
@@ -148,6 +149,7 @@ pub(super) fn choose(root: &Path, input: &Value) -> Result<Value> {
     Ok(public_plan(&plan))
 }
 pub(super) fn apply(root: &Path, input: &Value) -> Result<Value> {
+    check_saved_plan_features(root, input)?;
     ensure!(input["confirmed"] == true, "Подтвердите изменение");
     ensure!(
         input["text"].as_str().unwrap_or("").is_empty(),
@@ -227,7 +229,7 @@ mod tests {
     }
     #[test]
     fn delete_review_retry_and_restore_follow_typed_targets() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::voice::enabled_test_root();
         let root = temp.path();
         let n = notes::save_note(
             root,
@@ -258,7 +260,7 @@ mod tests {
     }
     #[test]
     fn unscoped_delete_cannot_select_whole_library() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::voice::enabled_test_root();
         let root = temp.path();
         let p = prepare(root, &json!({}), &proposal("trashNote")).unwrap();
         assert_eq!(p["status"], "unsupported");

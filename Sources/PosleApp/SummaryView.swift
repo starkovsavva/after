@@ -45,6 +45,7 @@ struct SummaryView: View {
                                 TextEditor(text: Binding(get: { store.selected?.focus ?? "" }, set: { value in
                                     if let id = store.selection { store.updateMeeting(id) { $0.focus = value } }
                                 })).font(AppTypography.body).frame(height: 110).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 6))
+                                MeetingCardGenerationToggle()
                                 Text("Факты берутся из транскрипта. После изменения контекста обновите конспект.")
                                     .font(AppTypography.caption).foregroundStyle(.secondary)
                                 HStack { Spacer(); Button("Готово") { showingFocus = false } }
@@ -250,7 +251,7 @@ struct SummaryView: View {
                 let index = store.summary?.items.firstIndex(where: { $0.id == item.id }) ?? -1
                 let targeted = store.navigationTarget?.meetingID == store.selection && store.navigationTarget?.kind == "item" && store.navigationTarget?.itemIndex == index
                 HStack(alignment: .top, spacing: 12) {
-                    if kind == "action" {
+                    if kind == "action" && store.settings.isEnabled(.tasks) {
                         Button { store.toggleTask(item) } label: {
                             Image(systemName: store.taskCompleted(item) ? "checkmark.circle.fill" : "circle")
                                 .foregroundStyle(Ink.accent).font(.system(size: 18)).frame(width: 30, height: 30).contentShape(Rectangle())
@@ -259,7 +260,7 @@ struct SummaryView: View {
                     } else { Circle().fill(Ink.accent.opacity(0.45)).frame(width: 5, height: 5).padding(.top, 6) }
                     VStack(alignment: .leading, spacing: 7) {
                         Text(item.text).font(AppTypography.body).lineSpacing(5).textSelection(.enabled)
-                            .strikethrough(kind == "action" && store.taskCompleted(item))
+                            .strikethrough(kind == "action" && store.settings.isEnabled(.tasks) && store.taskCompleted(item))
                         if !item.owner.isEmpty || !item.due.isEmpty {
                             HStack(spacing: 12) {
                                 if !item.owner.isEmpty { Label(item.owner, systemImage: "person") }
@@ -277,6 +278,22 @@ struct SummaryView: View {
                     .id("summary-item-\(index)")
             }
         }.padding(.bottom, 4)
+    }
+}
+
+/// Shared by the meeting context popover and native interaction checks.
+struct MeetingCardGenerationToggle: View {
+    @EnvironmentObject private var store: AppStore
+    var body: some View {
+        if store.settings.isEnabled(.cards) {
+            Toggle("Создавать карточки для этой встречи", isOn: Binding(get: {
+                store.selected?.generateCards == true
+            }, set: { enabled in
+                if let id = store.selection { store.updateMeeting(id) { $0.generateCards = enabled } }
+            }))
+            .font(AppTypography.control)
+            .accessibilityIdentifier("summary-generate-cards")
+        }
     }
 }
 

@@ -756,7 +756,16 @@ fn select_calendar(
 fn retrieve(root: &Path, input: &Value) -> Result<Retrieval> {
     retrieve_for(root, input, false)
 }
+fn kind_enabled(features: &crate::ai::AppFeatures, kind: &str) -> bool {
+    match kind {
+        "card" => features.cards,
+        "task" | "code" => features.tasks,
+        "calendar" => features.calendar,
+        _ => true,
+    }
+}
 fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieval> {
+    let features = crate::ai::live_features(root)?;
     ensure!(root.is_absolute(), "Нужен абсолютный путь библиотеки");
     let question = input["text"]
         .as_str()
@@ -772,9 +781,10 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
     let mut warnings = Vec::new();
     let mut truncated = false;
     let mut derived_cache = HashMap::new();
-    let (mut calendar, mut candidates) =
-        calendar_snapshot(input, now, offset, &mut warnings, &mut truncated)?;
-    select_calendar(
+    let (mut calendar, mut candidates) = if features.calendar {
+        calendar_snapshot(input, now, offset, &mut warnings, &mut truncated)?
+    } else { (Value::Null, vec![]) };
+    if features.calendar { select_calendar(
         input,
         now,
         offset,
@@ -783,11 +793,11 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
         &mut candidates,
         &mut warnings,
         &mut truncated,
-    )?;
+    )?; }
 
     // The same canonical task boundary used by UI and MCP supplies current status.
     // Task contexts contain saved linked thoughts; no linked folder is opened.
-    match domain(
+    if features.tasks { match domain(
         root,
         "task-list",
         json!({"agentOnly":false,"includeDetails":false}),
@@ -919,7 +929,7 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
             &mut warnings,
             "Текущие задачи недоступны; ответ может быть неполным.",
         ),
-    }
+    } }
     match crate::notes::list(root) {
         Ok(workspace) => {
             let mut notes: Vec<_> = workspace
@@ -1006,7 +1016,7 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
         .iter()
         .flat_map(|query| {
             ["all", "transcript", "cards"]
-                .into_iter()
+                .into_iter().filter(|scope| *scope != "cards" || features.cards)
                 .map(move |scope| {
                     (
                         query.clone(),
@@ -1046,6 +1056,7 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
                         "overview" | "item" => "summary",
                         _ => continue,
                     };
+                    if !kind_enabled(&features, kind) { continue; }
                     let full = hit["text"].as_str().unwrap_or("");
                     let excerpt = if full.len() <= MAX_EXCERPT {
                         full
@@ -1110,7 +1121,7 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
     }
     // Semantic ranks are ordinal votes, never added to raw BM25 scores. Model
     // outages preserve lexical retrieval and never block access to originals.
-    if !queries.is_empty() {
+    if features.semantic_search && !queries.is_empty() {
         let key = input["embeddingAPIKey"].as_str().unwrap_or("");
         match crate::semantic::search(
             root,
@@ -1157,7 +1168,7 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
     }
     // Code search also remains useful without an embedding service. No folders
     // are traversed until a separate per-material grant exists.
-    if !queries.is_empty() {
+    if features.tasks && !queries.is_empty() {
         let mut rank = 0;
         for phrase in &queries {
             if let Ok(found) = crate::code_index::dispatch(
@@ -1289,6 +1300,8 @@ pub fn lookup(root: &Path, input: &Value) -> Result<Value> {
 pub(crate) fn embedding_documents(
     root: &Path,
 ) -> Result<(Vec<crate::semantic::EmbeddingDocument>, Vec<String>)> {
+    let features = crate::ai::live_features(root)?;
+    if !features.semantic_search { return Ok((vec![], vec![])); }
     let mut docs = Vec::new();
     let mut warnings = Vec::new();
     let mut derived_cache = HashMap::new();
@@ -1307,6 +1320,7 @@ pub(crate) fn embedding_documents(
             "card" => "card",
             _ => continue,
         };
+        if !kind_enabled(&features, kind) { continue; }
         let body = hit["text"].as_str().unwrap_or("");
         let mut s = source(
             kind,
@@ -1383,6 +1397,7 @@ pub(crate) fn embedding_documents(
         }
     }
     let mut task_rows = Vec::new();
+    if features.tasks {
     let mut offset = 0usize;
     loop {
         let list = domain(
@@ -1399,6 +1414,7 @@ pub(crate) fn embedding_documents(
             break;
         }
         offset = next as usize;
+    }
     }
     for task in task_rows {
         let Some(id) = task["id"].as_str() else {
@@ -1456,6 +1472,7 @@ fn answer_with(
     input: &Value,
     mut generate: impl FnMut(&Value) -> Result<Value>,
 ) -> Result<Value> {
+    ensure!(crate::ai::live_features(root)?.assistant, "Включите «Помощник» в настройках → Возможности.");
     let mut retrieval = retrieve(root, input)?;
     // Retrieval may await an embedding provider. Recheck before sending any
     // evidence to the generative model, including newly revoked cloud grants.
@@ -1472,7 +1489,10 @@ fn answer_with(
     if retrieval.candidates.is_empty() {
         return Ok(fallback(retrieval.warnings, retrieval.truncated));
     }
-    let draft: Draft = serde_json::from_value(generate(&prompt)?)
+    ensure!(crate::ai::live_features(root)?.assistant, "Включите «Помощник» в настройках → Возможности.");
+    let generated = generate(&prompt)?;
+    ensure!(crate::ai::live_features(root)?.assistant, "Помощник выключен. Ответ не опубликован.");
+    let draft: Draft = serde_json::from_value(generated)
         .context("Помощник вернул неподходящий формат ответа")?;
     ensure!(
         bounded(&draft.title, 300) && draft.paragraphs.len() <= 10,
@@ -1549,6 +1569,8 @@ pub fn validate_source(root: &Path, input: &Value) -> Result<Value> {
     Ok(json!({"valid":result}))
 }
 fn current(root: &Path, s: &Source, input: &Value) -> Result<bool> {
+    let features = crate::ai::live_features(root)?;
+    if !kind_enabled(&features, &s.kind) { return Ok(false); }
     if !root.is_absolute()
         || !bounded(&s.id, 64)
         || !s.id.starts_with("s_")
@@ -1624,6 +1646,7 @@ fn current(root: &Path, s: &Source, input: &Value) -> Result<bool> {
                 return Ok(false);
             }
             let dir = root.join("meetings").join(id);
+            if !features.cards && safe_json(&dir.join("meta.json"), 1_048_576).is_ok_and(|meta| meta["libraryKind"] == "cards") { return Ok(false); }
             if ["summary", "card"].contains(&s.kind.as_str()) {
                 let state = derived_state(root, id)?;
                 return Ok(if s.kind == "card" {

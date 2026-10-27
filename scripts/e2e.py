@@ -280,10 +280,10 @@ def run(engine, library, temporary):
                          "speaker": "speaker_1" if index % 2 == 0 else "speaker_2", "text": text, "overlap": False})
     transcript = {"duration": 20, "segments": segments, "warnings": [], "model": "synthetic transcript fixture"}
     core.write(f"meetings/{meeting_id}/transcript.json", transcript)
-    core.cli("update", stdin={"id": meeting_id, "patch": {"status": "transcribed", "duration": 20, "speakerNames": {"speaker_1": "Анна", "speaker_2": "Борис"}}})
+    core.cli("update", stdin={"id": meeting_id, "patch": {"status": "transcribed", "duration": 20, "speakerNames": {"speaker_1": "Анна", "speaker_2": "Борис"}, "generateCards": True}})
     transcript_hash = digest(directory / "transcript.json")
     with localhost_fixture() as (server, endpoint):
-        settings = {"mode": "local", "localProvider": "ollama", "localEndpoint": endpoint, "localModel": MODEL, "language": "ru", "focus": ""}
+        settings = {"features": {"cards": True, "assistant": True}, "mode": "local", "localProvider": "ollama", "localEndpoint": endpoint, "localModel": MODEL, "language": "ru", "focus": ""}
         core.write("settings.json", settings)
         start = server.phase()
         core.cli("summarize", "--meeting", directory)

@@ -149,6 +149,9 @@ fn note(root: &Path, id: &str, text: &str) -> Value {
     crate::notes::dispatch(root,&json!({"command":"note-save","note":{"id":id,"kind":"note","title":text,"text":text,"createdAt":1,"updatedAt":1,"revision":0}})).unwrap()
 }
 fn configure(root: &Path, c: &Config) {
+    let mut settings: Value = fs::read(root.join("settings.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or(json!({}));
+    settings["features"] = json!({"semanticSearch":true,"assistant":true,"cards":true,"tasks":true});
+    crate::storage::atomic_json(&root.join("settings.json"), &settings).unwrap();
     dispatch(root, &json!({"command":"semantic-config","config":c})).unwrap();
 }
 
@@ -333,6 +336,7 @@ fn revoking_folder_during_one_batch_prevents_all_later_requests() {
     let task=crate::task_workspace::dispatch(&root,&json!({"command":"task-material-link","taskID":task["id"],"expectedRevision":task["revision"],"operationID":uuid::Uuid::new_v4().to_string(),"material":{"kind":"repository","title":"Code","path":code}})).unwrap();
     let task_id = task["id"].as_str().unwrap().to_owned();
     let material = task["materials"][0]["id"].as_str().unwrap().to_owned();
+    crate::storage::atomic_json(&root.join("settings.json"), &json!({"features":{"tasks":true}})).unwrap();
     crate::code_index::dispatch(&root,&json!({"command":"code-index-grant","taskID":task_id,"materialID":material,"enabled":true})).unwrap();
     let fixture = Fixture::start();
     configure(&root, &fixture.config());
@@ -356,4 +360,38 @@ fn revoking_folder_during_one_batch_prevents_all_later_requests() {
         refresh(&root, &json!({"maxDocuments":32})).unwrap()["complete"],
         true
     );
+}
+
+#[test]
+fn module_off_blocks_semantic_network_before_any_provider_call() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let fixture = Fixture::start();
+    dispatch(&root, &json!({"command":"semantic-config","config":fixture.config()})).unwrap();
+    note(&root, "a", "Resilience");
+    assert!(refresh(&root, &json!({})).unwrap_err().to_string().contains("Включите"));
+    assert_eq!(search(&root,"resilience",10,"",None).unwrap()["enabled"], false);
+    for command in ["semantic-check","semantic-models","semantic-pull"] {
+        assert!(dispatch(&root,&json!({"command":command})).unwrap_err().to_string().contains("Включите"));
+    }
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
+}
+#[test]
+fn module_revocation_during_embedding_discards_vectors_and_stops_further_batches() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let fixture = Fixture::start(); configure(&root, &fixture.config());
+    for i in 0..12 { note(&root, &format!("n-{i}"), "Resilience"); }
+    let changed = root.clone();
+    *fixture.hook.lock().unwrap() = Some(Box::new(move || {
+        crate::storage::atomic_json(&changed.join("settings.json"), &json!({"features":{}})).unwrap();
+    }));
+    assert!(refresh(&root, &json!({"maxDocuments":32})).is_err());
+    assert_eq!(fixture.calls.load(Ordering::SeqCst),1);
+    let db=connection(&root).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM vectors",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert!(db.query_row("SELECT value FROM state WHERE key='active'",[],|r|r.get::<_,String>(0)).optional().unwrap().is_none());
+    assert_eq!(crate::notes::list(&root).unwrap().notes.len(),12);
+    configure(&root, &fixture.config());
+    assert_eq!(refresh(&root,&json!({"maxDocuments":32})).unwrap()["complete"],true);
 }
