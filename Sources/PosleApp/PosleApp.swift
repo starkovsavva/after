@@ -151,6 +151,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-trash") {
+            Task {
+                do { try await TrashNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native trash check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-integrations") {
             Task {
                 do { try await IntegrationNativeChecks.run(); NSApp.terminate(nil) }

@@ -10,6 +10,8 @@ public struct Meeting: Codable, Identifiable, Hashable {
     public var speakerNames: [String: String]
     public var completedTasks: [String]
     public var focus: String
+    /// Optional framing supplied by the user, never transcript evidence.
+    public var meetingPurpose: String? = nil
     public var recordingTracks: Bool = false
     public var hasVideo: Bool = false
     public var recordingAudioQuality: String?
@@ -225,6 +227,7 @@ public struct AppSettings: Codable {
     public var diarization = true
     public var speakerCount = 0
     public var autoSummary = true
+    public var summaryUserContext = ""
     public var focus = "Решения, задачи, ответственные, сроки, точные цифры, требования и риски. Полезные английские фразы и важные понятия для запоминания."
     public init() {}
 
@@ -294,7 +297,7 @@ public struct AppSettings: Codable {
         case startSection, recordSystemAudio, recordVideo, quickCaptureEnabled, bookmarkShortcutEnabled, voiceShortcutEnabled, quickCaptureShortcut, notesAutoTimestamp, notesSaveToActiveMeeting, defaultTemplateID
         case mode, localModel, localProvider, localEndpoint, asrModelPath, asrModelFormat
         case speechMode, speechLocalModel, speechCloudProvider, speechCloudEndpoint, speechCloudModel, speechResponseFormat, speechLanguage
-        case cloudModel, cloudProvider, cloudEndpoint, cloudAPI, cloudOutput, cloudReasoning, chatGPTAccountID, cloudProfiles, language, diarization, speakerCount, autoSummary, focus
+        case cloudModel, cloudProvider, cloudEndpoint, cloudAPI, cloudOutput, cloudReasoning, chatGPTAccountID, cloudProfiles, language, diarization, speakerCount, autoSummary, focus, summaryUserContext
     }
 
     // Defaults are applied per field, so adding settings never resets an existing setup.
@@ -340,6 +343,7 @@ public struct AppSettings: Codable {
         speakerCount = try values.decodeIfPresent(Int.self, forKey: .speakerCount) ?? speakerCount
         autoSummary = try values.decodeIfPresent(Bool.self, forKey: .autoSummary) ?? autoSummary
         focus = try values.decodeIfPresent(String.self, forKey: .focus) ?? focus
+        summaryUserContext = try values.decodeIfPresent(String.self, forKey: .summaryUserContext) ?? summaryUserContext
     }
 }
 

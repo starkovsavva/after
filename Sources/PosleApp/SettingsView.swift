@@ -266,6 +266,8 @@ struct SettingsView: View {
             Picker("Язык конспекта", selection: $store.settings.language) {
                 Text("Русский").tag("ru"); Text("English").tag("en")
             }.frame(maxWidth: 340)
+            Divider().padding(.vertical, 8)
+            SummaryContextSettingsView()
         }
     }
     private var focusSettings: some View {

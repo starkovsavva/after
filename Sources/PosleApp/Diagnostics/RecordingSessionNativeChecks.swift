@@ -24,10 +24,13 @@ enum RecordingSessionNativeChecks {
         await store.startRecording(systemAudio: false, title: "Запись без установленной модели")
         try expect(store.isRecording && store.captureMeetingID != nil, "Model setup or unrelated work blocked capture")
         let first = store.captureMeetingID!
-        store.busy = false; await store.stopRecording()
+        store.busy = false; store.processAfterRecording = false
+        let savingWithoutModels = Task { await store.stopRecording() }
+        try await wait { await gate.started(first) }
+        await gate.release(first); await savingWithoutModels.value
         try expect(!store.isRecording && store.captureMeetingID == nil && store.recordingAssertion == 0, "Raw capture did not release its lifecycle/power lease")
         try expect(FileManager.default.fileExists(atPath: store.meetingDirectory(first).appendingPathComponent("recording.m4a").path), "Recording without models did not preserve its source")
-        print("PASS: actual capture flow saves source without models while unrelated preparation is busy")
+        print("PASS: actual capture saves source and admits media finalization without installed ASR models")
 
         store.runtimeReady = true; store.settings.autoSummary = false
         for fails in [false, true] {

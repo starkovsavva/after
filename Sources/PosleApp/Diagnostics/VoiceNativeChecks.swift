@@ -202,6 +202,14 @@ enum VoiceNativeChecks {
         voice.openResult(); try expect(store.summary?.cards.count == 1, "Created cards must open for in-app study")
         voice.undo(); try await waitUntil { !voice.isWorking && !store.busy }; try expect(!store.meetings.contains { $0.libraryKind == "cards" }, "Undo removes only untouched created deck")
         print("PASS: voice-created cards are usable in the existing study system and undoable")
+        try fixture("createCards", title: "Следующий шаг", cards: [["kind": "phrase", "front": "Следующий шаг", "back": "Next step", "context": "Пример: Let's agree on the next step."]])
+        prepare("Сделай ещё одну карточку")
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        let newDeck = try required(voice.result?.target.meetingID ?? voice.result?.target.id, "Created deck target")
+        voice.continueCommand()
+        try expect(voice.phase == .editing && voice.selectedContextForChecks == ["meetingID":newDeck], "Command continuation must select the NEW deck, without stale task/note scope")
+        print("PASS: continuing a card creation targets the created deck and drops stale selected objects")
+
 
         // A library question ignores the selected task/project and produces an
         // ephemeral answer rather than a plan or an undoable write operation.

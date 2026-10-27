@@ -2,7 +2,7 @@ mod python_host;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use posle_core::{ai, models, search, storage, worker};
+use posle_core::{ai, media, models, search, storage, worker};
 use serde_json::{json, Value};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -62,8 +62,9 @@ fn run(args: Args) -> Result<Value> {
     } else { None };
     let required = || directory.as_deref().context("Выберите встречу");
     match args.command {
-        Command::Prepare | Command::Transcribe | Command::Diarize | Command::Finalize | Command::InstallLocal => {
-            let command = match args.command { Command::Prepare=>"prepare", Command::Transcribe=>"transcribe", Command::Diarize=>"diarize", Command::Finalize=>"finalize", _=>"install-local" };
+        Command::Finalize => { media::finalize(&args.root, required()?)?; Ok(json!({})) }
+        Command::Prepare | Command::Transcribe | Command::Diarize | Command::InstallLocal => {
+            let command = match args.command { Command::Prepare=>"prepare", Command::Transcribe=>"transcribe", Command::Diarize=>"diarize", _=>"install-local" };
             worker::run_worker(&args.root, &backend, command, directory.as_deref(), args.speakers, !args.no_diarization)?;
             Ok(json!({}))
         }

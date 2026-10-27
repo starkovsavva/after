@@ -655,3 +655,29 @@ fn native_metadata_has_no_implicit_cap_and_mcp_pagination_has_no_duplicates() {
     )
     .is_err());
 }
+
+#[test]
+fn trashed_and_purged_source_alias_cannot_recreate_a_task() {
+    let root=tempfile::tempdir().unwrap();
+    let dir=storage::meeting_directory(root.path(),"deleted-source").unwrap();std::fs::create_dir_all(&dir).unwrap();
+    storage::atomic_json(&dir.join("meta.json"),&json!({"id":"deleted-source","title":"Sync","createdAt":1.0,"source":"source.mp3"})).unwrap();
+    let item=json!({"kind":"action","text":"Follow up on launch","owner":"","due":"","segmentIDs":[7]});
+    storage::atomic_json(&dir.join("summary.json"),&json!({"items":[item]})).unwrap();
+    let alias=format!("summary:deleted-source:{}",notes::task_signature(&item));
+    let original=get(root.path(),&json!(alias));
+    let materialized=patch(root.path(),&original,json!({"status":"doing"}));
+    let note=notes::list(root.path()).unwrap().notes.into_iter().find(|n|format!("manual:{}",n.id)==materialized["id"].as_str().unwrap()).unwrap();
+    let deleted=notes::trash_note(root.path(),&note.id,note.revision,false).unwrap();
+    assert!(call(root.path(),"task-get",json!({"taskID":alias})).is_err());
+    assert!(call(root.path(),"task-context",json!({"taskID":alias})).is_err());
+    assert!(call(root.path(),"task-details-update",json!({"taskID":alias,"expectedRevision":0,"expectedSourceFingerprint":original["sourceFingerprint"],"operationID":uuid(),"patch":{"status":"doing"}})).is_err());
+    assert_eq!(notes::list(root.path()).unwrap().notes.len(),1);
+    let restored=notes::trash_note(root.path(),&note.id,deleted.revision,true).unwrap();
+    assert_eq!(get(root.path(),&json!(alias))["id"],materialized["id"]);
+    notes::delete_note(root.path(),&note.id,restored.revision).unwrap();
+    assert!(call(root.path(),"task-get",json!({"taskID":alias})).is_err());
+    assert!(call(root.path(),"task-context",json!({"taskID":alias})).is_err());
+    assert!(call(root.path(),"task-details-update",json!({"taskID":alias,"expectedRevision":0,"expectedSourceFingerprint":original["sourceFingerprint"],"operationID":uuid(),"patch":{"status":"doing"}})).is_err());
+    assert_eq!(notes::list(root.path()).unwrap().notes.len(),1);
+    assert!(call(root.path(),"task-list",json!({})).unwrap()["tasks"].as_array().unwrap().is_empty());
+}

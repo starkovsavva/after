@@ -28,14 +28,25 @@ struct SummaryView: View {
                         .menuStyle(.borderlessButton).frame(width: 110).disabled(overviewLocked || overviewEditing)
                         .onChange(of: store.settings.mode) { _, _ in store.saveSettings() }
                     Button { showingFocus = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).foregroundStyle(.secondary).disabled(overviewLocked || overviewEditing).accessibilityLabel("Фокус конспекта")
-                        .help("Что важно выписать из встречи")
+                        .buttonStyle(.plain).foregroundStyle(.secondary).disabled(overviewLocked || overviewEditing).accessibilityLabel("Контекст встречи")
+                        .help("Цель встречи и что важно выписать")
                         .popover(isPresented: $showingFocus) {
                             VStack(alignment: .leading, spacing: 12) {
-                                Text("Фокус конспекта").font(AppTypography.heading)
+                                Text("Контекст встречи").font(AppTypography.heading)
+                                Text("Цель встречи").font(AppTypography.control)
+                                TextField("Например: синк с руководителем о прогрессе и следующих шагах", text: Binding(get: { store.selected?.meetingPurpose ?? "" }, set: { value in
+                                    if let id = store.selection {
+                                        store.updateMeeting(id) { $0.meetingPurpose = String(value.prefix(300)) }
+                                    }
+                                }), axis: .vertical)
+                                    .font(AppTypography.control).lineLimit(2...4).textFieldStyle(.roundedBorder)
+                                    .accessibilityLabel("Цель встречи")
+                                Text("На что обратить внимание").font(AppTypography.control)
                                 TextEditor(text: Binding(get: { store.selected?.focus ?? "" }, set: { value in
                                     if let id = store.selection { store.updateMeeting(id) { $0.focus = value } }
                                 })).font(AppTypography.body).frame(height: 110).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 6))
+                                Text("Факты берутся из транскрипта. После изменения контекста обновите конспект.")
+                                    .font(AppTypography.caption).foregroundStyle(.secondary)
                                 HStack { Spacer(); Button("Готово") { showingFocus = false } }
                             }.padding(20).frame(width: 420)
                         }
@@ -48,9 +59,7 @@ struct SummaryView: View {
                     }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(overviewLocked || overviewEditing)
                 }
                 if store.settings.mode == "cloud" {
-                    Text(store.settings.cloudProvider == "chatgpt"
-                         ? "ChatGPT получит текст встречи. Используются лимиты вашей подписки."
-                         : "\(store.settings.cloudProviderTitle) получит текст встречи. Запрос оплачивается через API.")
+                    Text(cloudContextDisclosure)
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }
 
@@ -136,6 +145,15 @@ struct SummaryView: View {
         }
         }
     }
+    private var cloudContextDisclosure: String {
+        let hasContext = !store.settings.summaryUserContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !(store.selected?.meetingPurpose ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let content = hasContext ? "текст встречи и указанный контекст" : "текст встречи"
+        return store.settings.cloudProvider == "chatgpt"
+            ? "ChatGPT получит \(content). Используются лимиты вашей подписки."
+            : "\(store.settings.cloudProviderTitle) получит \(content). Запрос оплачивается через API."
+    }
+
     private var overviewEditor: some View {
         VStack(alignment: .leading, spacing: 12) {
             TextEditor(text: Binding(get: { overviewDraft }, set: { text in

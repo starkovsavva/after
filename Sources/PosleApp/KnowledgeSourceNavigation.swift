@@ -4,6 +4,22 @@ import PosleCore
 
 /// Call only after core validation of the original source fingerprint.
 extension AppStore {
+    /// Read the current metadata instead of trusting a sidebar snapshot: a
+    /// meeting can have moved to Trash since search generated this note source.
+    /// The independent note stays editable and keeps its historical link.
+    func openCapturedNote(_ note: CapturedNote) {
+        if let id = note.meetingID,
+           let meeting: Meeting = self.read(self.meetingDirectory(id).appendingPathComponent("meta.json")),
+           meeting.id == id, meeting.libraryKind != "cards" {
+            self.openMeeting(id, tab: "notes")
+        } else {
+            self.librarySection = "inbox"
+            self.pause()
+        }
+        self.notes.selectedNoteID = note.id
+        self.notes.highlightedNoteID = note.id
+    }
+
     func revealKnowledgeSource(_ source: KnowledgeSource, calendar: KnowledgeCalendarSnapshot? = nil) throws {
         switch source.kind {
         case "task":
@@ -13,9 +29,7 @@ extension AppStore {
             guard let id = source.noteID else { throw AppError.message("Заметка больше недоступна.") }
             self.notes.reload()
             guard let note = self.notes.notes.first(where: { $0.id == id }) else { throw AppError.message("Заметка больше недоступна.") }
-            if let meeting = note.meetingID { self.openMeeting(meeting, tab: "notes") }
-            else { self.librarySection = "inbox"; self.pause() }
-            self.notes.selectedNoteID = id; self.notes.highlightedNoteID = id
+            self.openCapturedNote(note)
         case "meeting", "transcript", "summary", "card":
             guard let id = source.meetingID else { throw AppError.message("Встреча больше недоступна.") }
             self.openMeeting(id, tab: source.kind == "transcript" ? "transcript" : source.kind == "card" ? "cards" : "summary", segmentID: source.kind == "transcript" ? source.segmentID : nil)

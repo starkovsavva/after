@@ -74,16 +74,12 @@ extension AppStore {
             notice = "Исходная запись сохранена. Обработку можно запустить после открытия приложения."
             return
         }
-        guard runtimeReady else {
-            notice = "Исходная запись сохранена. Подготовьте распознавание, чтобы получить MP3 и текст."
-            return
-        }
         do {
             try await worker("finalize", id: id)
             if let fresh: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")),
                let index = meetings.firstIndex(where: { $0.id == id }) { meetings[index] = fresh }
-            if transcribeAfterSave { await processMeeting(id) }
-            else { notice = "Встреча записана и сохранена в MP3." }
+            if transcribeAfterSave && runtimeReady { await processMeeting(id) }
+            else { notice = runtimeReady ? "Встреча записана и сохранена в MP3." : "Встреча сохранена в MP3. Для транскрипции подготовьте распознавание в настройках." }
         } catch is CancellationError {
             notice = Self.stoppedProcessingMessage
         } catch {

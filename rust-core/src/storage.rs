@@ -21,7 +21,7 @@ const ALLOWED_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "m4a", "mp3", "wav", "aiff", "aif", "caf", "flac", "ogg", "webm", "mkv", "aac",
 ];
 const MUTABLE_META_FIELDS: &[&str] = &[
-    "title", "focus", "status", "duration", "speakerNames", "completedTasks",
+    "title", "focus", "meetingPurpose", "status", "duration", "speakerNames", "completedTasks",
     "recordingTracks", "hasVideo", "error",
 ];
 
@@ -174,6 +174,7 @@ fn validate_patch(patch: &Map<String, Value>) -> Result<()> {
         let valid = match key.as_str() {
             "title" => value.as_str().is_some_and(|text| !text.trim().is_empty()),
             "focus" => value.is_string(),
+            "meetingPurpose" => value.is_null() || value.as_str().is_some_and(|text| text.chars().count() <= 300),
             "status" => value.as_str().is_some_and(|status| ["imported", "recording", "processing", "transcribed", "ready"].contains(&status)),
             "duration" => value.as_f64().is_some_and(|duration| duration.is_finite() && duration >= 0.0),
             "speakerNames" => value.as_object().is_some_and(|names| names.values().all(Value::is_string)),
@@ -439,6 +440,19 @@ mod tests {
         assert_eq!(changed["title"], meta["title"]);
         assert_eq!(changed["speakerNames"]["speaker_0"], "Мария");
         assert_eq!(changed["futureMetadata"], json!({"preserve": true}));
+    }
+
+    #[test]
+    fn meeting_purpose_is_an_optional_user_editable_metadata_field() {
+        let temp = TestDirectory::new(); let meta = temp.meeting(); let root = temp.0.join("data");
+        let id = meta["id"].as_str().unwrap();
+        let purpose = "Синк с руководителем о прогрессе и следующих шагах";
+        let updated = update_meta(&root, id, &json!({"meetingPurpose":purpose})).unwrap();
+        assert_eq!(updated["meetingPurpose"],purpose);
+        assert_eq!(list_meetings(&root).unwrap()[0]["meetingPurpose"],purpose);
+        assert!(update_meta(&root,id,&json!({"meetingPurpose":12})).is_err());
+        assert!(update_meta(&root,id,&json!({"meetingPurpose":"x".repeat(301)})).is_err());
+        assert_eq!(update_meta(&root,id,&json!({"meetingPurpose":null})).unwrap()["meetingPurpose"],Value::Null);
     }
 
     #[test]

@@ -236,14 +236,33 @@ pub fn save_note(root: &Path,mut note: CapturedNote) -> Result<CapturedNote> {
 pub fn trash_note(root:&Path,id:&str,revision:u64,restore:bool) -> Result<CapturedNote> {
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
     let note=expected(&mut data,id,revision)?;
-    note.trashed_at=if restore { None } else { Some(now()) };
+    if restore {
+        ensure!(note.trashed_at.is_some_and(|deleted| deleted <= now() && now()-deleted < crate::trash::RETENTION_SECONDS), "Срок восстановления заметки истёк");
+    }
+    note.trashed_at=if restore { None } else { note.trashed_at.or_else(||Some(now())) };
     note.revision=bumped(note.revision)?; note.updated_at=now();
     let result=note.clone(); persist(&dir,&data)?; Ok(result)
 }
+pub(crate) fn is_task_tombstone(note: &CapturedNote) -> bool {
+    note.task_origin.as_ref().is_some_and(|origin| origin["sourceText"] == "")
+        && note.trashed_at.is_some_and(|deleted| now()-deleted >= crate::trash::RETENTION_SECONDS)
+        && note.text.is_empty() && note.title.is_empty() && note.attachments.is_empty()
+}
 pub fn delete_note(root:&Path,id:&str,revision:u64) -> Result<Value> {
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
-    let attachments=expected(&mut data,id,revision)?.attachments.clone();
-    data.notes.retain(|note|note.id != id); persist(&dir,&data)?;
+    let current=expected(&mut data,id,revision)?;
+    if is_task_tombstone(current) { return Ok(json!({"deleted":true})); }
+    let attachments=current.attachments.clone();
+    if let Some(note)=data.notes.iter_mut().find(|note|note.id==id && note.task_origin.is_some()) {
+        // Keep only a source tombstone: otherwise the unchanged summary would
+        // re-create a deleted task after retention cleanup.
+        let origin=note.task_origin.as_ref().unwrap();
+        note.task_origin=Some(json!({"meetingID":origin["meetingID"],"itemSignature":origin["itemSignature"],"sourceText":"","segmentIDs":[],"summaryTaskID":""}));
+        note.text.clear(); note.title.clear(); note.content_rtf.clear(); note.owner.clear(); note.due.clear();
+        note.source_url.clear(); note.tags.clear(); note.attachments.clear(); note.history.clear(); note.subtasks.clear(); note.expansion=None;
+        note.trashed_at=Some(now()-crate::trash::RETENTION_SECONDS-1.0); note.revision=bumped(note.revision)?; note.updated_at=now();
+    } else { data.notes.retain(|note|note.id != id); }
+    persist(&dir,&data)?;
     for attachment in attachments { let _=remove_owned_attachment(root,&attachment); }
     Ok(json!({"deleted":true}))
 }

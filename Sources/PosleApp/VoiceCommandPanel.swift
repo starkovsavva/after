@@ -52,6 +52,7 @@ struct VoiceCommandPanel: View {
                     if result.canUndo { Button("Отменить изменение") { controller.undo() }.buttonStyle(.borderless).disabled(controller.isWorking) }
                     if controller.isWorking { ProgressView().controlSize(.small) }
                     Spacer()
+                    Button("Продолжить") { controller.continueCommand(); commandFocused = true }.buttonStyle(.borderless).disabled(controller.isWorking)
                     Button { controller.reset(); commandFocused = true } label: { Image(systemName: "plus").frame(width: 24, height: 24) }
                         .buttonStyle(.plain).disabled(controller.isWorking).help("Новое поручение").accessibilityLabel("Новое поручение")
                 }
@@ -68,7 +69,7 @@ struct VoiceCommandPanel: View {
                     Text(plan.detail).font(AppTypography.control).foregroundStyle(.secondary)
                 }
                 HStack {
-                    Text("Задачи").font(AppTypography.control.weight(.medium))
+                    Text(reviewLabel(plan.action)).font(AppTypography.control.weight(.medium))
                     Spacer()
                     Text("Выбрано: \(controller.selectedTargetIDs.count)")
                         .font(AppTypography.caption).foregroundStyle(.secondary)
@@ -88,9 +89,9 @@ struct VoiceCommandPanel: View {
                                         }
                                     }
                                     if let reason = candidate.reason, !reason.isEmpty {
-                                        Text(reason).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(3)
+                                        Text(reason).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit((plan.action ?? "").contains("Cards") ? 8 : 3).textSelection(.enabled)
                                     } else if !candidate.detail.isEmpty {
-                                        Text(candidate.detail).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2)
+                                        Text(candidate.detail).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit((plan.action ?? "").contains("Cards") ? 8 : 3)
                                     }
                                 }
                             }
@@ -124,7 +125,7 @@ struct VoiceCommandPanel: View {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(candidate.title).font(AppTypography.body).lineLimit(2)
-                                        if !candidate.detail.isEmpty { Text(candidate.detail).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2) }
+                                        if !candidate.detail.isEmpty { Text(candidate.detail).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit((plan.action ?? "").contains("Cards") ? 8 : 3) }
                                     }
                                     Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary)
                                 }.padding(.vertical, 10).padding(.horizontal, 8).contentShape(Rectangle())
@@ -178,6 +179,13 @@ struct VoiceCommandPanel: View {
         .onAppear { commandFocused = true }
         .onExitCommand { controller.dismiss() }
         .accessibilityElement(children: .contain).accessibilityLabel("Помощник")
+    }
+    private func reviewLabel(_ action: String?) -> String {
+        let value = action ?? ""
+        if value.contains("Cards") { return "Карточки" }
+        if value.hasSuffix("Meeting") { return "Встреча" }
+        if value.hasSuffix("Note") { return "Заметка" }
+        return "Задачи"
     }
     private var phaseLabel: String {
         switch controller.phase {

@@ -14,6 +14,7 @@ final class AppStore: ObservableObject {
     let trackerSync: TrackerSyncCoordinator
     let updates = AppUpdateController()
     let voice = VoiceCommandController()
+    var assistantCardMeetingID: String?
     let jobs: BackgroundJobsController
     private var jobsSubscription: AnyCancellable?
     @Published var startingRecording = false
@@ -381,7 +382,7 @@ final class AppStore: ObservableObject {
     private func legacyWorker(_ command: String, id: String? = nil, extra: [String] = [], input: Data? = nil) async throws -> WorkerEvent? {
         guard !cancellationRequested, !isTerminating else { throw CancellationError() }
         let configuration = settings
-        if ["transcribe", "finalize", "install-local", "import-gguf"].contains(command) && !runtimeReady {
+        if ["transcribe", "install-local", "import-gguf"].contains(command) && !runtimeReady {
             throw AppError.message("Сначала подготовьте распознавание в настройках.")
         }
         if command == "pull" && configuration.localProvider != "managed" {
@@ -417,7 +418,7 @@ final class AppStore: ObservableObject {
             }
         }
         let result: WorkerEvent?
-        if command == "diarize" || command == "finalize" || (command == "transcribe" && configuration.speechMode == "local") {
+        if command == "diarize" || (command == "transcribe" && configuration.speechMode == "local") {
             let speakerIndex = extra.firstIndex(of: "--speakers")
             let speakers = speakerIndex.flatMap { extra.indices.contains($0 + 1) ? Int(extra[$0 + 1]) : nil } ?? configuration.speakerCount
             result = try await embeddedSpeech.run(root: root, interpreter: python, backend: backend, command: command,
@@ -1076,10 +1077,15 @@ final class AppStore: ObservableObject {
         }
     }
     func trashSelected() {
-        guard let directory = selectedDirectory, !busy, !isRecording else { return }
+        guard let meeting = selected, !busy, !isRecording else { return }
         do {
-            try FileManager.default.trashItem(at: directory, resultingItemURL: nil)
+            let bridge = try RustBridge.shared.get()
+            let snapshot = try bridge.request(root: root, command: "trash-snapshot", arguments: ["kind": "meeting", "id": meeting.id, "restore": false])
+            struct Snapshot: Decodable { var fingerprint: String }
+            let expected = try JSONDecoder().decode(Snapshot.self, from: snapshot)
+            _ = try bridge.request(root: root, command: "trash-change", arguments: ["kind": "meeting", "id": meeting.id, "restore": false, "expectedFingerprint": expected.fingerprint, "operationID": UUID().uuidString.lowercased()])
             reloadLibrary(); selection = meetings.first?.id; loadSelection()
+            notice = "Встреча в Корзине. Её можно восстановить в течение 30 дней."
         } catch { self.error = error.localizedDescription }
     }
     func exportAudio() {

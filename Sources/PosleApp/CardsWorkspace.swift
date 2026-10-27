@@ -108,7 +108,7 @@ final class CardsWorkspace: ObservableObject {
                 var args = Self.arguments(entry); args["suspended"] = !entry.suspended
                 return try RustBridge.shared.get().request(root: root, command: delete ? "card-delete" : "card-suspend", arguments: args)
             }.value
-            message = delete ? "Карточка удалена" : entry.suspended ? "Карточка вернулась в повторение" : "Карточка исключена из повторения"
+            message = delete ? "Карточка в Корзине" : entry.suspended ? "Карточка вернулась в повторение" : "Карточка исключена из повторения"
             error = nil
             await reload(root: root, meetingID: meetingID)
         } catch { self.error = error.localizedDescription }

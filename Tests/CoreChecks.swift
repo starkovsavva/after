@@ -29,14 +29,16 @@ struct CoreChecks {
 
         var meeting = Meeting(title: "Встреча / Meeting", source: "source.mov")
         meeting.speakerNames["speaker_1"] = "Аня"
+        meeting.meetingPurpose = "Синк с руководителем о прогрессе"
         meeting.completedTasks = ["commitment-1"]; meeting.recordingTracks = true; meeting.hasVideo = true
         meeting.recordingAudioQuality = "high"; meeting.recordingVideoQuality = "native"; meeting.recordingDisplayUUID = "display-fixture"
         let copy = try JSONDecoder().decode(Meeting.self, from: JSONEncoder().encode(meeting))
         expect(copy == meeting, "metadata round trip")
         var legacyMeetingObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(meeting)) as! [String: Any]
-        for key in ["recordingAudioQuality", "recordingVideoQuality", "recordingDisplayUUID"] { legacyMeetingObject.removeValue(forKey: key) }
+        for key in ["recordingAudioQuality", "recordingVideoQuality", "recordingDisplayUUID", "meetingPurpose"] { legacyMeetingObject.removeValue(forKey: key) }
         let legacyMeeting = try JSONDecoder().decode(Meeting.self, from: JSONSerialization.data(withJSONObject: legacyMeetingObject))
         expect(legacyMeeting.recordingAudioQuality == nil && legacyMeeting.recordingVideoQuality == nil && legacyMeeting.recordingDisplayUUID == nil, "old recordings do not fabricate quality or monitor metadata")
+        expect(legacyMeeting.meetingPurpose == nil && copy.meetingPurpose == meeting.meetingPurpose, "meeting purpose remains optional on legacy metadata and persists when specified")
         expect(copy.speakerName("speaker_1") == "Аня", "speaker rename")
         expect(copy.speakerName("speaker_2") == "Участник 2", "speaker fallback")
         expect(copy.speakerName("unknown") == "Голос не определён", "unknown speaker")
@@ -71,9 +73,12 @@ struct CoreChecks {
         expect(!settings.diarization && settings.speakerCount == 3 && !settings.autoSummary, "old processing options retained")
         expect(settings.focus == "Keep precise details", "old focus retained")
         expect(settings.localProvider == "managed" && settings.asrModelPath.isEmpty, "new settings default without reset")
+        expect(settings.summaryUserContext.isEmpty, "legacy settings do not invent a personal profile")
+        settings.summaryUserContext = "Я стажёр в команде разработки"
         settings.localProvider = "lmstudio"; settings.localModel = "local/qwen"
         settings.asrModelPath = "/tmp/parakeet"; settings.asrModelFormat = "onnx"
         let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        expect(restored.summaryUserContext == settings.summaryUserContext, "explicit summary context persists independently of provider")
         expect(restored.localProvider == "lmstudio" && restored.localModel == "local/qwen", "external model selection round trip")
         expect(restored.resolvedLocalEndpoint == "http://127.0.0.1:1234", "LM Studio default endpoint")
         expect(restored.asrModelPath == "/tmp/parakeet" && restored.asrModelFormat == "onnx", "ASR selection round trip")

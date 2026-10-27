@@ -104,7 +104,7 @@ extension AppStore {
         defer { if let lease { Task { await localRuntimeLease.release(lease) } } }
         guard !cancellation.isCancelled else { throw CancellationError() }
         try validateJobRevision(job)
-        if ["transcribe", "diarize", "finalize"].contains(config.command), !runtimeReady {
+        if ["transcribe", "diarize"].contains(config.command), !runtimeReady {
             throw AppError.message("Запись сохранена. Подготовьте распознавание в настройках и повторите операцию.")
         }
         if snapshot.mode == "local", ["summarize", "example", "expand-notes", "voice-plan"].contains(config.command) {
@@ -137,7 +137,7 @@ extension AppStore {
                 apiKey: snapshot.speechMode == "cloud" && !isPreview ? Keychain.read(account: Keychain.speechAccount(for: snapshot)) : nil,
                 settings: try JSONEncoder().encode(snapshot), event: event)
             var done = WorkerEvent(event: "done"); done.dictation = value; result = done
-        } else if config.command == "diarize" || config.command == "finalize" || (config.command == "transcribe" && snapshot.speechMode == "local") {
+        } else if config.command == "diarize" || (config.command == "transcribe" && snapshot.speechMode == "local") {
             let index = config.extra.firstIndex(of: "--speakers")
             let speakers = index.flatMap { config.extra.indices.contains($0 + 1) ? Int(config.extra[$0 + 1]) : nil } ?? snapshot.speakerCount
             embeddedSpeech.resetCancellation()

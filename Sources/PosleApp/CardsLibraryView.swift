@@ -61,10 +61,11 @@ struct CardsWorkspaceView: View {
         .task { await reload() }
         .onReceive(NotificationCenter.default.publisher(for: .posleJobsChanged)) { _ in Task { await reload() } }
         .onChange(of: mode) { _, _ in flipped = previewAnswer; picked = nil }
-        .onChange(of: deck) { _, _ in flipped = false; picked = nil }
+        .onChange(of: deck) { _, _ in flipped = false; picked = nil; app.assistantCardMeetingID = meetingID ?? (deck.isEmpty ? nil : deck) }
         .onChange(of: query) { _, _ in flipped = false; picked = nil }
         .onChange(of: app.navigationTarget?.id) { _, _ in revealTarget() }
-        .onAppear { if ProcessInfo.processInfo.arguments.contains("--preview-all") { mode = "all" }; revealTarget() }
+        .onAppear { if ProcessInfo.processInfo.arguments.contains("--preview-all") { mode = "all" }; revealTarget(); app.assistantCardMeetingID = meetingID ?? (deck.isEmpty ? nil : deck) }
+        .onDisappear { app.assistantCardMeetingID = nil }
         .sheet(item: $editor) { request in
             CardEditorView(request: request) { result in
                 app.reloadLibrary(); if !embedded { deck = result.meeting.id }; mode = "all"; picked = result.meeting.id + ":" + result.card.id
@@ -79,12 +80,12 @@ struct CardsWorkspaceView: View {
             }
         }
         .sheet(isPresented: $showingMeetings) { meetingPicker }
-        .alert("Удалить карточку?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+        .alert("Переместить карточку в Корзину?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
             Button("Отмена", role: .cancel) { deleting = nil }
-            Button("Удалить", role: .destructive) {
+            Button("В Корзину", role: .destructive) {
                 if let entry = deleting { Task { await workspace.mutate(root: app.root, entry: entry, delete: true, meetingID: meetingID); app.refreshResults(entry.meeting.id) } }; deleting = nil
             }
-        } message: { Text(deleting?.card.front ?? "") }
+        } message: { Text("Карточку можно будет восстановить в течение 30 дней.") }
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {

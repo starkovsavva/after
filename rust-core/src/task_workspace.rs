@@ -495,11 +495,11 @@ fn summary_task(root: &Path, workspace: &NotesWorkspace, id: &str) -> Result<(Ta
     let origin = json!({"meetingID":parts[1],"itemSignature":parts[2],"sourceText":item["text"],"segmentIDs":item["segmentIDs"],"summaryTaskID":id});
     if let Some(note) = workspace.notes.iter().find(|n| {
         n.kind == "task"
-            && n.trashed_at.is_none()
             && n.task_origin
                 .as_ref()
                 .is_some_and(|o| o["meetingID"] == parts[1] && o["itemSignature"] == parts[2])
     }) {
+        ensure!(note.trashed_at.is_none(), "Задача находится в Корзине или уже удалена. Восстановите её, чтобы продолжить.");
         return Ok((note_details(root, workspace, note), origin));
     }
     Ok((

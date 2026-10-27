@@ -18,7 +18,7 @@ PROFILES = {
     "release": "All profiles plus the real Sparkle SDK on signed disposable fixtures",
 }
 NATIVE = (
-    "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-sessions", "corrections", "tasks", "task-workspace", "integrations", "themes", "typography", "guidance", "voice", "copy-transcript", "updates",
+    "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-sessions", "corrections", "tasks", "task-workspace", "integrations", "trash", "themes", "typography", "guidance", "voice", "copy-transcript", "updates",
     "calendar", "calendar-workspace", "notes", "overview", "jobs", "navigation", "cards", "queue", "source-playback",
 )
 

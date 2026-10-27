@@ -8,9 +8,9 @@ use std::{fs, path::{Path, PathBuf}};
 use uuid::Uuid;
 use crate::storage::{atomic_json, meeting_directory, meeting_lock, regular_json, recover_review, schedule};
 
-fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> { v[key].as_str().with_context(|| format!("Нет поля {key}")) }
-fn fingerprint(v: &Value) -> String { format!("{:x}", Sha256::digest(serde_json::to_vec(v).unwrap_or_default())) }
-fn read(path: &Path, default: Value) -> Result<Value> {
+pub(super) fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str> { v[key].as_str().with_context(|| format!("Нет поля {key}")) }
+pub(super) fn fingerprint(v: &Value) -> String { format!("{:x}", Sha256::digest(serde_json::to_vec(v).unwrap_or_default())) }
+pub(super) fn read(path: &Path, default: Value) -> Result<Value> {
     match fs::symlink_metadata(path) {
         Ok(meta) => { ensure!(meta.len() <= 8 * 1_048_576, "Файл карточек слишком большой"); regular_json(path) }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(default),
@@ -26,7 +26,7 @@ fn checked_card<'a>(summary: &'a Value, input: &Value) -> Result<(usize, &'a Val
     ensure!(text(input,"expectedFingerprint")? == fingerprint(card), "Карточка изменилась. Закройте редактор и откройте актуальную версию.");
     Ok((index, card))
 }
-fn valid_card(card: &Value) -> bool {
+pub(super) fn valid_card(card: &Value) -> bool {
     ["id", "kind", "front", "back", "context"].iter().all(|k| card[*k].is_string()) &&
         ["front", "back"].iter().all(|key| card[*key].as_str().is_some_and(|text| !text.trim().is_empty())) &&
         card["segmentIDs"].as_array().is_some_and(|ids| ids.iter().all(|id| id.as_i64().is_some()))
@@ -111,7 +111,7 @@ fn mutate(root: &Path, input: &Value, delete: bool) -> Result<Value> {
     if delete {
         summary["cards"].as_array_mut().unwrap().remove(index);
         if summary.get("archivedCards").is_none() { summary["archivedCards"]=json!([]); }
-        summary["archivedCards"].as_array_mut().context("Повреждён архив карточек")?.push(json!({"card":old,"deletedAt":Utc::now().timestamp_millis()}));
+        summary["archivedCards"].as_array_mut().context("Повреждён архив карточек")?.push(super::operations::archive(old,None,Utc::now().timestamp_millis()));
     } else { summary["cards"][index]["suspended"]=json!(input["suspended"].as_bool().context("Нет состояния повторения")?); }
     atomic_json(&dir.join("summary.json"),&summary)?;
     Ok(json!({"saved":true}))

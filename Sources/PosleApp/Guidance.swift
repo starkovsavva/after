@@ -6,7 +6,7 @@ enum GuidancePresentation: String, Identifiable {
     case gettingStarted, whatsNew
     var id: String { rawValue }
 }
-enum GuidanceAction { case record, importFile, speechSettings, cards, aiSettings, tasks, integrations, semantic }
+enum GuidanceAction { case record, importFile, speechSettings, cards, aiSettings, tasks, integrations, semantic, trash }
 
 private struct GuidancePreferences: Codable {
     var introSeen = false
@@ -42,7 +42,7 @@ final class GuidanceController: ObservableObject {
     private var pendingAction: GuidanceAction?
     private var consideredStartup = false
     // Bump only when a release introduces something worth teaching.
-    private let featureRelease = "0.14"
+    private let featureRelease = "0.15"
     var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development" }
 
     func configure(root: URL, preview: Bool) {
@@ -130,14 +130,14 @@ struct GuidanceSheet: View {
                 }
                 Button("Выбрать локальную или облачную модель") { controller.complete(with: .speechSettings) }.buttonStyle(.borderless)
             } else {
+                feature("Карточки под вашу задачу", "Просите помощника изменить существующие карточки. Перед сохранением можно проверить новые стороны и выбрать карточки.", "rectangle.on.rectangle")
                 HStack {
-                    feature("Поиск по смыслу", "Находите карточки, заметки и фрагменты кода, даже если помните их другими словами.", "sparkle.magnifyingglass")
-                    Button("Настроить") { controller.complete(with: .semantic) }.buttonStyle(.bordered)
+                    feature("Корзина на 30 дней", "Встречи, заметки, задачи и карточки можно восстановить после удаления.", "trash")
+                    Button("Открыть") { controller.complete(with: .trash) }.buttonStyle(.bordered)
                 }
-                feature("Разговор с помощником", "Уточняйте предыдущий вопрос и просите открыть найденную карточку, заметку или встречу.", "bubble.left.and.bubble.right")
                 HStack {
-                    feature("Подключённые трекеры", "Обменивайтесь задачами с Google Tasks и Яндекс Трекером. Конфликты выбираете вы.", "arrow.triangle.2.circlepath")
-                    Button("Настроить") { controller.complete(with: .integrations) }.buttonStyle(.bordered)
+                    feature("Контекст конспекта", "Укажите свою роль и цель встречи, чтобы конспект точнее выделял главное.", "text.bubble")
+                    Button("Настроить") { controller.complete(with: .aiSettings) }.buttonStyle(.bordered)
                 }
             }
             Divider()

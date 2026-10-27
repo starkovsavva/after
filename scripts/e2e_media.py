@@ -5,10 +5,10 @@
         --engine /private/tmp/posle-rust-build/debug/posle-engine --keep
 
 No microphone, screen, user media, network, model, Keychain or TCC access. The
-provided Python is queried read-only for its base and bundled imageio-ffmpeg.
-A minimal runtime is copied into a newly created fixture; foreign symlinks and
-writes to the donor runtime/settings are forbidden. No backend implementation is
-imported or patched: conversion runs through the actual posle-engine CLI.
+provided Python is queried read-only for its bundled imageio-ffmpeg executable.
+Only that pinned media executable is copied into a new fixture; the ASR Python
+runtime is deliberately incomplete. No backend implementation is imported or
+patched: conversion runs through the actual posle-engine CLI.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import struct
 import sys
@@ -73,52 +74,22 @@ def copy_file(source, target):
     return shutil.copy2(source, target)
 
 
-def copy_owned_tree(source, target):
-    source = source.resolve(strict=True)
-    # A standalone runtime may contain relative aliases, but never escape it.
-    aliases = []
-    for item in source.rglob("*"):
-        if item.is_symlink():
-            resolved = item.resolve(strict=True)
-            require(resolved.is_relative_to(source), "Donor runtime has a foreign symlink: " + str(item))
-            aliases.append((item.relative_to(source), resolved.relative_to(source)))
-    shutil.copytree(source, target, symlinks=True, copy_function=copy_file,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for relative, destination in aliases:
-        alias = target / relative
-        alias.unlink()
-        alias.symlink_to(os.path.relpath(target / destination, alias.parent))
-
-
 def prepare_runtime(python, root):
-    query = """import imageio_ffmpeg,json,pathlib,sys
-print(json.dumps({'base':sys.base_prefix,'version':list(sys.version_info[:2]),
-'package':str(pathlib.Path(imageio_ffmpeg.__file__).parent),
-'ffmpeg':imageio_ffmpeg.get_ffmpeg_exe()}))"""
-    info = json.loads(run([python, "-B", "-E", "-s", "-c", query]).stdout)
-    require(info["version"] == [3, 12], "The native speech helper requires a private CPython 3.12 runtime")
+    query = "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"
+    source = Path(run([python, "-B", "-E", "-s", "-c", query]).stdout.strip()).resolve(strict=True)
+    require(digest(source) == "6d175a4743ca50256e89a8cdd731100f9cee33bd79aeea46894d209410dc6617",
+            "Use pinned imageio-ffmpeg 0.6.0 arm64 for media checks")
     runtime = root / "runtime"
-    base = runtime / "python"
-    runtime.mkdir(mode=0o700)
-    copy_owned_tree(Path(info["base"]), base)
-    venv = runtime / "venv"
-    binary = venv / "bin"
-    site = venv / "lib/python3.12/site-packages"
-    binary.mkdir(parents=True, mode=0o700)
-    site.mkdir(parents=True, mode=0o700)
-    for name in ("python", "python3", "python3.12"):
-        (binary / name).symlink_to(os.path.relpath(base / "bin/python3.12", binary))
-    (venv / "pyvenv.cfg").write_text(
-        "home = " + str(base / "bin") + "\ninclude-system-site-packages = false\nversion = 3.12\n", encoding="utf-8")
-    copy_owned_tree(Path(info["package"]), site / "imageio_ffmpeg")
-    for item in runtime.rglob("*"):
-        if item.is_symlink():
-            require(item.resolve(strict=True).is_relative_to(runtime), "Copied runtime retains a foreign symlink")
-    private_python = binary / "python"
-    private_info = json.loads(run([private_python, "-B", "-E", "-s", "-c", query]).stdout)
-    ffmpeg = Path(private_info["ffmpeg"])
-    require(ffmpeg.resolve().is_relative_to(venv), "FFmpeg came from outside the isolated runtime")
-    require(Path(private_info["base"]).resolve() == base.resolve(), "Python did not select the copied base")
+    media = runtime / "media"
+    media.mkdir(parents=True, mode=0o700)
+    ffmpeg = media / "После Медиа"
+    copy_file(source, ffmpeg)
+    ffmpeg.chmod(0o700)
+    # Real finalization must work even when ASR's Python tree is incomplete.
+    # No Python binary or venv is installed in the fixture.
+    python_base = runtime / "python"
+    python_base.mkdir(mode=0o700)
+    (python_base / "incomplete-runtime.txt").write_text("deliberately incomplete ASR runtime")
     return ffmpeg
 
 
@@ -477,6 +448,54 @@ class MediaE2E:
                 "h264PacketsPreserved": True, "nativeWriterFixturePreserved": True,
                 "fullFrameSize": [320, 200], "expectedSeconds": expected["duration"], "videoTrackSeconds": video_seconds}
 
+    def cancelled(self):
+        self.calls += 1
+        meeting, external, meta = self.fixture("cancelled-finalization", video=True, dual=True)
+        before_source = digest(meeting / "recording.mov")
+        before_meta = digest(meeting / "meta.json")
+        process = subprocess.Popen([str(self.engine), "finalize", "--root", str(self.root), "--backend", str(self.backend),
+                                    "--meeting", str(meeting)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, env=clean_environment())
+        try:
+            first = json.loads(process.stdout.readline())
+            require(first.get("event") == "progress", "Finalization did not report progress before encoding")
+            process.send_signal(signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=10)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        require(process.returncode != 0, "Cancelled finalization reported success")
+        require(digest(meeting / "recording.mov") == before_source and digest(meeting / "meta.json") == before_meta,
+                "Cancelled finalization changed the recoverable source or metadata")
+        require(not list(meeting.glob(".posle-finalize-*")), "Cancelled finalization left private intermediates")
+        self.cli(meeting)
+        require(json.loads((meeting / "meta.json").read_text())["source"] == "recording.mp3", "Retry after cancellation failed")
+        return {"sourcePreserved": True, "metadataPreserved": True, "retrySucceeded": True}
+
+    def concurrent_title_edit(self):
+        self.calls += 2
+        meeting, external, meta = self.fixture("concurrent-title", video=True, dual=True)
+        process = subprocess.Popen([str(self.engine), "finalize", "--root", str(self.root), "--meeting", str(meeting)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_environment())
+        try:
+            first = json.loads(process.stdout.readline())
+            require(first.get("event") == "progress", "Finalization did not report encoding progress")
+            changed = subprocess.run([str(self.engine), "update", "--root", str(self.root)],
+                                     input=json.dumps({"id": meta["id"], "patch": {"title": "Название после правки"}}),
+                                     capture_output=True, text=True, env=clean_environment(), timeout=10)
+            require(changed.returncode == 0, "Concurrent native metadata edit failed")
+            stdout, stderr = process.communicate(timeout=30)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        require(process.returncode == 0, "Finalization failed during a metadata edit: " + stdout)
+        saved = json.loads((meeting / "meta.json").read_text())
+        require(saved["title"] == "Название после правки" and saved["source"] == "recording.mp3",
+                "Media publication overwrote the concurrent user edit")
+        return {"concurrentTitlePreserved": True, "mediaCommitted": True}
+
     def failure(self):
         meeting, external, meta = self.fixture("failed-video-export")
         meta["hasVideo"] = True  # Deliberate mismatch exercises the real FFmpeg failure path.
@@ -522,7 +541,9 @@ def main():
             results = {"audioOnly": test.successful("audio-only"),
                        "lightVideo": test.successful("light-video", video=True),
                        "dualVideo": test.successful("dual-video", video=True, dual=True),
-                       "failurePreservesSource": test.failure()}
+                       "failurePreservesSource": test.failure(),
+                       "cancelAndRetry": test.cancelled(),
+                       "concurrentTitleEdit": test.concurrent_title_edit()}
             for quality in ("compact", "standard", "high"):
                 results[quality + "1080p"] = test.successful(quality + "-1080p", video=True, dual=True,
                                                              size="1920x1080", quality=quality, high_frequency=True, stereo=quality == "high")
@@ -531,7 +552,7 @@ def main():
         branded = root / "runtime/media/После Медиа"
         require(branded.is_file() and not branded.is_symlink(), "Real finalize did not use the owned media runtime")
         result = {"result": "PASS", "cliCommands": test.calls, "cases": results,
-                  "ffmpegSHA256": digest(branded), "syntheticOnly": True}
+                  "ffmpegSHA256": digest(branded), "syntheticOnly": True, "independentOfPython": True}
         (root / "results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         for name in results:
             print("PASS:", name)

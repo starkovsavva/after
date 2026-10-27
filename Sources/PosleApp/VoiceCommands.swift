@@ -191,7 +191,7 @@ final class VoiceCommandController: ObservableObject {
                             }
                             if let edited = draft.reviewText { reviewText = edited }
                         }
-                        message = plan.reviewRequired == true ? "Поручение прервалось. Проверьте задачи перед продолжением." : "Поручение прервалось. Нажмите «Выполнить», чтобы продолжить."
+                        message = plan.reviewRequired == true ? "Поручение прервалось. Проверьте изменения перед продолжением." : "Поручение прервалось. Нажмите «Выполнить», чтобы продолжить."
                     }
                 } catch {
                     message = "Не удалось проверить результат прерванного поручения. Проверьте библиотеку перед повтором."
@@ -206,7 +206,9 @@ final class VoiceCommandController: ObservableObject {
             previousQuestions = []
             text = ""; plan = nil; result = nil; phase = .editing; message = nil; context = [:]
             if let taskID { context["taskID"] = taskID; contextLabel = title ?? "Задача" }
-            else if store.librarySection == "meetings", let meeting = store.selected, meeting.libraryKind != "cards" {
+            else if store.librarySection == "cards", let id = store.assistantCardMeetingID, let meeting = store.meetings.first(where: { $0.id == id }) {
+                context["meetingID"] = id; contextLabel = meeting.title
+            } else if store.librarySection == "meetings", let meeting = store.selected {
                 context["meetingID"] = meeting.id; contextLabel = meeting.title
             } else if store.librarySection == "inbox", let id = store.notes.selectedNoteID,
                       let note = store.notes.notes.first(where: { $0.id == id }) {
@@ -246,6 +248,24 @@ final class VoiceCommandController: ObservableObject {
         context = [:]; contextLabel = "Продолжение разговора"
         knowledgeAnswer = nil; knowledgeOpeningID = nil; result = nil; plan = nil
         interruptedPlanID = nil; interruptedOperationID = nil
+        phase = .editing; text = ""; message = nil; _ = flushDraft()
+    }
+    func continueCommand() {
+        guard !isWorking, let result else { return }
+        switch result.target.kind {
+        case "cards" where plan?.action == "createCards":
+            let id = result.target.meetingID ?? result.target.id
+            context = ["meetingID": id]
+            contextLabel = store?.meetings.first(where: { $0.id == id })?.title ?? "Созданные карточки"
+        case "task": context = ["taskID": result.target.id]; contextLabel = result.title
+        case "note": context = ["noteID": result.target.id]; contextLabel = result.title
+        case "meeting": context["meetingID"] = result.target.meetingID ?? result.target.id
+        default: break
+        }
+        let topic = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !topic.isEmpty { previousQuestions.append(topic) }
+        previousQuestions = Self.retainedQuestions(previousQuestions)
+        self.result = nil; plan = nil; interruptedPlanID = nil; interruptedOperationID = nil
         phase = .editing; text = ""; message = nil; _ = flushDraft()
     }
     private static func retainedQuestions(_ questions: [String]) -> [String] {
@@ -458,7 +478,7 @@ final class VoiceCommandController: ObservableObject {
         let root = store.root
         var arguments: [String: Any] = ["planID": id, "operationID": operation]
         if plan.reviewRequired == true {
-            guard confirmed else { throw AppError.message("Сначала проверьте задачи и подтвердите изменение.") }
+            guard confirmed else { throw AppError.message("Сначала проверьте изменения и подтвердите их.") }
             arguments["confirmed"] = true
             arguments["selectedTargetIDs"] = selectedTargetIDs.sorted()
             arguments["text"] = reviewText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -495,6 +515,8 @@ final class VoiceCommandController: ObservableObject {
         }
         switch target.kind {
         case "task": store.openTask(id: target.id)
+        case "trash": store.librarySection = "trash"
+        case "meeting": store.librarySection = "meetings"; store.selection = target.meetingID ?? target.id; store.loadSelection()
         case "cards": store.librarySection = "cards"; store.selection = target.meetingID ?? target.id; store.loadSelection()
         default:
             store.librarySection = "inbox"; store.notes.selectedNoteID = target.id; store.notes.highlightedNoteID = target.id
@@ -635,6 +657,7 @@ final class VoiceCommandController: ObservableObject {
         catch { message = "Не удалось сохранить поручение. Оставьте панель открытой и повторите сохранение."; return false }
     }
     #if DEBUG
+    var selectedContextForChecks: [String: String] { context.compactMapValues { $0 as? String } }
     func seedPreview(_ state: String) {
         contextLabel = "Пилот для отдела закупок"; isPresented = true
         text = "К задаче про договор добавь: проверить условия оплаты"

@@ -1,4 +1,5 @@
 pub mod python_runtime;
+pub mod media;
 pub mod ai;
 pub mod chatgpt;
 pub mod models;
@@ -6,6 +7,7 @@ pub mod storage;
 pub mod notes;
 pub mod workspace_repository;
 pub mod cards;
+pub mod trash;
 pub mod voice;
 pub mod task_workspace;
 pub mod mcp;
@@ -48,13 +50,14 @@ pub fn request(value: &Value) -> Result<Value> {
     let root = PathBuf::from(value["root"].as_str().context("Нужна папка данных приложения")?);
     if !root.is_absolute() { bail!("Папка данных должна иметь абсолютный путь"); }
     match value["command"].as_str().context("Нет команды ядра")? {
+        command if command.starts_with("trash-") => trash::dispatch(&root,value),
         command if command.starts_with("tracker-") => tracker_sync::request(&root,command,value),
         command if command.starts_with("semantic-") => semantic::dispatch(&root,value),
         command if command.starts_with("code-index-") => code_index::dispatch(&root,value),
         command if ["notes-list", "note-save", "note-delete", "note-trash", "note-restore", "context-save", "template-save", "template-delete", "note-attach", "attachment-path", "attachment-remove", "attachment-text", "notes-search", "notes-tasks", "notes-task-complete", "notes-brief", "note-search-validate", "note-expansion-validate", "note-expansion-valid"].contains(&command) => notes::dispatch(&root, value),
         "voice-plan" | "voice-inspect" | "voice-choose" | "voice-apply" | "voice-undo" | "voice-recover" | "task-update" | "task-materialize" | "task-append" => voice::dispatch(&root, value),
         command if command.starts_with("task-") => task_workspace::dispatch(&root, value),
-        "cards-import" | "cards-import-preview" | "cards-library" | "card-save" | "card-delete" | "card-suspend" | "cards-review" | "cards-review-preview" | "cards-review-undo" => cards::dispatch(&root,value),
+        "card-trash-list" | "card-restore" | "card-trash-purge" | "cards-batch-apply" | "cards-batch-undo" | "cards-batch-recover" | "cards-import" | "cards-import-preview" | "cards-library" | "card-save" | "card-delete" | "card-suspend" | "cards-review" | "cards-review-preview" | "cards-review-undo" => cards::dispatch(&root,value),
         command if command.starts_with("job-") => jobs::dispatch(&root, value),
         "meeting-content-snapshot" | "transcript-segment-save" | "summary-item-save" => corrections::dispatch(&root, value),
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),

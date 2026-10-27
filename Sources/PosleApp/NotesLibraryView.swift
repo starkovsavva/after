@@ -126,7 +126,8 @@ struct NotesLibraryView: View {
         return notes.workspace.notes.filter { note in
             if filter == "trash" { guard note.trashedAt != nil else { return false } }
             else { guard note.trashedAt == nil else { return false } }
-            if filter == "inbox" && note.meetingID != nil { return false }
+            if filter == "inbox", let meetingID = note.meetingID,
+               app.noteMeetings.contains(where: { $0.id == meetingID }) { return false }
             if filter == "pinned" && !note.pinned { return false }
             if !folder.isEmpty && note.folder != folder { return false }
             if search.isEmpty { return true }
@@ -317,8 +318,13 @@ struct NotesLibraryView: View {
                     .accessibilityLabel("Заголовок заметки")
                 HStack(spacing: 10) {
                     Text(Date(timeIntervalSince1970: draft.updatedAt), style: .date).font(AppTypography.caption).foregroundStyle(.secondary)
-                    if let meetingID = draft.meetingID, let meeting = app.noteMeetings.first(where: { $0.id == meetingID }) {
-                        Button { if document.flush() { app.openMeeting(meetingID, tab: "notes") } } label: { Label(meeting.title, systemImage: "waveform").lineLimit(1) }.buttonStyle(.link).font(AppTypography.caption)
+                    if let meetingID = draft.meetingID {
+                        if let meeting = app.noteMeetings.first(where: { $0.id == meetingID }) {
+                            Button { if document.flush() { app.openCapturedNote(draft) } } label: { Label(meeting.title, systemImage: "waveform").lineLimit(1) }.buttonStyle(.link).font(AppTypography.caption)
+                        } else {
+                            Label("Встреча недоступна", systemImage: "waveform").font(AppTypography.caption).foregroundStyle(.secondary)
+                                .help("Связь с встречей сохранена. После восстановления из Корзины она снова откроется.")
+                        }
                     }
                     Spacer(minLength: 0)
                 }

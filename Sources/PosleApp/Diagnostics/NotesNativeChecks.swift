@@ -108,6 +108,38 @@ enum NotesNativeChecks {
         var orphanEdit = orphan; orphanEdit.text = "Заметку можно редактировать после удаления встречи"
         try expect(notes.save(orphanEdit)?.meetingID == orphanMeeting.id, "Existing orphan notes remain editable without erasing their original meeting link")
         print("PASS: deletion removes tasks, orphan notes remain editable in Inbox and navigation does not autoplay")
+        let navigationMeeting = Meeting(title: "Планирование пилота", source: "source.mp3")
+        let navigationDirectory = app.meetingDirectory(navigationMeeting.id)
+        try FileManager.default.createDirectory(at: navigationDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try app.write(navigationMeeting, navigationDirectory.appendingPathComponent("meta.json"))
+        guard let linkedNote = notes.capture(text: "Согласовать критерии пилота", meetingID: navigationMeeting.id) else { throw AppError.message(notes.error ?? "Trash navigation note missing") }
+        app.reloadLibrary(); app.openMeeting(navigationMeeting.id, tab: "notes")
+        let trashBridge = try RustBridge.shared.get()
+        func changeNavigationMeeting(restore: Bool) throws {
+            let data = try trashBridge.request(root: app.root, command: "trash-snapshot", arguments: ["kind": "meeting", "id": navigationMeeting.id, "restore": restore])
+            guard let snapshot = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let fingerprint = snapshot["fingerprint"] as? String else { throw AppError.message("Missing navigation meeting snapshot") }
+            _ = try trashBridge.request(root: app.root, command: "trash-change", arguments: ["kind": "meeting", "id": navigationMeeting.id, "restore": restore, "expectedFingerprint": fingerprint, "operationID": UUID().uuidString.lowercased()])
+        }
+        let noteSource = KnowledgeSource(id: "note-navigation-fixture", kind: "note", title: linkedNote.text,
+                                        excerpt: linkedNote.text, noteID: linkedNote.id, meetingID: navigationMeeting.id,
+                                        sourceFingerprint: "navigation-already-validated-fixture")
+        try changeNavigationMeeting(restore: false)
+        // Keep the sidebar deliberately stale to exercise actual disk availability.
+        try expect(app.noteMeetings.contains(where: { $0.id == navigationMeeting.id }), "Navigation fixture must retain a stale sidebar snapshot")
+        app.error = nil
+        try app.revealKnowledgeSource(noteSource)
+        try expect(app.librarySection == "inbox" && notes.selectedNoteID == linkedNote.id && notes.highlightedNoteID == linkedNote.id && app.error == nil && !app.isPlaying,
+                   "A note from a trashed meeting opens silently in Inbox even with stale sidebar metadata")
+        try expect(notes.notes.first(where: { $0.id == linkedNote.id })?.meetingID == navigationMeeting.id,
+                   "Opening an independent note must preserve its historical meeting link")
+        try changeNavigationMeeting(restore: true)
+        app.reloadLibrary()
+        try app.revealKnowledgeSource(noteSource)
+        try expect(app.librarySection == "meetings" && app.selection == navigationMeeting.id && app.tab == "notes" && !app.isPlaying,
+                   "The same note source reopens its meeting after restoration without changing the note")
+        print("PASS: knowledge note navigation survives meeting Trash, stale sidebar metadata and restoration without detaching sources")
+
         struct Preview: Decodable { var cards: [Flashcard]; var total: Int; var skipped: Int; var warnings: [String] }
         struct Imported: Decodable { var meeting: Meeting; var count: Int; var skipped: Int; var warnings: [String] }
         let tsv = directory.appendingPathComponent("legacy-anki.tsv")

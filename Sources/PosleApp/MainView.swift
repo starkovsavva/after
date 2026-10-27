@@ -29,6 +29,7 @@ struct MainView: View {
                             else if store.librarySection == "calendar" { CalendarView() }
                             else if store.librarySection == "contexts" { NotesContextsView(notes: store.notes) }
                             else if store.librarySection == "cards" { CardsLibraryView() }
+                            else if store.librarySection == "trash" { TrashView() }
                             else if let meeting = store.selected { MeetingView(meeting: meeting) }
                             else { welcome }
                         }.frame(maxWidth: .infinity, maxHeight: .infinity).appLayoutAnchor("workspace")
@@ -48,6 +49,7 @@ struct MainView: View {
             guide.configure(root: store.root, preview: store.isPreview)
             guide.considerStartup(hasMeetings: !store.meetings.isEmpty)
         }
+        .task { await TrashMaintenance.run(app: store) }
         .onReceive(NotificationCenter.default.publisher(for: .posleJobsChanged)) { _ in
             store.reloadLibrary()
             if let id = store.selection { store.refreshResults(id) }
@@ -63,6 +65,7 @@ struct MainView: View {
             case .tasks: store.librarySection = "tasks"
             case .integrations: store.openSettings("integrations")
             case .semantic: store.openSettings("semantic")
+            case .trash: store.librarySection = "trash"
             case nil: break
             }
         }) { _ in GuidanceSheet(controller: guide) }
@@ -104,7 +107,7 @@ struct MainView: View {
         .alert("Переместить встречу в Корзину?", isPresented: $confirmDelete) {
             Button("Отмена", role: .cancel) {}
             Button("В Корзину", role: .destructive) { store.trashSelected() }
-        } message: { Text("Запись, конспект и карточки этой встречи можно будет восстановить из Корзины Finder.") }
+        } message: { Text("Запись, конспект и карточки этой встречи можно будет восстановить в Корзине приложения в течение 30 дней.") }
     }
 
     private var sidebar: some View {
@@ -128,6 +131,7 @@ struct MainView: View {
             Text("Библиотека").font(AppTypography.captionStrong).foregroundStyle(.secondary)
                 .padding(.horizontal, 18).padding(.top, 24).padding(.bottom, 7)
             libraryButton("contexts", "Проекты и люди", "folder").padding(.horizontal, 8)
+            libraryButton("trash", "Корзина", "trash").padding(.horizontal, 8)
             Spacer(minLength: 12)
             if ProcessInfo.processInfo.arguments.contains("--preview") && !ProcessInfo.processInfo.arguments.contains("--snapshot") {
                 Text("Демонстрационные данные").font(AppTypography.caption).foregroundStyle(Ink.warning).padding(.horizontal, 18).padding(.bottom, 8)
