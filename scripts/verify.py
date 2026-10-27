@@ -18,7 +18,7 @@ PROFILES = {
     "release": "All profiles plus the real Sparkle SDK on signed disposable fixtures",
 }
 NATIVE = (
-    "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-sessions", "corrections", "tasks", "themes", "guidance", "voice", "copy-transcript", "updates",
+    "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-sessions", "corrections", "tasks", "task-workspace", "themes", "typography", "guidance", "voice", "copy-transcript", "updates",
     "calendar", "calendar-workspace", "notes", "overview", "jobs", "navigation", "cards", "queue", "source-playback",
 )
 
@@ -114,6 +114,7 @@ class Verification:
     def integration(self):
         self.build_rust()
         self.run("CLI, C ABI and localhost HTTP", [self.python, "scripts/e2e.py", "--engine", self.engine, "--library", self.library])
+        self.run("MCP task lifecycle over stdio", [self.python, "scripts/check_mcp.py", "--engine", self.engine, "--library", self.library])
         self.run("Recording through native worker", [self.python, "scripts/e2e_media.py", "--python", self.python, "--engine", self.engine],
                  env=self.env | {"POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"})
         self.run("Long, delayed and idle recording tracks", [self.python, "scripts/check_media.py"],

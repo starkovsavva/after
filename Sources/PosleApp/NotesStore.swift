@@ -15,6 +15,11 @@ final class NotesStore: ObservableObject {
     @Published var attachmentBusy = false
     @Published var tasks: [LibraryTask] = []
     @Published var selectedTaskID: String?
+    @Published var selectedTaskProject = "all"
+    @Published var taskNavigationRequest = UUID()
+    var pendingTaskNavigationID: String?
+    @Published var taskWorkspaces: [String: TaskWorkspace] = [:]
+    @Published var taskWorkspaceBusy = false
     @Published var newLibraryNoteRequest = UUID()
     @Published var selectedNoteID: String?
     @Published var highlightedNoteID: String?

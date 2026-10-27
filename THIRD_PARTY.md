@@ -35,6 +35,8 @@ and transitive dependencies are recorded in `rust-core/Cargo.lock`.
 - [unicode-normalization](https://github.com/unicode-rs/unicode-normalization), (MIT OR Apache-2.0) AND Unicode-3.0.
 - [serde_json](https://github.com/serde-rs/json), MIT OR Apache-2.0.
 - [uuid](https://github.com/uuid-rs/uuid), MIT OR Apache-2.0.
+- [rmcp 3.8.0](https://github.com/modelcontextprotocol/rust-sdk), MIT. Official MCP SDK; local stdio transport.
+- [tokio](https://github.com/tokio-rs/tokio), MIT. Runtime for the MCP transport.
 
 Optional cloud APIs are subject to the selected provider's terms, data policies and billing.
 Native recording, notes, OCR and calendar integration use Apple's macOS frameworks.

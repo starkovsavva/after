@@ -151,6 +151,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-task-workspace") {
+            Task {
+                do { try await TaskWorkspaceNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native task workspace check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-tasks") {
             Task {
                 do { try await TasksNativeChecks.run(); NSApp.terminate(nil) }
@@ -224,6 +231,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-typography") {
+            Task {
+                do { try await TypographyNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native typography check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-navigation") {
             Task {
                 do { try await NativeNavigationChecks.run(); NSApp.terminate(nil) }
@@ -237,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            ProcessInfo.processInfo.arguments.count > index + 1 {
             let path = ProcessInfo.processInfo.arguments[index + 1]
             let previewStore = AppStore(preview: true)
+            ThemeController.shared.configure(root: previewStore.root)
             let arguments = ProcessInfo.processInfo.arguments
             func option(_ name: String) -> String? {
                 guard let i = arguments.firstIndex(of: name), arguments.count > i + 1 else { return nil }
@@ -252,7 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 previewStore.librarySection = screen == "cards-library" ? "cards" : screen.hasPrefix("calendar") ? "calendar" : screen
             }
             #if DEBUG
-            if ["voice", "voice-result"].contains(screen) { previewStore.voice.seedPreview(screen) }
+            if ["voice", "voice-result", "voice-answer"].contains(screen) { previewStore.voice.seedPreview(screen) }
             #endif
             if screen == "notes" { previewStore.librarySection = "meetings"; previewStore.tab = "notes" }
             if screen == "welcome" { previewStore.selection = nil; previewStore.meetings = []; previewStore.loadSelection() }

@@ -60,6 +60,20 @@ enum VoiceNativeChecks {
                 "completed": false, "cards": cards]
             try JSONSerialization.data(withJSONObject: ["proposal": proposal, "delay": delay]).write(to: root.appendingPathComponent("fixture-response.json"))
         }
+        func confirmTaskReview() async throws {
+            try expect(voice.phase == .reviewing && voice.plan?.reviewRequired == true, "Task mutation requires a visible review")
+            try expect(voice.canConfirmReview, "Valid task preview must be confirmable")
+            voice.confirmReview(); voice.confirmReview()
+            try await waitUntil { !voice.isWorking && !store.busy }
+            try expect(voice.phase == .result, "Confirmed task mutation failed: \(voice.message ?? "")")
+        }
+        func taskFixture(_ action: String, targets: [(String, String)], text: String = "", query: String = "пилот") throws {
+            try fixture(action, text: text, query: query)
+            let file = root.appendingPathComponent("fixture-response.json")
+            var value = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
+            value["reranking"] = ["matches": targets.map { ["id": $0.0, "reason": $0.1] }, "clarification": ""]
+            try JSONSerialization.data(withJSONObject: value).write(to: file)
+        }
         func prepare(_ text: String, taskID: String? = nil) {
             voice.dismiss(); voice.reset(); voice.present(taskID: taskID, title: "Выбранная задача"); voice.text = text
         }
@@ -110,11 +124,14 @@ enum VoiceNativeChecks {
         try fixture("appendTask", text: "Уточнить условия оплаты.")
         prepare("Дополни эту задачу: уточнить условия оплаты", taskID: taskID)
         voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        try expect(store.notes.tasks.first?.text.contains("Уточнить условия") == false, "Planning must not mutate a task before confirmation")
+        try await confirmTaskReview()
         try expect(store.notes.tasks.count == 1 && store.notes.tasks.first?.text.contains("Уточнить условия") == true, "Task must be extended without duplication")
         try expect(store.notes.tasks.first?.history?.count == 1, "Append must retain task history")
         try fixture("updateTask", due: "завтра", setDue: true)
         prepare("Перенеси эту задачу на завтра", taskID: taskID)
         voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        try await confirmTaskReview()
         let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: Date())!
         let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
         try expect(store.notes.tasks.first?.due == formatter.string(from: tomorrow), "Relative due date must use client timezone")
@@ -127,6 +144,7 @@ enum VoiceNativeChecks {
         try expect(voice.phase == .choosing && (voice.plan?.candidates?.count ?? 0) == 2, "Ambiguous task requires explicit choice: \(voice.message ?? "")")
         let candidate = try required(voice.plan?.candidates?.first, "Target candidate")
         voice.choose(candidate); try await waitUntil { !voice.isWorking && !store.busy }
+        try await confirmTaskReview()
         try expect(voice.phase == .result && store.notes.tasks.filter { $0.text.contains("Запросить согласование") }.count == 1, "Choice modifies only one candidate")
         // A concurrent edit must prevent undo from overwriting newer work.
         let updated = try required(store.notes.notes.first { $0.id == voice.result?.target.id }, "Chosen task")
@@ -135,6 +153,48 @@ enum VoiceNativeChecks {
         try expect(voice.result != nil && voice.message != nil && store.notes.notes.contains { $0.text.contains("Правка после команды") }, "Unsafe undo must fail with original data preserved")
         print("PASS: ambiguity is resolved explicitly; undo protects a later edit")
 
+        let stableTask = try required(store.notes.tasks.first, "Task for semantic navigation")
+        let originalNotes = store.notes.notes.count
+        try taskFixture("openTask", targets: [(stableTask.id, "В задаче обсуждается договор для пилота")])
+        prepare("Открой задачу, где нужно согласовать договор для пилота")
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        try expect(store.librarySection == "tasks" && store.notes.selectedTaskID == stableTask.id && !voice.isPresented,
+                   "Semantic navigation must open the exact existing task")
+        try expect(store.notes.notes.count == originalNotes, "Navigation must not materialize or create a task")
+        print("PASS: two-pass task intent opens an existing canonical task without mutation")
+
+        let tasks = Array(store.notes.tasks.prefix(2))
+        try expect(tasks.count == 2, "Batch fixture needs two tasks")
+        try taskFixture("appendTaskContexts", targets: tasks.map { ($0.id, "Относится к согласованию договора") }, text: "Проверить оплату")
+        prepare("Добавь мысль к задачам о договоре: проверить оплату")
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        try expect(voice.phase == .reviewing && voice.selectedTargetIDs.count == 2, "Batch plan must show both suggested targets")
+        let excluded = try required(voice.plan?.candidates?.last, "Batch excluded target")
+        voice.toggleReviewTarget(excluded, selected: false)
+        voice.reviewText = "Уточнить оплату в два этапа"
+        try await confirmTaskReview()
+        func taskContext(_ id: String) throws -> String {
+            let data = try RustBridge.shared.get().request(root: root, command: "task-context", arguments: ["taskID": id])
+            return String(decoding: data, as: UTF8.self)
+        }
+        let included = try required(tasks.first { $0.id != excluded.id }, "Included batch task")
+        try expect(try taskContext(included.id).contains("Уточнить оплату в два этапа"), "Edited context must reach the selected task")
+        try expect(try !taskContext(excluded.id).contains("Уточнить оплату в два этапа"), "Excluded task must stay unchanged")
+        voice.undo(); try await waitUntil { !voice.isWorking && !store.busy }
+        try expect(try !taskContext(included.id).contains("Уточнить оплату в два этапа"), "Batch undo must remove only its additions")
+        print("PASS: native batch preview edits text, selects a subset and undoes its atomic change")
+
+        try taskFixture("completeTask", targets: [(included.id, "Пользователь завершает согласование договора")])
+        prepare("Заверши задачу про согласование договора")
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        try expect(voice.phase == .reviewing, "Completion must stop at review")
+        let noteForConflict = try required(store.notes.notes.first { included.id == "manual:\($0.id)" }, "Mutable task for conflict")
+        var concurrentEdit = noteForConflict; concurrentEdit.owner = "Анна"; _ = store.notes.save(concurrentEdit)
+        voice.confirmReview(); try await waitUntil { !voice.isWorking && !store.busy }
+        try expect(voice.phase == .reviewing && voice.message != nil && store.notes.tasks.first { $0.id == included.id }?.completed == false,
+                   "Stale completion must preserve the newer task and stay reviewable")
+        print("PASS: stale semantic completion fails before mutation and preserves a concurrent edit")
+
         try fixture("createCards", title: "Рабочая переписка", cards: [["kind": "phrase", "front": "follow up", "back": "Уточнить результат", "context": "Пример: I will follow up tomorrow."]])
         prepare("Сделай карточку с фразой follow up")
         voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
@@ -142,6 +202,174 @@ enum VoiceNativeChecks {
         voice.openResult(); try expect(store.summary?.cards.count == 1, "Created cards must open for in-app study")
         voice.undo(); try await waitUntil { !voice.isWorking && !store.busy }; try expect(!store.meetings.contains { $0.libraryKind == "cards" }, "Undo removes only untouched created deck")
         print("PASS: voice-created cards are usable in the existing study system and undoable")
+
+        // A library question ignores the selected task/project and produces an
+        // ephemeral answer rather than a plan or an undoable write operation.
+        let workspaceURL = root.appendingPathComponent("notes/workspace.json")
+        let beforeQuestion = try Data(contentsOf: workspaceURL)
+        try fixture("askKnowledge", query: "стенд")
+        voice.dismiss(); voice.reset()
+        voice.present(taskID: stableTask.id, title: "Выбранная задача", projectID: "Другой проект")
+        voice.text = "Что нужно для доступа к стенду?"
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        let answer = try required(voice.knowledgeAnswer, "Read-only library answer: \(voice.message ?? "")")
+        try expect(voice.phase == .result && voice.result == nil && voice.plan == nil,
+                   "A knowledge answer must not create a mutation result, plan identity, or Undo")
+        let noteSource = try required(answer.sources.first { $0.noteID == noteID }, "Global note citation outside selected project")
+        try expect(!answer.paragraphs.isEmpty && answer.paragraphs.allSatisfy { !$0.sourceIDs.isEmpty }, "Library facts require real citations")
+        try expect(try Data(contentsOf: workspaceURL) == beforeQuestion, "Read-only Q&A changed the notes/tasks/voice workspace")
+        voice.openKnowledgeSource(noteSource)
+        try await waitUntil { voice.knowledgeOpeningID == nil }
+        try expect(!voice.isPresented && store.notes.selectedNoteID == noteID && store.librarySection == "inbox",
+                   "A validated citation must open the exact saved note")
+        try expect(voice.knowledgeAnswer == nil, "Source navigation must clear the ephemeral answer")
+
+        try fixture("askKnowledge", query: "стенд")
+        prepare("Что нужно для стенда?")
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        let staleSource = try required(voice.knowledgeAnswer?.sources.first { $0.noteID == noteID }, "Citation for stale test")
+        var changedNote = try required(store.notes.notes.first { $0.id == noteID }, "Cited note")
+        changedNote.text += "\nДоступ согласован позже."; _ = store.notes.save(changedNote)
+        store.librarySection = "tasks"
+        voice.openKnowledgeSource(staleSource)
+        try await waitUntil { voice.knowledgeOpeningID == nil }
+        try expect(voice.isPresented && store.librarySection == "tasks" && voice.message != nil,
+                   "A changed source must remain visible as a stale citation, without navigating")
+        voice.reset()
+        try expect(voice.knowledgeAnswer == nil && voice.result == nil && voice.phase == .editing, "Reset must clear all answer state")
+        print("PASS: global Q&A is read-only, ignores selected project, and validates exact/stale note navigation")
+
+        // Synthetic calendar evidence follows the same validation route without
+        // constructing EventKit or touching accounts, permissions or sync links.
+        store.calendar.seedPreview()
+        let snapshot = store.calendar.knowledgeSnapshot(question: "Промежуточные результаты")
+        let event = try required(snapshot.events.first { $0.id == "project-checkpoint" }, "Synthetic calendar event")
+        try expect(snapshot.connected && snapshot.events.count <= 128 && (try JSONEncoder().encode(snapshot).count) < 128 * 1024, "Already-connected calendar snapshot must be bounded")
+        let beforeCalendarQuestion = try Data(contentsOf: workspaceURL)
+        try fixture("askKnowledge", query: "Промежуточные результаты")
+        prepare("Когда промежуточные результаты?")
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        let calendarSource = try required(voice.knowledgeAnswer?.sources.first { $0.kind == "calendar" && $0.eventID == event.id }, "Real calendar citation from synthetic snapshot")
+        voice.openKnowledgeSource(calendarSource)
+        try await waitUntil { voice.knowledgeOpeningID == nil }
+        try expect(store.librarySection == "calendar" && store.calendar.displayMode == .day && !voice.isPresented,
+                   "Calendar citation must reveal the correct day without scheduling a new event")
+        try expect(Calendar.current.isDate(store.calendar.selectedDate, inSameDayAs: Date(timeIntervalSince1970: event.start)), "Calendar citation opened a different date")
+        try expect(try Data(contentsOf: workspaceURL) == beforeCalendarQuestion, "Calendar question/navigation changed task or note data")
+        print("PASS: synthetic calendar Q&A opens its occurrence using fresh read-only validation")
+
+        try CalendarStore.verifyKnowledgeSnapshotBounds()
+        store.calendar.seedPreview()
+        try fixture("askKnowledge", query: "Промежуточные результаты")
+        let knowledgeResponse = root.appendingPathComponent("fixture-response.json")
+        var changing = try JSONSerialization.jsonObject(with: Data(contentsOf: knowledgeResponse)) as! [String: Any]
+        changing["knowledgeDelay"] = 1; changing["knowledgeMixed"] = true
+        try JSONSerialization.data(withJSONObject: changing).write(to: knowledgeResponse)
+        let knowledgeStarted = root.appendingPathComponent("fixture-knowledge-started.json")
+        try? FileManager.default.removeItem(at: knowledgeStarted)
+        prepare("Когда промежуточные результаты и что нужно сделать?")
+        voice.perform()
+        try await waitUntil { FileManager.default.fileExists(atPath: knowledgeStarted.path) }
+        store.calendar.changeKnowledgeEventForChecks(id: "project-checkpoint", title: "Встреча перенесена: дату уточним")
+        try await waitUntil { !voice.isWorking && !store.busy }
+        let changedAnswer = try required(voice.knowledgeAnswer, "Answer after an in-flight calendar change")
+        try expect(changedAnswer.sources.isEmpty && changedAnswer.paragraphs.allSatisfy { $0.sourceIDs.isEmpty },
+                   "A whole mixed task/calendar paragraph must be removed when its event changes during the model call")
+        try expect(changedAnswer.warnings.contains { $0.contains("изменились во время ответа") }, "Changed calendar evidence must produce a visible warning")
+        try expect(try Data(contentsOf: workspaceURL) == beforeCalendarQuestion, "In-flight event validation changed note/task data")
+        voice.reset()
+        print("PASS: calendar snapshot stays within count/UTF-8 budgets; changed in-flight evidence removes a whole mixed paragraph")
+
+        let farDate = store.calendar.seedKnowledgeLongTailForChecks()
+        let literalDate = formatter.string(from: farDate)
+        for (question, query) in [("Когда проверка астролябии?", "астролябии"), ("Что запланировано на \(literalDate)?", "")] {
+            try fixture("askKnowledge", query: query)
+            var calendarFixture = try JSONSerialization.jsonObject(with: Data(contentsOf: knowledgeResponse)) as! [String: Any]
+            calendarFixture["knowledgeKinds"] = ["calendar"]
+            try JSONSerialization.data(withJSONObject: calendarFixture).write(to: knowledgeResponse)
+            prepare(question)
+            voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+            let longTailAnswer = try required(voice.knowledgeAnswer, "Long-tail calendar answer: \(voice.message ?? "")")
+            try expect(longTailAnswer.sources.contains { $0.eventID == "far-astrolabe" },
+                       "The real question pipeline dropped a far calendar match behind 200 nearby events")
+            try expect(longTailAnswer.paragraphs.contains { !$0.sourceIDs.isEmpty }, "Long-tail calendar fact lost its source")
+            voice.reset()
+        }
+        try expect(try Data(contentsOf: workspaceURL) == beforeCalendarQuestion, "Long-tail calendar Q&A modified the task/note workspace")
+        print("PASS: 200 nearby calendar events do not hide a later title or explicit-date match through the native Q&A pipeline")
+
+        // Calendar access changes while the classifier is in flight. The
+        // second native phase must capture the new permission state before
+        // sending any calendar evidence to the synthesis provider.
+        store.calendar.seedPreview()
+        let privateCanary = "CALENDAR_PRIVATE_CANARY_MUST_NOT_REACH_SYNTHESIS"
+        store.calendar.changeKnowledgeEventForChecks(id: "project-checkpoint", title: privateCanary)
+        try fixture("askKnowledge", query: "стенд")
+        var revoking = try JSONSerialization.jsonObject(with: Data(contentsOf: knowledgeResponse)) as! [String: Any]
+        revoking["classificationDelay"] = 1
+        try JSONSerialization.data(withJSONObject: revoking).write(to: knowledgeResponse)
+        let classificationStarted = root.appendingPathComponent("fixture-classification-started.json")
+        try? FileManager.default.removeItem(at: classificationStarted)
+        try? FileManager.default.removeItem(at: knowledgeStarted)
+        prepare("Что нужно для доступа к стенду и когда встреча?")
+        voice.perform()
+        try await waitUntil { FileManager.default.fileExists(atPath: classificationStarted.path) }
+        let classificationPrompt = try String(contentsOf: classificationStarted, encoding: .utf8)
+        try expect(!classificationPrompt.contains(privateCanary), "The classifier must not receive any raw calendar snapshot")
+        store.calendar.disconnect()
+        try await waitUntil { !voice.isWorking && !store.busy }
+        try expect(voice.knowledgeAnswer != nil && !store.calendar.connected, "The non-calendar library answer should survive calendar disconnection")
+        let synthesisPrompt = try String(contentsOf: knowledgeStarted, encoding: .utf8)
+        try expect(!synthesisPrompt.contains(privateCanary), "Revoked calendar evidence was sent to synthesis after classification")
+        try expect(voice.knowledgeAnswer?.sources.contains { $0.kind == "calendar" } == false,
+                   "A disconnected calendar must not remain a citation in the accepted answer")
+        try expect(try Data(contentsOf: workspaceURL) == beforeCalendarQuestion, "Two-phase permission recheck changed task/note data")
+        voice.reset()
+        print("PASS: two-phase Q&A rechecks native calendar permission after classification and sends no revoked evidence to synthesis")
+
+        // History Retry bypasses VoiceController. Neither the durable queue nor
+        // a later execution attempt may reuse its original EventKit snapshot.
+        store.calendar.seedPreview()
+        store.calendar.changeKnowledgeEventForChecks(id: "project-checkpoint", title: privateCanary)
+        let queuedSnapshot = store.calendar.knowledgeSnapshot(question: "Что нужно для стенда и когда встреча?")
+        let retryQuestion: [String: Any] = ["text": "Что нужно для стенда и когда встреча?", "query": "стенд",
+            "questionOnly": true, "now": Date().timeIntervalSince1970, "timeZoneOffsetMinutes": TimeZone.current.secondsFromGMT() / 60,
+            "calendar": try JSONSerialization.jsonObject(with: JSONEncoder().encode(queuedSnapshot))]
+        let retryInput = try JSONSerialization.data(withJSONObject: retryQuestion, options: [.sortedKeys])
+        var changedSnapshot = retryQuestion; changedSnapshot["calendar"] = ["connected": false, "events": []]
+        let changedSnapshotInput = try JSONSerialization.data(withJSONObject: changedSnapshot, options: [.sortedKeys])
+        let persisted = try AppStore.persistableJobInput(command: "voice-plan", input: retryInput)
+        try expect(persisted == AppStore.persistableJobInput(command: "voice-plan", input: changedSnapshotInput),
+                   "Volatile calendar evidence changed the canonical queued request or its revision")
+        try fixture("askKnowledge", query: "стенд")
+        var failingQuestion = try JSONSerialization.jsonObject(with: Data(contentsOf: knowledgeResponse)) as! [String: Any]
+        failingQuestion["knowledge"] = ["title": "Invalid fixture", "paragraphs": "invalid"]
+        try JSONSerialization.data(withJSONObject: failingQuestion).write(to: knowledgeResponse)
+        do {
+            _ = try await store.worker("voice-plan", input: retryInput)
+            throw AppError.message("Invalid question fixture unexpectedly succeeded")
+        } catch {
+            try expect(error.localizedDescription != "Invalid question fixture unexpectedly succeeded", "Question retry fixture did not fail")
+        }
+        try await waitUntil { store.jobs.jobs.contains { $0.kind == "voice-plan" && $0.state == "failed" && $0.config.input == persisted } }
+        guard let failedQuestion = store.jobs.jobs.first(where: { $0.kind == "voice-plan" && $0.state == "failed" && $0.config.input == persisted }),
+              let savedQuestionInput = failedQuestion.config.input,
+              let savedQuestion = try JSONSerialization.jsonObject(with: savedQuestionInput) as? [String: Any] else {
+            throw AppError.message("Durable failed question job missing")
+        }
+        try expect(savedQuestion["calendar"] == nil && !String(decoding: savedQuestionInput, as: UTF8.self).contains(privateCanary),
+                   "The durable queue retained a private calendar snapshot")
+        store.calendar.disconnect()
+        try fixture("askKnowledge", query: "стенд")
+        try? FileManager.default.removeItem(at: knowledgeStarted)
+        store.jobs.retry(failedQuestion)
+        try await waitUntil { store.jobs.jobs.contains { $0.id == failedQuestion.id && $0.attempt == failedQuestion.attempt + 1 && $0.state == "succeeded" } }
+        let retryPrompt = try String(contentsOf: knowledgeStarted, encoding: .utf8)
+        try expect(!retryPrompt.contains(privateCanary), "History Retry sent revoked persisted calendar evidence to synthesis")
+        try expect(store.jobs.jobs.first { $0.id == failedQuestion.id }?.inputRevision == failedQuestion.inputRevision,
+                   "Refreshing volatile calendar evidence invalidated the original question revision")
+        try expect(try Data(contentsOf: workspaceURL) == beforeCalendarQuestion, "Question history retry modified notes or tasks")
+        print("PASS: question queue persists only the request; History Retry refreshes revoked calendar access without changing its revision")
 
         let count = store.notes.notes.count
         try fixture("unsupported", text: "Уточните, какую заметку нужно изменить.")
@@ -180,7 +408,7 @@ enum VoiceNativeChecks {
         try expect(reopened.voice.text == longDraft && !reopened.voice.isWorking, "Reopen must preserve full draft without truncation or microphone access")
         voice.reset(); _ = voice.flushDraft()
         print("PASS: crash recovery keeps committed operation identity; long drafts survive reopening intact")
-        print("8 native voice E2E groups passed")
+        print("17 native voice E2E groups passed")
     }
     private static func notesDraftCheck(store: AppStore) throws {
         store.notes.captureDrafts["taskappend:pending"] = "Не потерять уточнение задачи"

@@ -11,6 +11,7 @@ struct VoiceCommandOverlay: View {
 }
 
 struct VoiceCommandPanel: View {
+    @ObservedObject private var theme = ThemeController.shared
     @EnvironmentObject private var app: AppStore
     @ObservedObject var controller: VoiceCommandController
     @FocusState private var commandFocused: Bool
@@ -18,7 +19,7 @@ struct VoiceCommandPanel: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "mic").foregroundStyle(.secondary)
-                Text("Поручение").font(AppTypography.control.weight(.semibold))
+                Text("Помощник").font(AppTypography.control.weight(.semibold))
                 Spacer()
                 if controller.result == nil && controller.hasDraft && !controller.isWorking {
                     Button { controller.reset(); commandFocused = true } label: { Image(systemName: "plus").frame(width: 24, height: 24) }
@@ -28,8 +29,16 @@ struct VoiceCommandPanel: View {
                     .buttonStyle(.plain).help("Закрыть поручение").accessibilityLabel("Закрыть поручение")
                     .disabled(controller.phase == .applying)
             }
-            Text(controller.contextLabel).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
-            if let result = controller.result {
+            Text(controller.knowledgeAnswer == nil ? controller.contextLabel : "По библиотеке").font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
+            if let answer = controller.knowledgeAnswer {
+                KnowledgeAnswerView(answer: answer, openingID: controller.knowledgeOpeningID, open: controller.openKnowledgeSource)
+                HStack {
+                    Button { KnowledgeAnswerView.copy(answer) } label: { Image(systemName: "doc.on.doc").frame(width: 24, height: 24) }
+                        .buttonStyle(.plain).help("Скопировать ответ").accessibilityLabel("Скопировать ответ")
+                    Spacer()
+                    Button("Новый вопрос") { controller.reset(); commandFocused = true }.buttonStyle(.borderless)
+                }
+            } else if let result = controller.result {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(Ink.green)
                     VStack(alignment: .leading, spacing: 6) {
@@ -44,6 +53,65 @@ struct VoiceCommandPanel: View {
                     Spacer()
                     Button { controller.reset(); commandFocused = true } label: { Image(systemName: "plus").frame(width: 24, height: 24) }
                         .buttonStyle(.plain).disabled(controller.isWorking).help("Новое поручение").accessibilityLabel("Новое поручение")
+                }
+            } else if let plan = controller.plan, plan.reviewRequired == true, [.reviewing, .applying].contains(controller.phase) {
+                Text(plan.title).font(AppTypography.heading)
+                if ["appendTaskContext", "appendTaskContexts", "appendTask"].contains(plan.action ?? "") {
+                    TextField("Что добавить к задачам", text: $controller.reviewText, axis: .vertical)
+                        .font(AppTypography.body).lineLimit(3...6)
+                        .textFieldStyle(.plain).padding(10)
+                        .background(Ink.soft, in: RoundedRectangle(cornerRadius: 7))
+                        .accessibilityLabel("Текст дополнения")
+                        .accessibilityIdentifier("voice-review-text").disabled(controller.isWorking)
+                } else {
+                    Text(plan.detail).font(AppTypography.control).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("Задачи").font(AppTypography.control.weight(.medium))
+                    Spacer()
+                    Text("Выбрано: \(controller.selectedTargetIDs.count)")
+                        .font(AppTypography.caption).foregroundStyle(.secondary)
+                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(plan.candidates ?? []) { candidate in
+                            Toggle(isOn: Binding(
+                                get: { controller.selectedTargetIDs.contains(candidate.id) },
+                                set: { controller.toggleReviewTarget(candidate, selected: $0) }
+                            )) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                                        Text(candidate.title).font(AppTypography.body).lineLimit(2)
+                                        if candidate.completed == true {
+                                            Text("Выполнена").font(AppTypography.caption).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    if let reason = candidate.reason, !reason.isEmpty {
+                                        Text(reason).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(3)
+                                    } else if !candidate.detail.isEmpty {
+                                        Text(candidate.detail).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2)
+                                    }
+                                }
+                            }
+                            .toggleStyle(.checkbox).padding(.vertical, 9)
+                            .accessibilityIdentifier("voice-review-target-\(candidate.id)").disabled(controller.isWorking)
+                            if candidate.id != plan.candidates?.last?.id { Divider() }
+                        }
+                    }
+                }.frame(maxHeight: 240)
+                HStack {
+                    Button("Изменить поручение") { controller.editCommand(); commandFocused = true }
+                        .buttonStyle(.borderless).disabled(controller.isWorking)
+                    Spacer()
+                    Button { controller.confirmReview() } label: {
+                        HStack(spacing: 7) {
+                            if controller.phase == .applying { ProgressView().controlSize(.small) }
+                            Text(controller.phase == .applying ? "Сохраняю…" : "Применить")
+                        }
+                    }
+                        .buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                        .disabled(!controller.canConfirmReview || app.busy)
+                        .accessibilityIdentifier("voice-review-confirm")
                 }
             } else if controller.phase == .choosing, let plan = controller.plan {
                 Text(plan.title).font(AppTypography.heading)
@@ -65,7 +133,7 @@ struct VoiceCommandPanel: View {
                 }.frame(maxHeight: 200)
                 Button("Изменить поручение") { controller.editCommand(); commandFocused = true }.buttonStyle(.borderless)
             } else {
-                TextField("Например: к задаче про договор добавь проверить оплату", text: $controller.text, axis: .vertical)
+                TextField("Спросите о встречах или поручите добавить мысль к задаче", text: $controller.text, axis: .vertical)
                     .font(AppTypography.body).lineLimit(3...6).textFieldStyle(.plain)
                     .focused($commandFocused).disabled(controller.isWorking)
                     .accessibilityLabel("Текст поручения").accessibilityIdentifier("voice-command-text")
@@ -98,17 +166,17 @@ struct VoiceCommandPanel: View {
                 }
             }
             if let message = controller.message {
-                Text(message).font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(message).font(AppTypography.caption).foregroundStyle(controller.phase == .reviewing ? Ink.warning : .secondary).fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("voice-command-message")
             }
         }
         .padding(18).frame(width: 430, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .appSurface(.floatingPanel)
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Ink.line, lineWidth: 0.5))
         .shadow(color: .black.opacity(0.15), radius: 18, y: 5)
         .onAppear { commandFocused = true }
         .onExitCommand { controller.dismiss() }
-        .accessibilityElement(children: .contain).accessibilityLabel("Голосовое поручение")
+        .accessibilityElement(children: .contain).accessibilityLabel("Помощник")
     }
     private var phaseLabel: String {
         switch controller.phase {

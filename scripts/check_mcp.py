@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Real stdio MCP lifecycle over a disposable library. No accounts or models."""
+from __future__ import annotations
+import argparse
+import json
+from pathlib import Path
+import queue
+import subprocess
+import tempfile
+import threading
+import uuid
+from e2e import Core, require
+
+
+def operation():
+    return str(uuid.uuid4())
+
+
+class Client:
+    def __init__(self, core):
+        self.sequence = 0
+        self.output = queue.Queue()
+        self.errors = []
+        self.process = subprocess.Popen([str(core.engine), "mcp", "--root", str(core.root)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=core.environment)
+        def read():
+            try:
+                for line in self.process.stdout:
+                    self.output.put(json.loads(line))
+            except Exception as error:
+                self.output.put(error)
+            finally:
+                self.output.put(EOFError("MCP stdout closed"))
+        threading.Thread(target=read, daemon=True).start()
+        def errors():
+            for line in self.process.stderr:
+                self.errors.append(line.decode(errors="replace"))
+        threading.Thread(target=errors, daemon=True).start()
+        initialized = self.request("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "posle-isolated-check", "version": "1"}})
+        require(initialized["serverInfo"]["name"] == "posle", "Wrong server identity")
+        self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def send(self, data):
+        self.process.stdin.write((json.dumps(data, ensure_ascii=False) + "\n").encode())
+        self.process.stdin.flush()
+
+    def request(self, method, parameters):
+        self.sequence += 1
+        request_id = self.sequence
+        self.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": parameters})
+        while True:
+            response = self.output.get(timeout=20)
+            if isinstance(response, BaseException):
+                raise AssertionError(f"MCP transport: {response}; {''.join(self.errors)[-2000:]}")
+            if response.get("id") == request_id:
+                require("error" not in response, f"MCP protocol failure: {response}")
+                return response["result"]
+
+    def tool(self, name, *, error=False, **arguments):
+        result = self.request("tools/call", {"name": name, "arguments": arguments})
+        require(bool(result.get("isError")) is error, f"MCP {name}: {result}")
+        if error:
+            return result
+        structured = result.get("structuredContent")
+        if structured is not None:
+            return structured
+        return json.loads(result["content"][0]["text"])
+
+    def close(self):
+        self.process.stdin.close()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.terminate()
+            self.process.wait(timeout=5)
+        self.process.stdout.close()
+        self.process.stderr.close()
+
+
+def run(engine, library):
+    with tempfile.TemporaryDirectory(prefix="posle-mcp-check-", dir="/private/tmp") as temporary:
+        core = Core(engine, library, Path(temporary))
+        first = Client(core)
+        second = None
+        try:
+            tools = first.request("tools/list", {})["tools"]
+            require(len(tools) == 7 and len({tool["name"] for tool in tools}) == 7, "MCP tool catalog")
+            first.tool("posle_tasks", error=True)
+            settings = core.request("task-agent-settings")
+            core.request("task-agent-settings", enabled=True, expectedRevision=settings["revision"], operationID=operation())
+            created = core.request("task-create", title="Проверить совместимость входа", text="Сохранить старые ссылки", project="Пилот", operationID=operation())
+            task_id = created["id"]
+            require(first.tool("posle_tasks")["tasks"] == [], "Unshared task leaked through MCP")
+            first.tool("posle_task_context", taskID=task_id, error=True)
+            task = core.request("task-details-update", taskID=task_id, expectedRevision=created["revision"], operationID=operation(), patch={"agentAccess": {"enabled": True}})
+            task = core.request("task-material-link", taskID=task_id, expectedRevision=task["revision"], operationID=operation(),
+                material={"kind": "note", "title": "Публичный контекст", "text": "Нужен обратный сценарий", "shared": True})
+            task = core.request("task-material-link", taskID=task_id, expectedRevision=task["revision"], operationID=operation(),
+                material={"kind": "note", "title": "Личный контекст", "text": "PRIVATE-MATERIAL-MUST-NOT-LEAK", "shared": False})
+            folder = core.root / "source-project"
+            folder.mkdir()
+            (folder / "private.txt").write_text("FOLDER-CONTENTS-MUST-NOT-BE-READ")
+            task = core.request("task-material-link", taskID=task_id, expectedRevision=task["revision"], operationID=operation(),
+                material={"kind": "folder", "title": "Проект", "path": str(folder), "shared": True})
+            context = first.tool("posle_task_context", taskID=task_id)
+            serial = json.dumps(context)
+            require("PRIVATE-MATERIAL-MUST-NOT-LEAK" not in serial and "FOLDER-CONTENTS-MUST-NOT-BE-READ" not in serial, "Context leaked excluded material or traversed folder")
+            claim_args = dict(taskID=task_id, expectedRevision=context["task"]["revision"], expectedContextVersion=context["contextVersion"], agentID="Codex", operationID=operation())
+            claimed = first.tool("posle_claim_task", **claim_args)
+            retry = first.tool("posle_claim_task", **claim_args)
+            require(claimed == retry and claimed["status"] == "doing", "Claim retry duplicated mutation")
+            claim_id = claimed["claim"]["id"]
+            second = Client(core)
+            fresh = second.tool("posle_task_context", taskID=task_id)
+            second.tool("posle_claim_task", taskID=task_id, expectedRevision=claimed["revision"], expectedContextVersion=fresh["contextVersion"], agentID="Другой агент", operationID=operation(), error=True)
+            report = first.tool("posle_task_report", taskID=task_id, expectedRevision=claimed["revision"], claimID=claim_id, agentID="Codex", operationID=operation(),
+                text="Реализация и проверки готовы", artifacts=[{"title": "Проверки", "kind": "checks", "text": "12 сценариев пройдено"}])
+            require(any(event.get("artifacts") for event in report["history"]), "Report artifacts were not persisted")
+            core.request("task-material-link", taskID=task_id, expectedRevision=report["revision"], operationID=operation(),
+                material={"kind": "note", "title": "Новое условие", "text": "Проверить второе устройство", "shared": True})
+            first.tool("posle_complete_task", taskID=task_id, expectedRevision=report["revision"], claimID=claim_id, agentID="Codex", operationID=operation(), expectedContextVersion=fresh["contextVersion"], error=True)
+            updated = first.tool("posle_task_context", taskID=task_id)
+            require(updated["contextVersion"] != context["contextVersion"], "Changed user context has unchanged fingerprint")
+            report_arguments = dict(taskID=task_id, expectedRevision=updated["task"]["revision"], claimID=claim_id, agentID="Codex", operationID=operation(), text="Учтено новое условие; проверки повторены")
+            reported = first.tool("posle_task_report", **report_arguments)
+            latest = first.tool("posle_task_context", taskID=task_id)
+            completed = first.tool("posle_complete_task", taskID=task_id, expectedRevision=reported["revision"], claimID=claim_id, agentID="Codex", operationID=operation(), expectedContextVersion=latest["contextVersion"])
+            require(completed["status"] == "done" and completed["completed"], "Agent completion did not reach shared tracker state")
+            native = core.request("task-get", taskID=task_id)
+            require(all(native[key] == completed[key] for key in ("id", "status", "completed", "revision")), "MCP and native domain have divergent task state")
+            public_material = next(material for material in native["materials"] if material["title"] == "Публичный контекст")
+            core.request("task-material-link", taskID=task_id, expectedRevision=native["revision"], operationID=operation(), material={"id": public_material["id"], "shared": False})
+            replayed = first.tool("posle_task_report", **report_arguments)
+            require("Публичный контекст" not in json.dumps(replayed, ensure_ascii=False) and "Нужен обратный сценарий" not in json.dumps(replayed, ensure_ascii=False), "A cached mutation replay leaked a newly revoked material")
+            integration = core.request("task-agent-settings")
+            core.request("task-agent-settings", enabled=False, expectedRevision=integration["revision"], operationID=operation())
+            first.tool("posle_task_context", taskID=task_id, error=True)
+            first.tool("posle_task_report", error=True, **report_arguments)
+            first.tool("posle_tasks", root="/tmp/other", error=True)
+            print("PASS: real MCP initialization, tools, private access, immutable context, claim retries/concurrency, artifacts, stale completion and revocation")
+        finally:
+            if second:
+                second.close()
+            first.close()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--engine", type=Path, required=True)
+    parser.add_argument("--library", type=Path, required=True)
+    args = parser.parse_args()
+    run(args.engine.resolve(), args.library.resolve())

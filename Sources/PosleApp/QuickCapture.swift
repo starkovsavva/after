@@ -22,7 +22,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
     func start() {
         guard !started else { return }; started = true
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = ReplicaArtwork.menuBarImage()
+        item.button?.image = SunsetArtwork.menuBarImage()
         let menu = NSMenu()
         let capture = NSMenuItem(title: "Быстрая заметка…", action: #selector(showFromMenu), keyEquivalent: "")
         capture.target = self; menu.addItem(capture)

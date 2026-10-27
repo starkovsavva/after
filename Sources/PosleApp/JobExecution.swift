@@ -12,11 +12,14 @@ extension AppStore {
            disconnectingChatGPTAccounts.contains(settings.chatGPTAccountID) {
             throw AppError.message("Выполняется выход из ChatGPT. Повторите после входа в нужный аккаунт.")
         }
-        let configuration = JobConfiguration(command: command, meetingID: id, extra: extra, input: input, settings: settings)
+        // EventKit evidence is permission-scoped and volatile. Persist only the
+        // request; each execution attempt obtains its own authorized snapshot.
+        let persistedInput = try Self.persistableJobInput(command: command, input: input)
+        let configuration = JobConfiguration(command: command, meetingID: id, extra: extra, input: persistedInput, settings: settings)
         let speech = ["transcribe", "diarize", "finalize", "dictate"].contains(command)
         let cloud = speech ? ["transcribe", "dictate"].contains(command) && settings.speechMode == "cloud" : settings.mode == "cloud"
         let resource = ["finalize", "dictate", "diarize"].contains(command) || (command == "transcribe" && settings.diarization) ? "local-heavy" : cloud ? "cloud" : "local-heavy"
-        let revision = try jobInputRevision(command: command, meetingID: id, input: input)
+        let revision = try jobInputRevision(command: command, meetingID: id, input: persistedInput)
         let label: String
         switch command {
         case "transcribe": label = "Распознавание"
@@ -41,6 +44,37 @@ extension AppStore {
             return command == "transcribe" ? transcript : transcript + ":" + summary
         }
         return input.map { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() } ?? ""
+    }
+
+    static func persistableJobInput(command: String, input: Data?) throws -> Data? {
+        guard command == "voice-plan", let input else { return input }
+        guard var request = try JSONSerialization.jsonObject(with: input) as? [String: Any] else {
+            throw AppError.message("Не удалось прочитать запрос голосового поручения.")
+        }
+        request.removeValue(forKey: "calendar")
+        return try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
+    }
+
+    /// AppStore is MainActor-isolated. This runs after all suspending startup
+    /// work, including credentials, for initial, resumed and historical retries.
+    func executionJobInput(_ config: JobConfiguration) throws -> Data? {
+        guard config.command == "voice-plan", let input = try Self.persistableJobInput(command: config.command, input: config.input) else {
+            return config.input
+        }
+        guard var request = try JSONSerialization.jsonObject(with: input) as? [String: Any] else {
+            throw AppError.message("Не удалось прочитать запрос голосового поручения.")
+        }
+        if request["questionOnly"] as? Bool == true {
+            guard let question = request["text"] as? String else {
+                throw AppError.message("Нет вопроса помощнику.")
+            }
+            let now = Date()
+            let snapshot = calendar.knowledgeSnapshot(question: question, now: now)
+            request["now"] = now.timeIntervalSince1970
+            request["timeZoneOffsetMinutes"] = TimeZone.current.secondsFromGMT(for: now) / 60
+            request["calendar"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot))
+        }
+        return try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
     }
 
     /// A snapshot belongs to the queued operation, including its provider/key scope.
@@ -100,7 +134,8 @@ extension AppStore {
                 diarization: !config.extra.contains("--no-diarization") && snapshot.diarization,
                 settings: try JSONEncoder().encode(snapshot), event: event)
         } else {
-            result = try await cancellation.runner.run(rustEngine, arguments: arguments, environment: environment, input: config.input, event: event)
+            let executionInput = try executionJobInput(config)
+            result = try await cancellation.runner.run(rustEngine, arguments: arguments, environment: environment, input: executionInput, event: event)
         }
         if let id = config.meetingID {
             if config.command == "summarize" { updateMeeting(id) { $0.status = "ready"; $0.error = nil } }

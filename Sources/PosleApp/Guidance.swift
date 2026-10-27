@@ -6,7 +6,7 @@ enum GuidancePresentation: String, Identifiable {
     case gettingStarted, whatsNew
     var id: String { rawValue }
 }
-enum GuidanceAction { case record, importFile, speechSettings, cards, aiSettings }
+enum GuidanceAction { case record, importFile, speechSettings, cards, aiSettings, tasks, integrations }
 
 private struct GuidancePreferences: Codable {
     var introSeen = false
@@ -42,7 +42,7 @@ final class GuidanceController: ObservableObject {
     private var pendingAction: GuidanceAction?
     private var consideredStartup = false
     // Bump only when a release introduces something worth teaching.
-    private let featureRelease = "0.12"
+    private let featureRelease = "0.13"
     var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development" }
 
     func configure(root: URL, preview: Bool) {
@@ -131,11 +131,14 @@ struct GuidanceSheet: View {
                 Button("Выбрать локальную или облачную модель") { controller.complete(with: .speechSettings) }.buttonStyle(.borderless)
             } else {
                 HStack {
-                    feature("Подписка ChatGPT", "Войдите в личный аккаунт для конспектов, карточек и текстовых поручений.", "person.crop.circle")
-                    Button("Настроить") { controller.complete(with: .aiSettings) }.buttonStyle(.bordered)
+                    feature("Контекст задачи", "Прикрепляйте мысли, заметки, фрагменты встреч и папки. Результаты работы сохраняются в истории.", "checklist")
+                    Button("Открыть") { controller.complete(with: .tasks) }.buttonStyle(.bordered)
                 }
-                feature("Ваши модели и рассуждения", "Список доступен после входа. Для Luna можно отключить рассуждения.", "slider.horizontal.3")
-                feature("Контроль лимитов", "При исчерпании лимита очередь приостановится. Использование можно проверить в ChatGPT.", "pause.circle")
+                feature("Поручения голосом", "Открывайте и завершайте задачи. Дополняйте связанные задачи одним поручением с проверкой списка перед сохранением.", "mic")
+                HStack {
+                    feature("Работа с агентом", "Codex может принять задачу, оставить отчёт с артефактами и завершить работу через MCP.", "point.3.connected.trianglepath.dotted")
+                    Button("Настроить") { controller.complete(with: .integrations) }.buttonStyle(.bordered)
+                }
             }
             Divider()
             HStack(spacing: 14) {

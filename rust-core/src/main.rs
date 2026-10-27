@@ -40,6 +40,17 @@ fn backend_path(override_path: Option<&Path>) -> Result<PathBuf> {
     Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend"))
 }
 
+const VOICE_INPUT_LIMIT: usize = 256 * 1024;
+
+fn read_voice_input(reader: impl Read) -> Result<Value> {
+    let mut bytes = Vec::new();
+    reader.take((VOICE_INPUT_LIMIT + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > VOICE_INPUT_LIMIT {
+        bail!("Контекст помощника слишком большой. Сократите диапазон календаря или вопрос.");
+    }
+    serde_json::from_slice(&bytes).context("Не удалось прочитать запрос помощника")
+}
+
 fn run(args: Args) -> Result<Value> {
     if !args.root.is_absolute() { bail!("Нужен абсолютный путь папки приложения"); }
     let backend = backend_path(args.backend.as_deref())?;
@@ -76,8 +87,7 @@ fn run(args: Args) -> Result<Value> {
         Command::CardsImportPreview => posle_core::cards::preview(args.path.as_deref().context("Выберите CSV/TSV файл")?,Some(&args.separator)),
         Command::ExpandNotes => { ai::expand_note(&args.root, &args.note)?; Ok(json!({})) }
         Command::VoicePlan => {
-            let mut input=String::new(); io::stdin().take(20_000).read_to_string(&mut input)?;
-            let mut request:Value=serde_json::from_str(&input)?; request["root"]=json!(args.root); request["command"]=json!("voice-plan");
+            let mut request = read_voice_input(io::stdin())?; request["root"]=json!(args.root); request["command"]=json!("voice-plan");
             Ok(json!({"voicePlan":posle_core::request(&request)?}))
         }
         Command::NotesList => posle_core::request(&json!({"root":args.root,"command":"notes-list"})),
@@ -102,6 +112,13 @@ fn run(args: Args) -> Result<Value> {
 }
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("mcp")) {
+        let args: Vec<_> = std::env::args_os().skip(2).collect();
+        let result = if args.len() == 2 && args[0] == "--root" { posle_core::mcp::run_stdio(PathBuf::from(&args[1])) }
+            else { Err(anyhow::anyhow!("Usage: posle-engine mcp --root /absolute/library/path")) };
+        if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
+        return;
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(posle_core::python_runtime::VERIFY_MODE)) {
         let args: Vec<_> = std::env::args_os().skip(2).collect();
         let result = if args.len() == 1 { posle_core::python_runtime::verify_distribution(Path::new(&args[0])) }
@@ -145,5 +162,24 @@ fn main() {
             println!("{}", event);
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod voice_input_tests {
+    use super::*;
+    #[test]
+    fn calendar_context_larger_than_old_stdin_limit_is_not_truncated() {
+        let value = json!({"text":"Что у меня в календаре?", "calendar":{"events":[{"title":"Обсуждение".repeat(4000)}]}});
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(bytes.len() > 20_000 && bytes.len() < VOICE_INPUT_LIMIT);
+        assert_eq!(read_voice_input(bytes.as_slice()).unwrap(), value);
+    }
+    #[test]
+    fn oversized_or_invalid_input_fails_without_accepting_a_valid_prefix() {
+        let mut bytes = br#"{"text":"question"}"#.to_vec();
+        bytes.resize(VOICE_INPUT_LIMIT + 1, b' ');
+        assert!(read_voice_input(bytes.as_slice()).unwrap_err().to_string().contains("слишком большой"));
+        assert!(read_voice_input(&[0xffu8][..]).is_err());
     }
 }

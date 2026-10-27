@@ -196,7 +196,8 @@ struct ThemeSettingsView: View {
                             guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return }
                             let hex = String(format: "%02X%02X%02X", Int((rgb.redComponent * 255).rounded()), Int((rgb.greenComponent * 255).rounded()), Int((rgb.blueComponent * 255).rounded()))
                             theme.change { $0.name = "Своя тема"; $0.accent = hex }
-                        }), supportsOpacity: false).labelsHidden().accessibilityLabel("Свой цвет акцента")
+                        }), supportsOpacity: false).fixedSize().accessibilityLabel("Свой цвет акцента")
+                            .accessibilityIdentifier("theme.custom-accent")
                     }
                 }
                 row("Размер текста") {

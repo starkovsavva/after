@@ -1,6 +1,6 @@
 [package]
 name = "posle-engine"
-version = "0.12.3"
+version = "0.13.0"
 edition = "2021"
 description = "Local-first meeting library, grounded notes and spaced repetition for Posle"
 license = "MIT"
@@ -27,6 +27,8 @@ rust-stemmers = "1.2.0"
 unicode-normalization = "0.1.26"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
+rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "time", "sync"] }
 
 [dev-dependencies]
 tempfile = "3"

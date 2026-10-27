@@ -21,6 +21,11 @@ const MAX_TRANSCRIPT: u64 = 64 * 1_048_576;
 const MAX_DOCUMENT: usize = 200_000;
 const MAX_ROWS_PER_MEETING: usize = 100_000;
 
+#[cfg(test)]
+thread_local! {
+    static SYNC_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn private_directory(path: &Path) -> Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(path)?;
     let info = fs::symlink_metadata(path)?;
@@ -254,6 +259,8 @@ fn remove_meeting(connection: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 fn sync(connection: &mut Connection, root: &Path, lexicon: &Lexicon) -> Result<Vec<String>> {
+    #[cfg(test)]
+    SYNC_CALLS.with(|calls| calls.set(calls.get() + 1));
     let library = root.join("meetings");
     private_directory(&library)?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -342,11 +349,36 @@ pub(crate) fn query_excerpt(text:&str,query:&str) -> Result<String> {
 /// Search is blocking; callers should run this off their UI thread. The private
 /// file lock serializes index synchronization across FFI and worker processes.
 pub fn search(root: &Path, query: &str, scope: &str, limit: usize) -> Result<Value> {
+    Ok(search_batch(root, &[(query.into(), scope.into(), limit)])?.remove(0))
+}
+
+struct SearchRequest {
+    query: String,
+    scope: String,
+    limit: usize,
+    expression: String,
+    terms: Vec<String>,
+}
+
+fn empty_result() -> Value {
+    json!({"hits":[],"total":0,"truncated":false,"warnings":[]})
+}
+
+/// Run several lexical searches against one synchronized index session. The
+/// returned values follow request order; the lock is released before returning
+/// evidence to the caller, including callers that subsequently invoke a model.
+pub(crate) fn search_batch(root: &Path, requests: &[(String, String, usize)]) -> Result<Vec<Value>> {
     ensure!(root.is_absolute(), "Папка данных должна иметь абсолютный путь");
-    ensure!(["all","notes","transcript","cards","meetings"].contains(&scope), "Неизвестная область поиска");
     let lexicon = Lexicon::new();
-    let (expression, terms) = lexicon.query(query)?;
-    if expression.is_empty() { return Ok(json!({"hits":[],"total":0,"truncated":false,"warnings":[]})); }
+    // Validate the complete batch before opening or updating the derived index.
+    let requests = requests.iter().map(|(query, scope, limit)| {
+        ensure!(["all","notes","transcript","cards","meetings"].contains(&scope.as_str()), "Неизвестная область поиска");
+        let (expression, terms) = lexicon.query(query)?;
+        Ok(SearchRequest { query: query.clone(), scope: scope.clone(), limit: (*limit).clamp(1, 100), expression, terms })
+    }).collect::<Result<Vec<_>>>()?;
+    if requests.iter().all(|request| request.expression.is_empty()) {
+        return Ok(requests.iter().map(|_| empty_result()).collect());
+    }
     private_directory(root)?;
     let cache = root.join("cache"); private_directory(&cache)?;
     let folder = cache.join("search"); private_directory(&folder)?;
@@ -361,23 +393,33 @@ pub fn search(root: &Path, query: &str, scope: &str, limit: usize) -> Result<Val
     let (mut connection,rebuilt) = open_index(&database)?;
     let mut warnings = sync(&mut connection,root,&lexicon)?;
     if rebuilt { warnings.push("Повреждённый индекс поиска восстановлен по исходным заметкам и встречам.".into()); }
-    let filter = match scope {
+    let transaction = connection.transaction()?;
+    let results = requests.iter().map(|request| {
+        if request.expression.is_empty() { return Ok(empty_result()); }
+        query_index(&transaction, root, request, &lexicon, warnings.clone())
+    }).collect::<Result<Vec<_>>>()?;
+    transaction.commit()?;
+    Ok(results)
+}
+
+fn query_index(connection: &Connection, root: &Path, request: &SearchRequest, lexicon: &Lexicon, mut warnings: Vec<String>) -> Result<Value> {
+    let SearchRequest { query, scope, limit, expression, terms } = request;
+    let filter = match scope.as_str() {
         "notes" => "d.kind IN ('overview','item')", "transcript" => "d.kind='transcript'",
         "cards" => "d.kind='card'", "meetings" => "d.kind='title'", _=>"1=1",
     };
     let count_sql = format!("SELECT COUNT(*) FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter}");
-    let mut total: i64 = connection.query_row(&count_sql, [&expression], |row|row.get(0))?;
+    let mut total: i64 = connection.query_row(&count_sql, [expression], |row|row.get(0))?;
     let sql = format!("SELECT d.key,d.meeting_id,d.title,d.created_at,d.kind,d.text,d.refs,d.start,d.item_index,d.card_id,d.fingerprint,d.excerpt_text FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter} ORDER BY bm25(documents_fts,1.0,0.8) * CASE d.kind WHEN 'title' THEN 4.0 WHEN 'overview' THEN 2.8 WHEN 'item' THEN 2.4 WHEN 'card' THEN 1.2 ELSE 1.0 END ASC,d.created_at DESC,d.meeting_id ASC,d.key ASC LIMIT ?2");
-    let limit = limit.clamp(1,100);
-    let mut hits = connection.prepare(&sql)?.query_map(params![expression,limit as i64],|row| {
+    let mut hits = connection.prepare(&sql)?.query_map(params![expression,*limit as i64],|row| {
         let content: String = row.get(5)?;
         let refs: String = row.get(6)?;
         Ok(json!({"id":row.get::<_,String>(0)?,"meetingID":row.get::<_,String>(1)?,"meetingTitle":row.get::<_,String>(2)?,
-            "createdAt":row.get::<_,f64>(3)?,"kind":row.get::<_,String>(4)?,"snippet":excerpt(&row.get::<_,String>(11)?,&terms,&lexicon),"text":content,
+            "createdAt":row.get::<_,f64>(3)?,"kind":row.get::<_,String>(4)?,"snippet":excerpt(&row.get::<_,String>(11)?,terms,lexicon),"text":content,
             "segmentIDs":serde_json::from_str::<Vec<u64>>(&refs).unwrap_or_default(),"start":row.get::<_,Option<f64>>(7)?,
             "itemIndex":row.get::<_,Option<i64>>(8)?,"cardID":row.get::<_,Option<String>>(9)?,"sourceFingerprint":row.get::<_,String>(10)?}))
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
-    if ["all","notes"].contains(&scope) {
+    if ["all","notes"].contains(&scope.as_str()) {
         let manual = match crate::notes::search_hits(root,query) {
             Ok(hits)=>hits,
             Err(_)=>{ warnings.push("Ручные заметки недоступны для поиска. Проверьте библиотеку заметок.".into()); vec![] }
@@ -385,8 +427,11 @@ pub fn search(root: &Path, query: &str, scope: &str, limit: usize) -> Result<Val
         total += manual.len() as i64;
         // Keep BM25 order within meeting results; recent manual captures precede
         // them, giving source notes a predictable place without inventing scores.
-        let mut combined=manual; combined.extend(hits); combined.truncate(limit); hits=combined;
+        let mut combined=manual; combined.extend(hits); combined.truncate(*limit); hits=combined;
     }
+    // The ordinal preserves the actual lexical result order for rank fusion;
+    // it is not a comparable raw score across different queries or scopes.
+    for (index, hit) in hits.iter_mut().enumerate() { hit["rank"] = json!(index + 1); }
     Ok(json!({"total":total,"truncated":total as usize>hits.len(),"hits":hits,"warnings":warnings}))
 }
 
@@ -416,6 +461,67 @@ mod tests {
     }
     fn transcript(dir:&Path, content:&str) {
         atomic_json(&dir.join("transcript.json"),&json!({"segments":[{"id":7,"start":12.5,"end":19.0,"text":content}]})).unwrap();
+    }
+    #[test]
+    fn batch_matches_single_searches_and_synchronizes_once() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = meeting(root.path(), "one", "Migration planning");
+        transcript(&dir, "Planning migration milestones and checking migration dependencies");
+        atomic_json(&dir.join("summary.json"), &json!({
+            "overview":"Migration plan",
+            "items":[{"text":"Check migration dependencies","segmentIDs":[7]}],
+            "cards":[{"id":"c1","front":"Migration","back":"Перенос","context":"Migration plan","segmentIDs":[7]}]
+        })).unwrap();
+        let requests: [(String, String, usize); 5] = [
+            ("migration".into(), "all".into(), 3),
+            ("migration".into(), "transcript".into(), 10),
+            ("migration".into(), "cards".into(), 10),
+            ("migration".into(), "notes".into(), 10),
+            ("!!!".into(), "all".into(), 10),
+        ];
+        let singles: Vec<_> = requests.iter().map(|(query, scope, limit)| search(root.path(), query, scope, *limit).unwrap()).collect();
+        let before = SYNC_CALLS.with(std::cell::Cell::get);
+        let batch = search_batch(root.path(), &requests).unwrap();
+        assert_eq!(SYNC_CALLS.with(std::cell::Cell::get) - before, 1);
+        assert_eq!(batch, singles, "batching preserves IDs, fingerprints, BM25 order, scopes and limits");
+        for result in &batch {
+            for (index, hit) in result["hits"].as_array().unwrap().iter().enumerate() {
+                assert_eq!(hit["rank"], index + 1);
+            }
+        }
+    }
+    #[test]
+    fn batch_synchronizes_source_changes_between_calls() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = meeting(root.path(), "one", "Batch source");
+        transcript(&dir, "Original evidence");
+        let requests = [("original".into(), "transcript".into(), 10), ("replacement".into(), "transcript".into(), 10)];
+        let before = search_batch(root.path(), &requests).unwrap();
+        let fingerprint = before[0]["hits"][0]["sourceFingerprint"].as_str().unwrap();
+        assert_eq!(before[0]["total"], 1);
+        assert_eq!(before[1]["total"], 0);
+        transcript(&dir, "Replacement evidence");
+        let after = search_batch(root.path(), &requests).unwrap();
+        assert_eq!(after[0]["total"], 0);
+        assert_eq!(after[1]["total"], 1);
+        assert_ne!(after[1]["hits"][0]["sourceFingerprint"], fingerprint);
+        assert_eq!(validate(root.path(), "one", fingerprint).unwrap()["valid"], false);
+    }
+    #[test]
+    fn invalid_batches_and_empty_queries_do_not_open_the_index() {
+        let root = tempfile::tempdir().unwrap();
+        let valid = ("normal".into(), "all".into(), 10);
+        for invalid in [("normal".into(), "unknown".into(), 10), ("x".repeat(513), "all".into(), 10)] {
+            assert!(search_batch(root.path(), &[valid.clone(), invalid]).is_err());
+            assert!(!root.path().join("cache").exists());
+        }
+        assert!(search_batch(root.path(), &[("word ".repeat(25), "all".into(), 10)]).is_err());
+        assert!(search_batch(Path::new("relative"), &[]).is_err());
+        assert_eq!(search_batch(root.path(), &[]).unwrap(), Vec::<Value>::new());
+        let before = SYNC_CALLS.with(std::cell::Cell::get);
+        assert_eq!(search_batch(root.path(), &[("!!!".into(), "all".into(), 10)]).unwrap(), vec![empty_result()]);
+        assert_eq!(SYNC_CALLS.with(std::cell::Cell::get), before);
+        assert!(!root.path().join("cache").exists());
     }
     #[test] fn corrupt_derived_index_is_rebuilt_without_touching_source_notes() {
         let root=tempfile::tempdir().unwrap(); let directory=meeting(root.path(),"one","Поставка");

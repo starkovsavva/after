@@ -60,6 +60,8 @@ struct MainView: View {
             case .speechSettings: store.openSettings("speech")
             case .aiSettings: store.openSettings("ai")
             case .cards: store.librarySection = "cards"
+            case .tasks: store.librarySection = "tasks"
+            case .integrations: store.openSettings("integrations")
             case nil: break
             }
         }) { _ in GuidanceSheet(controller: guide) }

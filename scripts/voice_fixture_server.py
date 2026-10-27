@@ -41,7 +41,34 @@ class Handler(BaseHTTPRequestHandler):
         (root / 'fixture-request.json').write_text(json.dumps(body))
         fixture = json.loads((root / 'fixture-response.json').read_text())
         time.sleep(min(float(fixture.get('delay', 0)), 3))
-        content = fixture.get('content', fixture.get('proposal'))
+        schema = body.get('response_format', {}).get('json_schema', {}).get('schema', {})
+        properties = schema.get('properties', {})
+        reranking = 'matches' in properties
+        knowledge = 'paragraphs' in properties
+        if knowledge:
+            # The real second pass supplies opaque, validated source IDs. The
+            # fixture echoes only actual evidence; never fabricate citations.
+            prompt = json.loads(body['messages'][-1]['content'])
+            sources = prompt.get('sources', [])
+            (root / 'fixture-knowledge-started.json').write_text(json.dumps(prompt))
+            time.sleep(min(float(fixture.get('knowledgeDelay', 0)), 3))
+            kinds = fixture.get('knowledgeKinds', [])
+            if kinds:
+                sources = [source for source in sources if source.get('kind') in kinds]
+            paragraphs = [{'text': source['excerpt'][:900], 'sourceIDs': [source['id']]}
+                          for source in sources[:3] if source.get('excerpt')]
+            if fixture.get('knowledgeMixed'):
+                mixed = [next(source for source in sources if source['kind'] == kind)
+                         for kind in ['calendar', 'task']]
+                paragraphs = [{'text': '\n'.join(source['excerpt'][:900] for source in mixed),
+                               'sourceIDs': [source['id'] for source in mixed]}]
+            content = fixture.get('knowledge', {'title': 'Найдено в библиотеке', 'paragraphs': paragraphs})
+        else:
+            if not reranking:
+                prompt = json.loads(body['messages'][-1]['content'])
+                (root / 'fixture-classification-started.json').write_text(json.dumps(prompt))
+                time.sleep(min(float(fixture.get('classificationDelay', 0)), 3))
+            content = fixture.get('reranking') if reranking else fixture.get('content', fixture.get('proposal'))
         if not isinstance(content, str):
             content = json.dumps(content, ensure_ascii=False)
         self.reply({'choices': [{'finish_reason': 'stop', 'message': {'role': 'assistant', 'content': content}}]})

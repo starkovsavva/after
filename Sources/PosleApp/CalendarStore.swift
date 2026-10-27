@@ -140,11 +140,11 @@ final class CalendarStore: ObservableObject {
     @Published private(set) var events: [CalendarAgendaEvent] = []
     @Published private(set) var links: [CalendarTaskLink] = []
     @Published var selectedDate = Date() {
-        didSet { if selectedDate != oldValue { refresh() } }
+        didSet { if selectedDate != oldValue && !knowledgeNavigation { refresh() } }
     }
     @Published var displayMode: CalendarDisplayMode = .week {
         didSet {
-            guard displayMode != oldValue else { return }
+            guard displayMode != oldValue, !knowledgeNavigation else { return }
             do { try persistViewPreferences() } catch { self.error = error.localizedDescription }
             refresh()
         }
@@ -159,6 +159,7 @@ final class CalendarStore: ObservableObject {
     private let root: URL
     private var preferences = CalendarPreferences()
     private var eventStore: EKEventStore?
+    private var knowledgeNavigation = false
     private weak var notes: NotesStore?
     private var cancellables = Set<AnyCancellable>()
     private var refreshing = false
@@ -305,6 +306,157 @@ final class CalendarStore: ObservableObject {
             }.sorted { $0.start == $1.start ? $0.title < $1.title : $0.start < $1.start }
         }
         lastRefreshed = Date()
+    }
+
+    /// Reads only calendars the user has already connected and made visible.
+    /// Unlike refresh(), this never activates EventKit, requests permission,
+    /// reconciles task links, or changes the visible calendar period.
+    func knowledgeSnapshot(question: String, now: Date = Date(), includingEventIDs: Set<String> = []) -> KnowledgeCalendarSnapshot {
+        let period = Self.knowledgePeriod(question, now: now)
+        let anchor = period?.start ?? now
+        let day = Calendar.current.startOfDay(for: anchor)
+        // A literal day/range has exact coverage; general questions keep the
+        // bounded surrounding window. Period hints preserve local DST offsets.
+        let start = period?.start ?? Calendar.current.date(byAdding: .day, value: -7, to: day) ?? day.addingTimeInterval(-7 * 86400)
+        let end = period?.end ?? Calendar.current.date(byAdding: .day, value: 31, to: day) ?? day.addingTimeInterval(31 * 86400)
+        guard let agenda = knowledgeEvents(start: start, end: end) else {
+            return KnowledgeCalendarSnapshot(connected: false, coverageStart: start.timeIntervalSince1970,
+                coverageEnd: end.timeIntervalSince1970, events: [], requestedStart: period?.start.timeIntervalSince1970,
+                requestedEnd: period?.end.timeIntervalSince1970)
+        }
+        let terms = Self.knowledgeSubjectTerms(question)
+        let valid = agenda.filter { event in
+            !event.id.isEmpty && event.id.utf8.count <= 1024 && event.start.timeIntervalSince1970.isFinite
+                && event.end.timeIntervalSince1970.isFinite && event.end >= event.start
+                && event.start < end && (event.end > start || event.start >= start)
+        }.sorted {
+            let lhsCited = includingEventIDs.contains($0.id), rhsCited = includingEventIDs.contains($1.id)
+            if lhsCited != rhsCited { return lhsCited }
+            let lhsScore = Self.knowledgeSubjectScore($0, terms: terms), rhsScore = Self.knowledgeSubjectScore($1, terms: terms)
+            if lhsScore != rhsScore { return lhsScore > rhsScore }
+            let lhs = abs($0.start.timeIntervalSince(anchor)), rhs = abs($1.start.timeIntervalSince(anchor))
+            return lhs == rhs ? $0.id < $1.id : lhs < rhs
+        }
+        var snapshot = KnowledgeCalendarSnapshot(connected: true, coverageStart: start.timeIntervalSince1970,
+            coverageEnd: end.timeIntervalSince1970, events: [], requestedStart: period?.start.timeIntervalSince1970,
+            requestedEnd: period?.end.timeIntervalSince1970)
+        let encoder = JSONEncoder()
+        for event in valid {
+            guard snapshot.events.count < 128 else { break }
+            let value = KnowledgeCalendarEvent(id: event.id, title: Self.knowledgeText(event.title, bytes: 1024),
+                start: event.start.timeIntervalSince1970, end: event.end.timeIntervalSince1970,
+                allDay: event.allDay, calendarTitle: Self.knowledgeText(event.calendarTitle, bytes: 512),
+                startOffsetMinutes: TimeZone.current.secondsFromGMT(for: event.start) / 60,
+                endOffsetMinutes: TimeZone.current.secondsFromGMT(for: event.end) / 60)
+            snapshot.events.append(value)
+            // Measure complete UTF-8 JSON objects, never slice serialized bytes.
+            guard let encoded = try? encoder.encode(snapshot), encoded.count < 128 * 1024 else {
+                snapshot.events.removeLast(); break
+            }
+        }
+        snapshot.truncated = valid.count > snapshot.events.count
+        return snapshot
+    }
+
+    /// Called only after the fresh snapshot and source fingerprint were checked.
+    /// Navigation reads the destination day without running task/calendar sync.
+    @discardableResult func revealKnowledgeEvent(_ event: KnowledgeCalendarEvent) -> Bool {
+        let date = Date(timeIntervalSince1970: event.start)
+        let day = Calendar.current.startOfDay(for: date)
+        let end = Calendar.current.date(byAdding: .day, value: 1, to: day) ?? day.addingTimeInterval(86400)
+        guard let visible = knowledgeEvents(start: day, end: end), visible.contains(where: { $0.id == event.id }) else { return false }
+        knowledgeNavigation = true
+        selectedDate = date; displayMode = .day
+        knowledgeNavigation = false
+        events = visible.sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
+        return true
+    }
+
+    private func knowledgeEvents(start: Date, end: Date) -> [CalendarAgendaEvent]? {
+        guard connected else { return nil }
+        if preview {
+            return events.filter { (visibleCalendarIDs?.contains($0.calendarID) ?? true) && $0.start < end && ($0.end > start || $0.start >= start) }
+        }
+        guard preferences.enabled, let eventStore,
+              EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return nil }
+        let chosen = eventStore.calendars(for: .event).filter { visibleCalendarIDs?.contains($0.calendarIdentifier) ?? true }
+        guard !chosen.isEmpty else { return [] }
+        let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: chosen)
+        return eventStore.events(matching: predicate).map { event in
+            CalendarAgendaEvent(id: event.eventIdentifier + ":" + String(event.startDate.timeIntervalSince1970), eventID: event.eventIdentifier,
+                title: event.title ?? "Без названия", start: event.startDate, end: event.endDate, allDay: event.isAllDay,
+                calendarID: event.calendar.calendarIdentifier, calendarTitle: event.calendar.title,
+                account: event.calendar.source.title, color: NSColor(cgColor: event.calendar.cgColor) ?? .systemPurple,
+                writable: event.calendar.allowsContentModifications && !event.hasRecurrenceRules)
+        }
+    }
+
+    private static func knowledgePeriod(_ question: String, now: Date) -> DateInterval? {
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: now)
+        var dates: [Date] = []
+        for (pattern, format) in [(#"\b\d{4}-\d{2}-\d{2}\b"#, "yyyy-MM-dd"), (#"\b\d{2}\.\d{2}\.\d{4}\b"#, "dd.MM.yyyy")] {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian)
+            formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = .current
+            formatter.dateFormat = format; formatter.isLenient = false
+            for match in regex.matches(in: question, range: NSRange(question.startIndex..., in: question)).prefix(2) {
+                if let range = Range(match.range, in: question), let date = formatter.date(from: String(question[range])) { dates.append(date) }
+            }
+        }
+        let text = question.lowercased()
+        let begin: Date, end: Date
+        if let first = dates.min(), let last = dates.max(), let next = calendar.date(byAdding: .day, value: 1, to: last) {
+            begin = first; end = next
+        } else {
+            let delta: Int?
+            if text.contains("послезавтра") || text.contains("day after tomorrow") { delta = 2 }
+            else if text.contains("завтра") || text.contains("tomorrow") { delta = 1 }
+            else if text.contains("вчера") || text.contains("yesterday") { delta = -1 }
+            else if text.contains("сегодня") || text.contains("today") { delta = 0 }
+            else { delta = nil }
+            if let delta, let date = calendar.date(byAdding: .day, value: delta, to: day),
+               let next = calendar.date(byAdding: .day, value: 1, to: date) { begin = date; end = next }
+            else if text.contains("следующей неделе") || text.contains("next week") || text.contains("этой неделе") || text.contains("this week") {
+                let weekday = (calendar.component(.weekday, from: day) + 5) % 7
+                let next = text.contains("следующей неделе") || text.contains("next week") ? 7 : 0
+                guard let date = calendar.date(byAdding: .day, value: next - weekday, to: day),
+                      let finish = calendar.date(byAdding: .day, value: 7, to: date) else { return nil }
+                begin = date; end = finish
+            } else { return nil }
+        }
+        guard begin.timeIntervalSince1970 >= 0, end.timeIntervalSince1970 <= 4_133_980_800,
+              end > begin, end.timeIntervalSince(begin) <= 93 * 86400 else { return nil }
+        return DateInterval(start: begin, end: end)
+    }
+
+    private static func knowledgeWords(_ text: String) -> [String] {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted).filter { $0.count >= 3 }
+    }
+    private static func knowledgeSubjectTerms(_ question: String) -> [String] {
+        let ignored: Set<String> = ["what", "when", "where", "which", "show", "find", "about", "have", "does", "with", "that", "this", "there", "were", "will", "today", "tomorrow", "yesterday", "after", "next", "week", "last", "когда", "какие", "какая", "какой", "найди", "найти", "покажи", "календарь", "меня", "есть", "будет", "будут", "были", "было", "запланировано", "сегодня", "завтра", "послезавтра", "вчера", "следующей", "этой", "неделе", "встречи", "встреча", "события"]
+        return Array(Set(knowledgeWords(question).filter { !ignored.contains($0) && $0.contains(where: \.isLetter) })).sorted()
+    }
+    private static func knowledgeSubjectScore(_ event: CalendarAgendaEvent, terms: [String]) -> Int {
+        let title = knowledgeWords(event.title), calendar = knowledgeWords(event.calendarTitle)
+        func matches(_ term: String, in words: [String]) -> Bool {
+            words.contains { word in
+                if word == term || (min(word.count, term.count) >= 4 && (word.hasPrefix(term) || term.hasPrefix(word))) { return true }
+                // A bounded lexical preselection, not semantic retrieval. Keep
+                // common RU endings from dropping an otherwise exact topic.
+                return min(word.count, term.count) >= 6 && word.prefix(min(word.count, term.count) - 2) == term.prefix(min(word.count, term.count) - 2)
+            }
+        }
+        return terms.reduce(0) { $0 + (matches($1, in: title) ? 4 : 0) + (matches($1, in: calendar) ? 1 : 0) }
+    }
+    private static func knowledgeText(_ text: String, bytes: Int) -> String {
+        var value = "", size = 0
+        for scalar in text.unicodeScalars {
+            guard scalar != "\0", size + scalar.utf8.count <= bytes else { break }
+            value.unicodeScalars.append(scalar); size += scalar.utf8.count
+        }
+        return value
     }
 
     func toggleVisible(_ id: String) {
@@ -662,6 +814,88 @@ final class CalendarStore: ObservableObject {
         try expect(store.events(on: day).isEmpty, "Hidden preview calendars remain visible")
         store.visibleCalendarIDs = ["fiction"]
         try expect(store.events(on: next).count == 3 && store.eventStore == nil, "Restoring calendar visibility touched EventKit or lost events")
+    }
+
+    static func verifyKnowledgeSnapshotBounds() throws {
+        func expect(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
+            guard try condition() else { throw AppError.message(message) }
+        }
+        let root = URL(fileURLWithPath: "/private/tmp/posle-knowledge-calendar-memory-only")
+        let store = CalendarStore(root: root, preview: true)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try expect(!store.knowledgeSnapshot(question: "Сегодня", now: now).connected && store.eventStore == nil,
+                   "A disconnected knowledge query must not construct EventKit")
+        store.connected = true
+        func event(_ index: Int, large: Bool) -> CalendarAgendaEvent {
+            CalendarAgendaEvent(id: "event-\(index)" + (large ? String(repeating: "x", count: 900) : ""), eventID: "event-\(index)",
+                title: large ? String(repeating: "Ж", count: 1000) : "Встреча", start: now.addingTimeInterval(Double(index)),
+                end: now.addingTimeInterval(Double(index) + 60), allDay: false, calendarID: "fixture",
+                calendarTitle: large ? String(repeating: "К", count: 1000) : "Личный", account: "Synthetic", color: .systemBlue, writable: false)
+        }
+        store.events = (0..<200).map { event($0, large: false) }
+        let countBounded = store.knowledgeSnapshot(question: "Сегодня", now: now)
+        try expect(countBounded.events.count == 128 && countBounded.truncated, "Knowledge calendar event-count limit failed")
+        store.events = (0..<200).map { event($0, large: true) }
+        let bytesBounded = store.knowledgeSnapshot(question: "Сегодня", now: now)
+        try expect(bytesBounded.events.count < 128 && !bytesBounded.events.isEmpty && bytesBounded.truncated,
+                   "UTF-8 calendar payload must be bounded by bytes as well as event count")
+        try expect(try JSONEncoder().encode(bytesBounded).count < 128 * 1024, "Knowledge calendar JSON exceeds its input budget")
+        try expect(bytesBounded.coverageStart == countBounded.coverageStart && bytesBounded.coverageEnd == countBounded.coverageEnd,
+                   "Truncation must retain honest calendar coverage")
+        let dated = store.knowledgeSnapshot(question: "Что запланировано на 2027-06-15?", now: now)
+        let formatter = DateFormatter(); formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = .current; formatter.dateFormat = "yyyy-MM-dd"
+        let expected = formatter.date(from: "2027-06-15")!
+        try expect(dated.coverageStart == expected.timeIntervalSince1970 && dated.requestedStart == dated.coverageStart && store.eventStore == nil,
+                   "Explicit question date must use exact coverage and the local timezone without EventKit access")
+        // A distant topical match must survive preselection before the 128 cap.
+        let far = calendarDate(now, days: 25)
+        let target = CalendarAgendaEvent(id: "far-astrolabe", eventID: "far-astrolabe", title: "Проверка астролябии",
+            start: far, end: far.addingTimeInterval(3600), allDay: false, calendarID: "fixture",
+            calendarTitle: "Личный", account: "Synthetic", color: .systemBlue, writable: false)
+        store.events = (0..<200).map { event($0, large: false) } + [target]
+        let topical = store.knowledgeSnapshot(question: "Когда проверка астролябии?", now: now)
+        try expect(topical.events.contains { $0.id == target.id } && topical.events.count == 128 && topical.truncated,
+                   "A far topic match was discarded before calendar ranking")
+        let validation = store.knowledgeSnapshot(question: "Какие события?", now: now, includingEventIDs: [target.id])
+        try expect(validation.events.contains { $0.id == target.id }, "Fresh citation validation must retain a real occurrence even when its rank changes")
+        let explicit = store.knowledgeSnapshot(question: "Что запланировано на \(formatter.string(from: far))?", now: now)
+        try expect(explicit.events.map(\.id) == [target.id] && explicit.requestedStart == explicit.coverageStart,
+                   "An explicit date must fetch its matching far occurrence before the cap")
+        func calendarDate(_ date: Date, days: Int) -> Date {
+            Calendar.current.date(byAdding: .day, value: days, to: date)!
+        }
+    }
+
+    /// More nearby records than the input cap, plus a relevant later event.
+    @discardableResult func seedKnowledgeLongTailForChecks(anchor: Date = Date()) -> Date {
+        precondition(preview)
+        connected = true; visibleCalendarIDs = nil; links = []
+        calendars = [CalendarChoice(id: "knowledge-fixture", title: "Личный", account: "Synthetic", writable: false, color: .systemBlue)]
+        let day = Calendar.current.startOfDay(for: anchor)
+        events = (0..<200).map { index in
+            let start = day.addingTimeInterval(Double(index) * 60)
+            return CalendarAgendaEvent(id: "near-\(index)", eventID: "near-\(index)", title: "Синхронизация команды", start: start,
+                end: start.addingTimeInterval(30), allDay: false, calendarID: "knowledge-fixture", calendarTitle: "Личный",
+                account: "Synthetic", color: .systemBlue, writable: false)
+        }
+        let far = Calendar.current.date(byAdding: .day, value: 25, to: day)!.addingTimeInterval(12 * 3600)
+        events.append(CalendarAgendaEvent(id: "far-astrolabe", eventID: "far-astrolabe", title: "Проверка астролябии",
+            start: far, end: far.addingTimeInterval(3600), allDay: false, calendarID: "knowledge-fixture",
+            calendarTitle: "Личный", account: "Synthetic", color: .systemBlue, writable: false))
+        return far
+    }
+
+    /// Deterministic in-flight-answer regression; never touches EventKit.
+    func changeKnowledgeEventForChecks(id: String, title: String) {
+        precondition(preview)
+        if let index = events.firstIndex(where: { $0.id == id }) {
+            let old = events[index]
+            events[index] = CalendarAgendaEvent(id: old.id, eventID: old.eventID, title: title,
+                start: old.start, end: old.end, allDay: old.allDay, calendarID: old.calendarID,
+                calendarTitle: old.calendarTitle, account: old.account, color: old.color,
+                writable: old.writable, taskID: old.taskID)
+        }
     }
 
     /// Synthetic UI fixtures only; never reads real calendars or asks for permission.

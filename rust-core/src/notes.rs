@@ -70,6 +70,10 @@ pub struct NotesWorkspace {
     #[serde(default)] pub contexts: Vec<MeetingContext>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")] pub voice_plans: Vec<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")] pub voice_operations: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub task_workspaces: Vec<crate::task_workspace::TaskRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub task_plans: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub task_operations: Vec<Value>,
+    #[serde(default)] pub task_integration: crate::task_workspace::TaskIntegration,
 }
 fn defaults() -> NotesWorkspace {
     let templates = [
@@ -78,7 +82,7 @@ fn defaults() -> NotesWorkspace {
         ("one-on-one", "Один на один", "Как дела\n\nЧто получилось\n\nЧто мешает\n\nОбратная связь\n\nДоговорённости", "Обратная связь, препятствия, ожидания и договорённости. Отделяй мнение от подтверждённых фактов."),
         ("english", "Английский", "Тема разговора\n\nНовые фразы\n\nЧто было трудно сказать\n\nОшибки и исправления\n\nЧто повторить", "Полезные английские фразы с контекстом, переводом и исправлениями, только если они подтверждены записью."),
     ].into_iter().map(|(id,name,body,focus)| NoteTemplate { id:id.into(),name:name.into(),body:body.into(),focus:focus.into(),revision:1 }).collect();
-    NotesWorkspace { notes:vec![],templates,contexts:vec![],voice_plans:vec![],voice_operations:vec![] }
+    NotesWorkspace { notes:vec![],templates,contexts:vec![],voice_plans:vec![],voice_operations:vec![],task_workspaces:vec![],task_plans:vec![],task_operations:vec![],task_integration:Default::default() }
 }
 fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
@@ -170,6 +174,7 @@ fn validate_note(note: &CapturedNote) -> Result<()> {
     Ok(())
 }
 pub(crate) fn validate_workspace(data: &NotesWorkspace) -> Result<()> {
+    crate::task_workspace::validate_workspace(data)?;
     ensure!(data.notes.len() <= MAX_NOTES && data.templates.len() <= 100 && data.contexts.len() <= MAX_NOTES,"Слишком много заметок или шаблонов");
     ensure!(data.voice_plans.len() <= 100 && data.voice_operations.len() <= 500, "Слишком много голосовых операций");
     let mut ids = std::collections::HashSet::new();

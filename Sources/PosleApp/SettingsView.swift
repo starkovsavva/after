@@ -48,6 +48,7 @@ struct SettingsView: View {
         ("general", "Общие", "gearshape"), ("appearance", "Оформление", "paintpalette"), ("record", "Запись", "record.circle"),
         ("speech", "Распознавание речи", "waveform"), ("ai", "Конспект и карточки", "sparkles"),
         ("notes", "Заметки и шаблоны", "square.and.pencil"), ("keys", "Горячие клавиши", "keyboard"),
+        ("integrations", "Интеграции", "point.3.connected.trianglepath.dotted"),
         ("data", "Данные и экспорт", "externaldrive"),
         ("updates", "Обновления", "arrow.triangle.2.circlepath")
     ]
@@ -139,6 +140,7 @@ struct SettingsView: View {
         case "record": recordSettings.disabled(store.busy || store.isRecording)
         case "notes": notesSettings
         case "keys": shortcutSettings
+        case "integrations": AgentIntegrationSettings()
         case "data": dataSettings
         case "updates": UpdateSettingsView(updates: store.updates)
         default: generalSettings

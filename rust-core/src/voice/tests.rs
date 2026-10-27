@@ -29,11 +29,13 @@ fn planned(root: &Path, input: Value, proposal: Proposal) -> Value {
     store_plan(root, &input, proposal, targets).unwrap()
 }
 fn applied(root: &Path, p: &Value) -> Value {
-    apply(
-        root,
-        &json!({"planID":p["planID"],"operationID":p["operationID"]}),
-    )
-    .unwrap()
+    let mut input = json!({"planID":p["planID"],"operationID":p["operationID"]});
+    if p["reviewRequired"] == true {
+        input["confirmed"] = json!(true);
+        input["selectedTargetIDs"] = json!([p["candidates"][0]["id"]]);
+        input["text"] = p["text"].clone();
+    }
+    apply(root, &input).unwrap()
 }
 fn note(root: &Path, title: &str, text: &str, kind: &str) -> CapturedNote {
     let mut n = empty_note(kind, text, title, None).unwrap();
@@ -665,40 +667,254 @@ fn prepared_voice_plan_follows_exact_source_after_summary_reordering() {
 
 #[test]
 fn new_voice_deadlines_use_command_local_date_and_preserve_unrecognized_wording() {
-    let at=Utc.with_ymd_and_hms(2026,10,25,23,30,0).unwrap().timestamp() as f64;
-    assert_eq!(due_date("завтра",at,180).unwrap(),"2026-10-27");
-    assert_eq!(due_date("tomorrow",at,-420).unwrap(),"2026-10-26");
-    assert_eq!(due_date("послезавтра",at,180).unwrap(),"2026-10-28");
-    assert_eq!(due_date("к пятнице",at,180).unwrap(),"2026-10-30");
-    assert_eq!(due_date("Friday",at,180).unwrap(),"2026-10-30");
-    assert_eq!(due_date("после согласования",at,180).unwrap(),"после согласования");
-    assert_eq!(due_date("2026-12-15",at,180).unwrap(),"2026-12-15");
-    assert_eq!(due_date("",at,180).unwrap(),"");
-    assert!(due_date("завтра",at,1440).is_err());
+    let at = Utc
+        .with_ymd_and_hms(2026, 10, 25, 23, 30, 0)
+        .unwrap()
+        .timestamp() as f64;
+    assert_eq!(due_date("завтра", at, 180).unwrap(), "2026-10-27");
+    assert_eq!(due_date("tomorrow", at, -420).unwrap(), "2026-10-26");
+    assert_eq!(due_date("послезавтра", at, 180).unwrap(), "2026-10-28");
+    assert_eq!(due_date("к пятнице", at, 180).unwrap(), "2026-10-30");
+    assert_eq!(due_date("Friday", at, 180).unwrap(), "2026-10-30");
+    assert_eq!(
+        due_date("после согласования", at, 180).unwrap(),
+        "после согласования"
+    );
+    assert_eq!(due_date("2026-12-15", at, 180).unwrap(), "2026-12-15");
+    assert_eq!(due_date("", at, 180).unwrap(), "");
+    assert!(due_date("завтра", at, 1440).is_err());
 }
 
 #[test]
 fn voice_deadline_update_on_old_task_is_frozen_at_command_time_not_source_time() {
-    let root=tempfile::tempdir().unwrap();let task_id=fixture(root.path());
-    let at=Utc.with_ymd_and_hms(2026,10,25,23,30,0).unwrap().timestamp() as f64;
-    let mut proposal=proposed("updateTask","");proposal.set_due=true;proposal.due="завтра".into();
-    let plan=planned(root.path(),json!({"taskID":task_id,"now":at,"timeZoneOffsetMinutes":180}),proposal);
-    assert_eq!(plan["status"],"ready");let result=applied(root.path(),&plan);
-    let note=notes::load_note_snapshot(root.path(),result["target"]["id"].as_str().unwrap()).unwrap();
-    assert_eq!(note.due,"2026-10-27");
+    let root = tempfile::tempdir().unwrap();
+    let task_id = fixture(root.path());
+    let at = Utc
+        .with_ymd_and_hms(2026, 10, 25, 23, 30, 0)
+        .unwrap()
+        .timestamp() as f64;
+    let mut proposal = proposed("updateTask", "");
+    proposal.set_due = true;
+    proposal.due = "завтра".into();
+    let plan = planned(
+        root.path(),
+        json!({"taskID":task_id,"now":at,"timeZoneOffsetMinutes":180}),
+        proposal,
+    );
+    assert_eq!(plan["status"], "ready");
+    let result = applied(root.path(), &plan);
+    let note =
+        notes::load_note_snapshot(root.path(), result["target"]["id"].as_str().unwrap()).unwrap();
+    assert_eq!(note.due, "2026-10-27");
     // Retrying an already-applied plan cannot reinterpret tomorrow later.
-    assert_eq!(applied(root.path(),&plan),result);
-    let original=read_json(&root.path().join("meetings/meeting/summary.json"),1_048_576).unwrap();
-    assert_eq!(original["items"][0]["due"],"");
+    assert_eq!(applied(root.path(), &plan), result);
+    let original = read_json(
+        &root.path().join("meetings/meeting/summary.json"),
+        1_048_576,
+    )
+    .unwrap();
+    assert_eq!(original["items"][0]["due"], "");
 }
 
 #[test]
 fn changing_only_owner_does_not_reinterpret_legacy_source_deadline() {
-    let root=tempfile::tempdir().unwrap();fixture(root.path());
-    let path=root.path().join("meetings/meeting/summary.json");let mut source=read_json(&path,1_048_576).unwrap();source["items"][0]["due"]=json!("к пятнице");crate::storage::atomic_json(&path,&source).unwrap();
-    let task_id=notes::tasks(root.path()).unwrap()["tasks"][0]["id"].clone();
-    let mut proposal=proposed("updateTask","");proposal.set_owner=true;proposal.owner="Майкл".into();
-    let plan=planned(root.path(),json!({"taskID":task_id,"now":2_000_000_000,"timeZoneOffsetMinutes":180}),proposal);let result=applied(root.path(),&plan);
-    let note=notes::load_note_snapshot(root.path(),result["target"]["id"].as_str().unwrap()).unwrap();
-    assert_eq!(note.due,"к пятнице");assert_eq!(note.owner,"Майкл");assert_eq!(read_json(&path,1_048_576).unwrap(),source);
+    let root = tempfile::tempdir().unwrap();
+    fixture(root.path());
+    let path = root.path().join("meetings/meeting/summary.json");
+    let mut source = read_json(&path, 1_048_576).unwrap();
+    source["items"][0]["due"] = json!("к пятнице");
+    crate::storage::atomic_json(&path, &source).unwrap();
+    let task_id = notes::tasks(root.path()).unwrap()["tasks"][0]["id"].clone();
+    let mut proposal = proposed("updateTask", "");
+    proposal.set_owner = true;
+    proposal.owner = "Майкл".into();
+    let plan = planned(
+        root.path(),
+        json!({"taskID":task_id,"now":2_000_000_000,"timeZoneOffsetMinutes":180}),
+        proposal,
+    );
+    let result = applied(root.path(), &plan);
+    let note =
+        notes::load_note_snapshot(root.path(), result["target"]["id"].as_str().unwrap()).unwrap();
+    assert_eq!(note.due, "к пятнице");
+    assert_eq!(note.owner, "Майкл");
+    assert_eq!(read_json(&path, 1_048_576).unwrap(), source);
+}
+
+#[test]
+fn legacy_task_actions_cannot_bypass_review_or_change_a_committed_addition() {
+    let root = tempfile::tempdir().unwrap();
+    let task = note(root.path(), "Договор", "Исходный текст", "task");
+    let p = planned(
+        root.path(),
+        json!({"taskID":task.id}),
+        proposed("appendTask", "Уточнить оплату"),
+    );
+    assert_eq!(p["reviewRequired"], true);
+    assert!(apply(
+        root.path(),
+        &json!({"planID":p["planID"],"operationID":p["operationID"]})
+    )
+    .is_err());
+    assert!(apply(root.path(),&json!({"planID":p["planID"],"operationID":p["operationID"],"confirmed":true,"selectedTargetIDs":["manual:invented"],"text":"Уточнить оплату"})).is_err());
+    let input = json!({"planID":p["planID"],"operationID":p["operationID"],"confirmed":true,"selectedTargetIDs":[format!("manual:{}",task.id)],"text":"Исправленный пользователем текст"});
+    let result = apply(root.path(), &input).unwrap();
+    assert_eq!(apply(root.path(), &input).unwrap(), result);
+    let mut changed = input;
+    changed["text"] = json!("Другое дополнение");
+    assert!(apply(root.path(), &changed).is_err());
+    let saved = notes::load_note_snapshot(root.path(), &task.id).unwrap();
+    assert!(saved.text.contains("Исправленный пользователем текст"));
+    assert!(!saved.text.contains("Другое дополнение"));
+    let mut complete = proposed("updateTask", "");
+    complete.set_completed = true;
+    complete.completed = true;
+    let p = planned(root.path(), json!({"taskID":task.id}), complete);
+    assert_eq!(p["reviewRequired"], true);
+    assert!(apply(
+        root.path(),
+        &json!({"planID":p["planID"],"operationID":p["operationID"]})
+    )
+    .is_err());
+    assert!(
+        !notes::load_note_snapshot(root.path(), &task.id)
+            .unwrap()
+            .completed
+    );
+    applied(root.path(), &p);
+    assert!(
+        notes::load_note_snapshot(root.path(), &task.id)
+            .unwrap()
+            .completed
+    );
+}
+
+#[test]
+fn knowledge_intent_uses_global_original_question_and_never_creates_an_executable_plan() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+    let root = tempfile::tempdir().unwrap();
+    let reference = note(
+        root.path(),
+        "Доступ к стенду",
+        "Для пилота нужен доступ к тестовому стенду.",
+        "note",
+    );
+    let selected = note(root.path(), "Текущая задача", "Согласовать договор", "task");
+    let before = serde_json::to_value(notes::list(root.path()).unwrap()).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut proposal = proposed("askKnowledge", "MODEL_PARAPHRASE_MUST_NOT_REPLACE_QUESTION");
+    proposal.query = "стенд".into();
+    let intent = serde_json::to_string(&proposal).unwrap();
+    let note_id = reference.id.clone();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for index in 0..4 {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+            }
+            let mut bytes = vec![0; length];
+            reader.read_exact(&mut bytes).unwrap();
+            let body: Value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap()
+            };
+            let response = if index%2 == 0 { json!({"data":[{"id":"knowledge-fixture"}]}) }
+                else {
+                    let content = if index == 1 { intent.clone() } else {
+                        assert!(body["response_format"]["json_schema"]["schema"]["properties"]["paragraphs"].is_object());
+                        let prompt:Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+                        let source = prompt["sources"].as_array().unwrap().iter().find(|s|s["noteID"] == note_id).unwrap();
+                        json!({"title":"Доступ к стенду","paragraphs":[{"text":source["excerpt"],"sourceIDs":[source["id"]]}]}).to_string()
+                    };
+                    json!({"choices":[{"finish_reason":"stop","message":{"content":content}}]})
+                }.to_string();
+            requests.push((first, body));
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response).unwrap();
+        }
+        requests
+    });
+    crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"mode":"local","localProvider":"lmstudio","localModel":"knowledge-fixture","localEndpoint":format!("http://{address}")})).unwrap();
+    let question = "Что нужно для доступа к стенду?";
+    let classified = plan(root.path(),&json!({"text":question,"taskID":format!("manual:{}",selected.id),"projectID":"Изолированный проект","now":1_800_000_000,"timeZoneOffsetMinutes":180,
+        "calendar":{"connected":true,"events":[{"title":"PRIVATE_CALENDAR_MUST_NOT_ENTER_CLASSIFIER"}]}})).unwrap();
+    assert_eq!(classified["status"], "question");
+    assert_eq!(classified["query"], "стенд");
+    assert!(classified["planID"].is_null() && classified["operationID"].is_null());
+    assert_eq!(
+        serde_json::to_value(notes::list(root.path()).unwrap()).unwrap(),
+        before
+    );
+    assert!(apply(root.path(), &classified).is_err());
+    // The second, native-initiated read phase must bypass classification and
+    // ignore even an invalid stale selected context rather than opening it.
+    let answer = plan(root.path(),&json!({"text":question,"query":classified["query"],"questionOnly":true,
+        "meetingID":"../../MUST_NOT_LOAD_SELECTED_CONTEXT","taskID":"not-a-real-task","projectID":"ignored",
+        "now":1_800_000_000,"timeZoneOffsetMinutes":180,"calendar":{"connected":false}})).unwrap();
+    assert_eq!(answer["status"], "answered");
+    assert!(answer["planID"].is_null() && answer["operationID"].is_null());
+    assert_eq!(
+        answer["knowledgeAnswer"]["sources"][0]["noteID"],
+        reference.id
+    );
+    assert_eq!(
+        serde_json::to_value(notes::list(root.path()).unwrap()).unwrap(),
+        before
+    );
+    assert!(apply(root.path(), &answer).is_err());
+    let requests = server.join().unwrap();
+    assert!(!requests[1]
+        .1
+        .to_string()
+        .contains("PRIVATE_CALENDAR_MUST_NOT_ENTER_CLASSIFIER"));
+    let prompt: Value =
+        serde_json::from_str(requests[3].1["messages"][1]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(prompt["question"], question);
+    assert!(
+        prompt["projectID"].is_null()
+            && prompt["selected_objects"].is_null()
+            && prompt["taskID"].is_null()
+    );
+    assert!(!prompt
+        .to_string()
+        .contains("MODEL_PARAPHRASE_MUST_NOT_REPLACE_QUESTION"));
+}
+
+#[test]
+fn read_only_knowledge_intent_rejects_write_flags_before_any_answer_or_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let mut proposal = proposed("askKnowledge", "");
+    proposal.set_completed = true;
+    assert!(store_plan(
+        root.path(),
+        &json!({"text":"Какие задачи остались?"}),
+        proposal,
+        vec![]
+    )
+    .is_err());
+    let workspace = notes::list(root.path()).unwrap();
+    assert!(
+        workspace.notes.is_empty()
+            && workspace.voice_plans.is_empty()
+            && workspace.voice_operations.is_empty()
+    );
 }

@@ -6,7 +6,10 @@ pub mod storage;
 pub mod notes;
 pub mod cards;
 pub mod voice;
+pub mod task_workspace;
+pub mod mcp;
 pub mod search;
+pub mod knowledge;
 pub mod worker;
 pub mod jobs;
 pub mod corrections;
@@ -43,10 +46,12 @@ pub fn request(value: &Value) -> Result<Value> {
     match value["command"].as_str().context("Нет команды ядра")? {
         command if ["notes-list", "note-save", "note-delete", "note-trash", "note-restore", "context-save", "template-save", "template-delete", "note-attach", "attachment-path", "attachment-remove", "attachment-text", "notes-search", "notes-tasks", "notes-task-complete", "notes-brief", "note-search-validate", "note-expansion-validate", "note-expansion-valid"].contains(&command) => notes::dispatch(&root, value),
         "voice-plan" | "voice-inspect" | "voice-choose" | "voice-apply" | "voice-undo" | "voice-recover" | "task-update" | "task-materialize" | "task-append" => voice::dispatch(&root, value),
+        command if command.starts_with("task-") => task_workspace::dispatch(&root, value),
         "cards-import" | "cards-import-preview" | "cards-library" | "card-save" | "card-delete" | "card-suspend" | "cards-review" | "cards-review-preview" | "cards-review-undo" => cards::dispatch(&root,value),
         command if command.starts_with("job-") => jobs::dispatch(&root, value),
         "meeting-content-snapshot" | "transcript-segment-save" | "summary-item-save" => corrections::dispatch(&root, value),
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),
+        "knowledge-validate-source" => knowledge::validate_source(&root, value),
         "search-validate" => search::validate(&root, value["meetingID"].as_str().context("Нет ID встречи")?, value["sourceFingerprint"].as_str().unwrap_or("")),
         "search" => search::search(&root, value["query"].as_str().unwrap_or(""), value["scope"].as_str().unwrap_or("all"), value["limit"].as_u64().unwrap_or(60).min(100) as usize),
         "read" => {
