@@ -148,7 +148,7 @@ enum CalendarWorkspaceNativeChecks {
         print("PASS: native editor initialStart survives load with a 30-minute end; Save is never invoked")
         editor.close()
         try await verifyConnectionFlow(app: app, root: root)
-        print("10 native calendar workspace checks passed")
+        print("11 native calendar workspace checks passed")
     }
 
     private static func verifyConnectionFlow(app: AppStore, root: URL) async throws {
@@ -183,8 +183,25 @@ enum CalendarWorkspaceNativeChecks {
             "Actual UI must leave onboarding after permission, before the delayed read completes")
         try expect(node("calendar.mode", in: host)?.isEnabled == true && node("calendar.refresh", in: host)?.isEnabled == false,
             "Loading only disables refresh; period navigation remains usable")
-        fixture.complete(0)
+        fixture.fail(0)
+        try await settle(host) { !calendar.refreshing && calendar.error != nil }
+        try expect(node("calendar.noSources", in: host) == nil && node("calendar.refresh", in: host)?.isEnabled == true,
+            "An unsuccessful first read cannot claim there are no calendars or send the user to add an account")
+        try expect(try required(node("calendar.refresh", in: host), "Retry refresh missing").press(),
+            "A failed initial read must be retryable through the actual refresh control")
+        try await settle(host) { fixture.reads.count == 2 }
+        fixture.complete(1, empty: true)
+        try await settle(host) { !calendar.refreshing && node("calendar.noSources", in: host) != nil }
+        try expect(calendar.error == nil && node("calendar.add", in: host)?.isEnabled == false,
+            "Only a successful empty source read may offer account setup")
+        try expect(try required(node("calendar.refresh", in: host), "Refresh after adding an account missing").press(),
+            "The verified empty state must allow refreshing after account setup")
+        try await settle(host) { fixture.reads.count == 3 }
+        fixture.complete(2)
         try await settle(host) { !calendar.refreshing && node("calendar.add", in: host)?.isEnabled == true }
+        try expect(node("calendar.noSources", in: host) == nil && calendar.error == nil,
+            "A successful retry must replace the empty-state guidance with the real writable schedule")
+        print("PASS: failed source reads do not claim missing accounts; real refresh recovers through verified empty and populated states")
         fixture.status = .denied
         calendar.refreshIfNeeded()
         try await settle(host) { node("calendar.permissions", in: host) != nil && node("calendar.grid", in: host) == nil }

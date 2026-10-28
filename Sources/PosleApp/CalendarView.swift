@@ -46,7 +46,7 @@ struct CalendarWorkspace: View {
                             Button("Выбрать календари") { showingCalendars = true }.buttonStyle(.borderless)
                         }.font(AppTypography.control).accessibilityIdentifier("calendar.hiddenSources")
                     }
-                    if calendar.calendars.isEmpty && !calendar.refreshing {
+                    if calendar.calendars.isEmpty && !calendar.refreshing && calendar.error == nil {
                         HStack(spacing: 12) {
                             Label("В macOS пока нет календарей", systemImage: "calendar.badge.exclamationmark")
                                 .foregroundStyle(Ink.secondaryText)

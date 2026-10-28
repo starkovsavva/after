@@ -416,20 +416,39 @@ private struct MeetingContextEditor: View {
     let meeting: Meeting
     @Environment(\.dismiss) private var dismiss
     @State private var context: MeetingContext
+    @State private var baseline: MeetingContext
     @State private var selectedTemplate = ""
     @State private var insertTemplate = false
     @State private var editorID = UUID()
     @State private var baselineTemplate = ""
-    private let baseline: MeetingContext
+    @State private var finished = false
+    @State private var templateFailureDetail: String?
+    @State private var showingTemplateFailure = false
     private var dirty: Bool { context.project != baseline.project || context.person != baseline.person || selectedTemplate != baselineTemplate || insertTemplate }
-    private func close() { UnsavedEditorRegistry.remove(id: editorID); dismiss() }
+    private var updatedContext: MeetingContext {
+        var updated = context
+        updated.templateID = selectedTemplate.isEmpty ? nil : selectedTemplate
+        updated.project = updated.project.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.person = updated.person.trimmingCharacters(in: .whitespacesAndNewlines)
+        return updated
+    }
+    private var metadataChanged: Bool {
+        let updated = updatedContext
+        // A new meeting can display the app's default without a stored row.
+        // Explicitly choosing None must persist an override of that default.
+        return updated.project != baseline.project || updated.person != baseline.person || updated.templateID != baseline.templateID
+            || (baseline.revision == 0 && selectedTemplate != baselineTemplate)
+    }
+    private func close() { finished = true; UnsavedEditorRegistry.remove(id: editorID); dismiss() }
     private func registerDraft() {
+        guard !finished else { return }
         UnsavedEditorRegistry.set(id: editorID, title: "Контекст встречи «\(meeting.title.prefix(60))»", dirty: dirty)
     }
     init(notes: NotesStore, meeting: Meeting) {
         self.notes = notes; self.meeting = meeting
-        let value = notes.context(for: meeting.id); baseline = value
-        _context = State(initialValue: value); _selectedTemplate = State(initialValue: value.templateID ?? "")
+        let value = notes.context(for: meeting.id)
+        _context = State(initialValue: value); _baseline = State(initialValue: value)
+        _selectedTemplate = State(initialValue: value.templateID ?? "")
         _baselineTemplate = State(initialValue: value.templateID ?? "")
     }
     var body: some View {
@@ -444,19 +463,26 @@ private struct MeetingContextEditor: View {
             }
             Picker("Шаблон", selection: $selectedTemplate) {
                 Text("Без шаблона").tag(""); ForEach(notes.templates) { Text($0.name).tag($0.id) }
-            }
-            if !selectedTemplate.isEmpty { Toggle("Создать заметку по шаблону", isOn: $insertTemplate) }
-            HStack { Spacer(); Button("Отмена") { close() }.accessibilityIdentifier("notes.context.cancel"); Button("Сохранить") {
-                guard dirty else { close(); return }
-                context.templateID = selectedTemplate.isEmpty ? nil : selectedTemplate
-                context.project = context.project.trimmingCharacters(in: .whitespacesAndNewlines); context.person = context.person.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard notes.saveContext(context) else { return }
-                if let template = notes.templates.first(where: { $0.id == selectedTemplate }) {
-                    if insertTemplate { _ = notes.capture(text: template.body, meetingID: meeting.id) }
-                    if app.selection == meeting.id && !template.focus.isEmpty { app.updateMeeting(meeting.id) { $0.focus = template.focus } }
+            }.accessibilityIdentifier("notes.context.template")
+            if !selectedTemplate.isEmpty { Toggle("Создать заметку по шаблону", isOn: $insertTemplate).accessibilityIdentifier("notes.context.insertTemplate") }
+            if let detail = templateFailureDetail {
+                HStack(alignment: .top, spacing: 10) {
+                    Label((metadataChanged ? "" : "Параметры сохранены. ") + "Не удалось создать заметку по шаблону. Повторите сохранение.", systemImage: "exclamationmark.triangle")
+                        .font(AppTypography.caption).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("notes.context.templateFailure")
+                    Spacer(minLength: 0)
+                    Button { showingTemplateFailure = true } label: { Image(systemName: "info.circle").frame(width: 24, height: 24) }
+                        .buttonStyle(.plain).help("Подробности ошибки").accessibilityLabel("Подробности ошибки создания заметки")
+                        .popover(isPresented: $showingTemplateFailure) { Text(detail).font(AppTypography.control).textSelection(.enabled).padding(20).frame(width: 420) }
                 }
-                if notes.error == nil { close() }
-            }.accessibilityIdentifier("notes.context.save").buttonStyle(.borderedProminent).tint(Ink.actionFill) }
+            }
+            HStack {
+                Spacer()
+                Button("Отмена") { close() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("notes.context.cancel")
+                Button("Сохранить", action: save).keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("notes.context.save").buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    .disabled(app.isTerminating)
+            }
         }.padding(24).frame(width: 570)
             .overlay(alignment: .topTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
             .interactiveDismissDisabled(dirty)
@@ -466,8 +492,41 @@ private struct MeetingContextEditor: View {
                 }
                 registerDraft()
             }
+            .onChange(of: selectedTemplate) { _, value in
+                if value.isEmpty { insertTemplate = false; templateFailureDetail = nil }
+            }
             .onChange(of: dirty) { _, _ in registerDraft() }
-            .onDisappear { UnsavedEditorRegistry.remove(id: editorID) }
+            .onDisappear { finished = true; UnsavedEditorRegistry.remove(id: editorID) }
+    }
+    private func save() {
+        guard !finished, !app.isTerminating else { return }
+        if selectedTemplate.isEmpty { insertTemplate = false; templateFailureDetail = nil }
+        guard dirty else { close(); return }
+        templateFailureDetail = nil
+        guard metadataChanged || insertTemplate else { close(); return }
+        if metadataChanged {
+            guard notes.saveContext(updatedContext) else { return }
+            // Context and note writes are separate transactions. Once this
+            // stage commits, retain its new revision before attempting the note.
+            // Retrying the note must not rewrite unchanged meeting metadata.
+            context = notes.context(for: meeting.id); baseline = context; baselineTemplate = selectedTemplate
+        }
+        if insertTemplate {
+            guard let template = notes.templates.first(where: { $0.id == selectedTemplate }) else {
+                notes.error = "Шаблон больше недоступен. Выберите другой шаблон и повторите сохранение."; return
+            }
+            guard notes.capture(text: template.body, meetingID: meeting.id) != nil else {
+                templateFailureDetail = notes.error ?? "Не удалось сохранить заметку."
+                notes.error = nil; registerDraft(); return
+            }
+            // A later retry or a second queued default action must not insert
+            // another copy of the note that already committed successfully.
+            insertTemplate = false
+        }
+        if let template = notes.templates.first(where: { $0.id == selectedTemplate }), app.selection == meeting.id, !template.focus.isEmpty {
+            app.updateMeeting(meeting.id) { $0.focus = template.focus }
+        }
+        close()
     }
 }
 

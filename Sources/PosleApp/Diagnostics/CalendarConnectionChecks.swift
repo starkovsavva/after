@@ -25,9 +25,10 @@ final class CalendarReadFixture {
         self.status = status
         let continuation = access; access = nil; continuation?.resume(returning: granted)
     }
-    func complete(_ index: Int, title: String = "План на день") {
+    func complete(_ index: Int, title: String = "План на день", empty: Bool = false) {
         guard let continuation = pending.removeValue(forKey: index) else { return }
-        continuation.resume(returning: Self.snapshot(for: reads[index], title: title))
+        continuation.resume(returning: empty ? CalendarReadSnapshot(sources: [], events: [], defaultCalendarID: nil)
+                            : Self.snapshot(for: reads[index], title: title))
     }
     func fail(_ index: Int) {
         pending.removeValue(forKey: index)?.resume(throwing: NSError(domain: "SyntheticCalendar", code: 1,
