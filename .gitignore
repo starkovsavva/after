@@ -24,3 +24,13 @@ transcriptions/
 *.wav
 *.flac
 *.webm
+
+# Cross-platform desktop build artifacts
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/binaries/*
+!desktop/src-tauri/binaries/README.md
+!desktop/src-tauri/binaries/.gitkeep
+desktop/test-results/
+desktop/playwright-report/
+desktop/*.tsbuildinfo

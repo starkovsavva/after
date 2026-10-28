@@ -113,6 +113,17 @@ fn run(args: Args) -> Result<Value> {
 }
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("desktop-bridge")) {
+        let args: Vec<_> = std::env::args_os().skip(2).collect();
+        if args.len() != 2 || args[0] != "--root" {
+            eprintln!("Usage: posle-engine desktop-bridge --root /absolute/library/path");
+            std::process::exit(2);
+        }
+        if posle_core::desktop::run_stdio(Path::new(&args[1]), io::stdin().lock(), io::stdout().lock()).is_err() {
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("mcp")) {
         let args: Vec<_> = std::env::args_os().skip(2).collect();
         let result = if args.len() == 2 && args[0] == "--root" { posle_core::mcp::run_stdio(PathBuf::from(&args[1])) }

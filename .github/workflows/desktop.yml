@@ -1,0 +1,79 @@
+name: Cross-platform desktop preview
+on:
+  push:
+    branches: [codex/cross-platform]
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'rust-core/**'
+      - 'scripts/*desktop*'
+      - '.github/workflows/desktop.yml'
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: desktop
+      - run: npm run build && npm test
+        working-directory: desktop
+      - run: npx playwright install --with-deps chromium
+        working-directory: desktop
+      - run: npm run test:e2e
+        working-directory: desktop
+  host:
+    name: Tauri shell (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux WebKit dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: npm ci --ignore-scripts
+        working-directory: desktop
+      - run: npm run build
+        working-directory: desktop
+      - name: Test typed host and transport
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri
+      - name: Canonical core regression and engine (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust
+          cargo build --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust
+          python3 scripts/stage-desktop-engine.py
+      - name: Host to actual canonical engine (macOS)
+        if: runner.os == 'macOS'
+        env:
+          AFTER_TEST_ENGINE_PATH: ${{ github.workspace }}/.build/rust/debug/posle-engine
+        run: |
+          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --test real_engine -- --ignored
+          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --lib -- --ignored
+      - name: Browser to actual canonical engine (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd desktop
+          npx playwright install chromium
+          cd ..
+          node scripts/check-desktop-browser.mjs

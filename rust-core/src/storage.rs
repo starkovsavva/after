@@ -43,6 +43,20 @@ pub(crate) fn regular_json(path: &Path) -> Result<Value> {
         .with_context(|| format!("Не удалось прочитать JSON: {}", path.display()))
 }
 
+/// Bounded ordinary-file read for client projections. Read through O_NOFOLLOW
+/// and enforce the limit again on the held descriptor; never accept a prefix.
+pub(crate) fn regular_json_limited(path: &Path, limit: u64) -> Result<Value> {
+    let info = fs::symlink_metadata(path)?;
+    ensure!(info.is_file() && !info.file_type().is_symlink() && info.len() <= limit, "Некорректный или слишком большой файл библиотеки");
+    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(metadata.is_file() && metadata.len() <= limit, "Файл библиотеки слишком большой");
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() as u64 <= limit, "Файл библиотеки слишком большой");
+    serde_json::from_slice(&bytes).context("Не удалось прочитать файл библиотеки")
+}
+
 /// Write a complete private file, fsync it, then replace the destination atomically.
 /// A failed write preserves the previously committed JSON.
 pub fn atomic_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> {
@@ -113,7 +127,7 @@ pub fn list_meetings(root: &Path) -> Result<Vec<Value>> {
         if !valid_id(&id) { continue; }
         let Ok(kind) = entry.file_type() else { continue };
         if !kind.is_dir() || kind.is_symlink() { continue; }
-        if let Ok(meta) = regular_json(&entry.path().join("meta.json")).and_then(|meta| compatible_meta(meta, &id)) {
+        if let Ok(meta) = regular_json_limited(&entry.path().join("meta.json"), 1_048_576).and_then(|meta| compatible_meta(meta, &id)) {
             result.push(meta);
         }
     }
