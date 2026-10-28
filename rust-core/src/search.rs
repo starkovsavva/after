@@ -368,11 +368,23 @@ fn empty_result() -> Value {
 /// returned values follow request order; the lock is released before returning
 /// evidence to the caller, including callers that subsequently invoke a model.
 pub(crate) fn search_batch(root: &Path, requests: &[(String, String, usize)]) -> Result<Vec<Value>> {
+    search_batch_scoped(root, requests, None)
+}
+
+/// The portable library client uses the same FTS index and ranking. Canonical
+/// folder membership is applied before COUNT/LIMIT, not after a global top-N.
+/// Cards and task notes remain outside this first client capability boundary.
+pub fn search_library(root: &Path, query: &str, folder_id: Option<&str>, limit: usize) -> Result<Value> {
+    if let Some(id) = folder_id { crate::folders::resolve(root, None, Some(id))?; }
+    Ok(search_batch_scoped(root, &[(query.into(), "library".into(), limit)], folder_id)?.remove(0))
+}
+
+fn search_batch_scoped(root: &Path, requests: &[(String, String, usize)], folder_id: Option<&str>) -> Result<Vec<Value>> {
     ensure!(root.is_absolute(), "Папка данных должна иметь абсолютный путь");
     let lexicon = Lexicon::new();
     // Validate the complete batch before opening or updating the derived index.
     let requests = requests.iter().map(|(query, scope, limit)| {
-        ensure!(["all","notes","transcript","cards","meetings"].contains(&scope.as_str()), "Неизвестная область поиска");
+        ensure!(["all","notes","transcript","cards","meetings","library"].contains(&scope.as_str()), "Неизвестная область поиска");
         let (expression, terms) = lexicon.query(query)?;
         Ok(SearchRequest { query: query.clone(), scope: scope.clone(), limit: (*limit).clamp(1, 100), expression, terms })
     }).collect::<Result<Vec<_>>>()?;
@@ -396,7 +408,7 @@ pub(crate) fn search_batch(root: &Path, requests: &[(String, String, usize)]) ->
     let transaction = connection.transaction()?;
     let results = requests.iter().map(|request| {
         if request.expression.is_empty() { return Ok(empty_result()); }
-        query_index(&transaction, root, request, &lexicon, warnings.clone())
+        query_index(&transaction, root, request, &lexicon, warnings.clone(), folder_id)
     }).collect::<Result<Vec<_>>>()?;
     transaction.commit()?;
     Ok(results)
@@ -405,26 +417,28 @@ pub(crate) fn search_batch(root: &Path, requests: &[(String, String, usize)]) ->
 fn profile_visibility(connection:&Connection,root:&Path)->Result<crate::ai::FeatureResolver> {
     let profiles=crate::ai::FeatureResolver::new(root)?;
     let ids=connection.prepare("SELECT meeting_id FROM sources")?.query_map([],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    connection.execute_batch("CREATE TEMP TABLE IF NOT EXISTS profile_visibility(meeting_id TEXT PRIMARY KEY,cards INTEGER NOT NULL,semantic INTEGER NOT NULL); DELETE FROM profile_visibility;")?;
+    connection.execute_batch("CREATE TEMP TABLE IF NOT EXISTS profile_visibility(meeting_id TEXT PRIMARY KEY,cards INTEGER NOT NULL,semantic INTEGER NOT NULL,folder_id TEXT); DELETE FROM profile_visibility;")?;
     for id in ids {
         let features=profiles.features_for(&json!({"meetingID":id}))?;
-        connection.execute("INSERT INTO profile_visibility(meeting_id,cards,semantic) VALUES(?1,?2,?3)",params![id,features.cards,features.semantic_search])?;
+        let folder_id=profiles.folder_for(&json!({"meetingID":id}))?;
+        connection.execute("INSERT INTO profile_visibility(meeting_id,cards,semantic,folder_id) VALUES(?1,?2,?3,?4)",params![id,features.cards,features.semantic_search,folder_id])?;
     }
     Ok(profiles)
 }
-fn query_index(connection: &Connection, root: &Path, request: &SearchRequest, lexicon: &Lexicon, mut warnings: Vec<String>) -> Result<Value> {
+fn query_index(connection: &Connection, root: &Path, request: &SearchRequest, lexicon: &Lexicon, mut warnings: Vec<String>, folder_id: Option<&str>) -> Result<Value> {
     let SearchRequest { query, scope, limit, expression, terms } = request;
     let scope_filter = match scope.as_str() {
         "notes" => "d.kind IN ('overview','item')", "transcript" => "d.kind='transcript'",
-        "cards" => "d.kind='card'", "meetings" => "d.kind='title'", _=>"1=1",
+        "cards" => "d.kind='card'", "meetings" => "d.kind='title'", "library" => "d.kind IN ('title','overview','item','transcript') AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.meeting_id=d.meeting_id AND s.library_kind='cards')", _=>"1=1",
     };
     let profiles=profile_visibility(connection,root)?;
     // Per-folder visibility is applied before COUNT/LIMIT; originals stay indexed.
     let filter = format!("({scope_filter}) AND (EXISTS (SELECT 1 FROM profile_visibility p WHERE p.meeting_id=d.meeting_id AND p.cards=1) OR (d.kind<>'card' AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.meeting_id=d.meeting_id AND s.library_kind='cards')))");
+    let filter=format!("({filter}) AND (?2 IS NULL OR EXISTS (SELECT 1 FROM profile_visibility p WHERE p.meeting_id=d.meeting_id AND p.folder_id=?2))");
     let count_sql = format!("SELECT COUNT(*) FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter}");
-    let mut total: i64 = connection.query_row(&count_sql, [expression], |row|row.get(0))?;
-    let sql = format!("SELECT d.key,d.meeting_id,d.title,d.created_at,d.kind,d.text,d.refs,d.start,d.item_index,d.card_id,d.fingerprint,d.excerpt_text FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter} ORDER BY bm25(documents_fts,1.0,0.8) * CASE d.kind WHEN 'title' THEN 4.0 WHEN 'overview' THEN 2.8 WHEN 'item' THEN 2.4 WHEN 'card' THEN 1.2 ELSE 1.0 END ASC,d.created_at DESC,d.meeting_id ASC,d.key ASC LIMIT ?2");
-    let mut hits = connection.prepare(&sql)?.query_map(params![expression,*limit as i64],|row| {
+    let mut total: i64 = connection.query_row(&count_sql, params![expression,folder_id], |row|row.get(0))?;
+    let sql = format!("SELECT d.key,d.meeting_id,d.title,d.created_at,d.kind,d.text,d.refs,d.start,d.item_index,d.card_id,d.fingerprint,d.excerpt_text FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?1 AND {filter} ORDER BY bm25(documents_fts,1.0,0.8) * CASE d.kind WHEN 'title' THEN 4.0 WHEN 'overview' THEN 2.8 WHEN 'item' THEN 2.4 WHEN 'card' THEN 1.2 ELSE 1.0 END ASC,d.created_at DESC,d.meeting_id ASC,d.key ASC LIMIT ?3");
+    let mut hits = connection.prepare(&sql)?.query_map(params![expression,folder_id,*limit as i64],|row| {
         let content: String = row.get(5)?;
         let refs: String = row.get(6)?;
         Ok(json!({"id":row.get::<_,String>(0)?,"meetingID":row.get::<_,String>(1)?,"meetingTitle":row.get::<_,String>(2)?,
@@ -432,9 +446,12 @@ fn query_index(connection: &Connection, root: &Path, request: &SearchRequest, le
             "segmentIDs":serde_json::from_str::<Vec<u64>>(&refs).unwrap_or_default(),"start":row.get::<_,Option<f64>>(7)?,
             "itemIndex":row.get::<_,Option<i64>>(8)?,"cardID":row.get::<_,Option<String>>(9)?,"sourceFingerprint":row.get::<_,String>(10)?}))
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
-    if ["all","notes"].contains(&scope.as_str()) {
+    if ["all","notes","library"].contains(&scope.as_str()) {
         let manual = match crate::notes::search_hits(root,query) {
-            Ok(hits)=>hits.into_iter().filter(|hit| hit["noteKind"] != "task" || profiles.features_for(hit).is_ok_and(|f|f.tasks)).collect::<Vec<_>>(),
+            Ok(hits)=>hits.into_iter()
+                .filter(|hit| profiles.in_scope(hit,&json!({"folderID":folder_id})))
+                .filter(|hit| hit["noteKind"] != "task" || (scope != "library" && profiles.features_for(hit).is_ok_and(|f|f.tasks)))
+                .collect::<Vec<_>>(),
             Err(_)=>{ warnings.push("Ручные заметки недоступны для поиска. Проверьте библиотеку заметок.".into()); vec![] }
         };
         total += manual.len() as i64;

@@ -1,0 +1,31 @@
+[package]
+name = "after-desktop"
+version = "0.1.0"
+description = "Cross-platform After desktop shell"
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "after_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "after-desktop"
+path = "src/main.rs"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+sha2 = "0.10"
+
+[dependencies]
+tauri = { version = "=2.12.5", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+tauri = { version = "=2.12.5", features = ["test"] }
