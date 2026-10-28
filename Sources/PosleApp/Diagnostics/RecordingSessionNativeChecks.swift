@@ -133,6 +133,7 @@ enum RecordingSessionNativeChecks {
         catch is CancellationError {}
         print("PASS: quit cancels blocked background and legacy work while flushing raw capture without starting encoding")
         try await runtimeAdmission()
+        try await CaptureSelectionNativeChecks.run()
         try await CaptureWriterNativeChecks.run(root: root)
         print("9 native recording session groups passed"); fflush(stdout)
     }

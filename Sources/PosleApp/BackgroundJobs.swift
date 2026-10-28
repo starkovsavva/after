@@ -15,7 +15,7 @@ struct JobConfiguration: Codable {
     var folderProfile: Data? = nil
     var folderID: String? = nil
     var profileMeetingID: String? = nil
-    /// Explicitly reopened input creates a new operation; old attempts stay in history.
+    /// Explicit recovery creates a new operation; old attempts stay in history.
     var restartOfJobID: String? = nil
 
     /// Speech keeps its separate API-key billing path even when summaries use ChatGPT.
@@ -45,15 +45,39 @@ struct BackgroundJob: Decodable, Identifiable {
     var createdAt: Double
     var updatedAt: Double
     var active: Bool { ["queued", "running"].contains(state) }
-    var canReopenVoiceCommand: Bool {
-        guard kind == "voice-plan", config.command == "voice-plan", config.input != nil,
-              ["failed", "interrupted"].contains(state) else { return false }
+    var hasProfileFailure: Bool {
+        guard ["failed", "interrupted"].contains(state) else { return false }
         return ["Настройки модели не совпадают с сохранённым профилем операции.",
                 "Профиль папки изменился после постановки в очередь.",
                 "Профиль папки изменился во время обработки.",
                 "Папка или её настройки изменились.", "У встречи появилась папка.",
-                "У фоновой операции нет сохранённого профиля папки.",
-                "Данные изменились после постановки в очередь."].contains { message.hasPrefix($0) }
+                "У фоновой операции нет сохранённого профиля папки."].contains { message.hasPrefix($0) }
+    }
+    var canReopenVoiceCommand: Bool {
+        kind == "voice-plan" && config.command == "voice-plan" && config.input != nil
+            && (hasProfileFailure || (["failed", "interrupted"].contains(state) && message.hasPrefix("Данные изменились после постановки в очередь.")))
+    }
+    static let changedNoteSourceMessage = "Исходная заметка или запись изменились. Запустите дополнение заново с текущими данными."
+    var canRestartWithCurrentProfile: Bool {
+        let changedNoteSource = config.command == "expand-notes" && ["failed", "interrupted"].contains(state)
+            && message == Self.changedNoteSourceMessage
+        guard kind == config.command, hasProfileFailure || changedNoteSource else { return false }
+        switch config.command {
+        case "summarize", "example": return config.meetingID != nil
+        case "expand-notes":
+            return config.extra.firstIndex(of: "--note").map { config.extra.indices.contains($0 + 1) && !config.extra[$0 + 1].isEmpty } == true
+        default: return false
+        }
+    }
+    var retryTitle: String {
+        if canReopenVoiceCommand { return L("Открыть поручение…") }
+        if canRestartWithCurrentProfile { return L("Запустить заново…") }
+        return L("Повторить")
+    }
+    var retryHelp: String {
+        if canReopenVoiceCommand { return L("Открыть исходный текст в помощнике. Новый запуск использует текущие настройки и требует нажатия «Выполнить».") }
+        if canRestartWithCurrentProfile { return L("Создать новую операцию с текущими настройками папки. Предыдущая попытка останется в истории; перед запуском будут показаны выбранные модель и провайдер.") }
+        return L("Повторить с сохранёнными настройками этой операции.")
     }
     var stateLabel: String {
         switch state {
@@ -350,6 +374,7 @@ final class BackgroundJobsController: ObservableObject {
     @Published var error: String?
     @Published var showing = false
     var reopenVoiceCommand: ((BackgroundJob) -> Void)?
+    var restartWithCurrentProfile: ((BackgroundJob) -> Void)?
     @Published private(set) var pendingSubmissions = 0 { didSet { updateActivityLease() } }
     @Published private(set) var pausedChatGPTAccounts: Set<String> = [] { didSet { updateActivityLease() } }
     @Published private(set) var pausedChatGPTFailures: [BackgroundJob] = []
@@ -420,6 +445,11 @@ final class BackgroundJobsController: ObservableObject {
         if job.canReopenVoiceCommand {
             guard let reopenVoiceCommand else { error = L("Откройте помощника и запустите поручение заново с текущими настройками."); return }
             error = nil; showing = false; reopenVoiceCommand(job)
+            return
+        }
+        if job.canRestartWithCurrentProfile {
+            guard let restartWithCurrentProfile else { error = L("Откройте исходную встречу или заметку и запустите обработку заново с текущими настройками."); return }
+            error = nil; restartWithCurrentProfile(job)
             return
         }
         var confirmed = !job.paid
@@ -529,10 +559,10 @@ struct BackgroundJobsView: View {
                                 if job.active || job.state == "blocked" {
                                     Button { jobs.cancel(job.id) } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain).accessibilityLabel(LF("Отменить {0}", arguments: [BackgroundJobPresentation.title(job)]))
                                 } else if !historical && job.kind != "dictate" && ["failed", "interrupted", "cancelled"].contains(job.state) {
-                                    Button(job.canReopenVoiceCommand ? L("Открыть поручение…") : L("Повторить")) { jobs.retry(job) }
+                                    Button(job.retryTitle) { jobs.retry(job) }
                                         .buttonStyle(.borderless).fixedSize(horizontal: true, vertical: false)
                                         .accessibilityIdentifier("jobs.retry." + job.id)
-                                        .help(job.canReopenVoiceCommand ? L("Открыть исходный текст в помощнике. Новый запуск использует текущие настройки и требует нажатия «Выполнить».") : L("Повторить с сохранёнными настройками этой операции."))
+                                        .help(job.retryHelp)
                                 }
                             }
                             let metadata = BackgroundJobPresentation.metadata(job, historical: historical)

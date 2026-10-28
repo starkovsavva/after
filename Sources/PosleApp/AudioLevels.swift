@@ -80,7 +80,9 @@ final class AudioCheckController: ObservableObject {
                 guard let self, self.directory?.lastPathComponent == failure.sessionID,
                       self.running || self.starting else { return }
                 await self.stop()
-                self.error = LF("Проверка прервалась: {0}", arguments: [String(describing: failure.message)])
+                if !failure.userInitiated {
+                    self.error = LF("Проверка прервалась: {0}", arguments: [String(describing: failure.message)])
+                }
             }
         }
         startTask = Task {
@@ -91,7 +93,11 @@ final class AudioCheckController: ObservableObject {
                 try await recorder.start(url: directory.appendingPathComponent(systemAudio ? "check.mov" : "check.m4a"), systemAudio: systemAudio)
                 guard generation == token else { try? await recorder.stop(); cleanup(); starting = false; return }
                 running = true; starting = false
-            } catch { self.error = error.localizedDescription; starting = false; running = false; cleanup() }
+            } catch {
+                try? await recorder.stop()
+                if !(error is CancellationError), generation == token { self.error = error.localizedDescription }
+                starting = false; running = false; cleanup()
+            }
         }
     }
     func stop() async {
@@ -102,7 +108,12 @@ final class AudioCheckController: ObservableObject {
         stopping = true
         defer { stopping = false }
         generation = UUID(); running = false
-        if let startTask { await startTask.value; self.startTask = nil }
+        if let startTask {
+            startTask.cancel()
+            await recorder.cancelPendingStart()
+            await startTask.value
+            self.startTask = nil
+        }
         try? await recorder.stop(); cleanup(); starting = false; levels.clear()
     }
     private func cleanup() {

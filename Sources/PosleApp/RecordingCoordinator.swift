@@ -26,20 +26,11 @@ extension AppStore {
             return
         }
         startingRecording = true
-        defer { startingRecording = false }
+        defer { startingRecording = false; startingRecordingID = nil; pendingRecordingFailure = nil }
         // Snapshot before any permission prompt. Finalization must use this meeting's
         // quality even if the default settings change before an interrupted job resumes.
         let audioQuality = settings.recordAudioQuality
         let videoQuality = settings.recordVideoQuality
-        let requestedDisplay = settings.recordDisplayUUID
-        let displays = video ? RecordingDisplay.choices(preview: isPreview) : []
-        let selectedDisplay = requestedDisplay.isEmpty
-            ? displays.first(where: \.isMain)
-            : displays.first(where: { $0.persistentID == requestedDisplay })
-        if video && selectedDisplay == nil {
-            error = L("Выбранный экран недоступен. Выберите подключённый экран перед записью.")
-            return
-        }
         pause(); error = nil; audioLevels.clear()
         processAfterRecording = true
         var meeting = Meeting(title: title.isEmpty ? LF("Встреча {0}", arguments: [String(describing: Date().formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(UILocale())))]) : title,
@@ -48,7 +39,7 @@ extension AppStore {
         meeting.hasVideo = video
         meeting.recordingAudioQuality = audioQuality.rawValue
         meeting.recordingVideoQuality = video ? videoQuality.rawValue : nil
-        meeting.recordingDisplayUUID = selectedDisplay?.persistentID
+        meeting.recordingDisplayUUID = nil
         meeting.generateCards = destination.generateCards
         let destinationFolderID = destination.folderID
         let directory = meetingDirectory(meeting.id)
@@ -56,9 +47,17 @@ extension AppStore {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                    attributes: [.posixPermissions: 0o700])
+            startingRecordingID = meeting.id
+            pendingRecordingFailure = nil
             try await recorder.start(url: directory.appendingPathComponent(meeting.source), systemAudio: systemAudio, video: video,
                                      videoQuality: videoQuality, audioQuality: audioQuality,
-                                     displayID: selectedDisplay?.id, expectedDisplayUUID: selectedDisplay?.persistentID)
+                                     displayID: nil, expectedDisplayUUID: nil)
+            try Task.checkCancellation()
+            guard !isTerminating else { throw CancellationError() }
+            if let failure = pendingRecordingFailure {
+                if failure.userInitiated { throw CancellationError() }
+                throw AppError.message(failure.message)
+            }
             try write(meeting, directory.appendingPathComponent("meta.json"))
             if let destinationFolderID, !notes.assignMeetingFolder(meeting.id, folderID: destinationFolderID) {
                 recordingFolderFailures.insert(meeting.id)
@@ -71,10 +70,19 @@ extension AppStore {
             // Start already opens this meeting; its sidebar must describe the same destination.
             folderSelection = notes.context(for: meeting.id).folderID; libraryFilter = ""
             reloadLibrary(); librarySection = "meetings"; selection = meeting.id; tab = "notes"; loadSelection(); applyDefaultNoteTemplate(to: meeting.id); showingRecord = false
+        } catch is CancellationError {
+            try? await recorder.stop()
+            // This directory belongs to this uncommitted start, never an existing meeting.
+            try? FileManager.default.removeItem(at: directory)
+            self.error = nil
         } catch {
             try? await recorder.stop()
             self.error = error.localizedDescription
         }
+    }
+    func cancelRecordingStart() async {
+        guard startingRecording else { return }
+        await recorder.cancelPendingStart()
     }
     func stopRecording(finalize: Bool = true) async {
         guard let id = recordingID, isRecording, !stoppingRecording else { return }
@@ -120,6 +128,7 @@ extension AppStore {
         runner.cancel()
         voice.cancelWork()
         let queueShutdown = Task { await jobs.shutdown() }
+        await recorder.cancelPendingStart()
         // A permission prompt may still be resolving. Once capture has started,
         // flush only its original tracks; encoding and inference can resume later.
         while startingRecording || stoppingRecording { try? await Task.sleep(for: .milliseconds(25)) }

@@ -125,6 +125,8 @@ final class AppStore: ObservableObject {
     private var player: AVPlayer?
     private var playerObserver: Any?
     var recordingID: String?
+    var startingRecordingID: String?
+    var pendingRecordingFailure: RecordingFailure?
     var assertions: IOPMAssertionID = 0
     var recordingAssertion: IOPMAssertionID = 0
     var cancellationRequested = false
@@ -203,6 +205,7 @@ final class AppStore: ObservableObject {
         calendar.bindNotes(notes)
         voice.connect(self)
         jobs.reopenVoiceCommand = { [weak self] job in self?.voice.reopenFailedCommand(job) }
+        jobs.restartWithCurrentProfile = { [weak self] job in self?.restartProfileFailedJob(job) }
         jobsSubscription = jobs.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         if let executor { jobs.connect(executor) }
         else {
@@ -234,9 +237,19 @@ final class AppStore: ObservableObject {
         }
         recorder.failed = { [weak self] failure in
             Task { @MainActor in
-                guard let self, self.isRecording, self.recordingID == failure.sessionID else { return }
-                self.error = LF("Запись прервалась: {0}. Завершаю сохранение доступного аудио.", arguments: [failure.message])
-                await self.stopRecording()
+                guard let self else { return }
+                if self.startingRecording, self.startingRecordingID == failure.sessionID {
+                    self.pendingRecordingFailure = failure
+                    return
+                }
+                guard self.isRecording, self.recordingID == failure.sessionID else { return }
+                if failure.userInitiated {
+                    await self.stopRecording(finalize: false)
+                    if self.error == nil { self.notice = L("Запись завершена в macOS. Исходная запись сохранена; обработку можно запустить во встрече.") }
+                } else {
+                    self.error = LF("Запись прервалась: {0}. Завершаю сохранение доступного аудио.", arguments: [failure.message])
+                    await self.stopRecording()
+                }
             }
         }
     }

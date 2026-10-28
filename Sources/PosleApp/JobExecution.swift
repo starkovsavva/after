@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import CryptoKit
 import PosleCore
@@ -6,7 +7,19 @@ extension AppStore {
     private static let chatGPTAICommands = ["summarize", "example", "expand-notes", "voice-plan"]
     static let queuedCommands: Set<String> = ["transcribe", "diarize", "finalize", "dictate", "summarize", "example", "expand-notes", "voice-plan"]
 
+    struct PreparedBackgroundJob {
+        var configuration: JobConfiguration
+        var resource: String
+        var revision: String
+        var title: String
+        var paid: Bool
+    }
+
     func queuedWorker(_ command: String, id: String?, extra: [String], input: Data?) async throws -> WorkerEvent? {
+        try await submitPreparedJob(prepareBackgroundJob(command, id: id, extra: extra, input: input))
+    }
+
+    private func prepareBackgroundJob(_ command: String, id: String?, extra: [String], input: Data?, restartOfJobID: String? = nil) throws -> PreparedBackgroundJob {
         guard !isTerminating else { throw CancellationError() }
         // Model/account changes can arrive from the Settings catalog after its
         // last save. Commit this exact selection before Rust fingerprints the
@@ -26,12 +39,12 @@ extension AppStore {
         // EventKit evidence is permission-scoped and volatile. Persist only the
         // request; each execution attempt obtains its own authorized snapshot.
         let persistedInput = try Self.persistableJobInput(command: command, input: input)
-        let restartOfJobID = try voiceRestartID(command: command, input: input)
+        let restartOfJobID = try restartOfJobID ?? voiceRestartID(command: command, input: input)
         let configuration = JobConfiguration(command: command, meetingID: id, extra: extra, input: persistedInput, settings: snapshot, folderProfile: profileData, folderID: profile.folderID, profileMeetingID: scope.meetingID, restartOfJobID: restartOfJobID)
         let speech = ["transcribe", "diarize", "finalize", "dictate"].contains(command)
         let cloud = speech ? ["transcribe", "dictate"].contains(command) && snapshot.speechMode == "cloud" : snapshot.mode == "cloud"
         let resource = ["finalize", "dictate", "diarize"].contains(command) || (command == "transcribe" && snapshot.diarization) ? "local-heavy" : cloud ? "cloud" : "local-heavy"
-        let revision = try jobInputRevision(command: command, meetingID: id, input: persistedInput)
+        let revision = try jobInputRevision(command: command, meetingID: id, input: persistedInput, extra: extra)
         let label: String
         switch command {
         case "transcribe": label = "Распознавание"
@@ -44,10 +57,85 @@ extension AppStore {
         default: label = "Дополнение заметки"
         }
         let title = id.flatMap { value in meetings.first(where: { $0.id == value })?.title }.map { "\(label) · \($0)" } ?? label
-        return try await jobs.submit(configuration, resource: resource, revision: revision, title: title, paid: cloud)
+        return PreparedBackgroundJob(configuration: configuration, resource: resource, revision: revision, title: title, paid: cloud)
     }
 
-    func jobInputRevision(command: String, meetingID: String?, input: Data?) throws -> String {
+    func submitPreparedJob(_ prepared: PreparedBackgroundJob) async throws -> WorkerEvent? {
+        let config = prepared.configuration
+        guard !isTerminating else { throw CancellationError() }
+        // Confirmation can run a nested event loop. Never accept a changed
+        // profile/source between preparing the displayed route and admission.
+        try validateJobProfile(config)
+        guard try jobInputRevision(command: config.command, meetingID: config.meetingID, input: config.input, extra: config.extra) == prepared.revision else {
+            throw AppError.message(L("Данные изменились после подготовки операции. Запустите её заново из встречи или карточки."))
+        }
+        return try await jobs.submit(config, resource: prepared.resource, revision: prepared.revision, title: prepared.title, paid: prepared.paid)
+    }
+
+    /// Explicit recovery captures the original source with today's canonical
+    /// profile. It never mutates or silently retries the old frozen operation.
+    func prepareRestartedJob(_ original: BackgroundJob) throws -> PreparedBackgroundJob {
+        guard original.canRestartWithCurrentProfile else {
+            throw AppError.message(L("Эту операцию нельзя запустить заново с текущим профилем."))
+        }
+        // Consent to replacing manual edits belongs to the source revision the
+        // user originally reviewed. A historical failure cannot reuse it.
+        let extra = original.config.extra.filter { $0 != "--replace-manual-summary" }
+        return try prepareBackgroundJob(original.config.command, id: original.config.meetingID, extra: extra,
+                                        input: original.config.input, restartOfJobID: original.id)
+    }
+
+    func restartProfileFailedJob(_ original: BackgroundJob) {
+        do {
+            let prepared = try prepareRestartedJob(original)
+            let snapshot = prepared.configuration.settings
+            let provider = snapshot.mode == "cloud" ? snapshot.cloudProviderTitle
+                : snapshot.localProvider == "lmstudio" ? "LM Studio" : snapshot.localProvider == "ollama" ? "Ollama" : L("На этом Mac")
+            let model = snapshot.mode == "cloud" ? snapshot.cloudModel : snapshot.localModel
+            let alert = NSAlert()
+            alert.messageText = L("Запустить заново с текущими настройками?")
+            var explanation = LF("Новая операция: {0} · {1}. Предыдущая попытка останется в истории.", arguments: [provider, model])
+            if prepared.paid {
+                explanation += "\n\n" + (snapshot.cloudProvider == "chatgpt"
+                    ? L("Новый запрос использует лимит подписки ChatGPT.")
+                    : L("Новый запрос может оплачиваться выбранным сервисом."))
+            }
+            alert.informativeText = explanation
+            alert.addButton(withTitle: L("Запустить заново")); alert.addButton(withTitle: L("Отмена"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            jobs.showing = false
+            Task {
+                do { _ = try await submitPreparedJob(prepared); jobs.error = nil }
+                catch is CancellationError {} catch { jobs.error = error.localizedDescription }
+            }
+        } catch { jobs.error = error.localizedDescription }
+    }
+
+    func jobInputRevision(command: String, meetingID: String?, input: Data?, extra: [String] = []) throws -> String {
+        if command == "expand-notes" {
+            guard let index = extra.firstIndex(of: "--note"), extra.indices.contains(index + 1), !extra[index + 1].isEmpty else {
+                throw AppError.message(L("Выберите заметку для дополнения."))
+            }
+            let noteID = extra[index + 1]
+            let bridge = try RustBridge.shared.get()
+            let workspace = try JSONDecoder().decode(NotesWorkspace.self, from: bridge.request(root: root, command: "notes-list"))
+            guard let note = workspace.notes.first(where: { $0.id == noteID && $0.trashedAt == nil }) else {
+                throw AppError.message(L("Заметка не найдена. Обновите библиотеку."))
+            }
+            // Independent note jobs have neither meetingID nor stdin input.
+            // Bind confirmation and queued execution to the canonical source,
+            // including attachment membership/extracted text and its revision.
+            var source: [String: Any] = ["note": try JSONSerialization.jsonObject(with: JSONEncoder().encode(note))]
+            if let sourceMeetingID = note.meetingID {
+                let data = try bridge.request(root: root, command: "meeting-content-snapshot", arguments: ["meetingID": sourceMeetingID])
+                let snapshot = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+                source["transcriptFingerprint"] = snapshot["transcriptFingerprint"] ?? ""
+                let metadata = try JSONSerialization.jsonObject(with: bridge.read(root: root, url: meetingDirectory(sourceMeetingID).appendingPathComponent("meta.json"))) as? [String: Any] ?? [:]
+                source["meetingTitle"] = metadata["title"] ?? ""
+            }
+            let data = try JSONSerialization.data(withJSONObject: source, options: [.sortedKeys])
+            return "note-source-v1:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
         if let id = meetingID, command != "finalize" {
             let data = try RustBridge.shared.get().request(root: root, command: "meeting-content-snapshot", arguments: ["meetingID": id])
             let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
@@ -252,8 +340,14 @@ extension AppStore {
 
     private func validateJobRevision(_ job: BackgroundJob) throws {
         let config = job.config
-        let current = try jobInputRevision(command: config.command, meetingID: config.meetingID, input: config.input)
+        let current = try jobInputRevision(command: config.command, meetingID: config.meetingID, input: config.input, extra: config.extra)
         let followsTranscript = config.command == "summarize" && job.inputRevision.hasPrefix("dependency:") && job.dependencies.contains(String(job.inputRevision.dropFirst("dependency:".count)))
+        if config.command == "expand-notes", current != job.inputRevision {
+            // Old releases stored an empty revision for independent notes. It
+            // cannot prove consent to today's content; explicit recovery takes
+            // a fresh snapshot instead of grandfathering that missing guard.
+            throw AppError.message(BackgroundJob.changedNoteSourceMessage)
+        }
         guard current == job.inputRevision || followsTranscript else {
             throw AppError.message("Данные изменились после постановки в очередь. Запустите операцию заново из встречи или карточки.")
         }

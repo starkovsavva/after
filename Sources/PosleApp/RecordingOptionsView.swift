@@ -2,42 +2,13 @@ import AppKit
 import PosleCore
 import SwiftUI
 
-extension RecordingDisplay {
-    /// Preview and native checks use invented monitors and never enumerate user devices.
-    @MainActor static func choices(preview: Bool) -> [RecordingDisplay] {
-        if preview {
-            return [.init(id: 1, title: "Встроенный дисплей", pixelWidth: 2560, pixelHeight: 1664,
-                          isMain: true, persistentID: "preview-built-in"),
-                    .init(id: 2, title: "Внешний дисплей", pixelWidth: 3840, pixelHeight: 2160,
-                          isMain: false, persistentID: "preview-external")]
-        }
-        return MeetingRecorder.availableDisplays()
-    }
-
-    static func selectionIsAvailable(_ uuid: String, in displays: [RecordingDisplay]) -> Bool {
-        uuid.isEmpty ? displays.contains(where: \.isMain) : displays.contains { $0.persistentID == uuid }
-    }
-}
-
-/// The same controls before a meeting and in Settings, with no separate set of defaults.
+/// Shared recording defaults. macOS asks for an explicit screen selection at
+/// capture time, so saved monitor IDs cannot block a new recording after updates.
 struct RecordingOptionsView: View {
     @Binding var audioQuality: RecordingAudioQuality
     @Binding var video: Bool
     @Binding var videoQuality: RecordingVideoQuality
-    @Binding var displayUUID: String
-    let displays: [RecordingDisplay]
-
-    private var displayIsAvailable: Bool { RecordingDisplay.selectionIsAvailable(displayUUID, in: displays) }
-    private var selectedDisplay: RecordingDisplay? {
-        displayUUID.isEmpty ? displays.first(where: \.isMain) : displays.first { $0.persistentID == displayUUID }
-    }
-    private var videoDescription: String {
-        guard let display = selectedDisplay,
-              let size = videoQuality.dimensions(width: Double(display.pixelWidth), height: Double(display.pixelHeight)) else {
-            return L("MP4 · H.264 · 30 кадров/с")
-        }
-        return LF("MP4 · {0} × {1} · 30 кадров/с", arguments: [String(describing: (size.width)), String(describing: (size.height))])
-    }
+    var systemAudio = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -47,30 +18,26 @@ struct RecordingOptionsView: View {
             Toggle(L("Сохранять видео экрана"), isOn: $video)
                 .accessibilityIdentifier("record.video")
             if video {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker(L("Экран целиком"), selection: $displayUUID) {
-                        Text(L("Основной экран · автоматически")).tag("")
-                        ForEach(displays) { display in
-                            Text("\(display.title) · \(display.pixelWidth) × \(display.pixelHeight)").tag(display.persistentID)
-                        }
-                        if !displayUUID.isEmpty && !displayIsAvailable {
-                            Text(L("Экран недоступен")).tag(displayUUID)
-                        }
-                    }.accessibilityIdentifier("record.display")
+                VStack(alignment: .leading, spacing: 10) {
                     Picker(L("Качество видео"), selection: $videoQuality) {
                         ForEach(RecordingVideoQuality.allCases) { Text(L($0.title)).tag($0) }
                     }.accessibilityIdentifier("record.videoQuality").help(L(videoQuality.detail))
-                    if displayIsAvailable {
-                        Text(videoDescription).font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
-                            .accessibilityIdentifier("record.dimensions")
-                        Text(L("Весь экран, включая меню, Dock и другие окна."))
-                            .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
-                    } else {
-                        Label(L("Экран отключён. Выберите доступный."), systemImage: "exclamationmark.triangle")
-                            .font(AppTypography.caption).foregroundStyle(Ink.warning)
-                            .accessibilityIdentifier("record.displayUnavailable")
-                    }
+                    Text(L("MP4 · H.264 · 30 кадров/с"))
+                        .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                        .accessibilityIdentifier("record.format")
                 }.padding(.leading, 20)
+            }
+            if systemAudio || video {
+                Label(L("При запуске записи или проверки звука выберите экран в окне macOS. Доступ действует только на эту запись."), systemImage: "macwindow.on.rectangle")
+                    .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("record.screenSelection")
+                if systemAudio && !video {
+                    Text(L("Видео не сохраняется. Экран нужен для доступа к звуку Mac."))
+                        .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("record.audioSelection")
+                }
             }
         }.font(AppTypography.control)
     }

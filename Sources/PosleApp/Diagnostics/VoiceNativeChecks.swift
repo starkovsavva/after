@@ -168,6 +168,39 @@ enum VoiceNativeChecks {
         store.folderSelection = nil; store.librarySection = "inbox"; store.notes.selectedNoteID = noteID
         print("PASS: real Rust inference uses committed folder overrides while the native view still has an older model")
 
+        // Exercise summary recovery through the actual Swift queue, stdin CLI
+        // and Rust profile guard, rather than a mocked summary executor.
+        let summaryMeeting = Meeting(title: "Synthetic profile recovery", source: "source.wav", status: "transcribed")
+        let summaryDirectory = store.meetingDirectory(summaryMeeting.id)
+        try FileManager.default.createDirectory(at: summaryDirectory, withIntermediateDirectories: true)
+        try store.write(summaryMeeting, summaryDirectory.appendingPathComponent("meta.json"))
+        try store.write(Transcript(duration: 1, segments: [Segment(id: 0, start: 0, end: 1, speaker: "unknown", text: "Hello.")], warnings: [], model: "synthetic"), summaryDirectory.appendingPathComponent("transcript.json"))
+        guard store.notes.assignMeetingFolder(summaryMeeting.id, folderID: staleFolder.id) else { throw AppError.message("Summary profile fixture assignment failed") }
+        let (summaryProfile, summaryProfileData) = try store.folderProfile(for: summaryMeeting.id)
+        var legacySummarySettings = summaryProfile.overrides.apply(to: store.settings)
+        legacySummarySettings.localModel = "legacy-unsaved-model"
+        let legacySummary = JobConfiguration(command: "summarize", meetingID: summaryMeeting.id, extra: [], input: nil,
+            settings: legacySummarySettings, folderProfile: summaryProfileData, folderID: summaryProfile.folderID, profileMeetingID: summaryMeeting.id)
+        do {
+            let revision = try store.jobInputRevision(command: "summarize", meetingID: summaryMeeting.id, input: nil)
+            _ = try await store.jobs.submit(legacySummary, resource: "local-heavy", revision: revision, title: "Legacy frozen summary profile", paid: false)
+            throw AppError.message("The legacy summary profile unexpectedly entered inference")
+        } catch {
+            try expect(error.localizedDescription.hasPrefix("Настройки модели не совпадают"), "The exact historical summary mismatch must remain rejected by Rust")
+        }
+        try await waitUntil { store.jobs.jobs.contains { $0.title == "Legacy frozen summary profile" && $0.state == "failed" } }
+        guard let failedSummary = store.jobs.jobs.first(where: { $0.title == "Legacy frozen summary profile" }) else { throw AppError.message("Legacy summary operation missing") }
+        try JSONSerialization.data(withJSONObject: ["content": ["facts": [], "overview": "", "studyCards": []]]).write(to: root.appendingPathComponent("fixture-response.json"))
+        let recoveredSummary = try store.prepareRestartedJob(failedSummary)
+        _ = try await store.submitPreparedJob(recoveredSummary)
+        let summaryResult = try JSONSerialization.jsonObject(with: Data(contentsOf: summaryDirectory.appendingPathComponent("summary.json"))) as! [String: Any]
+        try expect(summaryResult["model"] as? String == "voice-fixture" && recoveredSummary.configuration.restartOfJobID == failedSummary.id,
+            "Explicit summary recovery must run the canonical current folder model in a new operation")
+        try await waitUntil { store.jobs.jobs.contains { $0.config.restartOfJobID == failedSummary.id && $0.state == "succeeded" } }
+        try expect(store.jobs.jobs.first { $0.id == failedSummary.id }?.state == "failed" && !store.jobs.latestAttemptIDs.contains(failedSummary.id),
+            "Recovered summary must retain its original failed row as resolved history")
+        print("PASS: real Rust summary rejects the legacy mixed profile and explicit recovery succeeds with current folder inheritance in a new operation")
+
         // A task created by another native/MCP client is not necessarily in
         // task-list yet. Its committed source must still select the right model.
         var uncachedTask = CapturedNote(text: "Temporary source for canonical task routing", kind: "task")

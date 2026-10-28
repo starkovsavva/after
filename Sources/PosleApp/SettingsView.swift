@@ -9,7 +9,6 @@ struct SettingsView: View {
     @ObservedObject private var localization = UILocalization.shared
     @State private var editingCustomLocalModel = false
     @State private var customLocalModel = ""
-    @State private var recordingDisplays: [RecordingDisplay] = []
 
     private var localModelPreset: Binding<String> {
         Binding {
@@ -124,13 +123,9 @@ struct SettingsView: View {
             }
             .onAppear {
                 theme.configure(root: store.root)
-                recordingDisplays = RecordingDisplay.choices(preview: store.isPreview)
                 if !store.settings.defaultTemplateID.isEmpty && !store.notes.templates.contains(where: { $0.id == store.settings.defaultTemplateID }) { store.settings.defaultTemplateID = "" }
                 editingCustomLocalModel = !isPresetModel(store.settings.localModel)
                 customLocalModel = editingCustomLocalModel ? store.settings.localModel : ""
-            }
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
-                recordingDisplays = RecordingDisplay.choices(preview: store.isPreview)
             }
             .onChange(of: store.settings.localProvider) { _, _ in
                 editingCustomLocalModel = !isPresetModel(store.settings.localModel)
@@ -204,7 +199,7 @@ struct SettingsView: View {
                 .help(L("Вместе с микрофоном. Для разделения голосов в звонке используйте наушники."))
             RecordingOptionsView(audioQuality: $store.settings.recordAudioQuality,
                                  video: $store.settings.recordVideo, videoQuality: $store.settings.recordVideoQuality,
-                                 displayUUID: $store.settings.recordDisplayUUID, displays: recordingDisplays)
+                                 systemAudio: store.settings.recordSystemAudio)
             LabeledContent(L("Формат аудио"), value: "MP3")
         }
     }
@@ -414,18 +409,16 @@ struct RecordView: View {
     @State private var video = false
     @State private var audioQuality: RecordingAudioQuality = .standard
     @State private var videoQuality: RecordingVideoQuality = .compact
-    @State private var displayUUID = ""
-    @State private var displays: [RecordingDisplay] = []
     @State private var recordingError: String?
     @State private var folderID = ""
     @State private var cardsChoice = "inherit"
     @State private var showingProcessing = false
     @State private var preparingCapture = false
+    @State private var captureTask: Task<Void, Never>?
     private var startLocked: Bool { preparingCapture || store.startingRecording }
     private var destinationExists: Bool { folderID.isEmpty || store.notes.folder(folderID) != nil }
     private var profileSettings: AppSettings { store.effectiveSettings(folderID: folderID.isEmpty ? nil : folderID) }
     private var folderGeneratesCards: Bool { store.notes.folder(folderID)?.overrides.generateCards ?? false }
-    private var displayIsAvailable: Bool { !video || RecordingDisplay.selectionIsAvailable(displayUUID, in: displays) }
     private var processingSummary: String {
         let model = profileSettings.mode == "cloud" ? profileSettings.cloudProviderTitle + " · " + profileSettings.cloudModel : L("На Mac · ") + profileSettings.localModel
         let cards = profileSettings.features.cards && (cardsChoice == "inherit" ? folderGeneratesCards : cardsChoice == "on")
@@ -484,7 +477,7 @@ struct RecordView: View {
             }.pickerStyle(.radioGroup).disabled(startLocked)
                 .help(L("Для звонков выберите звук Mac и используйте наушники. Для встречи в комнате — только микрофон."))
             RecordingOptionsView(audioQuality: $audioQuality, video: $video,
-                                 videoQuality: $videoQuality, displayUUID: $displayUUID, displays: displays).disabled(startLocked)
+                                 videoQuality: $videoQuality, systemAudio: systemAudio).disabled(startLocked)
             HStack {
                 Text(video ? "MP3 + MP4" : "MP3").font(AppTypography.captionStrong).foregroundStyle(Ink.secondaryText)
                 Spacer()
@@ -501,31 +494,37 @@ struct RecordView: View {
             if startLocked {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small).accessibilityHidden(true)
-                    Text(L("Проверяю доступ к записи…")).font(AppTypography.control)
+                    Text(systemAudio || video ? L("Выберите экран в окне macOS…") : L("Включаю микрофон…")).font(AppTypography.control)
                 }.accessibilityElement(children: .combine)
             }
             HStack {
-                Button(L("Отмена"), role: .cancel) { dismiss() }.buttonStyle(.bordered).disabled(startLocked).keyboardShortcut(.cancelAction)
+                Button(startLocked ? L("Отменить запуск") : L("Отмена"), role: .cancel) {
+                    if startLocked {
+                        captureTask?.cancel()
+                        Task { await audioCheck.stop(); await store.cancelRecordingStart() }
+                    } else { dismiss() }
+                }.buttonStyle(.bordered).keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("record.cancel")
                 Spacer()
                 Button(L("Начать запись")) {
                     guard !startLocked else { return }
                     recordingError = nil
                     store.settings.recordSystemAudio = systemAudio; store.settings.recordVideo = video
                     store.settings.recordAudioQuality = audioQuality; store.settings.recordVideoQuality = videoQuality
-                    store.settings.recordDisplayUUID = displayUUID
                     guard store.saveSettings() else { recordingError = store.error; return }
                     let destination = RecordingDestination(folderID: folderID.isEmpty ? nil : folderID,
                         generateCards: cardsChoice == "inherit" ? nil : cardsChoice == "on")
                     let captureTitle = title, captureSystemAudio = systemAudio, captureVideo = video
                     preparingCapture = true
-                    Task {
-                        defer { preparingCapture = false }
+                    captureTask = Task {
+                        defer { preparingCapture = false; captureTask = nil }
                         await audioCheck.stop()
+                        guard !Task.isCancelled else { return }
                         await store.startRecording(systemAudio: captureSystemAudio, video: captureVideo, title: captureTitle, destination: destination)
                         if !store.isRecording { recordingError = store.error }
                     }
                 }.buttonStyle(.borderedProminent).tint(Ink.recordFill)
-                    .disabled(startLocked || !displayIsAvailable || !destinationExists).keyboardShortcut(.defaultAction)
+                    .disabled(startLocked || !destinationExists).keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("record.start")
             }
         }.padding(AppLayout.contentInset).frame(width: 560).appControlDefaults().tint(Ink.accent)
@@ -534,15 +533,10 @@ struct RecordView: View {
                 folderID = store.folderSelection ?? ""
                 systemAudio = store.settings.recordSystemAudio; video = store.settings.recordVideo
                 audioQuality = store.settings.recordAudioQuality; videoQuality = store.settings.recordVideoQuality
-                displayUUID = store.settings.recordDisplayUUID
-                displays = RecordingDisplay.choices(preview: store.isPreview)
                 if ProcessInfo.processInfo.arguments.contains("--preview") && ProcessInfo.processInfo.arguments.contains("--preview-error") {
                     recordingError = "Нет доступа к микрофону. Разрешите его в настройках macOS и повторите запись."
                 }
             }
             .onChange(of: folderID) { _, _ in cardsChoice = "inherit" }
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
-                displays = RecordingDisplay.choices(preview: store.isPreview)
-            }
     }
 }

@@ -14,6 +14,37 @@ struct BugReportDraft: Codable, Equatable {
 }
 
 struct BugReportDiagnostics: Encodable, Equatable {
+    /// Static bundle metadata only: no paths, account IDs, logs or TCC changes.
+    struct Installation: Encodable, Equatable {
+        let location: String
+        let sourceRevision: String
+        let helperVersions: String
+        let captureAuthorization = "system_picker"
+
+        init(bundleURL: URL = Bundle.main.bundleURL) {
+            let bundled = bundleURL.pathExtension == "app"
+            let parent = bundleURL.deletingLastPathComponent().standardizedFileURL
+            let applications = [URL(fileURLWithPath: "/Applications"), FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]
+            location = !bundled ? "unbundled" : applications.contains(parent) ? "applications" : "other"
+            let infoURL = bundleURL.appendingPathComponent("Contents/Info.plist")
+            let info = (try? Data(contentsOf: infoURL)).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] } ?? [:]
+            let revision = info["PosleSourceRevision"] as? String ?? ""
+            sourceRevision = revision.range(of: #"^[a-f0-9]{40}([a-f0-9]{24})?$"#, options: .regularExpression) != nil ? revision : "unknown"
+            guard bundled else { helperVersions = "not_bundled"; return }
+            let keys = ["CFBundleShortVersionString", "CFBundleVersion"]
+            guard keys.allSatisfy({ (info[$0] as? String)?.isEmpty == false }) else { helperVersions = "unknown"; return }
+            var matches = true
+            for name in ["После Обработка", "После Распознавание"] {
+                let childURL = bundleURL.appendingPathComponent("Contents/Helpers/" + name + ".app/Contents/Info.plist")
+                guard let data = try? Data(contentsOf: childURL),
+                      let child = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+                    helperVersions = "missing"; return
+                }
+                matches = matches && keys.allSatisfy { child[$0] as? String == info[$0] as? String }
+            }
+            helperVersions = matches ? "match" : "mismatch"
+        }
+    }
     struct Route: Encodable, Equatable {
         let mode: String
         let provider: String
@@ -46,6 +77,7 @@ struct BugReportDiagnostics: Encodable, Equatable {
     }
     let appVersion: String
     let appBuild: String
+    let installation: Installation
     let macOS: String
     let architecture: String
     let currentRoute: Route
@@ -55,6 +87,7 @@ struct BugReportDiagnostics: Encodable, Equatable {
     init(settings: AppSettings, lastFailure: BackgroundJob? = nil,
          appVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
          appBuild: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) {
+        installation = Installation()
         self.appVersion = Self.numeric(appVersion, pattern: #"^[0-9]{1,4}(\.[0-9]{1,4}){1,3}$"#)
         self.appBuild = Self.numeric(appBuild, pattern: #"^[0-9]{1,12}$"#)
         let system = ProcessInfo.processInfo.operatingSystemVersion

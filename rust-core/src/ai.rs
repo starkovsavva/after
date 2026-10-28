@@ -1581,6 +1581,65 @@ mod tests {
         assert!(output.status.success(),"{}\n{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
     }
     #[test]
+    fn legacy_mixed_settings_fail_closed_and_fresh_profiles_use_updated_folder_inheritance() {
+        const CHILD: &str = "POSLE_TEST_PROFILE_CAPTURE_ROOT";
+        if let Ok(root) = std::env::var(CHILD) {
+            let scope = json!({"folderID":"work"});
+            let result = settings_for_input(Path::new(&root), &scope);
+            match std::env::var("POSLE_TEST_PROFILE_EXPECT").unwrap().as_str() {
+                "mismatch" => assert!(result.unwrap_err().to_string().starts_with("Настройки модели не совпадают")),
+                "changed" => assert!(result.unwrap_err().to_string().starts_with("Профиль папки изменился")),
+                "current" => {
+                    let settings = result.unwrap();
+                    assert_eq!(settings.local_model, "updated-global-local");
+                    assert_eq!(settings.cloud_model, "folder-cloud-model");
+                    assert_eq!(settings.cloud_provider, "chatgpt");
+                    assert_eq!(settings.cloud_reasoning, "auto");
+                    assert_eq!(settings.chat_gpt_account_id, "synthetic-folder-account");
+                    assert!(settings.features.assistant);
+                    assert!(!settings.features.cards);
+                },
+                expected => panic!("Unexpected synthetic expectation: {expected}"),
+            }
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        // Legacy sparse settings model an installation predating newly added
+        // fields. Both capture and inference must normalize the same defaults.
+        atomic_json(&root.path().join("settings.json"), &json!({"localModel":"previous-local","features":{"assistant":true}})).unwrap();
+        profile_folder(root.path(), "work", json!({"mode":"cloud","cloudProvider":"chatgpt","cloudModel":"folder-cloud-model",
+            "chatGPTAccountID":"synthetic-folder-account","features":{"cards":false}}));
+        let scope = json!({"folderID":"work"});
+        let previous_profile = profile_for_input(root.path(), &scope).unwrap();
+        let previous_settings = settings_for_input(root.path(), &scope).unwrap();
+        let mut unsaved_settings = previous_settings.clone();
+        unsaved_settings.local_model = "updated-global-local".into();
+        unsaved_settings.cloud_reasoning = "auto".into();
+        let run = |captured: &Settings, profile: &crate::folders::ProfileSnapshot, expected: &str| {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact","ai::tests::legacy_mixed_settings_fail_closed_and_fresh_profiles_use_updated_folder_inheritance","--nocapture"])
+                .env(CHILD,root.path()).env("POSLE_TEST_PROFILE_EXPECT",expected)
+                .env("POSLE_JOB_SETTINGS",serde_json::to_string(captured).unwrap())
+                .env("POSLE_JOB_FOLDER_PROFILE",serde_json::to_string(profile).unwrap()).output().unwrap();
+            assert!(output.status.success(),"{expected}: {}\n{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+        };
+        // Before 507d666, Swift captured unsaved memory while Rust fingerprinted
+        // the previous file. The guard must continue rejecting those old jobs.
+        run(&unsaved_settings, &previous_profile, "mismatch");
+        let mut committed = read(&root.path().join("settings.json")).unwrap();
+        committed["localModel"] = json!("updated-global-local");
+        committed["cloudReasoning"] = json!("auto");
+        atomic_json(&root.path().join("settings.json"), &committed).unwrap();
+        let current_profile = profile_for_input(root.path(), &scope).unwrap();
+        let current_settings = settings_for_input(root.path(), &scope).unwrap();
+        run(&current_settings, &current_profile, "current");
+        // Merely retrying a saved operation cannot migrate its old route.
+        run(&previous_settings, &previous_profile, "changed");
+        // A forged/current fingerprint does not authorize old model settings.
+        run(&previous_settings, &current_profile, "mismatch");
+    }
+
+    #[test]
     fn regenerated_cards_keep_edits_suspension_and_deletions_without_false_evidence() {
         let edited=json!({"id":"same","kind":"phrase","front":"corrected phrase","back":"my answer","context":"Original source.","segmentIDs":[7],"editedAt":1,"suspended":true});
         let manual=json!({"id":"manual","kind":"concept","front":"My question","back":"My answer","context":"","segmentIDs":[],"editedAt":2});

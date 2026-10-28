@@ -149,6 +149,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-recording-start") {
+            Task {
+                do { try await RecordingStartNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Recording start check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-recording-sessions") {
             Task {
                 do { try await RecordingSessionNativeChecks.run(); NSApp.terminate(nil) }

@@ -79,7 +79,7 @@ enum CaptureWriterNativeChecks {
         print("PASS: capture without video frames fails explicitly while finalizing recoverable original audio")
 
         for (code, expected, forbidden) in [
-            (-3801, "Разрешите доступ", "не нашла доступный экран"),
+            (-3801, "подтвердите выбор", "не нашла доступный экран"),
             (-3814, "не нашла доступный экран", "Разрешите доступ"),
             (-3806, "потеряла подключение", "Разрешите доступ"),
             (-3811, "получить доступные экраны", "Разрешите доступ")
@@ -91,7 +91,15 @@ enum CaptureWriterNativeChecks {
                        && message.contains("код \(code)") && !message.contains("private-window-title"),
                        "ScreenCaptureKit error classification discarded the code or exposed raw diagnostics")
         }
-        print("PASS: recording permission, display, application-context and internal errors keep distinct safe diagnostics")
+        let userStopped = MeetingRecorder.captureFailure(NSError(domain: SCStreamErrorDomain,
+            code: SCStreamError.Code.userStopped.rawValue, userInfo: [NSLocalizedDescriptionKey: "private-window-title"]),
+            sessionID: "synthetic-session")
+        let denied = MeetingRecorder.captureFailure(NSError(domain: SCStreamErrorDomain,
+            code: SCStreamError.Code.userDeclined.rawValue), sessionID: "synthetic-session")
+        try expect(userStopped.userInitiated && !denied.userInitiated &&
+                   userStopped.sessionID == "synthetic-session" && !userStopped.message.contains("private-window-title"),
+                   "macOS user Stop must preserve session identity and be distinct from permission failure")
+        print("PASS: recording permission, display, application-context and internal errors keep distinct safe diagnostics; macOS Stop is user-initiated")
     }
 
     private static func feed(_ sink: CaptureSink, frameChanges: [Int: UInt8], inactiveStatus: SCFrameStatus, audioBuffers: Int = 100) async throws {
