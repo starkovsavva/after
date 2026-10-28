@@ -82,6 +82,11 @@ enum FeatureUINativeChecks {
         try await settle(cards) { app.selected?.generateCards == false }
         let disabledMeeting: Meeting? = app.read(directory.appendingPathComponent("meta.json"))
         try expect(disabledMeeting?.generateCards == false, "Turning card generation off persists for this meeting")
+        try press(cards, "summary-inherit-cards")
+        try await settle(cards) { app.selected?.generateCards == nil }
+        let inheritedMeeting: Meeting? = app.read(directory.appendingPathComponent("meta.json"))
+        try expect(inheritedMeeting?.generateCards == nil && !app.generatesCards(for: inheritedMeeting!),
+                   "Native reset must persist inheritance rather than copying the current default")
         app.settings.features.cards = false; app.saveSettings()
         try await settle(cards) { !ids(cards).contains("summary-generate-cards") }
         print("PASS: production per-meeting card switch defaults off, persists on/off and hides with global cards")

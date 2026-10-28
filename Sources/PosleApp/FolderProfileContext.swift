@@ -44,10 +44,17 @@ extension AppStore {
         let data = try RustBridge.shared.get().request(root: root, command: "profile-resolve", arguments: arguments)
         return (try JSONDecoder().decode(ResolvedFolderProfile.self, from: data), data)
     }
+    func inheritedCardGeneration(for meetingID: String) -> Bool {
+        notes.folder(for: meetingID)?.overrides.generateCards ?? false
+    }
+    func cardGenerationInheritanceTitle(for meetingID: String) -> String {
+        let source = folderID(for: meetingID) == nil ? "По умолчанию" : "Как в папке"
+        return source + (inheritedCardGeneration(for: meetingID) ? " · создавать" : " · не создавать")
+    }
     func generatesCards(for meeting: Meeting) -> Bool {
         guard effectiveSettings(for: meeting.id).features.cards else { return false }
         if let override = meeting.generateCards { return override }
-        return folderID(for: meeting.id).flatMap { id in notes.workspace.folders.first { $0.id == id }?.overrides.generateCards } ?? false
+        return inheritedCardGeneration(for: meeting.id)
     }
     func showFolderSettings(_ id: String) {
         NotificationCenter.default.post(name: Notification.Name("PosleEditFolder"), object: id)

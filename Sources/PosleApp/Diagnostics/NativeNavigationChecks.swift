@@ -107,7 +107,8 @@ enum NativeNavigationChecks {
         try await Task.sleep(for: .milliseconds(80))
         try expect(!store.searching && store.searchHits.isEmpty, "Closed search does not accept an in-flight result")
         print("PASS: asynchronous query generation and closed-search lifetime guards")
-        print("6 native navigation checks passed")
+        try await ImportFolderNativeChecks.run(store: store)
+        print("9 native navigation checks passed")
     }
     private static func isDisposableRoot(_ path: String) -> Bool {
         let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()

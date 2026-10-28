@@ -135,11 +135,13 @@ struct FolderSettingsView: View {
             inheritedText("Стиль конспекта", field: \.focus, placeholder: inherited.focus, height: 90)
             inheritedText("Контекст обо мне", field: \.summaryUserContext, placeholder: inherited.summaryUserContext, height: 80)
             Picker("Генерация карточек", selection: boolBinding(\.generateCards)) {
-                Text("Выбирать для каждой встречи").tag("inherit")
+                Text("Не создавать без выбора во встрече").tag("inherit")
                 Text("По умолчанию включена").tag("on")
                 Text("По умолчанию выключена").tag("off")
             }.accessibilityIdentifier("folder.generateCards")
-            Text("Выбор в самой встрече имеет приоритет. Карточки создаются, когда эта возможность включена для папки.")
+            Text(effective.features.cards
+                 ? "Действует для новых и существующих встреч этой папки. Выбор в меню конкретной встречи имеет приоритет; сохранённые карточки остаются на месте."
+                 : "Карточки выключены для папки. Включите их в разделе «Возможности», чтобы создавать автоматически.")
                 .font(AppTypography.caption).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
         }.disabled(locked)
     }

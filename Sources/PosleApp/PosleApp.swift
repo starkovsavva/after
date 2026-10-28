@@ -61,6 +61,12 @@ struct PosleApp: App {
             CommandGroup(replacing: .help) {
                 Button("Начало работы с После") { GuidanceController.shared.presentGettingStarted() }
                 Button("Что нового") { GuidanceController.shared.presentWhatsNew() }
+                Divider()
+                Button {
+                    let settings = store.librarySection == "meetings" ? store.effectiveSettings(for: store.selection, folderID: store.folderSelection) : store.activeSettings
+                    let failure = store.jobs.jobs.filter { ["failed", "interrupted"].contains($0.state) }.max { $0.updatedAt < $1.updatedAt }
+                    BugReportController.shared.present(settings: settings, lastFailure: failure)
+                } label: { Label("Сообщить об ошибке…", systemImage: "ladybug") }
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Настройки…") { store.openSettings() }.keyboardShortcut(",")
@@ -169,6 +175,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 do { try await ResponsivenessNativeChecks.run(); NSApp.terminate(nil) }
                 catch { fputs("Native responsiveness failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-bug-report") {
+            Task { @MainActor in
+                do { try await BugReportNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native bug report failed: \(error)\n", stderr); exit(1) }
             }
             return
         }

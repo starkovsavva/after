@@ -3,11 +3,26 @@ import Foundation
 import IOKit.pwr_mgt
 import PosleCore
 
+/// Destination and per-meeting choices are captured before audio checks or permission sheets.
+/// A nil folder explicitly means the base library, even if sidebar selection changes.
+struct RecordingDestination: Equatable {
+    var folderID: String?
+    var generateCards: Bool? = nil
+}
+
 extension AppStore {
     func startRecording(systemAudio: Bool, video: Bool = false, title: String) async {
+        await startRecording(systemAudio: systemAudio, video: video, title: title,
+                             destination: RecordingDestination(folderID: folderSelection))
+    }
+    func startRecording(systemAudio: Bool, video: Bool = false, title: String, destination: RecordingDestination) async {
         guard !isTerminating, !startingRecording, !isRecording else { return }
         guard ![.authorizing, .capturing].contains(voice.phase) else {
             error = "Завершите диктовку поручения перед записью встречи."
+            return
+        }
+        if let folderID = destination.folderID, notes.folder(folderID) == nil {
+            error = "Папка удалена. Выберите другую папку перед записью."
             return
         }
         startingRecording = true
@@ -34,7 +49,8 @@ extension AppStore {
         meeting.recordingAudioQuality = audioQuality.rawValue
         meeting.recordingVideoQuality = video ? videoQuality.rawValue : nil
         meeting.recordingDisplayUUID = selectedDisplay?.persistentID
-        let destinationFolderID = folderSelection
+        meeting.generateCards = destination.generateCards
+        let destinationFolderID = destination.folderID
         let directory = meetingDirectory(meeting.id)
         // Capture is independent of model preparation and generation.
         do {
@@ -52,6 +68,8 @@ extension AppStore {
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
                                        IOPMAssertionLevel(kIOPMAssertionLevelOn), "После записывает встречу" as CFString, &recordingAssertion)
             jobs.setRecording(true)
+            // Start already opens this meeting; its sidebar must describe the same destination.
+            folderSelection = notes.context(for: meeting.id).folderID; libraryFilter = ""
             reloadLibrary(); librarySection = "meetings"; selection = meeting.id; tab = "notes"; loadSelection(); applyDefaultNoteTemplate(to: meeting.id); showingRecord = false
         } catch {
             try? await recorder.stop()

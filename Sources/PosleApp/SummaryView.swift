@@ -293,15 +293,15 @@ struct MeetingCardGenerationToggle: View {
     @EnvironmentObject private var store: AppStore
     var body: some View {
         if store.effectiveSettings(for: store.selection).features.cards {
-            Toggle("Создавать карточки для этой встречи", isOn: Binding(get: {
+            Toggle("Создавать карточки при обновлении конспекта", isOn: Binding(get: {
                 store.selected.map { store.generatesCards(for: $0) } ?? false
             }, set: { enabled in
                 if let id = store.selection { store.updateMeeting(id) { $0.generateCards = enabled } }
             }))
             .font(AppTypography.control)
             .accessibilityIdentifier("summary-generate-cards")
-            if let meeting = store.selected, meeting.generateCards != nil, store.folderID(for: meeting.id) != nil {
-                Button("Как в папке") { store.updateMeeting(meeting.id) { $0.generateCards = nil } }
+            if let meeting = store.selected, meeting.generateCards != nil {
+                Button(store.cardGenerationInheritanceTitle(for: meeting.id)) { store.updateMeeting(meeting.id) { $0.generateCards = nil } }
                     .font(AppTypography.caption).accessibilityIdentifier("summary-inherit-cards")
             }
         }

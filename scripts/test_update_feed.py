@@ -5,6 +5,7 @@ No GitHub writes, production Keychain reads, microphone or personal files.
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -121,6 +122,51 @@ class FeedTests(unittest.TestCase):
         with mock.patch.object(u.subprocess, "run", return_value=response) as command:
             u.GitHub(REPO, "gh").guard_visibility()
         self.assertEqual(command.call_args.args[0], ["gh", "api", "--method", "GET", "repos/" + REPO])
+
+    def test_release_redirects_reject_untrusted_transport_credentials_and_hosts(self):
+        request = u.urllib.request.Request(u.asset_url(REPO, "v0.8.0", u.ZIP))
+        handler = u._HTTPSRedirect()
+        for target in ("http://github.com/file.zip", "https://example.com/file.zip",
+                       "https://github.com.example.com/file.zip", "https://objects.githubusercontent.com.example.com/file.zip",
+                       "https://user:password@github.com/file.zip", "ftp://github.com/file.zip", "file:///tmp/file.zip",
+                       "//example.com/file.zip"):
+            with self.subTest(target=target), self.assertRaisesRegex(RuntimeError, "unexpected release download redirect"):
+                handler.redirect_request(request, None, 302, "Found", {}, target)
+        for target in ("https://github.com/file.zip", "https://release-assets.githubusercontent.com/file.zip",
+                       "https://objects.githubusercontent.com/file.zip"):
+            with self.subTest(target=target):
+                redirected = handler.redirect_request(request, None, 302, "Found", {}, target)
+                self.assertIsNotNone(redirected)
+
+    def test_anonymous_download_rejects_incomplete_oversize_and_non_200_responses(self):
+        class Response(io.BytesIO):
+            def __init__(self, content, status=200):
+                super().__init__(content)
+                self.status = status
+        destination = Path(self.temporary.name) / "download.zip"
+        url = u.asset_url(REPO, "v0.8.0", u.ZIP)
+        for body, expected_size, status, message in ((b"short", 6, 200, "truncated"),
+                                                    (b"too long", 4, 200, "larger than expected"),
+                                                    (b"exact", 5, 206, "HTTP 200")):
+            opener = mock.Mock()
+            opener.open.return_value = Response(body, status)
+            with self.subTest(body=body, status=status), mock.patch.object(u.urllib.request, "build_opener", return_value=opener), \
+                 self.assertRaisesRegex(RuntimeError, message):
+                u.anonymous_download(url, destination, expected_size)
+        opener = mock.Mock()
+        opener.open.return_value = Response(b"exact")
+        with mock.patch.object(u.urllib.request, "build_opener", return_value=opener) as build:
+            u.anonymous_download(url, destination, 5)
+        self.assertEqual(destination.read_bytes(), b"exact")
+        self.assertEqual(build.call_args.args[0].proxies, {})
+        self.assertIsInstance(build.call_args.args[1], u._HTTPSRedirect)
+        headers = {name.casefold(): value for name, value in opener.open.call_args.args[0].header_items()}
+        self.assertFalse(set(headers) & {"authorization", "cookie", "proxy-authorization"})
+        for size in (0, -1, 1024 ** 3 + 1):
+            with self.subTest(size=size), mock.patch.object(u.urllib.request, "build_opener") as build:
+                with self.assertRaisesRegex(RuntimeError, "asset size"):
+                    u.anonymous_download(url, destination, size)
+                build.assert_not_called()
 
     def test_identity_requires_signed_head_provenance(self):
         self.assertEqual(u.identity(info(), REPO, REVISION).build, 9)

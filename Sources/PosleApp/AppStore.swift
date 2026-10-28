@@ -197,6 +197,7 @@ final class AppStore: ObservableObject {
         calendar.taskIsEnabled = { [weak self] task in self?.settingsForTask(task).features.tasks == true }
         calendar.bindNotes(notes)
         voice.connect(self)
+        jobs.reopenVoiceCommand = { [weak self] job in self?.voice.reopenFailedCommand(job) }
         jobsSubscription = jobs.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
         if let executor { jobs.connect(executor) }
         else {
@@ -425,10 +426,13 @@ final class AppStore: ObservableObject {
                 }.value
                 let meeting = try JSONDecoder().decode(Meeting.self, from: data)
                 busy = false
-                if let destinationFolderID, !notes.assignMeetingFolder(meeting.id, folderID: destinationFolderID) {
-                    reloadLibrary(); error = "Запись сохранена без папки. Выберите папку перед обработкой."; return
-                }
-                reloadLibrary(); librarySection = "meetings"; selection = meeting.id; tab = "transcript"; loadSelection(); applyDefaultNoteTemplate(to: meeting.id)
+                let assigned = destinationFolderID.map { notes.assignMeetingFolder(meeting.id, folderID: $0) } ?? true
+                // The destination was chosen before the asynchronous copy. Open
+                // that saved meeting even if the sidebar or its folder changed.
+                folderSelection = notes.context(for: meeting.id).folderID; libraryFilter = ""
+                reloadLibrary(); librarySection = "meetings"; selection = meeting.id; tab = "transcript"; loadSelection()
+                guard assigned else { error = "Запись сохранена без папки. Выберите папку перед обработкой."; return }
+                applyDefaultNoteTemplate(to: meeting.id)
                 if runtimeReady { await processMeeting(meeting.id) }
                 else { notice = "Запись сохранена. Установите модели один раз, чтобы начать распознавание."; showingSettings = true }
             } catch { busy = false; self.error = error.localizedDescription }

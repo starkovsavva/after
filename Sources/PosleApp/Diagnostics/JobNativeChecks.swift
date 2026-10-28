@@ -80,11 +80,19 @@ enum JobNativeChecks {
         store.selection = second.id; store.loadSelection(); store.tab = "notes"
         store.summarizeSelected()
         try expect(!store.busy && store.selection == second.id && store.tab == "notes", "A second meeting must remain navigable while generation is queued")
-        try await waitUntil { store.jobs.activeCount == 2 }
+        // activeCount includes pending submitters before SQLite admission has
+        // published its rows on MainActor. Await the actual persisted targets,
+        // not that earlier activity reservation.
+        try await waitUntil {
+            store.jobs.jobs.contains { $0.kind == "example" && $0.objectID == first.id && $0.state == "queued" }
+                && store.jobs.jobs.contains { $0.kind == "summarize" && $0.objectID == second.id && $0.state == "queued" }
+                && store.jobs.activeCount == 2
+        }
         guard let exampleJob = store.jobs.jobs.first(where: { $0.kind == "example" && $0.objectID == first.id }),
               let summaryJob = store.jobs.jobs.first(where: { $0.kind == "summarize" && $0.objectID == second.id }) else {
             throw AppError.message("Two distinct queued generation attempts required")
         }
+        try expect(exampleJob.id != summaryJob.id, "Distinct meeting operations must retain independent durable identities")
         store.jobs.cancel(exampleJob.id)
         try await waitUntil { store.jobs.jobs.contains { $0.id == exampleJob.id && $0.state == "cancelled" } }
         try expect(store.jobs.jobs.contains { $0.id == summaryJob.id && $0.active }, "Cancelling one meeting's example must leave the other meeting's summary queued")

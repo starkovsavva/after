@@ -175,9 +175,9 @@ struct CardsWorkspaceView: View {
             } else if !hasContent {
                 Text("Карточек пока нет").font(AppTypography.heading)
                 if embedded, scopeMeeting?.libraryKind != "cards" {
-                    Text(scopeMeeting?.generateCards == true
+                    Text(scopeMeeting.map { app.generatesCards(for: $0) } == true
                          ? "Создайте карточку вручную или обновите конспект: генерация для этой встречи включена."
-                         : "Создайте карточку вручную. Для генерации откройте «Конспект → Контекст встречи» и включите «Создавать карточки для этой встречи».")
+                         : "Создайте карточку вручную. Для генерации откройте меню встречи → «Автосоздание карточек».")
                         .font(AppTypography.body).foregroundStyle(.secondary)
                 } else {
                     Text("Сохраняйте фразы и понятия из встреч и повторяйте их здесь.").font(AppTypography.body).foregroundStyle(.secondary)

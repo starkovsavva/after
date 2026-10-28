@@ -52,8 +52,15 @@ enum VoiceNativeChecks {
         try await waitUntil { FileManager.default.fileExists(atPath: portFile.path) || !server.isRunning }
         let port = try String(contentsOf: portFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         store.settings.mode = "local"; store.settings.localProvider = "lmstudio"
+        store.settings.localModel = "previous-model"; store.settings.cloudReasoning = "none"
+        try expect(store.saveSettings(), "Initial settings fixture could not be saved")
+        // Model catalog/account callbacks can change memory after the previous
+        // Settings save. Use real inference only on the disposable loopback
+        // server; inactive ChatGPT fields are non-secret identity canaries.
         store.settings.localModel = "voice-fixture"; store.settings.localEndpoint = "http://127.0.0.1:\(port)"
-        store.saveSettings()
+        store.settings.cloudProvider = "chatgpt"; store.settings.cloudModel = "gpt-6-luna"
+        store.settings.chatGPTAccountID = "synthetic-profile-account"; store.settings.cloudReasoning = "auto"
+        store.settings.focus = "Synthetic unsaved model profile"
         let voice = store.voice
         func fixture(_ action: String, text: String = "", title: String = "", query: String = "", due: String = "", setDue: Bool = false, cards: [[String: String]] = [], delay: Double = 0) throws {
             let proposal: [String: Any] = ["action": action, "text": text, "title": title, "query": query,
@@ -78,6 +85,30 @@ enum VoiceNativeChecks {
         func prepare(_ text: String, taskID: String? = nil) {
             voice.dismiss(); voice.reset(); voice.present(taskID: taskID, title: "Выбранная задача"); voice.text = text
         }
+        try fixture("unsupported", text: "Synthetic save failure must not reach inference")
+        prepare("Проверка сохранения профиля")
+        let settingsURL = root.appendingPathComponent("settings.json")
+        let preservedSettings = root.appendingPathComponent("settings-before-failure.json")
+        try FileManager.default.moveItem(at: settingsURL, to: preservedSettings)
+        try FileManager.default.createDirectory(at: settingsURL, withIntermediateDirectories: false)
+        let countBeforeSaveFailure = store.jobs.jobs.count
+        voice.perform(); try await waitUntil { !voice.isWorking }
+        try expect(voice.phase == .editing && voice.text == "Проверка сохранения профиля" && voice.message != nil,
+                   "A settings write failure must retain the command and surface an actionable error")
+        let unsavedCommand = try JSONSerialization.data(withJSONObject: ["text": "Проверка сохранения профиля", "folderID": NSNull()])
+        do {
+            _ = try await store.queuedWorker("voice-plan", id: nil, extra: [], input: unsavedCommand)
+            throw AppError.message("An unwritable settings snapshot unexpectedly entered the queue")
+        } catch {
+            try expect(error.localizedDescription != "An unwritable settings snapshot unexpectedly entered the queue",
+                       "The actual queuedWorker settings write must fail before durable admission")
+        }
+        try expect(store.jobs.jobs.count == countBeforeSaveFailure && !FileManager.default.fileExists(atPath: root.appendingPathComponent("fixture-request.json").path),
+                   "A settings write failure must not enqueue or start a provider request")
+        try FileManager.default.removeItem(at: settingsURL)
+        try FileManager.default.moveItem(at: preservedSettings, to: settingsURL)
+        print("PASS: durable settings failure keeps voice input and stops before queue admission or inference")
+
         try fixture("createNote", text: "Для пилота нужен доступ к тестовому стенду.", title: "Доступ к стенду", delay: 0.4)
         prepare("Создай заметку про доступ к стенду")
         voice.perform(); voice.perform()
@@ -108,6 +139,96 @@ enum VoiceNativeChecks {
         voice.openResult()
         try expect(store.notes.selectedNoteID == noteID && store.librarySection == "inbox", "Result opens exact note")
         print("PASS: native voice stdin pipeline creates one note and opens its exact destination")
+
+        let persistedSettings = try JSONDecoder().decode(AppSettings.self, from: Data(contentsOf: settingsURL))
+        try expect(persistedSettings.localModel == "voice-fixture" && persistedSettings.cloudModel == "gpt-6-luna"
+            && persistedSettings.cloudReasoning == "auto" && persistedSettings.chatGPTAccountID == "synthetic-profile-account",
+            "The real worker must use one committed model/account/reasoning snapshot instead of mixing memory with previous Settings")
+        print("PASS: unsaved model, account and reasoning changes cross the real Swift queue and Rust worker without a profile mismatch")
+
+        // Change a profile through the actual bridge without refreshing the
+        // native cache, as an MCP/import operation can do between view updates.
+        var profileOverrides = FolderOverrides()
+        profileOverrides.mode = "local"; profileOverrides.localProvider = "lmstudio"
+        profileOverrides.localEndpoint = "http://127.0.0.1:\(port)"; profileOverrides.localModel = "stale-cache-model"
+        guard let staleFolder = store.notes.saveFolder(LibraryFolder(name: "Worker profile fixture", overrides: profileOverrides)) else {
+            throw AppError.message("Folder profile fixture could not be saved")
+        }
+        var currentFolder = staleFolder; currentFolder.overrides.localModel = "voice-fixture"
+        let folderValue = try JSONSerialization.jsonObject(with: JSONEncoder().encode(currentFolder))
+        _ = try RustBridge.shared.get().request(root: root, command: "folder-save", arguments: ["folder": folderValue])
+        try expect(store.notes.workspace.folders.first { $0.id == staleFolder.id }?.overrides.localModel == "stale-cache-model", "Fixture must retain the stale UI cache")
+        store.folderSelection = staleFolder.id; store.librarySection = "meetings"; store.selection = nil
+        try fixture("unsupported", text: "Canonical profile reached the loopback worker")
+        prepare("Проверка актуального профиля папки")
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        try expect(voice.message == "Canonical profile reached the loopback worker", "A fresh folder profile must override its stale UI model cache: \(voice.message ?? "")")
+        let modelRequest = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("fixture-request.json"))) as! [String: Any]
+        try expect(modelRequest["model"] as? String == "voice-fixture", "Rust must call the committed folder model, never the stale UI-cache model")
+        store.folderSelection = nil; store.librarySection = "inbox"; store.notes.selectedNoteID = noteID
+        print("PASS: real Rust inference uses committed folder overrides while the native view still has an older model")
+
+        // A task created by another native/MCP client is not necessarily in
+        // task-list yet. Its committed source must still select the right model.
+        var uncachedTask = CapturedNote(text: "Temporary source for canonical task routing", kind: "task")
+        uncachedTask.folderID = staleFolder.id
+        let uncachedValue = try JSONSerialization.jsonObject(with: JSONEncoder().encode(uncachedTask))
+        let savedTaskData = try RustBridge.shared.get().request(root: root, command: "note-save", arguments: ["note": uncachedValue])
+        let savedUncachedTask = try JSONDecoder().decode(CapturedNote.self, from: savedTaskData)
+        let uncachedTaskID = "manual:" + savedUncachedTask.id
+        try expect(!store.notes.tasks.contains { $0.id == uncachedTaskID }, "The task-routing fixture must be absent from the UI cache")
+        store.settings.localModel = "unavailable-base-model"; store.librarySection = "tasks"
+        try fixture("unsupported", text: "Uncached task reached its canonical folder model")
+        prepare("Проверка поручения для новой задачи", taskID: uncachedTaskID)
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        try expect(voice.message == "Uncached task reached its canonical folder model", "A newly created uncached task must use its committed folder/provider: \(voice.message ?? "")")
+        let summaryScopeInput = try JSONSerialization.data(withJSONObject: ["taskID": "summary:synthetic-meeting:7", "folderID": staleFolder.id])
+        let summaryScope = try store.jobProfileScope(meetingID: nil, extra: [], input: summaryScopeInput, refresh: true)
+        try expect(summaryScope.meetingID == "synthetic-meeting" && summaryScope.folderID == nil, "Summary-task source membership must win over a stale sidebar folder even without a cached task row")
+        _ = try RustBridge.shared.get().request(root: root, command: "note-delete", arguments: ["id": savedUncachedTask.id, "revision": savedUncachedTask.revision])
+        store.settings.localModel = "voice-fixture"; try expect(store.saveSettings(), "Restoring fixture model failed")
+        store.librarySection = "inbox"; store.notes.selectedNoteID = noteID
+        print("PASS: uncached manual tasks use committed folder inference and summary tasks keep their canonical source meeting")
+
+        // Reproduce an already-durable pre-fix snapshot: its profile is current,
+        // but its model came from different in-memory settings. Keep strict Rust
+        // validation and prove explicit reopening creates a fresh operation.
+        let staleText = "Открой исходное поручение с новым профилем"
+        let staleInput = try JSONSerialization.data(withJSONObject: ["text": staleText, "folderID": NSNull(), "now": 1], options: [.sortedKeys])
+        let (_, currentProfile) = try store.folderProfile()
+        var mismatchedSettings = store.settings; mismatchedSettings.localModel = "wrong-frozen-model"
+        let staleConfig = JobConfiguration(command: "voice-plan", extra: [], input: staleInput, settings: mismatchedSettings, folderProfile: currentProfile)
+        do {
+            let originalRevision = try store.jobInputRevision(command: "voice-plan", meetingID: nil, input: staleInput)
+            _ = try await store.jobs.submit(staleConfig, resource: "local-heavy", revision: originalRevision, title: "Synthetic stale voice profile", paid: false)
+            throw AppError.message("A mismatched frozen provider unexpectedly ran")
+        } catch {
+            try expect(error.localizedDescription.contains("Настройки модели не совпадают"), "The original Rust profile guard must remain effective: \(error.localizedDescription)")
+        }
+        try await waitUntil { store.jobs.jobs.contains { $0.title == "Synthetic stale voice profile" && $0.state == "failed" } }
+        guard let failed = store.jobs.jobs.first(where: { $0.title == "Synthetic stale voice profile" }) else { throw AppError.message("Historical profile failure missing") }
+        try expect(failed.canReopenVoiceCommand, "A frozen profile failure must offer explicit reopening")
+        prepare("Несохранённое другое поручение")
+        store.jobs.retry(failed)
+        try expect(voice.text == "Несохранённое другое поручение" && voice.message?.contains("Сначала завершите") == true,
+                   "Opening a historical command must preserve an unrelated active draft")
+        voice.reset(); voice.dismiss()
+        let jobsBeforeReopen = store.jobs.jobs.count
+        store.jobs.retry(failed)
+        try expect(voice.isPresented && voice.phase == .editing && voice.text == staleText && !voice.isWorking
+            && store.jobs.jobs.count == jobsBeforeReopen, "Reopening must restore the original text without issuing a request")
+        let restored = VoiceCommandController(); restored.connect(store)
+        try expect(restored.text == staleText, "The reopened draft must survive a controller restart")
+        try fixture("unsupported", text: "Fresh profile succeeded")
+        voice.perform(); try await waitUntil { !voice.isWorking && !store.busy }
+        try expect(voice.message == "Fresh profile succeeded", "The explicit fresh run must replace the old mismatch with its own current result: \(voice.message ?? "")")
+        try await waitUntil { store.jobs.jobs.contains { $0.config.restartOfJobID == failed.id && $0.state == "succeeded" } }
+        let history = store.jobs.jobs
+        try expect(history.first { $0.id == failed.id }?.state == "failed" && !store.jobs.latestAttemptIDs.contains(failed.id), "A fresh success must retain the old failed record as history and clear its unresolved-error badge")
+        let fresh = history.first { $0.config.restartOfJobID == failed.id }!
+        let providerInput = try JSONSerialization.jsonObject(with: fresh.config.input!) as! [String: Any]
+        try expect(providerInput["restartOfJobID"] == nil && fresh.config.settings.localModel == "voice-fixture", "Restart metadata must stay out of the provider input and never reuse the old model")
+        print("PASS: strict frozen-profile rejection, draft-safe reopening and explicit fresh execution preserve history without stale error badges")
 
         try fixture("appendNote", text: "Проверить права на выгрузку.")
         prepare("Дополни эту заметку: проверить права на выгрузку")
@@ -541,7 +662,7 @@ enum VoiceNativeChecks {
         try expect(reopened.voice.text == longDraft && !reopened.voice.isWorking, "Reopen must preserve full draft without truncation or microphone access")
         voice.reset(); _ = voice.flushDraft()
         print("PASS: crash recovery keeps committed operation identity; long drafts survive reopening intact")
-        print("23 native voice E2E groups passed")
+        print("30 native voice E2E groups passed")
     }
     private static func notesDraftCheck(store: AppStore) throws {
         store.notes.captureDrafts["taskappend:pending"] = "Не потерять уточнение задачи"

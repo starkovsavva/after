@@ -130,9 +130,93 @@ enum RecordingNativeChecks {
             recordHost.close()
         }
         print("PASS: 560 px native dialog fits both densities at largest text size, disables disconnected video and permits audio-only")
-        print("5 native recording checks passed")
+        try await folderProfiles(root: root)
+        print("6 native recording groups passed")
     }
 
+    private static func folderProfiles(root: URL) async throws {
+        ThemeRuntime.shared.set(ThemePalette(textSize: 14, density: "regular"))
+        let recorder = ProfileRecorder()
+        let app = AppStore(preview: true, recorder: recorder)
+        app.settings.recordVideo = false; app.saveSettings()
+        var englishOverrides = FolderOverrides()
+        englishOverrides.features = FolderFeatureOverrides(); englishOverrides.features?.cards = true
+        englishOverrides.generateCards = true; englishOverrides.language = "en"
+        englishOverrides.localModel = "English test model"; englishOverrides.mode = "local"
+        englishOverrides.focus = "Полезные фразы и домашние задания"
+        var workOverrides = FolderOverrides()
+        workOverrides.features = FolderFeatureOverrides(); workOverrides.features?.cards = false
+        workOverrides.generateCards = false; workOverrides.language = "ru"
+        workOverrides.localModel = "Work test model"; workOverrides.mode = "local"
+        guard let english = app.notes.saveFolder(LibraryFolder(name: "Английский", overrides: englishOverrides)),
+              let work = app.notes.saveFolder(LibraryFolder(name: "Рабочие синки", overrides: workOverrides)) else {
+            throw AppError.message(app.notes.error ?? "Native recording folders could not be created")
+        }
+        app.folderSelection = english.id
+        let host = NativeHost(AnyView(RecordView().environmentObject(app)), height: 720)
+        defer { host.close() }
+        try await settle(host) { node("record.processing", in: host)?.text.contains("English test model") == true }
+        try chooseFolder("Рабочие синки", in: host)
+        try await settle(host) { node("record.processing", in: host)?.text.contains("Work test model") == true }
+        try expect(node("record.processing", in: host)?.text.contains("Русский") == true,
+                   "Native folder selection did not update the inherited language")
+        try expect(try required(node("record.processing", in: host), "Processing button missing").press(), "Processing popover cannot open")
+        try await settle(host) { node("record.cardsUnavailable", in: host) != nil }
+        try expect(node("record.generateCards", in: host) == nil, "Disabled folder must explain unavailable cards instead of exposing an inert control")
+        try expect(try required(node("record.processing.done", in: host), "Processing Done missing").press(), "Processing Done cannot be pressed")
+        try await settle(host) { node("record.processing.done", in: host) == nil }
+        try chooseFolder("Английский", in: host)
+        try await settle(host) { node("record.processing", in: host)?.text.contains("English test model") == true }
+        try expect(try required(node("record.processing", in: host), "Processing button missing").press(), "Processing popover cannot open")
+        try await settle(host) { node("record.generateCards.off", in: host) != nil }
+        try expect(try required(node("record.generateCards.off", in: host), "Generation-off choice missing").press(), "Generation-off choice cannot be selected")
+        try expect(try required(node("record.processing.done", in: host), "Processing Done missing").press(), "Processing Done cannot be pressed")
+        try await settle(host) { node("record.processing.done", in: host) == nil }
+        try snapshot(host.view, root.appendingPathComponent("record-folder-profile.png"))
+        try expect(try required(node("record.start", in: host), "Record Start missing").press(), "Native Record Start cannot be pressed")
+        try await settle(host) { app.isRecording }
+        guard let id = app.captureMeetingID, let meeting = app.meetings.first(where: { $0.id == id }) else {
+            throw AppError.message("Native start did not persist a meeting")
+        }
+        try expect(app.folderID(for: id) == english.id && app.folderSelection == english.id
+                   && app.filteredMeetings.contains(where: { $0.id == id }) && meeting.generateCards == false && !app.generatesCards(for: meeting),
+                   "Native Record Start ignored the selected folder or per-meeting card choice")
+        await app.stopRecording(finalize: false)
+        let reopened = AppStore(preview: true)
+        try expect(reopened.folderID(for: id) == english.id && reopened.meetings.first(where: { $0.id == id })?.generateCards == false,
+                   "Native recording choices failed to survive reopen")
+        try expect(recorder.startCount == 1 && !recorder.active && !app.busy,
+                   "Native recording profile flow started unrelated work or failed to stop injected capture")
+        print("PASS: actual recording controls select independent folder profiles, explain disabled cards and persist per-meeting override through native Start/reopen")
+    }
+    private static func chooseFolder(_ title: String, in host: NativeHost) throws {
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        guard let popup = descendants(host.view).compactMap({ $0 as? NSPopUpButton }).first(where: { $0.itemTitles.contains(title) }) else {
+            throw AppError.message("Native recording folder popup missing")
+        }
+        popup.selectItem(withTitle: title)
+        guard let menu = popup.menu, popup.indexOfSelectedItem >= 0 else { throw AppError.message("Native recording folder menu missing") }
+        // SwiftUI PickerOptionTarget belongs to the selected menu item.
+        menu.performActionForItem(at: popup.indexOfSelectedItem)
+    }
+    private static func snapshot(_ view: NSView, _ url: URL) throws {
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw AppError.message("Recording snapshot missing") }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { throw AppError.message("Recording PNG missing") }
+        try data.write(to: url)
+    }
+    private final class ProfileRecorder: MeetingRecordingBackend, @unchecked Sendable {
+        var failed: (@Sendable (RecordingFailure) -> Void)?
+        var levels: (@Sendable (Double?, Double?) -> Void)?
+        private(set) var active = false
+        private(set) var startCount = 0
+        func start(url: URL, systemAudio: Bool, video: Bool, videoQuality: RecordingVideoQuality,
+                   audioQuality: RecordingAudioQuality, displayID: UInt32?, expectedDisplayUUID: String?) async throws {
+            try Data("synthetic native capture".utf8).write(to: url, options: .atomic)
+            active = true; startCount += 1
+        }
+        func stop() async throws { active = false }
+    }
     @MainActor private final class OptionState: ObservableObject {
         @Published var audioQuality: RecordingAudioQuality = .standard
         @Published var video = false
@@ -151,7 +235,7 @@ enum RecordingNativeChecks {
         let view: NSHostingView<AnyView>
         let window: NSWindow
         init(_ root: AnyView, height: CGFloat) {
-            view = NSHostingView(rootView: root)
+            view = NSHostingView(rootView: AnyView(root.frame(maxWidth: .infinity, maxHeight: .infinity).background(Ink.paper)))
             view.sizingOptions = []; view.frame = NSRect(x: 0, y: 0, width: 560, height: height)
             window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: height),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -161,7 +245,7 @@ enum RecordingNativeChecks {
     }
     /// Public AppKit selectors also support SwiftUI's virtual accessibility nodes,
     /// which do not declare NSAccessibilityProtocol conformance.
-    private struct AccessibilityNode {
+    @MainActor private struct AccessibilityNode {
         let object: NSObject
         private var modern: (any NSAccessibilityProtocol)? { object as? any NSAccessibilityProtocol }
         private func value(_ name: String) -> Any? {
@@ -190,6 +274,8 @@ enum RecordingNativeChecks {
             return unsafeBitCast(implementation, to: Getter.self)(object, selector)
         }
         func press() -> Bool {
+            if let cell = object as? NSButtonCell, let button = cell.controlView as? NSButton, button.isEnabled { button.performClick(nil); return true }
+            if let control = object as? NSControl, control.isEnabled { control.performClick(nil); return true }
             if let modern { return modern.accessibilityPerformPress() }
             let selector = NSSelectorFromString("accessibilityPerformPress")
             guard object.responds(to: selector), let implementation = object.method(for: selector) else { return false }
@@ -205,7 +291,15 @@ enum RecordingNativeChecks {
             for child in node.children { visit(child, depth: depth + 1) }
             if let view = object as? NSView { for child in view.subviews { visit(child, depth: depth + 1) } }
         }
-        visit(host.view, depth: 0); return result
+        visit(host.view, depth: 0)
+        func visitChildren(_ window: NSWindow) {
+            for child in window.childWindows ?? [] {
+                if let content = child.contentView { visit(content, depth: 0) }
+                visitChildren(child)
+            }
+        }
+        visitChildren(host.window)
+        return result
     }
     private static func node(_ identifier: String, in host: NativeHost) -> AccessibilityNode? {
         nodes(host).first { $0.identifier == identifier }

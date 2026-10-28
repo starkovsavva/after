@@ -20,6 +20,7 @@ import pwd
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,9 @@ from xml.sax.saxutils import escape
 
 PROJECT = Path(__file__).resolve().parent.parent
 SUCCESS_SCENARIOS = ("valid", "deferred", "late-busy")
-SCENARIOS = (*SUCCESS_SCENARIOS, "bad-archive-signature", "tampered-archive", "bad-feed-signature")
+REPLAY_SCENARIOS = ("same-build", "downgrade")
+SCENARIOS = (*SUCCESS_SCENARIOS, "bad-archive-signature", "tampered-archive", "bad-feed-signature",
+             "truncated-archive", *REPLAY_SCENARIOS)
 
 
 def run(command, *, env=None):
@@ -143,7 +146,9 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
     target = web / name
     target.mkdir()
     feed_url = f"http://127.0.0.1:{port}/{name}/feed.xml"
-    for build, destination in ((1, old), (2, new)):
+    installed_build = 3 if name == "downgrade" else 1
+    candidate_build = 1 if name == "same-build" else 2
+    for build, destination in ((installed_build, old), (candidate_build, new)):
         make_app(destination, binary, framework, identifier=identifier, build=build,
                  scenario=scenario, feed=feed_url, public=public)
     library = scenario / "library.json"
@@ -166,8 +171,8 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
     feed.write_text(f'''<?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
 <channel><title>Fixture updates</title><item><title>Fixture update</title>
-<pubDate>{date}</pubDate><sparkle:version>2</sparkle:version>
-<sparkle:shortVersionString>0.0.2</sparkle:shortVersionString>
+<pubDate>{date}</pubDate><sparkle:version>{candidate_build}</sparkle:version>
+<sparkle:shortVersionString>0.0.{candidate_build}</sparkle:shortVersionString>
 <sparkle:minimumSystemVersion>15.0.0</sparkle:minimumSystemVersion>
 <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
 <enclosure url="http://127.0.0.1:{port}/{escape(name)}/update.zip"
@@ -197,10 +202,12 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
                 observed = events(log_path)
                 if name in SUCCESS_SCENARIOS and any(e["event"] == "relaunched" for e in observed):
                     break
-                if name not in SUCCESS_SCENARIOS and any(e["event"] == "error" for e in observed) and process.poll() is not None:
+                failure_event = "not-found" if name in REPLAY_SCENARIOS else "error"
+                if name not in SUCCESS_SCENARIOS and any(e["event"] == failure_event for e in observed) and process.poll() is not None:
                     time.sleep(0.5)
                     break
-                if any(e["event"] in ("timeout", "configuration-error", "not-found") for e in observed):
+                unexpected = ("timeout", "configuration-error") if name in REPLAY_SCENARIOS else ("timeout", "configuration-error", "not-found")
+                if any(e["event"] in unexpected for e in observed):
                     raise AssertionError("Unexpected fixture result: " + json.dumps(observed[-5:]))
                 if process.poll() is not None and not observed:
                     raise AssertionError(f"Fixture exited without initializing (exit {process.returncode})")
@@ -226,14 +233,24 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
                 assert sequence.count("termination-blocked") == 1 and sequence.count("termination-retried") == 1
                 assert sequence.index("termination-blocked") < sequence.index("termination-retried") < sequence.index("terminate"), "Late-busy termination was not safely retried"
         else:
-            assert actual_version == "1" and files(old) == before, "Rejected update modified the installed fixture"
-            assert not any(e["event"] in ("ready", "relaunched") for e in observed), "Invalid update reached installation"
+            assert actual_version == str(installed_build) and files(old) == before, "Rejected update modified the installed fixture"
+            assert not any(e["event"] in ("ready", "installing", "installed", "relaunched") for e in observed), "Invalid update reached installation"
             errors = [entry for e in observed for entry in e.get("errors", [])]
-            assert any(e["domain"] == "SUSparkleErrorDomain" and e["code"] in (1000, 1002, 3001, 3002, 4005)
-                       for e in errors), "No Sparkle validation error was observed"
-            assert any("sign" in e["description"].lower() for e in errors), "Failure was not signature validation"
             requested_zip = any(path.startswith(f"/{name}/update.zip") for path in requests)
-            assert requested_zip == (name != "bad-feed-signature"), "Signed-feed rejection happened at the wrong phase"
+            if name in REPLAY_SCENARIOS:
+                assert any(e["event"] == "not-found" for e in observed), "A signed non-newer release was not rejected"
+                assert any(e["domain"] == "SUSparkleErrorDomain" and e["code"] == 1001 for e in errors), "Expected Sparkle no-update result"
+                assert not requested_zip, "A non-newer signed release must be rejected before archive download"
+                assert not any(e["event"] in ("found", "downloading", "extracting") for e in observed), "A replayed release entered the update pipeline"
+            elif name == "truncated-archive":
+                assert requested_zip, "The interrupted download scenario never requested its archive"
+                assert any(e["domain"] == "SUSparkleErrorDomain" and e["code"] == 2001 for e in errors), "The interrupted response must fail as a Sparkle download error"
+                assert not any(e["event"] == "extracting" for e in observed), "An incomplete download reached extraction"
+            else:
+                assert any(e["domain"] == "SUSparkleErrorDomain" and e["code"] in (1000, 1002, 3001, 3002, 4005)
+                           for e in errors), "No Sparkle validation error was observed"
+                assert any("sign" in e["description"].lower() for e in errors), "Failure was not signature validation"
+                assert requested_zip == (name != "bad-feed-signature"), "Signed-feed rejection happened at the wrong phase"
         assert hashlib.sha256(library.read_bytes()).digest() == library_digest, "External library was modified"
         return {"scenario": name, "passed": True, "installedBuild": actual_version,
                 "relaunched": any(e["event"] == "relaunched" for e in observed),
@@ -279,6 +296,24 @@ def main():
                 pass
             def do_GET(self):
                 requests.append(self.path)
+                if self.path == "/truncated-archive/update.zip":
+                    # Advertise the complete signed archive, then interrupt its
+                    # transport halfway through; do not substitute a new ZIP or
+                    # change its feed signature. NSURLSession must reject this
+                    # response before extraction or installation can begin.
+                    archive = web / "truncated-archive/update.zip"
+                    size = archive.stat().st_size
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(size))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    with archive.open("rb") as stream:
+                        self.wfile.write(stream.read(size // 2))
+                    self.wfile.flush()
+                    self.close_connection = True
+                    self.connection.shutdown(socket.SHUT_WR)
+                    return
                 super().do_GET()
             def end_headers(self):
                 self.send_header("Cache-Control", "no-store")

@@ -12,6 +12,7 @@ enum IntegrationNativeChecks {
         guard ProcessInfo.processInfo.arguments.contains("--preview"), let path = ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] else { throw AppError.message("Disposable preview required") }
         let root = URL(fileURLWithPath: path).resolvingSymlinksInPath()
         try expect(["/private/tmp", "/tmp"].contains(root.deletingLastPathComponent().path) && root.lastPathComponent.hasPrefix("posle-native-check-"), "Disposable root required")
+        try mcpConfigurationChecks()
         let app = AppStore(preview: true)
         let bridge = try RustBridge.shared.get()
         let empty = try JSONDecoder().decode(TrackerSyncState.self, from: bridge.request(root: root, command: "tracker-state"))
@@ -36,6 +37,33 @@ enum IntegrationNativeChecks {
         hosted.frame = NSRect(x:0,y:0,width:620,height:540); hosted.layoutSubtreeIfNeeded()
         try expect(hosted.fittingSize.height > 0, "Integration view must lay out with real persisted metadata")
         print("PASS: native integrations view lays out persisted provider configuration")
+    }
+    private static func mcpConfigurationChecks() throws {
+        // Real macOS paths can contain spaces, Unicode, quotes and backslashes.
+        // They must stay separate argv values instead of becoming a shell command.
+        let configuration = AgentMCPConfiguration(
+            executable: "/Applications/После \"личное\".app/Contents/MacOS/posle-engine",
+            root: "/private/tmp/posle-native-check-MCP/Папка \"Английский\"\\Архив"
+        )
+        for client in [AgentMCPConfiguration.Client.claude, .other] {
+            let object = try JSONSerialization.jsonObject(with: Data(configuration.text(for: client).utf8)) as! [String: Any]
+            let server: [String: Any]
+            if client == .claude {
+                let servers = object["mcpServers"] as? [String: [String: Any]]
+                try expect(servers?.count == 1 && servers?["posle"] != nil, "Claude configuration must wrap one named server")
+                server = servers!["posle"]!
+            } else { server = object }
+            try expect(server["type"] as? String == "stdio" && server["command"] as? String == configuration.executable,
+                       "MCP JSON configuration must preserve the executable path and stdio transport")
+            try expect(server["args"] as? [String] == ["mcp", "--root", configuration.root],
+                       "MCP JSON must roundtrip paths as separate arguments without shell escaping")
+            try expect(server["env"] == nil && server["url"] == nil, "Local MCP must not require credentials or a remote service")
+        }
+        let codex = configuration.text(for: .codex)
+        try expect(codex.hasPrefix("[mcp_servers.posle]\n") && !codex.contains("\\/"), "Codex needs TOML basic strings rather than JSON slash escapes")
+        try expect(codex.contains("\\\"Английский\\\"\\\\Архив") && configuration.arguments.count == 3,
+                   "Codex configuration must escape quote/backslash characters while preserving argument boundaries")
+        print("PASS: Codex TOML and Claude/generic stdio JSON preserve Unicode paths and isolated argv without credentials")
     }
     private static func optionalSearchChecks(_ app: AppStore) async throws {
         let original = app.settings.features

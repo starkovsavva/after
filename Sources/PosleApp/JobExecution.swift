@@ -8,9 +8,16 @@ extension AppStore {
 
     func queuedWorker(_ command: String, id: String?, extra: [String], input: Data?) async throws -> WorkerEvent? {
         guard !isTerminating else { throw CancellationError() }
-        let scope = try jobProfileScope(meetingID: id, extra: extra, input: input)
+        // Model/account changes can arrive from the Settings catalog after its
+        // last save. Commit this exact selection before Rust fingerprints the
+        // profile; otherwise the durable job captures memory while its profile
+        // describes the previous settings.json and every retry fails closed.
+        try write(settings, root.appendingPathComponent("settings.json"))
+        let scope = try jobProfileScope(meetingID: id, extra: extra, input: input, capturedFolderID: folderSelection, refresh: true)
         let (profile, profileData) = try folderProfile(for: scope.meetingID, folderID: scope.folderID)
-        let snapshot = effectiveSettings(for: scope.meetingID, folderID: scope.folderID)
+        // The resolved profile owns current membership/overrides. A stale view
+        // cache must not select a different model from the committed profile.
+        let snapshot = profile.overrides.apply(to: settings)
         try validateOptionalJob(command, features: snapshot.features)
         if snapshot.mode == "cloud", snapshot.cloudProvider == "chatgpt", Self.chatGPTAICommands.contains(command),
            disconnectingChatGPTAccounts.contains(snapshot.chatGPTAccountID) {
@@ -19,7 +26,8 @@ extension AppStore {
         // EventKit evidence is permission-scoped and volatile. Persist only the
         // request; each execution attempt obtains its own authorized snapshot.
         let persistedInput = try Self.persistableJobInput(command: command, input: input)
-        let configuration = JobConfiguration(command: command, meetingID: id, extra: extra, input: persistedInput, settings: snapshot, folderProfile: profileData, folderID: profile.folderID, profileMeetingID: scope.meetingID)
+        let restartOfJobID = try voiceRestartID(command: command, input: input)
+        let configuration = JobConfiguration(command: command, meetingID: id, extra: extra, input: persistedInput, settings: snapshot, folderProfile: profileData, folderID: profile.folderID, profileMeetingID: scope.meetingID, restartOfJobID: restartOfJobID)
         let speech = ["transcribe", "diarize", "finalize", "dictate"].contains(command)
         let cloud = speech ? ["transcribe", "dictate"].contains(command) && snapshot.speechMode == "cloud" : snapshot.mode == "cloud"
         let resource = ["finalize", "dictate", "diarize"].contains(command) || (command == "transcribe" && snapshot.diarization) ? "local-heavy" : cloud ? "cloud" : "local-heavy"
@@ -55,10 +63,26 @@ extension AppStore {
         guard var request = try JSONSerialization.jsonObject(with: input) as? [String: Any] else {
             throw AppError.message("Не удалось прочитать запрос голосового поручения.")
         }
+        request.removeValue(forKey: "restartOfJobID")
         request.removeValue(forKey: "calendar")
         request.removeValue(forKey: "embeddingAPIKey")
         request.removeValue(forKey: "embeddingConfigFingerprint")
         return try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
+    }
+
+    private func voiceRestartID(command: String, input: Data?) throws -> String? {
+        guard command == "voice-plan", let input,
+              let request = try JSONSerialization.jsonObject(with: input) as? [String: Any],
+              let id = request["restartOfJobID"] as? String else { return nil }
+        struct Record: Decodable { var job: BackgroundJob }
+        let data = try RustBridge.shared.get().request(root: root, command: "job-get", arguments: ["jobID": id])
+        let previous = try JSONDecoder().decode(Record.self, from: data).job
+        let source = previous.config.input.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        guard previous.canReopenVoiceCommand, let sourceText = source?["text"] as? String,
+              let text = request["text"] as? String, sourceText == text else {
+            throw AppError.message("Исходное поручение изменилось. Откройте его заново из фоновых задач.")
+        }
+        return id
     }
 
     /// AppStore is MainActor-isolated. This runs after all suspending startup
@@ -182,9 +206,19 @@ extension AppStore {
             if let folderID = note.folderID { return (nil, folderID) }
             return (note.meetingID, nil)
         }
-        if let taskID = request["taskID"] as? String, let task = notes.tasks.first(where: { $0.id == taskID }) {
-            if let id = task.noteID, let folderID = workspace.notes.first(where: { $0.id == id })?.folderID { return (nil, folderID) }
-            return (task.meetingID, nil)
+        if let taskID = request["taskID"] as? String {
+            // Match Rust FeatureResolver: task-list is a view cache and can lag
+            // a task just created/moved through MCP or an import. Stable task
+            // IDs resolve directly to committed notes or their source meeting.
+            if taskID.hasPrefix("summary:") {
+                return (String(taskID.dropFirst("summary:".count).split(separator: ":", omittingEmptySubsequences: false).first ?? ""), nil)
+            }
+            let sourceID = taskID.hasPrefix("manual:") ? String(taskID.dropFirst("manual:".count)) : taskID
+            if let note = workspace.notes.first(where: { $0.id == sourceID }) {
+                if let folderID = note.folderID { return (nil, folderID) }
+                return (note.meetingID, nil)
+            }
+            if let task = notes.tasks.first(where: { $0.id == taskID }) { return (task.meetingID, nil) }
         }
         // An explicit null is a captured base-library scope, not an invitation
         // to substitute a different sidebar folder after the command began.

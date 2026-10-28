@@ -26,7 +26,15 @@ enum BackgroundJobPresentation {
             if let previous = latest[key], !moreRecent(job, than: previous) { continue }
             latest[key] = job
         }
-        return Set(latest.values.map(\.id))
+        var current = Set(latest.values.map(\.id))
+        let indexed = Dictionary(jobs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for job in jobs {
+            guard let id = job.config.restartOfJobID, let previous = indexed[id],
+                  job.kind == "voice-plan", previous.kind == job.kind,
+                  previous.objectID == job.objectID, previous.createdAt < job.createdAt else { continue }
+            current.remove(id)
+        }
+        return current
     }
     static func needsAttention(in jobs: [BackgroundJob]) -> Bool {
         let latest = latestIDs(in: jobs)

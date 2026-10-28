@@ -75,3 +75,21 @@ struct RecordingOptionsView: View {
         }.font(AppTypography.control)
     }
 }
+
+/// A sparse per-meeting override; inheritance stays nil and follows folder changes.
+struct CardGenerationPicker: View {
+    @Binding var selection: String
+    let inherited: Bool
+    let inheritedTitle: String
+    let identifier: String
+    var body: some View {
+        Picker("Автосоздание карточек", selection: $selection) {
+            Text(inheritedTitle + (inherited ? " · создавать" : " · не создавать")).tag("inherit")
+                .accessibilityIdentifier(identifier + ".inherit")
+            Text("Создавать при обновлении конспекта").tag("on")
+                .accessibilityIdentifier(identifier + ".on")
+            Text("Не создавать для этой встречи").tag("off")
+                .accessibilityIdentifier(identifier + ".off")
+        }.pickerStyle(.radioGroup).accessibilityIdentifier(identifier)
+    }
+}

@@ -56,6 +56,7 @@ private struct VoiceDraftRecord: Codable {
     var selectedTargetIDs: [String]? = nil
     var reviewText: String? = nil
     var previousQuestions: [String]? = nil
+    var restartOfJobID: String? = nil
 }
 
 /// Short, explicit microphone sessions. Meeting recording owns its microphone
@@ -126,7 +127,7 @@ final class VoiceCommandController: ObservableObject {
     @Published var isPresented = false
     @Published var text = "" { didSet {
         guard !restoringDraft else { return }
-        if text != oldValue && phase == .editing { knowledgeAnswer = nil; knowledgeOpeningID = nil; plan = nil; interruptedPlanID = nil; interruptedOperationID = nil }
+        if text != oldValue && phase == .editing { restartOfJobID = nil; knowledgeAnswer = nil; knowledgeOpeningID = nil; plan = nil; interruptedPlanID = nil; interruptedOperationID = nil }
         scheduleDraftSave()
     } }
     @Published private(set) var phase = Phase.editing { didSet { if !restoringDraft { _ = flushDraft() } } }
@@ -148,6 +149,7 @@ final class VoiceCommandController: ObservableObject {
     private var interruptedPlanID: String?
     private var interruptedOperationID: String?
     private var previousQuestions: [String] = []
+    private var restartOfJobID: String?
     private var generation = UUID()
     #if DEBUG
     private var dictationStopFailureForChecks: Error?
@@ -172,6 +174,7 @@ final class VoiceCommandController: ObservableObject {
             if let id = draft.folderID { context["folderID"] = id }
             else if draft.folderScopeCaptured == true { context["folderID"] = NSNull() }
             previousQuestions = Self.retainedQuestions(draft.previousQuestions ?? [])
+            restartOfJobID = draft.restartOfJobID
             text = draft.text
             if let planID = draft.planID, let operationID = draft.operationID {
                 interruptedPlanID = planID; interruptedOperationID = operationID
@@ -208,7 +211,7 @@ final class VoiceCommandController: ObservableObject {
         guard store.isFeatureEnabled(.assistant) else { store.openSettings("features"); return }
         if !hasDraft && !isWorking {
             generation = UUID(); knowledgeAnswer = nil; knowledgeOpeningID = nil
-            previousQuestions = []
+            previousQuestions = []; restartOfJobID = nil
             text = ""; plan = nil; result = nil; phase = .editing; message = nil; context = [:]
             if let folderID = store.folderSelection { context["folderID"] = folderID }
             if let taskID { context["taskID"] = taskID; contextLabel = title ?? "Задача" }
@@ -228,6 +231,38 @@ final class VoiceCommandController: ObservableObject {
         isPresented = true
         NSApp.activate(ignoringOtherApps: true)
     }
+    /// Reopening never retries a frozen provider or sends a request. The user
+    /// reviews the original command and explicitly starts a new operation.
+    func reopenFailedCommand(_ job: BackgroundJob) {
+        guard let store, job.canReopenVoiceCommand, let data = job.config.input,
+              let input = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let command = input["text"] as? String, !command.isEmpty, command.utf8.count <= 8_000 else { return }
+        var restored: [String: Any] = [:]
+        for key in ["meetingID", "noteID", "taskID", "projectID"] {
+            if let value = input[key] as? String { restored[key] = value }
+        }
+        if let folder = input["folderID"] { restored["folderID"] = folder }
+        isPresented = true; NSApp.activate(ignoringOtherApps: true)
+        guard !isWorking else { message = "Дождитесь завершения текущего поручения."; return }
+        guard !hasDraft || (phase == .editing && text == command && NSDictionary(dictionary: context).isEqual(to: restored)) else {
+            message = "Сначала завершите текущее поручение или нажмите «Новое поручение», затем откройте нужное из фоновых задач."
+            return
+        }
+        restored["folderID"] = restored["folderID"] ?? job.config.folderID.map { $0 as Any } ?? NSNull()
+        restoringDraft = true
+        generation = UUID(); context = restored
+        previousQuestions = Self.retainedQuestions(input["previousQuestions"] as? [String] ?? [])
+        text = command; plan = nil; result = nil; knowledgeAnswer = nil; knowledgeOpeningID = nil
+        interruptedPlanID = nil; interruptedOperationID = nil; selectedTargetIDs = []; reviewText = ""
+        restartOfJobID = job.id; phase = .editing
+        if let id = restored["meetingID"] as? String { contextLabel = store.meetings.first { $0.id == id }?.title ?? "Встреча" }
+        else if let id = restored["noteID"] as? String { contextLabel = store.notes.notes.first { $0.id == id }?.displayTitle ?? "Заметка" }
+        else if restored["taskID"] is String { contextLabel = "Задача" }
+        else if let id = restored["folderID"] as? String { contextLabel = store.notes.workspace.folders.first { $0.id == id }?.name ?? "Папка" }
+        else { contextLabel = "Библиотека" }
+        message = "Поручение открыто с текущими настройками модели. Проверьте текст и нажмите «Выполнить» для нового запуска."
+        restoringDraft = false; _ = flushDraft()
+    }
     func dismiss() {
         guard phase != .applying else { return }
         if isWorking { cancelWork() }
@@ -240,7 +275,7 @@ final class VoiceCommandController: ObservableObject {
     func reset() {
         guard !isWorking else { return }
         knowledgeAnswer = nil; knowledgeOpeningID = nil
-        previousQuestions = []
+        previousQuestions = []; restartOfJobID = nil
         text = ""; plan = nil; result = nil; interruptedPlanID = nil; interruptedOperationID = nil; phase = .editing; message = nil
         isPresented = false; present()
     }
@@ -400,6 +435,7 @@ final class VoiceCommandController: ObservableObject {
         generation = UUID(); let current = generation
         var input = context
         input["previousQuestions"] = previousQuestions
+        if let restartOfJobID { input["restartOfJobID"] = restartOfJobID }
         input["text"] = command; input["now"] = Date().timeIntervalSince1970
         input["timeZoneOffsetMinutes"] = TimeZone.current.secondsFromGMT() / 60
         phase = .planning; message = nil; result = nil; plan = nil; knowledgeAnswer = nil; knowledgeOpeningID = nil
@@ -681,7 +717,8 @@ final class VoiceCommandController: ObservableObject {
             planID: plan?.planID ?? interruptedPlanID, operationID: plan?.operationID ?? interruptedOperationID,
             folderID: context["folderID"] as? String, folderScopeCaptured: context.keys.contains("folderID"), projectID: context["projectID"] as? String, selectedTargetIDs: phase == .reviewing || phase == .applying ? selectedTargetIDs.sorted() : nil,
             reviewText: phase == .reviewing || phase == .applying ? reviewText : nil,
-            previousQuestions: previousQuestions.isEmpty ? nil : previousQuestions)
+            previousQuestions: previousQuestions.isEmpty ? nil : previousQuestions,
+            restartOfJobID: phase == .result ? nil : restartOfJobID)
         do { try store.write(value, store.root.appendingPathComponent("voice-draft.json")); return true }
         catch { message = "Не удалось сохранить поручение. Оставьте панель открытой и повторите сохранение."; return false }
     }

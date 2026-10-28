@@ -407,20 +407,74 @@ struct RecordView: View {
     @State private var displayUUID = ""
     @State private var displays: [RecordingDisplay] = []
     @State private var recordingError: String?
+    @State private var folderID = ""
+    @State private var cardsChoice = "inherit"
+    @State private var showingProcessing = false
+    @State private var preparingCapture = false
+    private var startLocked: Bool { preparingCapture || store.startingRecording }
+    private var destinationExists: Bool { folderID.isEmpty || store.notes.folder(folderID) != nil }
+    private var profileSettings: AppSettings { store.effectiveSettings(folderID: folderID.isEmpty ? nil : folderID) }
+    private var folderGeneratesCards: Bool { store.notes.folder(folderID)?.overrides.generateCards ?? false }
     private var displayIsAvailable: Bool { !video || RecordingDisplay.selectionIsAvailable(displayUUID, in: displays) }
+    private var processingSummary: String {
+        let model = profileSettings.mode == "cloud" ? profileSettings.cloudProviderTitle + " · " + profileSettings.cloudModel : "На Mac · " + profileSettings.localModel
+        let cards = profileSettings.features.cards && (cardsChoice == "inherit" ? folderGeneratesCards : cardsChoice == "on")
+        return (profileSettings.language == "en" ? "English" : "Русский") + " · " + model + (cards ? " · карточки создавать" : " · карточки не создавать")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Запись встречи").font(AppTypography.modalTitle)
             TextField("Название встречи", text: $title).textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Название новой встречи").disabled(store.startingRecording)
+                .accessibilityLabel("Название новой встречи").disabled(startLocked)
+            Picker("Папка", selection: $folderID) {
+                Text("Без папки · настройки приложения").tag("")
+                ForEach(store.notes.folders) { Text($0.name).tag($0.id) }
+                if !destinationExists { Text("Папка недоступна").tag(folderID) }
+            }.accessibilityIdentifier("record.folder").disabled(startLocked)
+            Button { showingProcessing = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "slider.horizontal.3").foregroundStyle(Ink.secondaryText)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Конспект · " + (profileSettings.language == "en" ? "English" : "Русский"))
+                            .font(AppTypography.control).accessibilityIdentifier("record.profile.language")
+                        Text(profileSettings.mode == "cloud" ? profileSettings.cloudProviderTitle + " · " + profileSettings.cloudModel : "На Mac · " + profileSettings.localModel)
+                            .font(AppTypography.caption).foregroundStyle(Ink.secondaryText).lineLimit(1)
+                            .accessibilityIdentifier("record.profile.model")
+                    }
+                    Spacer()
+                    Text("Настроить…").font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("Настройки конспекта новой встречи").accessibilityValue(processingSummary)
+                .accessibilityIdentifier("record.processing").disabled(startLocked)
+                .popover(isPresented: $showingProcessing) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text(profileSettings.features.cards ? "Конспект и карточки" : "Конспект").font(AppTypography.heading)
+                        Text(profileSettings.focus.isEmpty ? "Стиль конспекта: по умолчанию" : "Стиль конспекта: " + profileSettings.focus)
+                            .font(AppTypography.control).foregroundStyle(Ink.secondaryText).lineLimit(3)
+                            .accessibilityIdentifier("record.profile.focus")
+                        if profileSettings.features.cards {
+                            CardGenerationPicker(selection: $cardsChoice, inherited: folderGeneratesCards,
+                                                 inheritedTitle: folderID.isEmpty ? "По умолчанию" : "Как в папке",
+                                                 identifier: "record.generateCards")
+                        } else {
+                            Text(folderID.isEmpty ? "Карточки выключены в настройках приложения." : "Карточки выключены в настройках папки.")
+                                .font(AppTypography.control).foregroundStyle(Ink.secondaryText)
+                                .accessibilityIdentifier("record.cardsUnavailable")
+                        }
+                        Text("Язык, стиль и модель берутся из выбранной папки. Выбор карточек действует только для новой встречи.")
+                            .font(AppTypography.caption).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
+                        HStack { Spacer(); Button("Готово") { showingProcessing = false }.keyboardShortcut(.defaultAction)
+                            .accessibilityIdentifier("record.processing.done") }
+                    }.padding(20).frame(width: 420).appControlDefaults()
+                }
             Picker("Звук", selection: $systemAudio) {
                 Text("Микрофон и звук Mac").tag(true)
                 Text("Только микрофон").tag(false)
-            }.pickerStyle(.radioGroup).disabled(store.startingRecording)
+            }.pickerStyle(.radioGroup).disabled(startLocked)
                 .help("Для звонков выберите звук Mac и используйте наушники. Для встречи в комнате — только микрофон.")
             RecordingOptionsView(audioQuality: $audioQuality, video: $video,
-                                 videoQuality: $videoQuality, displayUUID: $displayUUID, displays: displays).disabled(store.startingRecording)
+                                 videoQuality: $videoQuality, displayUUID: $displayUUID, displays: displays).disabled(startLocked)
             HStack {
                 Text(video ? "MP3 + MP4" : "MP3").font(AppTypography.captionStrong).foregroundStyle(Ink.secondaryText)
                 Spacer()
@@ -434,31 +488,40 @@ struct RecordView: View {
                     .textSelection(.enabled)
             }
             RecordingAudioCheck(check: audioCheck, systemAudio: systemAudio).environmentObject(store)
-            if store.startingRecording {
+            if startLocked {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small).accessibilityHidden(true)
                     Text("Проверяю доступ к записи…").font(AppTypography.control)
                 }.accessibilityElement(children: .combine)
             }
             HStack {
-                Button("Отмена", role: .cancel) { dismiss() }.buttonStyle(.bordered).disabled(store.startingRecording).keyboardShortcut(.cancelAction)
+                Button("Отмена", role: .cancel) { dismiss() }.buttonStyle(.bordered).disabled(startLocked).keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Начать запись") {
+                    guard !startLocked else { return }
                     recordingError = nil
                     store.settings.recordSystemAudio = systemAudio; store.settings.recordVideo = video
                     store.settings.recordAudioQuality = audioQuality; store.settings.recordVideoQuality = videoQuality
-                    store.settings.recordDisplayUUID = displayUUID; store.saveSettings()
+                    store.settings.recordDisplayUUID = displayUUID
+                    guard store.saveSettings() else { recordingError = store.error; return }
+                    let destination = RecordingDestination(folderID: folderID.isEmpty ? nil : folderID,
+                        generateCards: cardsChoice == "inherit" ? nil : cardsChoice == "on")
+                    let captureTitle = title, captureSystemAudio = systemAudio, captureVideo = video
+                    preparingCapture = true
                     Task {
+                        defer { preparingCapture = false }
                         await audioCheck.stop()
-                        await store.startRecording(systemAudio: systemAudio, video: video, title: title)
+                        await store.startRecording(systemAudio: captureSystemAudio, video: captureVideo, title: captureTitle, destination: destination)
                         if !store.isRecording { recordingError = store.error }
                     }
                 }.buttonStyle(.borderedProminent).tint(Ink.recordFill)
-                    .disabled(store.startingRecording || !displayIsAvailable).keyboardShortcut(.defaultAction)
+                    .disabled(startLocked || !displayIsAvailable || !destinationExists).keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("record.start")
             }
         }.padding(AppLayout.contentInset).frame(width: 560).appControlDefaults().tint(Ink.accent)
+            .interactiveDismissDisabled(startLocked)
             .onAppear {
+                folderID = store.folderSelection ?? ""
                 systemAudio = store.settings.recordSystemAudio; video = store.settings.recordVideo
                 audioQuality = store.settings.recordAudioQuality; videoQuality = store.settings.recordVideoQuality
                 displayUUID = store.settings.recordDisplayUUID
@@ -467,6 +530,7 @@ struct RecordView: View {
                     recordingError = "Нет доступа к микрофону. Разрешите его в настройках macOS и повторите запись."
                 }
             }
+            .onChange(of: folderID) { _, _ in cardsChoice = "inherit" }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
                 displays = RecordingDisplay.choices(preview: store.isPreview)
             }

@@ -15,6 +15,8 @@ struct JobConfiguration: Codable {
     var folderProfile: Data? = nil
     var folderID: String? = nil
     var profileMeetingID: String? = nil
+    /// Explicitly reopened input creates a new operation; old attempts stay in history.
+    var restartOfJobID: String? = nil
 
     /// Speech keeps its separate API-key billing path even when summaries use ChatGPT.
     var chatGPTPlanAccountID: String? {
@@ -43,6 +45,16 @@ struct BackgroundJob: Decodable, Identifiable {
     var createdAt: Double
     var updatedAt: Double
     var active: Bool { ["queued", "running"].contains(state) }
+    var canReopenVoiceCommand: Bool {
+        guard kind == "voice-plan", config.command == "voice-plan", config.input != nil,
+              ["failed", "interrupted"].contains(state) else { return false }
+        return ["Настройки модели не совпадают с сохранённым профилем операции.",
+                "Профиль папки изменился после постановки в очередь.",
+                "Профиль папки изменился во время обработки.",
+                "Папка или её настройки изменились.", "У встречи появилась папка.",
+                "У фоновой операции нет сохранённого профиля папки.",
+                "Данные изменились после постановки в очередь."].contains { message.hasPrefix($0) }
+    }
     var stateLabel: String {
         switch state {
         case "queued": return "В очереди"
@@ -337,6 +349,7 @@ final class BackgroundJobsController: ObservableObject {
     @Published private(set) var jobs: [BackgroundJob] = [] { didSet { updateActivityLease() } }
     @Published var error: String?
     @Published var showing = false
+    var reopenVoiceCommand: ((BackgroundJob) -> Void)?
     @Published private(set) var pendingSubmissions = 0 { didSet { updateActivityLease() } }
     @Published private(set) var pausedChatGPTAccounts: Set<String> = [] { didSet { updateActivityLease() } }
     @Published private(set) var pausedChatGPTFailures: [BackgroundJob] = []
@@ -402,6 +415,11 @@ final class BackgroundJobsController: ObservableObject {
         } : nil
         guard quotaAccount != nil || latestAttemptIDs.contains(job.id) else {
             error = "У операции есть более новая попытка. Используйте её в списке фоновых задач."
+            return
+        }
+        if job.canReopenVoiceCommand {
+            guard let reopenVoiceCommand else { error = "Откройте помощника и запустите поручение заново с текущими настройками."; return }
+            error = nil; showing = false; reopenVoiceCommand(job)
             return
         }
         var confirmed = !job.paid
@@ -511,7 +529,10 @@ struct BackgroundJobsView: View {
                                 if job.active || job.state == "blocked" {
                                     Button { jobs.cancel(job.id) } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain).accessibilityLabel("Отменить \(job.title)")
                                 } else if !historical && job.kind != "dictate" && ["failed", "interrupted", "cancelled"].contains(job.state) {
-                                    Button("Повторить") { jobs.retry(job) }.buttonStyle(.borderless).accessibilityIdentifier("jobs.retry." + job.id)
+                                    Button(job.canReopenVoiceCommand ? "Открыть поручение…" : "Повторить") { jobs.retry(job) }
+                                        .buttonStyle(.borderless).fixedSize(horizontal: true, vertical: false)
+                                        .accessibilityIdentifier("jobs.retry." + job.id)
+                                        .help(job.canReopenVoiceCommand ? "Открыть исходный текст в помощнике. Новый запуск использует текущие настройки и требует нажатия «Выполнить»." : "Повторить с сохранёнными настройками этой операции.")
                                 }
                             }
                             let metadata = BackgroundJobPresentation.metadata(job, historical: historical)

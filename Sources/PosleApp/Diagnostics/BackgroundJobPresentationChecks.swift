@@ -41,6 +41,16 @@ enum BackgroundJobPresentationChecks {
         let voiceA = job("voice-a", kind: "voice-plan", object: "app:voice-plan", state: "failed", time: 1, input: Data("first request".utf8))
         let voiceB = job("voice-b", kind: "voice-plan", object: "app:voice-plan", state: "succeeded", time: 2, input: Data("other request".utf8))
         try expect(BackgroundJobPresentation.needsAttention(in: [voiceA, voiceB]), "Different dictated requests cannot acknowledge each other")
+        var reopened = job("voice-reopened", kind: "voice-plan", object: "app:voice-plan", state: "succeeded", time: 3, input: Data("first request with fresh clock".utf8))
+        reopened.config.restartOfJobID = voiceA.id
+        try expect(!BackgroundJobPresentation.needsAttention(in: [voiceA, voiceB, reopened]), "Explicit fresh success must acknowledge only the reopened failure despite its new input timestamp")
+        reopened.state = "failed"
+        try expect(BackgroundJobPresentation.latestIDs(in: [voiceA, voiceB, reopened]) == [voiceB.id, reopened.id], "A failed fresh operation must show its current error without reviving the old error")
+        let unrelated = job("voice-unrelated", kind: "voice-plan", object: "app:voice-plan", state: "failed", time: 4, input: Data("third request".utf8))
+        try expect(BackgroundJobPresentation.latestIDs(in: [voiceA, reopened, unrelated]).contains(unrelated.id), "An explicit restart must not hide another command's unresolved failure")
+        var malformedLink = reopened; malformedLink.objectID = "another-object"
+        try expect(BackgroundJobPresentation.latestIDs(in: [voiceA, malformedLink]).contains(voiceA.id), "A restart link cannot suppress a different object scope")
+        print("PASS: explicit fresh voice operations preserve history, replace only their linked error and leave unrelated failures visible")
         let malformed = job("unknown-card", kind: "example", state: "failed", time: 1)
         try expect(BackgroundJobPresentation.needsAttention(in: [malformed, cardB]), "A missing target must not silently merge with another operation")
         try expect(BackgroundJobPresentation.latestIDs(in: [cardA, noteA, old]).count == 3, "Operation kinds and target scopes cannot collapse")

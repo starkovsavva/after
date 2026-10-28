@@ -20,6 +20,29 @@ struct MeetingView: View {
                         if let folder = store.notes.folder(for: meeting.id) {
                             Button("Настройки папки…") { folderEditor = FolderEditorTarget(folder: folder) }
                         }
+                        if meeting.libraryKind != "cards" {
+                            Divider()
+                            Menu("Автосоздание карточек") {
+                                if store.effectiveSettings(for: meeting.id).features.cards {
+                                    Picker("Автосоздание карточек", selection: Binding(get: {
+                                        meeting.generateCards.map { $0 ? "on" : "off" } ?? "inherit"
+                                    }, set: { choice in
+                                        store.updateMeeting(meeting.id) { $0.generateCards = choice == "inherit" ? nil : choice == "on" }
+                                    })) {
+                                        Text(store.cardGenerationInheritanceTitle(for: meeting.id)).tag("inherit")
+                                        Text("Создавать при обновлении конспекта").tag("on")
+                                        Text("Не создавать для этой встречи").tag("off")
+                                    }.labelsHidden()
+                                } else {
+                                    Text(store.folderID(for: meeting.id) == nil ? "Карточки выключены в настройках приложения" : "Карточки выключены в настройках папки")
+                                    if let folder = store.notes.folder(for: meeting.id) {
+                                        Button("Настройки папки…") { folderEditor = FolderEditorTarget(folder: folder) }
+                                    } else {
+                                        Button("Выбрать возможности…") { store.openSettings("features") }
+                                    }
+                                }
+                            }.accessibilityIdentifier("meeting.cardGeneration")
+                        }
                         Divider()
                         Button("Переименовать…") { store.meetingTitleEdits.begin(meeting) }.disabled(store.captureMeetingID == meeting.id)
                         Button("Распознать заново") { Task { await store.processMeeting(meeting.id) } }.disabled(!store.runtimeReady || store.jobs.contains(objectID: meeting.id, kinds: ["transcribe"]) || meeting.libraryKind == "cards")
