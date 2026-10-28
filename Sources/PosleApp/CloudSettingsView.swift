@@ -6,6 +6,8 @@ import SwiftUI
 struct CloudSettingsView: View {
     @EnvironmentObject private var store: AppStore
     var chatGPTAccount: ChatGPTAccount = .shared
+    @State private var editorID = UUID()
+    @State private var mounted = false
     @State private var drafts: [String: String] = [:]
     @State private var savedKeys: [String: String] = [:]
     @State private var loadedAccounts: Set<String> = []
@@ -20,9 +22,16 @@ struct CloudSettingsView: View {
     private var key: String { account.flatMap { drafts[$0] } ?? "" }
     private var savedKey: String { account.flatMap { savedKeys[$0] } ?? "" }
     private var keyIsDirty: Bool { key.trimmingCharacters(in: .whitespacesAndNewlines) != savedKey }
+    private var hasPendingKeys: Bool {
+        drafts.contains { account, value in value.trimmingCharacters(in: .whitespacesAndNewlines) != (savedKeys[account] ?? "") }
+    }
+    private func registerDrafts() {
+        guard mounted else { return }
+        SettingsDraftRegistry.set(id: editorID, title: "API-ключи конспекта", dirty: hasPendingKeys)
+    }
     private var keyBinding: Binding<String> {
         Binding(get: { key }, set: { value in
-            if let account { drafts[account] = value; keyMessage = ""; store.clearCloudConnectionResult() }
+            if let account { drafts[account] = value; keyMessage = ""; store.clearCloudConnectionResult(); registerDrafts() }
         })
     }
     private var configuration: String {
@@ -47,8 +56,15 @@ struct CloudSettingsView: View {
             } else {
                 apiSettings
             }
+            if hasPendingKeys {
+                Button("Отменить правки ключей") { drafts = savedKeys; keyMessage = ""; registerDrafts() }
+                    .buttonStyle(.bordered).accessibilityIdentifier("cloud.key.cancel")
+            }
         }
-        .onAppear { loadAccount() }
+        .onAppear { mounted = true; loadAccount(); registerDrafts() }
+        .onChange(of: drafts) { _, _ in registerDrafts() }
+        .onChange(of: savedKeys) { _, _ in registerDrafts() }
+        .onDisappear { mounted = false; SettingsDraftRegistry.remove(id: editorID) }
         .onChange(of: account) { _, _ in keyMessage = ""; keyError = false; loadAccount() }
         .onChange(of: configuration) { _, _ in store.clearCloudConnectionResult() }
     }
@@ -79,11 +95,11 @@ struct CloudSettingsView: View {
             LabeledContent("API-ключ") {
                 SecureField(account == nil ? "Сначала укажите адрес API" : "Ключ выбранного провайдера", text: keyBinding)
                     .textFieldStyle(.roundedBorder).disabled(account == nil)
-                    .accessibilityLabel("API-ключ \(store.settings.cloudProviderTitle)")
+                    .accessibilityLabel("API-ключ \(store.settings.cloudProviderTitle)").accessibilityIdentifier("cloud.key")
             }
             HStack(spacing: 10) {
                 Button(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !savedKey.isEmpty ? "Удалить ключ" : "Сохранить ключ", action: saveKey)
-                    .buttonStyle(.bordered).disabled(account == nil || !keyIsDirty)
+                    .buttonStyle(.bordered).disabled(account == nil || !keyIsDirty).accessibilityIdentifier("cloud.key.save")
                 if keyIsDirty {
                     Text("Не сохранён").font(AppTypography.caption).foregroundStyle(Ink.warning)
                 } else if !keyMessage.isEmpty {

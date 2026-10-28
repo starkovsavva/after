@@ -150,12 +150,14 @@ final class CalendarStore: ObservableObject {
         }
     }
     var displayPeriod: CalendarPeriod { CalendarPeriod(anchor: selectedDate, mode: displayMode, calendar: .current) }
-    @Published var error: String?
+    @Published var error: String? { didSet { errorGeneration += 1 } }
+    private var errorGeneration = 0
     @Published private(set) var requesting = false
     @Published private(set) var lastRefreshed: Date?
     @Published var selectedCalendarID = ""
     @Published private(set) var visibleCalendarIDs: Set<String>? = nil
     let preview: Bool
+    var canConnect: Bool { featureEnabled && readClient != nil }
     private let root: URL
     private var preferences = CalendarPreferences()
     private var eventStore: EKEventStore?
@@ -165,15 +167,23 @@ final class CalendarStore: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var featureEnabled: Bool
     private var tasksEnabled: Bool
-    private var refreshing = false
+    @Published private(set) var refreshing = false
     private var pendingRefresh = false
+    private var refreshGeneration = 0
+    private var connectionGeneration = 0
+    private var refreshTask: Task<Void, Never>?
+    private var refreshedRequest: CalendarReadRequest?
+    private var readingRequest: CalendarReadRequest?
+    private let readClient: CalendarReadClient?
     private var eventChanges: NSObjectProtocol?
     private var activation: NSObjectProtocol?
     private var preferenceLoadFailed = false
     private var viewPreferenceLoadFailed = false
 
-    init(root: URL, preview: Bool = false, featureEnabled: Bool = true, tasksEnabled: Bool = true) {
+    init(root: URL, preview: Bool = false, featureEnabled: Bool = true, tasksEnabled: Bool = true,
+         readClient: CalendarReadClient? = nil) {
         self.root = root; self.preview = preview
+        self.readClient = readClient ?? (preview ? nil : .system())
         self.featureEnabled = featureEnabled; self.tasksEnabled = tasksEnabled
         if preview { return }
         do {
@@ -200,11 +210,11 @@ final class CalendarStore: ObservableObject {
             viewPreferenceLoadFailed = true
             if self.error == nil { self.error = "Не удалось прочитать вид календаря. Файл calendar-view.json сохранён без изменений." }
         }
-        permissionDenied = [.denied, .restricted, .writeOnly].contains(EKEventStore.authorizationStatus(for: .event))
+        permissionDenied = [.denied, .restricted, .writeOnly].contains(authorizationStatus)
         // Existing explicit opt-in survives restart, but never asks the OS for access here.
-        if featureEnabled && preferences.enabled && EKEventStore.authorizationStatus(for: .event) == .fullAccess { activate() }
+        if featureEnabled && preferences.enabled && authorizationStatus == .fullAccess { activate() }
         activation = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in self?.refreshIfNeeded() }
         }
     }
 
@@ -213,23 +223,25 @@ final class CalendarStore: ObservableObject {
         let resumeTasks = tasksEnabled && !self.tasksEnabled
         self.tasksEnabled = tasksEnabled
         guard enabled != featureEnabled else {
-            if enabled && resumeTasks { notes?.loadTasks(); refresh() }
+            if enabled && resumeTasks { refreshLinkedTasks() }
             return
         }
         featureEnabled = enabled
         if !enabled {
-            connected = false; calendars = []; events = []; eventStore = nil
+            suspendConnection()
             if let eventChanges { NotificationCenter.default.removeObserver(eventChanges); self.eventChanges = nil }
-        } else if !preview && preferences.enabled { activate() }
+        } else if preferences.enabled { activate() }
     }
 
     func bindNotes(_ notes: NotesStore) {
         self.notes = notes
         notes.$tasks.dropFirst().debounce(for: .milliseconds(180), scheduler: RunLoop.main).sink { [weak self] _ in self?.migrateTaskIdentities(); self?.reconcileTasks() }.store(in: &cancellables)
         notes.$workspace.dropFirst().debounce(for: .milliseconds(180), scheduler: RunLoop.main).sink { [weak self, weak notes] _ in
-            if self?.connected == true, self?.tasksEnabled == true { notes?.loadTasks() }
+            if self?.connected == true, self?.tasksEnabled == true, self?.links.isEmpty == false {
+                Task { await notes?.refresh(includeTasks: true) }
+            }
         }.store(in: &cancellables)
-        if connected { if tasksEnabled { notes.loadTasks() }; refresh() }
+        if connected { refreshLinkedTasks(); refreshIfNeeded() }
     }
 
     @discardableResult func openLink(_ url: URL) -> Bool {
@@ -242,90 +254,173 @@ final class CalendarStore: ObservableObject {
     }
 
     func stop() {
+        suspendConnection()
         if let eventChanges { NotificationCenter.default.removeObserver(eventChanges) }
         if let activation { NotificationCenter.default.removeObserver(activation) }
         eventChanges = nil; activation = nil; cancellables.removeAll()
     }
 
+    private var authorizationStatus: EKAuthorizationStatus { readClient?.authorizationStatus() ?? .notDetermined }
+
     func connect() async {
-        guard featureEnabled, !requesting, !preview else { return }
+        guard featureEnabled else { error = "Включите календарь в возможностях этой папки или приложения."; return }
+        guard !requesting, let readClient else { return }
         guard !preferenceLoadFailed else { error = "Сначала восстановите файл calendar-state.json: новые связи не будут записаны поверх повреждённых."; return }
-        requesting = true; defer { requesting = false }
+        requesting = true
+        let generation = connectionGeneration
+        defer { requesting = false }
         do {
-            if eventStore == nil { eventStore = EKEventStore() }
-            guard let eventStore else { return }
-            let granted = try await eventStore.requestFullAccessToEvents()
-            permissionDenied = !granted
-            guard featureEnabled else { return }
-            guard granted else { error = "Разрешите «После» доступ к календарям в настройках macOS."; return }
-            preferences.enabled = true; try persist(); activate(); error = nil
-        } catch { self.error = error.localizedDescription }
+            // Record the explicit opt-in even when macOS denies access. Returning
+            // from Settings can then resume the same connection without another prompt.
+            let previous = preferences.enabled
+            preferences.enabled = true
+            do { try persist() } catch { preferences.enabled = previous; throw error }
+            error = nil
+            var status = authorizationStatus
+            if status == .notDetermined || status == .writeOnly {
+                let granted = try await readClient.requestAccess()
+                guard generation == connectionGeneration, featureEnabled else { return }
+                // The callback and the global authorization cache can settle on
+                // adjacent run-loop turns. Never clear an unsuccessful activation.
+                if granted {
+                    for _ in 0..<10 where authorizationStatus == .notDetermined || authorizationStatus == .writeOnly {
+                        try await Task.sleep(for: .milliseconds(50))
+                        guard generation == connectionGeneration, featureEnabled else { return }
+                    }
+                }
+                status = authorizationStatus
+            }
+            guard generation == connectionGeneration, featureEnabled else { return }
+            permissionDenied = [.denied, .restricted, .writeOnly].contains(status)
+            guard status == .fullAccess else {
+                error = status == .notDetermined
+                    ? "macOS пока не подтвердила доступ к календарям. Повторите подключение."
+                    : "Разрешите «После» полный доступ к календарям в настройках macOS, затем вернитесь в приложение."
+                return
+            }
+            activate()
+        } catch {
+            guard generation == connectionGeneration else { return }
+            permissionDenied = [.denied, .restricted, .writeOnly].contains(authorizationStatus)
+            self.error = error.localizedDescription
+        }
     }
 
     func disconnect() {
         preferences.enabled = false
         do { try persist() } catch { self.error = error.localizedDescription; return }
-        connected = false; calendars = []; events = []; eventStore = nil
+        suspendConnection()
         if let eventChanges { NotificationCenter.default.removeObserver(eventChanges); self.eventChanges = nil }
     }
 
+    private func suspendConnection() {
+        connectionGeneration += 1; refreshGeneration += 1
+        refreshTask?.cancel(); refreshTask = nil
+        refreshing = false; pendingRefresh = false; refreshedRequest = nil; readingRequest = nil
+        connected = false; calendars = []; events = []; eventStore = nil
+    }
+
     private func activate() {
-        guard featureEnabled, !preview, !preferenceLoadFailed, EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return }
-        if eventStore == nil { eventStore = EKEventStore() }
-        connected = true; permissionDenied = false
-        if eventChanges == nil {
+        guard featureEnabled, !preferenceLoadFailed, authorizationStatus == .fullAccess else { return }
+        // Preview fixtures inject an inert client. They must never create EventKit.
+        if !preview, eventStore == nil { eventStore = EKEventStore() }
+        connected = true; permissionDenied = false; error = nil
+        if !preview, eventChanges == nil {
             eventChanges = NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: eventStore, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.refresh() }
+                Task { @MainActor in
+                    self?.refreshLinkedTasks()
+                    self?.refresh()
+                }
             }
         }
+        refreshLinkedTasks()
+        refresh()
+    }
+
+    private func refreshLinkedTasks() {
+        guard tasksEnabled, !links.isEmpty, let notes else { return }
+        Task { [weak self, weak notes] in
+            await notes?.refresh(includeTasks: true)
+            guard let self, self.connected, self.tasksEnabled else { return }
+            self.migrateTaskIdentities(); self.reconcileTasks()
+        }
+    }
+
+    /// Opening the same calendar repeatedly keeps the last visible schedule.
+    /// Explicit refresh, date changes and EventKit notifications bypass this cache.
+    func refreshIfNeeded() {
+        guard readClient != nil else { return }
+        if connected && authorizationStatus != .fullAccess { refresh(); return }
+        let period = displayPeriod
+        let request = CalendarReadRequest(start: period.start, end: period.end, visibleCalendarIDs: visibleCalendarIDs)
+        if refreshing && request == readingRequest { return }
+        guard !connected || request != refreshedRequest || lastRefreshed.map({ Date().timeIntervalSince($0) >= 60 }) != false else { return }
         refresh()
     }
 
     func refresh() {
-        guard featureEnabled, !preview else { return }
-        guard preferences.enabled else { return }
-        guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
-            connected = false; calendars = []; events = []; permissionDenied = true; return
+        guard featureEnabled, let readClient, preferences.enabled else { return }
+        guard authorizationStatus == .fullAccess else {
+            suspendConnection()
+            permissionDenied = [.denied, .restricted, .writeOnly].contains(authorizationStatus)
+            if permissionDenied { error = "Разрешите «После» полный доступ к календарям в настройках macOS." }
+            return
         }
         if !connected { activate(); return }
-        guard let eventStore else { return }
+        refreshGeneration += 1
         if refreshing { pendingRefresh = true; return }
         refreshing = true
-        defer {
-            refreshing = false
-            if pendingRefresh {
-                pendingRefresh = false
-                Task { @MainActor [weak self] in self?.refresh() }
+        let generation = refreshGeneration
+        let connection = connectionGeneration
+        let period = displayPeriod
+        let request = CalendarReadRequest(start: period.start, end: period.end, visibleCalendarIDs: visibleCalendarIDs)
+        let requestErrorGeneration = errorGeneration
+        readingRequest = request
+        refreshTask = Task { [weak self] in
+            do {
+                let snapshot = try await readClient.read(request)
+                guard let self, connection == self.connectionGeneration, !Task.isCancelled else { return }
+                if generation == self.refreshGeneration {
+                    guard self.authorizationStatus == .fullAccess else { self.refresh(); return }
+                    self.apply(snapshot)
+                    self.refreshedRequest = request
+                    self.lastRefreshed = Date()
+                    if self.errorGeneration == requestErrorGeneration { self.error = nil }
+                }
+            } catch {
+                guard let self, connection == self.connectionGeneration, !Task.isCancelled else { return }
+                if generation == self.refreshGeneration {
+                    if self.authorizationStatus != .fullAccess { self.refresh() }
+                    else if self.errorGeneration == requestErrorGeneration { self.error = error.localizedDescription }
+                }
+            }
+            guard let self, connection == self.connectionGeneration else { return }
+            self.refreshTask = nil; self.refreshing = false; self.readingRequest = nil
+            if self.pendingRefresh {
+                self.pendingRefresh = false
+                self.refresh()
             }
         }
-        calendars = eventStore.calendars(for: .event).map {
-            CalendarChoice(id: $0.calendarIdentifier, title: $0.title, account: $0.source.title,
-                           writable: $0.allowsContentModifications, color: NSColor(cgColor: $0.cgColor) ?? .systemPurple)
-        }.sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+    }
+
+    private func apply(_ snapshot: CalendarReadSnapshot) {
+        calendars = snapshot.sources.map {
+            CalendarChoice(id: $0.id, title: $0.title, account: $0.account, writable: $0.writable,
+                color: NSColor(srgbRed: $0.red, green: $0.green, blue: $0.blue, alpha: $0.alpha))
+        }
         if !calendars.contains(where: { $0.id == selectedCalendarID && $0.writable }) {
-            selectedCalendarID = eventStore.defaultCalendarForNewEvents.flatMap { $0.allowsContentModifications ? $0.calendarIdentifier : nil }
+            selectedCalendarID = snapshot.defaultCalendarID.flatMap { id in calendars.contains { $0.id == id && $0.writable } ? id : nil }
                 ?? calendars.first(where: \.writable)?.id ?? ""
         }
-        if tasksEnabled { notes?.loadTasks(); reconcileTasks() }
-        // Match the exact visible interval. A week can cross a month boundary,
-        // and the month grid includes its leading/trailing week days.
-        let period = displayPeriod
-        let start = period.start
-        let end = period.end
-        let chosen = eventStore.calendars(for: .event).filter { visibleCalendarIDs?.contains($0.calendarIdentifier) ?? true }
-        if chosen.isEmpty { events = [] }
-        else {
-            let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: chosen)
-            events = eventStore.events(matching: predicate).map { event in
-                CalendarAgendaEvent(id: event.eventIdentifier + ":" + String(event.startDate.timeIntervalSince1970), eventID: event.eventIdentifier,
-                                    title: event.title ?? "Без названия", start: event.startDate, end: event.endDate, allDay: event.isAllDay,
-                                    calendarID: event.calendar.calendarIdentifier, calendarTitle: event.calendar.title,
-                                    account: event.calendar.source.title, color: NSColor(cgColor: event.calendar.cgColor) ?? .systemPurple,
-                                    writable: event.calendar.allowsContentModifications && !event.hasRecurrenceRules,
-                                    taskID: links.first(where: { $0.isCanonicalEvent(identifier: event.eventIdentifier, url: event.url) })?.taskID)
-            }.sorted { $0.start == $1.start ? $0.title < $1.title : $0.start < $1.start }
-        }
-        lastRefreshed = Date()
+        let sources = Dictionary(uniqueKeysWithValues: calendars.map { ($0.id, $0) })
+        events = snapshot.events.compactMap { event in
+            guard let source = sources[event.calendarID] else { return nil }
+            return CalendarAgendaEvent(id: event.id + ":" + String(event.start.timeIntervalSince1970), eventID: event.id,
+                title: event.title, start: event.start, end: event.end, allDay: event.allDay,
+                calendarID: source.id, calendarTitle: source.title, account: source.account, color: source.color,
+                writable: event.writable,
+                taskID: links.first { $0.isCanonicalEvent(identifier: event.id, url: event.marker) }?.taskID)
+        }.sorted { $0.start == $1.start ? $0.title < $1.title : $0.start < $1.start }
     }
 
     /// Reads only calendars the user has already connected and made visible.
@@ -746,6 +841,8 @@ final class CalendarStore: ObservableObject {
     }
 
     #if DEBUG
+    var featureEnabledForChecks: Bool { featureEnabled }
+
     static func verifyPrivatePersistence(at directory: URL) throws {
         func expect(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
             guard try condition() else { throw AppError.message(message) }

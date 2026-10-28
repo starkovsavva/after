@@ -88,6 +88,19 @@ extension NotesStore {
         } catch { self.error = error.localizedDescription; return nil }
     }
 
+    /// Editing requires its own full read, independent of the navigation cache:
+    /// a late metadata refresh may replace cached bodies with list excerpts.
+    func taskWorkspaceForEditing(_ taskID: String) async throws -> TaskWorkspace {
+        let root = self.root
+        let task = try await Task.detached(priority: .userInitiated) {
+            let data = try RustBridge.shared.get().request(root: root, command: "task-get", arguments: ["taskID": taskID])
+            return try JSONDecoder().decode(TaskWorkspace.self, from: data)
+        }.value
+        try Task.checkCancellation()
+        guard task.id == taskID else { throw AppError.message("Не удалось загрузить выбранную задачу. Повторите попытку.") }
+        return task
+    }
+
     func taskWorkspace(for task: LibraryTask) -> TaskWorkspace {
         if let value = taskWorkspaces[task.id] { return value }
         let title = task.taskTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

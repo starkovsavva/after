@@ -60,14 +60,19 @@ struct TasksWorkspaceView: View {
         }
         .appControlDefaults()
         .onAppear {
-            notes.reload(); notes.loadTasks(); notes.loadTaskWorkspaces(); workspaceFileStamp = currentFileStamp()
+            workspaceFileStamp = currentFileStamp()
+            if !consumeTaskNavigation() { selectFirstIfNeeded() }
+        }
+        .task {
+            await notes.refresh(includeTasks: true)
+            guard !Task.isCancelled else { return }
             if !consumeTaskNavigation() { selectFirstIfNeeded() }
         }
         .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
             let stamp = currentFileStamp()
-            if stamp != workspaceFileStamp { workspaceFileStamp = stamp; notes.reload(); notes.loadTasks(); notes.loadTaskWorkspaces() }
+            if stamp != workspaceFileStamp { workspaceFileStamp = stamp; Task { await notes.refresh(includeTasks: true) } }
         }
-        .onChange(of: notes.selectedTaskID) { _, _ in notes.loadSelectedTaskWorkspace() }
+        .onChange(of: notes.selectedTaskID) { _, _ in Task { await notes.refresh(includeTasks: true) } }
         .onChange(of: notes.taskNavigationRequest) { _, _ in
             _ = consumeTaskNavigation()
         }
@@ -78,8 +83,8 @@ struct TasksWorkspaceView: View {
         .onChange(of: sourceFilter) { _, _ in selectFirstIfNeeded() }
         .onChange(of: query) { _, _ in selectFirstIfNeeded() }
         .onChange(of: notes.selectedTaskProject) { _, _ in selectFirstIfNeeded() }
-        .onChange(of: notes.workspace.notes) { _, _ in notes.loadTasks(); notes.loadTaskWorkspaces() }
-        .onChange(of: app.busy) { _, busy in if !busy { notes.reload(); notes.loadTasks(); notes.loadTaskWorkspaces() } }
+        .onChange(of: notes.workspace.notes) { _, _ in Task { await notes.refresh(includeTasks: true) } }
+        .onChange(of: app.busy) { _, busy in if !busy { Task { await notes.refresh(includeTasks: true) } } }
         .overlay(alignment: .bottomTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
         .sheet(isPresented: $newTaskSheet) {
             TaskCreationSheet(notes: notes, initialProject: notes.selectedTaskProject == "all" ? "" : notes.selectedTaskProject, initialFolderID: app.folderSelection) { task in

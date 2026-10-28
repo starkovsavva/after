@@ -7,7 +7,7 @@ struct CalendarView: View {
     var body: some View { CalendarWorkspace(calendar: app.calendar) }
 }
 
-private struct CalendarWorkspace: View {
+struct CalendarWorkspace: View {
     @EnvironmentObject private var app: AppStore
     @ObservedObject var calendar: CalendarStore
     @State private var creating: CalendarCreationDraft?
@@ -25,8 +25,13 @@ private struct CalendarWorkspace: View {
                             Label("Календари", systemImage: "line.3.horizontal.decrease")
                         }.buttonStyle(.bordered).accessibilityIdentifier("calendar.sources")
                             .popover(isPresented: $showingCalendars, arrowEdge: .bottom) { sources }
-                        Button { calendar.refresh() } label: { Image(systemName: "arrow.clockwise").frame(width: 24, height: 24) }
-                            .buttonStyle(.plain).help(refreshHelp).accessibilityLabel("Обновить календарь")
+                        Button { calendar.refresh() } label: {
+                            ZStack {
+                                Image(systemName: "arrow.clockwise").opacity(calendar.refreshing ? 0 : 1)
+                                if calendar.refreshing { ProgressView().controlSize(.small) }
+                            }.frame(width: 24, height: 24)
+                        }.buttonStyle(.plain).help(refreshHelp).accessibilityLabel(calendar.refreshing ? "Обновляю календарь" : "Обновить календарь")
+                            .disabled(calendar.refreshing).accessibilityIdentifier("calendar.refresh")
                         Button { createDefault() } label: { Label("Событие", systemImage: "plus") }
                             .buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(!canCreate)
                             .accessibilityIdentifier("calendar.add")
@@ -40,6 +45,13 @@ private struct CalendarWorkspace: View {
                             Label("Календари скрыты", systemImage: "eye.slash").foregroundStyle(Ink.secondaryText)
                             Button("Выбрать календари") { showingCalendars = true }.buttonStyle(.borderless)
                         }.font(AppTypography.control).accessibilityIdentifier("calendar.hiddenSources")
+                    }
+                    if calendar.calendars.isEmpty && !calendar.refreshing {
+                        HStack(spacing: 12) {
+                            Label("В macOS пока нет календарей", systemImage: "calendar.badge.exclamationmark")
+                                .foregroundStyle(Ink.secondaryText)
+                            Button("Добавить аккаунт") { CalendarStore.openAccounts() }.buttonStyle(.borderless)
+                        }.font(AppTypography.control).accessibilityIdentifier("calendar.noSources")
                     }
                     CalendarScheduleView(calendar: calendar, canCreate: canCreate,
                                          create: { create(at: $0) }, open: { editing = $0 },
@@ -60,7 +72,7 @@ private struct CalendarWorkspace: View {
                 }
             }
         }.appControlDefaults()
-            .onAppear { calendar.refresh() }
+            .onAppear { calendar.refreshIfNeeded() }
             .sheet(item: $creating) { draft in
                 CalendarEventEditor(calendar: calendar, initialStart: draft.start).environmentObject(app)
             }
@@ -165,13 +177,17 @@ private struct CalendarConnection: View {
         VStack(alignment: .leading, spacing: 16) {
             Image(systemName: "calendar").font(.system(size: 32, weight: .light)).foregroundStyle(Ink.accent)
             Text(app.isFeatureEnabled(.tasks) ? "Встречи и время для задач" : "Ваши встречи и события").font(AppTypography.sectionTitle)
-            Text("Подключите календари macOS. Google и Яндекс появятся здесь после добавления аккаунтов.")
+            Text(calendar.permissionDenied
+                 ? "Разрешите полный доступ в macOS. После возвращения сюда подключение продолжится."
+                 : "Подключите календари macOS один раз для всех папок. Google и Яндекс появятся после добавления аккаунтов.")
                 .font(AppTypography.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
-                Button(calendar.requesting ? "Подключение…" : "Подключить календарь") { Task { await calendar.connect() } }
-                    .buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(calendar.requesting || calendar.preview)
+                Button(calendar.requesting ? "Проверяю доступ…" : calendar.permissionDenied ? "Проверить доступ" : "Подключить календарь") { Task { await calendar.connect() } }
+                    .buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(calendar.requesting || !calendar.canConnect)
+                    .accessibilityIdentifier("calendar.connect")
                 if calendar.permissionDenied {
-                    Button("Доступ в macOS") { CalendarStore.openPermissions() }.buttonStyle(.bordered)
+                    Button("Разрешить в macOS") { CalendarStore.openPermissions() }.buttonStyle(.bordered)
+                        .accessibilityIdentifier("calendar.permissions")
                 }
             }
             CalendarAccountHelp()
@@ -353,8 +369,9 @@ struct CalendarEventEditor: View {
             }
             if let error = calendar.error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).textSelection(.enabled) }
         }.padding(24).frame(width: 520).fixedSize(horizontal: false, vertical: true).appControlDefaults()
-            .onAppear { calendar.refresh(); if !initialized { initialized = true; load() } }
+            .onAppear { calendar.refreshIfNeeded(); if !initialized { initialized = true; load() } }
             .onChange(of: calendar.connected) { _, connected in if connected { load() } }
+            .onChange(of: calendar.selectedCalendarID) { _, id in if calendarID.isEmpty { calendarID = id } }
             .onChange(of: start) { old, new in if end <= new { end = new.addingTimeInterval(max(900, end.timeIntervalSince(old))) } }
             .confirmationDialog("Отвязать событие от задачи?", isPresented: $unlinking, titleVisibility: .visible) {
                 Button("Отвязать") { if let currentTask { calendar.unlink(taskID: currentTask.id); dismiss() } }

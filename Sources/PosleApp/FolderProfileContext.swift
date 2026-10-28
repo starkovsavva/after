@@ -3,7 +3,7 @@ import PosleCore
 
 extension AppStore {
     func folderID(for meetingID: String) -> String? {
-        notes.workspace.contexts.first { $0.meetingID == meetingID }?.folderID
+        notes.context(for: meetingID).folderID
     }
     func effectiveSettings(for meetingID: String? = nil, folderID explicitFolderID: String? = nil) -> AppSettings {
         let id: String?

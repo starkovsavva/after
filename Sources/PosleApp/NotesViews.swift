@@ -59,7 +59,7 @@ struct NotesWorkspaceView: View {
             .onChange(of: notes.highlightedNoteID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
         }
         .overlay(alignment: .bottomTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
-        .onAppear { notes.reload() }
+        .onAppear { Task { await notes.refresh() } }
         .sheet(item: $editing) { note in NoteEditorView(notes: notes, note: note).environmentObject(app).appControlDefaults() }
         .sheet(isPresented: $showingContext) { MeetingContextEditor(notes: notes, meeting: meeting).environmentObject(app) }
     }
@@ -129,7 +129,7 @@ struct NotesInboxView: View {
                             .id(note.id).padding(2).background(notes.highlightedNoteID == note.id ? Ink.accent.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 9))
                     }
                 }.appContentLayout()
-            }.onAppear { notes.reload(); if notes.highlightedNoteID != nil { query = "" }; Task { await Task.yield(); if let id = notes.highlightedNoteID { proxy.scrollTo(id, anchor: .center) } } }
+            }.onAppear { Task { await notes.refresh() }; if notes.highlightedNoteID != nil { query = "" }; Task { await Task.yield(); if let id = notes.highlightedNoteID { proxy.scrollTo(id, anchor: .center) } } }
                 .onChange(of: notes.highlightedNoteID) { _, id in query = ""; Task { await Task.yield(); if let id { proxy.scrollTo(id, anchor: .center) } } }
                 .sheet(item: $editing) { note in NoteEditorView(notes: notes, note: note).environmentObject(app).appControlDefaults() }
         }.overlay(alignment: .bottomTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
@@ -435,15 +435,19 @@ private struct MeetingContextEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(app.isFeatureEnabled(.tasks) ? "Контекст встречи" : "Шаблон заметок").font(AppTypography.modalTitle)
+            Text(meeting.title).font(AppTypography.control).foregroundStyle(Ink.secondaryText).lineLimit(2)
             if app.isFeatureEnabled(.tasks) {
-                TextField("Проект", text: $context.project).textFieldStyle(.roundedBorder)
-                TextField("Человек", text: $context.person).textFieldStyle(.roundedBorder)
+                TextField("Проект", text: $context.project).textFieldStyle(.roundedBorder).accessibilityIdentifier("notes.context.project")
+                TextField("Человек", text: $context.person).textFieldStyle(.roundedBorder).accessibilityIdentifier("notes.context.person")
+                Text("Встреча появится в «Проекты и люди». Папка и её настройки сохранятся.")
+                    .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
             }
             Picker("Шаблон", selection: $selectedTemplate) {
                 Text("Без шаблона").tag(""); ForEach(notes.templates) { Text($0.name).tag($0.id) }
             }
             if !selectedTemplate.isEmpty { Toggle("Создать заметку по шаблону", isOn: $insertTemplate) }
             HStack { Spacer(); Button("Отмена") { close() }.accessibilityIdentifier("notes.context.cancel"); Button("Сохранить") {
+                guard dirty else { close(); return }
                 context.templateID = selectedTemplate.isEmpty ? nil : selectedTemplate
                 context.project = context.project.trimmingCharacters(in: .whitespacesAndNewlines); context.person = context.person.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard notes.saveContext(context) else { return }
@@ -571,56 +575,95 @@ struct NotesContextsView: View {
     @State private var selected = ""
     @State private var mode = "project"
     @State private var query = ""
-    private var allLabels: [String] {
-        var unique: [String: String] = [:]
-        let meetingIDs = Set(app.noteMeetings.map(\.id))
-        for context in notes.workspace.contexts where meetingIDs.contains(context.meetingID) {
-            let label = (mode == "project" ? context.project : context.person).trimmingCharacters(in: .whitespacesAndNewlines)
-            let key = label.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "ru_RU"))
-            if !label.isEmpty && unique[key] == nil { unique[key] = label }
-        }
-        return unique.values.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-    }
+    @State private var assigning = false
+    @State private var editingContext: Meeting?
+    @StateObject private var briefs = ContextBriefStore()
+    private var index: ContextLibraryIndex { ContextLibraryIndex(meetings: app.noteMeetings, contexts: notes.workspace.contexts, mode: mode) }
+    private var allLabels: [String] { index.labels }
     private var labels: [String] { allLabels.filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) } }
-    private var related: [Meeting] {
-        let ids = Set(notes.workspace.contexts.filter {
-            let label = (mode == "project" ? $0.project : $0.person).trimmingCharacters(in: .whitespacesAndNewlines)
-            return label.compare(selected, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
-        }.map(\.meetingID))
-        return app.noteMeetings.filter { ids.contains($0.id) }.sorted { $0.createdAt > $1.createdAt }
+    private var related: [Meeting] { index.meetings(for: selected) }
+    private var briefRequest: ContextBriefRequest {
+        ContextBriefRequest(folderID: app.folderSelection, mode: mode, label: selected, meetings: related)
     }
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: 18) {
                 AppWorkspaceHeader(title: "Проекты и люди") {
                     Picker("Группировать", selection: $mode) { Text("Проекты").tag("project"); Text("Люди").tag("person") }
                         .pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 200).accessibilityLabel("Проекты или люди")
+                        .accessibilityIdentifier("contexts.mode")
                 }
-                HStack(spacing: 12) {
-                    Picker(mode == "project" ? "Проект" : "Человек", selection: $selected) {
-                        if labels.isEmpty { Text(notes.error != nil ? "Недоступно" : mode == "project" ? "Нет проектов" : "Нет людей").tag("") }
-                        ForEach(labels, id: \.self) { Text($0).tag($0) }
-                    }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading).accessibilityLabel(mode == "project" ? "Выбрать проект" : "Выбрать человека")
-                    if !selected.isEmpty { Text("Встреч: \(related.count)").font(AppTypography.caption).foregroundStyle(.secondary) }
-                    if allLabels.count > 7 || !query.isEmpty {
-                        TextField("Фильтр", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 180)
-                            .accessibilityLabel(mode == "project" ? "Найти проект" : "Найти человека")
+                HStack(alignment: .top, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Встречи по общему проекту или человеку.").font(AppTypography.control).foregroundStyle(Ink.secondaryText)
+                        if let folder = app.notes.folder(app.folderSelection) {
+                            Label("В папке «\(folder.name)»", systemImage: "folder").font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if !allLabels.isEmpty {
+                        Button { assigning = true } label: { Label("Связать встречу…", systemImage: "plus") }
+                            .accessibilityIdentifier("contexts.add").disabled(app.noteMeetings.isEmpty || app.isTerminating)
+                    }
+                }
+                if !allLabels.isEmpty {
+                    HStack(spacing: 12) {
+                        Picker(mode == "project" ? "Проект" : "Человек", selection: $selected) {
+                            if labels.isEmpty { Text("Ничего не найдено").tag("") }
+                            ForEach(labels, id: \.self) { Text($0).tag($0) }
+                        }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading).accessibilityLabel(mode == "project" ? "Выбрать проект" : "Выбрать человека")
+                            .accessibilityIdentifier("contexts.selection")
+                        if !selected.isEmpty { Text("Встреч: \(related.count)").font(AppTypography.caption).foregroundStyle(.secondary) }
+                        if allLabels.count > 7 || !query.isEmpty {
+                            TextField("Фильтр", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 180)
+                                .accessibilityLabel(mode == "project" ? "Найти проект" : "Найти человека")
+                        }
                     }
                 }
                 if selected.isEmpty && notes.error == nil {
-                    NotesEmpty(title: query.isEmpty ? (mode == "project" ? "Проектов пока нет" : "Людей пока нет") : "Ничего не найдено",
-                               text: query.isEmpty ? "Добавьте проект или человека в параметрах заметок встречи." : "", icon: "rectangle.3.group")
+                    VStack(spacing: 0) {
+                        NotesEmpty(title: query.isEmpty ? (mode == "project" ? "Проектов пока нет" : "Людей пока нет") : "Ничего не найдено",
+                                   text: query.isEmpty ? (app.noteMeetings.isEmpty ? "Сначала добавьте встречу\(app.folderSelection == nil ? "" : " в эту папку")." : "Свяжите встречу с проектом или человеком, чтобы собрать её заметки и договорённости здесь.") : "", icon: mode == "project" ? "rectangle.3.group" : "person.2")
+                        if query.isEmpty {
+                            if app.noteMeetings.isEmpty {
+                                Button("Открыть встречи") { app.librarySection = "meetings" }
+                                    .accessibilityIdentifier("contexts.openMeetings")
+                            } else {
+                                Button("Связать встречу…") { assigning = true }
+                                    .buttonStyle(.borderedProminent).tint(Ink.actionFill).accessibilityIdentifier("contexts.add")
+                            }
+                            Text("Папки задают настройки. Проекты и люди собирают связанные встречи.")
+                                .font(AppTypography.caption).foregroundStyle(Ink.secondaryText).multilineTextAlignment(.center).frame(maxWidth: 440).padding(.top, 16)
+                        }
+                    }.frame(maxWidth: .infinity)
                 } else {
                     ForEach(related) { meeting in brief(meeting) }
                 }
             }.appContentLayout()
-        }.onAppear { notes.reload(); if let target = notes.contextSelection { mode = notes.contextMode; selected = target; notes.contextSelection = nil } else if selected.isEmpty { selected = labels.first ?? "" } }
-            .onChange(of: mode) { _, _ in if !labels.contains(selected) { selected = labels.first ?? "" } }
-            .onChange(of: query) { _, _ in if !labels.contains(selected) { selected = labels.first ?? "" } }
+        }.onAppear {
+            Task { await notes.refresh() }
+            if let target = notes.contextSelection { mode = notes.contextMode; selected = target; notes.contextSelection = nil }
+            normalizeSelection()
+        }
+            .onChange(of: mode) { _, _ in query = ""; normalizeSelection() }
+            .onChange(of: query) { _, _ in normalizeSelection() }
+            .onChange(of: allLabels) { _, _ in normalizeSelection() }
+            .onChange(of: app.folderSelection) { _, _ in query = ""; normalizeSelection() }
+            .task(id: briefRequest) { await briefs.load(root: app.root, request: briefRequest) }
+            .onDisappear { briefs.cancel() }
+            .sheet(isPresented: $assigning) {
+                ContextAssignmentSheet(notes: notes, mode: mode, suggestedLabel: selected) { savedLabel in
+                    query = ""; selected = savedLabel
+                }.environmentObject(app)
+            }
+            .sheet(item: $editingContext) { meeting in MeetingContextEditor(notes: notes, meeting: meeting).environmentObject(app).appControlDefaults() }
             .overlay(alignment: .bottomTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
     }
+    private func normalizeSelection() {
+        if !labels.contains(selected) { selected = labels.first ?? "" }
+    }
     @ViewBuilder private func brief(_ meeting: Meeting) -> some View {
-        let summary: Summary? = app.read(app.meetingDirectory(meeting.id).appendingPathComponent("summary.json"))
+        let summary = briefs.summaries[meeting.id]
         let actions = summary?.items.filter { ["decision", "question"].contains($0.kind) || ($0.kind == "action" && !meeting.completedTasks.contains($0.id)) } ?? []
         let own = notes.notes(for: meeting.id).filter { $0.kind != "task" || !$0.completed }
         VStack(alignment: .leading, spacing: 15) {
@@ -655,7 +698,11 @@ struct NotesContextsView: View {
                     }.padding(.top, 8)
                 }.font(AppTypography.controlStrong)
             }
-            if summary == nil && own.isEmpty { Text("Конспект ещё не создан. Откройте встречу, чтобы добавить заметки.").font(AppTypography.control).foregroundStyle(.secondary) }
+            if summary == nil && own.isEmpty {
+                if briefs.loading { ProgressView().controlSize(.small).accessibilityLabel("Загрузка конспекта") }
+                else { Text("Конспект ещё не создан. Откройте встречу, чтобы добавить заметки.").font(AppTypography.control).foregroundStyle(.secondary) }
+            }
+            HStack { Spacer(); Button("Изменить связь…") { editingContext = meeting }.buttonStyle(.borderless).font(AppTypography.control).accessibilityIdentifier("contexts.edit." + meeting.id) }
         }.padding(16).background(Ink.soft, in: RoundedRectangle(cornerRadius: 10))
     }
 }

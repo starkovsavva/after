@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -40,6 +41,10 @@ struct UpdateSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                     .accessibilityIdentifier("updates.status")
             }
+            if updates.settingsSaveFailed {
+                Button("Повторить установку") { updates.retryInstallation() }
+                    .buttonStyle(.bordered).disabled(updates.waitingForWork).accessibilityIdentifier("updates.retryInstall")
+            }
             Link("История версий", destination: URL(string: "https://github.com/starkovsavva/posle/releases")!)
                 .font(AppTypography.caption)
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -69,6 +74,34 @@ struct UpdateAvailabilityButton: View {
                         }
                     }.padding(20).appControlDefaults().frame(minWidth: 280)
                 }
+        }
+    }
+}
+
+/// Reads only this sheet's native window, rather than guessing from the key
+/// window (which belongs to Sparkle as soon as its installer is shown).
+struct UpdateSettingsWindowReader: NSViewRepresentable {
+    let updates: AppUpdateController
+    func makeNSView(context: Context) -> WindowReader { WindowReader(updates: updates) }
+    func updateNSView(_ view: WindowReader, context: Context) { view.updates = updates }
+    final class WindowReader: NSView {
+        weak var updates: AppUpdateController?
+        init(updates: AppUpdateController) { self.updates = updates; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { updates?.registerSettingsWindow(window) }
+        }
+    }
+}
+
+struct SettingsDraftWarning: View {
+    @ObservedObject var updates: AppUpdateController
+    var body: some View {
+        if let message = updates.settingsDraftStatus {
+            Text(message).font(AppTypography.caption).foregroundStyle(Ink.warning)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("settings.unsaved.warning")
         }
     }
 }

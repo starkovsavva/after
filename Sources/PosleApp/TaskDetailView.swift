@@ -8,7 +8,7 @@ struct TaskDetailView: View {
     @ObservedObject var notes: NotesStore
     let task: TaskWorkspace
     @State private var tab = "materials"
-    @State private var editing = false
+    @State private var editing: TaskWorkspace?
     @State private var access = false
     @State private var exporting = false
     @State private var context: TaskSnapshotPresentation?
@@ -33,7 +33,7 @@ struct TaskDetailView: View {
                     .frame(maxWidth: .infinity).background(Ink.paper)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .sheet(isPresented: $editing) { TaskCreationSheet(notes: notes, task: task) { _ in } }
+            .sheet(item: $editing) { selected in TaskCreationSheet(notes: notes, task: selected) { _ in } }
             .sheet(isPresented: $access) { TaskAgentAccessSheet(notes: notes, taskID: task.id) }
             .sheet(isPresented: $exporting) { TrackerSyncExportSheet(coordinator: app.trackerSync, taskID: task.id, taskTitle: task.title) }
             .sheet(item: $context) { TaskSnapshotSheet(snapshot: $0.snapshot, title: "Контекст для агента") }
@@ -48,7 +48,7 @@ struct TaskDetailView: View {
                         .buttonStyle(.plain).help("Открыть оригинал задачи").accessibilityLabel("Открыть оригинал задачи")
                 }
                 Menu {
-                    Button("Изменить задачу…") { editing = true }
+                    Button("Изменить задачу…") { editing = task }
                     Divider()
                     Button("Доступ агентам…") { access = true }
                     Button("Что увидит агент…") {

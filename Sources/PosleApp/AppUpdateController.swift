@@ -17,12 +17,15 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     @Published private(set) var canRevealDraft = false
     @Published private(set) var availableVersion: String?
     @Published private(set) var showsUpdateAnnouncement = false
+    @Published private(set) var settingsSaveFailed = false
+    @Published private(set) var settingsDraftStatus: String?
     private var availableBuild: String?
     private var dismissedBuild: String?
     private var attendedBuild: String?
     private(set) var relaunchRequested = false
     private weak var store: AppStore?
     private var controller: SPUStandardUpdaterController?
+    private weak var settingsWindow: NSWindow?
     private var observations = Set<AnyCancellable>()
     private var pendingCheck = false
     private var installHandler: (() -> Void)?
@@ -43,14 +46,14 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     }
     private var workInProgress: Bool {
         guard let store else { return false }
-        return store.startingRecording || store.isRecording || store.stoppingRecording || store.isTerminating || store.busy || store.trackerSync.busy || SemanticIndexController.shared.running || store.jobs.activeCount > 0 || store.notes.attachmentBusy || store.voice.isWorking || ChatGPTAccount.shared.isConnecting || ChatGPTAccount.shared.isLoadingModels || ChatGPTAccount.shared.isRefreshing || ChatGPTAccount.shared.isSigningOut || !store.disconnectingChatGPTAccounts.isEmpty
+        return SettingsDraftRegistry.isBusy || store.startingRecording || store.isRecording || store.stoppingRecording || store.isTerminating || store.busy || store.trackerSync.busy || SemanticIndexController.shared.running || store.jobs.activeCount > 0 || store.notes.attachmentBusy || store.voice.isWorking || ChatGPTAccount.shared.isConnecting || ChatGPTAccount.shared.isLoadingModels || ChatGPTAccount.shared.isRefreshing || ChatGPTAccount.shared.isSigningOut || !store.disconnectingChatGPTAccounts.isEmpty
     }
     private var editorOpen: Bool {
         guard let store else { return false }
         return store.voice.isPresented || store.editingOverview || store.notes.editingNewTask || store.showingCaptureDrafts || store.showingSettings || store.showingRecord || store.showingSearch || NSApp.modalWindow != nil ||
             NSApp.windows.contains { $0.attachedSheet != nil || ($0 is NSPanel && $0.isVisible && $0.title == "Быстрая заметка") }
     }
-    var canSafelyRelaunch: Bool { !UnsavedEditorRegistry.hasUnsaved && !workInProgress && !editorOpen && !hasQuickDraft() && store?.notes.hasUnsavedCaptureDrafts != true && !failedLibraryFlush && !failedOverviewFlush }
+    var canSafelyRelaunch: Bool { !SettingsDraftRegistry.hasUnsaved && !UnsavedEditorRegistry.hasUnsaved && !workInProgress && !editorOpen && !hasQuickDraft() && store?.notes.hasUnsavedCaptureDrafts != true && !failedLibraryFlush && !failedOverviewFlush && !settingsSaveFailed }
 
     func start(store: AppStore, hasQuickDraft: @escaping () -> Bool, showQuickDraft: @escaping () -> Void) {
         guard controller == nil, Bundle.main.bundleIdentifier == "app.posle.meetings",
@@ -95,7 +98,10 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     func checkForUpdates() {
         guard canCheck, let controller else { return }
         NSApp.keyWindow?.makeFirstResponder(nil)
-        store?.saveSettings()
+        guard store?.saveSettings() != false else {
+            status = "Не удалось сохранить настройки. Повторите сохранение перед обновлением."
+            return
+        }
         status = "Проверяю обновления…"
         controller.checkForUpdates(nil)
     }
@@ -109,9 +115,13 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         }
     }
     private func refreshAvailability() {
+        if !SettingsDraftRegistry.hasUnsaved, let previous = settingsDraftStatus {
+            if status == previous { status = nil }
+            settingsDraftStatus = nil
+        }
         let waiting = isAvailable && workInProgress
         if waitingForWork != waiting { waitingForWork = waiting }
-        let deferred = installHandler != nil && (UnsavedEditorRegistry.hasUnsaved || hasQuickDraft() || store?.notes.hasUnsavedCaptureDrafts == true || failedLibraryFlush || failedOverviewFlush)
+        let deferred = installHandler != nil && (SettingsDraftRegistry.hasUnsaved || UnsavedEditorRegistry.hasUnsaved || hasQuickDraft() || store?.notes.hasUnsavedCaptureDrafts == true || failedLibraryFlush || failedOverviewFlush || settingsSaveFailed)
         let reveal = deferred && !workInProgress && !editorOpen
         let check = isAvailable && sparkleCanCheck && !workInProgress && installHandler == nil && !relaunchRequested
         if hasDeferredDraft != deferred { hasDeferredDraft = deferred }
@@ -166,17 +176,20 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     }
     private func resumeWhenIdle() {
         refreshAvailability()
-        guard !workInProgress && !editorOpen else { return }
+        guard !workInProgress else { return }
+        if installHandler != nil { prepareSettingsForInstallation() }
+        guard !editorOpen else { return }
         if let handler = installHandler {
-            guard !UnsavedEditorRegistry.hasUnsaved else {
-                status = "Сохраните правки перед установкой обновления"
-                refreshAvailability(); return
-            }
+            guard !settingsSaveFailed else { return }
             if hasQuickDraft() {
                 if !promptedQuickDraft { promptedQuickDraft = true; showQuickDraft() }
                 return
             }
             if revealCaptureDraftIfNeeded() { return }
+            guard !UnsavedEditorRegistry.hasUnsaved else {
+                status = "Сохраните правки перед установкой обновления"
+                refreshAvailability(); return
+            }
             guard store?.flushOverviewDrafts() != false else {
                 failedOverviewFlush = true
                 revealOverviewDraftIfNeeded(); refreshAvailability(); return
@@ -199,10 +212,54 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
             retryTimer?.invalidate(); retryTimer = nil
         }
     }
+    /// The settings sheet edits live preferences, so a clean sheet is not an
+    /// unsaved document. Close only this known sheet after committing its field
+    /// editor and persisting the preferences; arbitrary sheets keep their guard.
+    func registerSettingsWindow(_ window: NSWindow) { settingsWindow = window }
+    private func prepareSettingsForInstallation() {
+        guard let store, store.showingSettings, !settingsSaveFailed, !workInProgress,
+              let window = settingsWindow, window.sheetParent != nil,
+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        guard !SettingsDraftRegistry.hasUnsaved else { revealSettingsDrafts(); return }
+        guard window.makeFirstResponder(nil) else {
+            settingsSaveFailed = true
+            status = "Завершите ввод в настройках и повторите установку."
+            refreshAvailability(); return
+        }
+        // Resigning a field editor can present another editor. Only the known
+        // settings sheet may close; documents elsewhere retain the restart gate.
+        guard window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        guard !SettingsDraftRegistry.hasUnsaved else { revealSettingsDrafts(); return }
+        guard store.saveSettings() else {
+            settingsSaveFailed = true
+            status = "Не удалось сохранить настройки. Правки сохранены в окне; повторите установку."
+            refreshAvailability(); return
+        }
+        store.showingSettings = false
+        status = "Закрываю настройки перед установкой…"
+        // SwiftUI detaches the native sheet asynchronously. editorOpen remains
+        // the final boundary until that happens; never end a sheet behind it.
+    }
+    func revealSettingsDrafts() {
+        guard SettingsDraftRegistry.hasUnsaved else { return }
+        settingsDraftStatus = "Сохраните или отмените изменения: " + SettingsDraftRegistry.titles + "."
+        status = settingsDraftStatus
+    }
+    func settingsDidSave() {
+        settingsSaveFailed = false
+        refreshAvailability()
+    }
+    func retryInstallation() {
+        guard installHandler != nil, !workInProgress else { return }
+        settingsSaveFailed = false
+        resumeWhenIdle()
+    }
     func revealPendingDraft() {
         guard installHandler != nil, !workInProgress, !editorOpen else { return }
         promptedQuickDraft = false; promptedCaptureKey = nil; promptedLibraryDraft = false; promptedOverviewDraft = false
-        if hasQuickDraft() { promptedQuickDraft = true; showQuickDraft() }
+        if SettingsDraftRegistry.hasUnsaved { revealSettingsDrafts() }
+        else if settingsSaveFailed { store?.openSettings("updates") }
+        else if hasQuickDraft() { promptedQuickDraft = true; showQuickDraft() }
         else if !revealCaptureDraftIfNeeded() {
             if failedOverviewFlush { revealOverviewDraftIfNeeded() }
             else { revealLibraryDraftIfNeeded() }
@@ -212,7 +269,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     private func clearDeferredInstallation() {
         installHandler = nil; promptedQuickDraft = false; promptedCaptureKey = nil
         failedLibraryFlush = false; promptedLibraryDraft = false
-        failedOverviewFlush = false; promptedOverviewDraft = false
+        failedOverviewFlush = false; promptedOverviewDraft = false; settingsSaveFailed = false; settingsDraftStatus = nil
         relaunchRequested = false
         if !pendingCheck { retryTimer?.invalidate(); retryTimer = nil }
         refreshAvailability()
@@ -298,6 +355,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         refreshAvailability()
     }
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem, untilInvokingBlock handler: @escaping () -> Void) -> Bool {
+        prepareSettingsForInstallation()
         let safe = canSafelyRelaunch
         let overviewFlushed = safe && store?.flushOverviewDrafts() != false
         let flushed = overviewFlushed && flushLibraryDrafts()
@@ -307,9 +365,14 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         failedOverviewFlush = safe && !overviewFlushed
         failedLibraryFlush = overviewFlushed && !flushed
         installHandler = handler
-        status = workInProgress ? "Установлю после завершения обработки" : "Сохраните правки и закройте редакторы для установки"
-        store?.notice = status
-        if !workInProgress && !editorOpen {
+        let closingSettings = store?.showingSettings == false && settingsWindow?.sheetParent != nil
+        if !settingsSaveFailed && settingsDraftStatus == nil {
+            status = workInProgress ? "Установлю после завершения обработки"
+                : closingSettings ? "Закрываю настройки перед установкой…"
+                : "Сохраните правки и закройте редакторы для установки"
+        }
+        if !closingSettings { store?.notice = status }
+        if !workInProgress && !editorOpen && !settingsSaveFailed {
             if hasQuickDraft() { promptedQuickDraft = true; showQuickDraft() }
             else if !revealCaptureDraftIfNeeded() {
                 if failedOverviewFlush { revealOverviewDraftIfNeeded() }
@@ -348,12 +411,13 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     #if DEBUG
     /// Dependency-free test entry: no framework controller, preferences or network.
     func configureForChecks(store: AppStore, hasQuickDraft: @escaping () -> Bool = { false },
-                            flushLibraryDrafts: (() -> Bool)? = nil) {
-        self.store = store; self.hasQuickDraft = hasQuickDraft
+                            showQuickDraft: @escaping () -> Void = {}, flushLibraryDrafts: (() -> Bool)? = nil) {
+        self.store = store; self.hasQuickDraft = hasQuickDraft; self.showQuickDraft = showQuickDraft
         loadReminderPreferences()
         self.flushLibraryDrafts = flushLibraryDrafts ?? { NoteDraftPersistence.flushAll() }
     }
     func postponeForChecks(_ handler: @escaping () -> Void) { installHandler = handler }
+    var hasSettingsWindowForChecks: Bool { settingsWindow?.sheetParent != nil }
     func resumeForChecks() { resumeWhenIdle() }
     func announceForChecks(version: String, build: String) {
         isAvailable = true; sparkleCanCheck = true

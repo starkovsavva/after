@@ -146,7 +146,51 @@ enum CalendarWorkspaceNativeChecks {
         try expect(signature(calendar.events) == original && app.meetings.isEmpty && app.notes.notes.isEmpty,
                    "Opening a draft editor must not create calendar events, meetings or notes")
         print("PASS: native editor initialStart survives load with a 30-minute end; Save is never invoked")
-        print("8 native calendar workspace checks passed")
+        editor.close()
+        try await verifyConnectionFlow(app: app, root: root)
+        print("10 native calendar workspace checks passed")
+    }
+
+    private static func verifyConnectionFlow(app: AppStore, root: URL) async throws {
+        app.settings.features.calendar = false
+        app.saveSettings()
+        try await CalendarConnectionChecks.settle { !app.calendar.featureEnabledForChecks }
+        var folder = LibraryFolder(name: "Рабочие встречи")
+        folder.overrides.features = FolderFeatureOverrides()
+        folder.overrides.features?.calendar = true
+        guard let saved = app.notes.saveFolder(folder) else { throw AppError.message(app.notes.error ?? "Cannot create calendar folder") }
+        app.folderSelection = saved.id
+        try await CalendarConnectionChecks.settle {
+            app.visibleFeatures.calendar && app.availableFeatures.calendar && app.calendar.featureEnabledForChecks
+        }
+        app.librarySection = "calendar"
+        try expect(app.folderSelection == saved.id && app.librarySection == "calendar" && !app.settings.features.calendar,
+            "A new folder must enable the calendar workflow without changing app defaults or its selected folder")
+        print("PASS: a new folder enables the shared calendar lifecycle before its visible connection workflow is used")
+        let fixture = CalendarReadFixture()
+        let calendar = CalendarStore(root: root, preview: true, readClient: fixture.client)
+        let host = NativeHost(AnyView(CalendarWorkspace(calendar: calendar).environmentObject(app)
+            .environment(\.locale, Locale(identifier: "ru_RU"))), width: 820, height: 620)
+        defer { host.close(); calendar.stop(); fixture.finish() }
+        try await settle(host) { node("calendar.connect", in: host) != nil }
+        let connect = try required(node("calendar.connect", in: host), "Connect calendar missing")
+        try expect(connect.isEnabled && connect.press(), "The actual Connect control must start authorization")
+        try await settle(host) { fixture.accessRequests == 1 && calendar.requesting && node("calendar.connect", in: host)?.isEnabled == false }
+        try expect(node("calendar.grid", in: host) == nil, "Pending authorization must keep onboarding visible")
+        fixture.grant(true, status: .fullAccess)
+        try await settle(host) { node("calendar.grid", in: host) != nil && fixture.reads.count == 1 }
+        try expect(node("calendar.connect", in: host) == nil && calendar.refreshing,
+            "Actual UI must leave onboarding after permission, before the delayed read completes")
+        try expect(node("calendar.mode", in: host)?.isEnabled == true && node("calendar.refresh", in: host)?.isEnabled == false,
+            "Loading only disables refresh; period navigation remains usable")
+        fixture.complete(0)
+        try await settle(host) { !calendar.refreshing && node("calendar.add", in: host)?.isEnabled == true }
+        fixture.status = .denied
+        calendar.refreshIfNeeded()
+        try await settle(host) { node("calendar.permissions", in: host) != nil && node("calendar.grid", in: host) == nil }
+        try expect(node("calendar.connect", in: host)?.isEnabled == true && calendar.events.isEmpty,
+            "Revoked access must show an actionable retry and clear old event text")
+        print("PASS: actual Connect disables repeated requests, opens the schedule while loading and shows retry when permission is revoked")
     }
 
     @MainActor private final class CapturedActions {

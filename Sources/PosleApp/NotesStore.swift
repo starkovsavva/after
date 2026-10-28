@@ -9,16 +9,25 @@ import Vision
 @MainActor
 final class NotesStore: ObservableObject {
     let root: URL
-    @Published var workspace = NotesWorkspace(notes: [], templates: [], contexts: [])
+    let refreshState = NotesRefreshState()
+    private var sortedNotes: [CapturedNote] = []
+    private var contextsByMeeting: [String: MeetingContext] = [:]
+    @Published var workspace = NotesWorkspace(notes: [], templates: [], contexts: []) {
+        didSet {
+            refreshState.revision &+= 1
+            sortedNotes = workspace.notes.filter { $0.trashedAt == nil }.sorted { $0.pinned != $1.pinned ? $0.pinned : $0.updatedAt > $1.updatedAt }
+            contextsByMeeting = Dictionary(workspace.contexts.map { ($0.meetingID, $0) }, uniquingKeysWith: { _, newer in newer })
+        }
+    }
     @Published var error: String?
     @Published var notice: String?
     @Published var attachmentBusy = false
-    @Published var tasks: [LibraryTask] = []
+    @Published var tasks: [LibraryTask] = [] { didSet { refreshState.revision &+= 1 } }
     @Published var selectedTaskID: String?
     @Published var selectedTaskProject = "all"
     @Published var taskNavigationRequest = UUID()
     var pendingTaskNavigationID: String?
-    @Published var taskWorkspaces: [String: TaskWorkspace] = [:]
+    @Published var taskWorkspaces: [String: TaskWorkspace] = [:] { didSet { refreshState.revision &+= 1 } }
     @Published var taskWorkspaceBusy = false
     @Published var newLibraryNoteRequest = UUID()
     @Published var selectedNoteID: String?
@@ -68,14 +77,14 @@ final class NotesStore: ObservableObject {
             self.error = "Не удалось сохранить черновик. Ваш текст остался в редакторе."; return false
         }
     }
-    var notes: [CapturedNote] { workspace.notes.filter { $0.trashedAt == nil }.sorted { $0.pinned != $1.pinned ? $0.pinned : $0.updatedAt > $1.updatedAt } }
+    var notes: [CapturedNote] { sortedNotes }
     var templates: [NoteTemplate] { workspace.templates }
     func notes(for meetingID: String?) -> [CapturedNote] { notes.filter { $0.meetingID == meetingID } }
     func inbox(meetingIDs: Set<String>) -> [CapturedNote] {
         notes.filter { note in note.meetingID.map { !meetingIDs.contains($0) } ?? true }
     }
     func context(for meetingID: String) -> MeetingContext {
-        workspace.contexts.first { $0.meetingID == meetingID } ?? MeetingContext(meetingID: meetingID)
+        contextsByMeeting[meetingID] ?? MeetingContext(meetingID: meetingID)
     }
     func reload() {
         do {

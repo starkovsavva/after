@@ -139,7 +139,7 @@ public struct MeetingContext: Codable, Identifiable, Hashable {
         self.meetingID = meetingID; self.folderID = folderID; self.project = project; self.person = person; self.templateID = templateID; self.revision = revision
     }
 }
-public struct NotesWorkspace: Codable {
+public struct NotesWorkspace: Codable, Equatable {
     public var notes: [CapturedNote]
     public var templates: [NoteTemplate]
     public var contexts: [MeetingContext]

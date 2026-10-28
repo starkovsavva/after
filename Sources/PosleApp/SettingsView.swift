@@ -62,7 +62,7 @@ struct SettingsView: View {
             HStack {
                 Text("Настройки").font(AppTypography.modalTitle)
                 Spacer()
-                Button { store.saveSettings(); dismiss() } label: { Image(systemName: "xmark").padding(6) }
+                Button { closeSettings() } label: { Image(systemName: "xmark").padding(6) }
                     .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Сохранить и закрыть настройки")
             }.padding(22)
             Divider()
@@ -71,7 +71,7 @@ struct SettingsView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 5) {
                             ForEach(sections, id: \.0) { id, title, icon in
-                                Button { section = id } label: {
+                                Button { selectSection(id) } label: {
                                     Label(title, systemImage: icon).font(AppTypography.control)
                                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 11).padding(.vertical, 11)
                                         .background(section == id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 6))
@@ -102,16 +102,18 @@ struct SettingsView: View {
                             if store.canCancelJob { Button("Отменить") { store.cancelJob() }.buttonStyle(.bordered) }
                         }.accessibilityElement(children: .contain)
                     }
+                    SettingsDraftWarning(updates: store.updates)
                     if let error = store.error {
                         Label(error, systemImage: "exclamationmark.triangle")
                             .font(AppTypography.caption).foregroundStyle(Ink.warning)
                             .lineLimit(2).help(error).textSelection(.enabled)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                Button("Готово") { store.saveSettings(); dismiss() }.buttonStyle(.borderedProminent)
+                Button("Готово") { closeSettings() }.buttonStyle(.borderedProminent)
                     .tint(Ink.actionFill).keyboardShortcut(.defaultAction)
             }.padding(.horizontal, 16).frame(height: AppLayout.statusHeight)
         }.frame(width: 900, height: 690).background(Ink.paper).tint(Ink.accent).appControlDefaults()
+            .background(UpdateSettingsWindowReader(updates: store.updates).frame(width: 0, height: 0))
             .preferredColorScheme(theme.colorScheme)
             .sheet(isPresented: $showingTemplates) {
                 VStack(spacing: 16) {
@@ -137,9 +139,22 @@ struct SettingsView: View {
                 editingCustomLocalModel = !isPresetModel(model)
                 if editingCustomLocalModel { customLocalModel = model }
             }
-            .onChange(of: store.settingsSection) { _, selected in section = selected }
+            .onChange(of: store.settingsSection) { _, selected in selectSection(selected) }
             .onChange(of: section) { _, selected in store.settingsSection = selected }
             .onDisappear { store.saveSettings() }
+    }
+    private func selectSection(_ target: String) {
+        guard target != section else { return }
+        guard !SettingsDraftRegistry.hasUnsaved else {
+            store.updates.revealSettingsDrafts(); store.settingsSection = section; return
+        }
+        section = target
+    }
+    private func closeSettings() {
+        guard !SettingsDraftRegistry.hasUnsaved else { store.updates.revealSettingsDrafts(); return }
+        guard store.saveSettings() else { return }
+        store.updates.settingsDidSave()
+        dismiss()
     }
     @ViewBuilder private var settingsContent: some View {
         switch section {
@@ -215,7 +230,12 @@ struct SettingsView: View {
     }
     private var aiSettings: some View {
         settingsSection(store.isFeatureEnabled(.cards) ? "Конспект и карточки" : "Конспект", "sparkles") {
-            Picker("Обработка", selection: $store.settings.mode) {
+            Picker("Обработка", selection: Binding(get: { store.settings.mode }, set: { mode in
+                guard !SettingsDraftRegistry.hasUnsaved else {
+                    store.updates.revealSettingsDrafts(); store.objectWillChange.send(); return
+                }
+                store.settings.mode = mode
+            })) {
                 Label("На Mac", systemImage: "laptopcomputer").tag("local")
                 Label("Облако", systemImage: "cloud").tag("cloud")
             }.pickerStyle(.segmented).tint(Ink.actionFill)

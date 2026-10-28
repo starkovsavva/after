@@ -2,6 +2,7 @@
 import AppKit
 import Foundation
 import PosleCore
+import SwiftUI
 
 /// Real AppStore state and native sheets, isolated from production updater/feed.
 @MainActor
@@ -43,6 +44,10 @@ enum UpdateNativeChecks {
         parent.beginSheet(editor, completionHandler: { _ in })
         try expect(!updates.canSafelyRelaunch, "Native editor sheets block restart independently of store flags")
         parent.endSheet(editor); editor.orderOut(nil); parent.orderOut(nil)
+        try await verifySettingsInstallation(app: app, updates: updates)
+        try await SettingsDraftNativeChecks.run(app: app, updates: updates)
+        try await verifyHiddenQuickCapture(app: app, updates: updates)
+        updates.configureForChecks(store: app, hasQuickDraft: { draft })
         draft = true
         try expect(!updates.canSafelyRelaunch, "Hidden quick-capture draft must survive update")
         print("PASS: settings, native sheets and hidden quick-capture drafts block restart")
@@ -162,7 +167,128 @@ enum UpdateNativeChecks {
                    "Cancelling the isolated queued job must release the update gate and clear its waiting reason")
         print("PASS: real queued job blocks restart independently of the legacy busy flag")
         try QuickCaptureController.verifyDraftPreservation(store: app)
-        print("10 native updater checks passed (no production feed, preferences or installation)")
+        print("13 native updater checks passed (no production feed, preferences or installation)")
+    }
+    private struct SettingsHarness: View {
+        @ObservedObject var app: AppStore
+        var body: some View {
+            Color.clear.frame(width: 1040, height: 760)
+                .sheet(isPresented: $app.showingSettings) {
+                    SettingsView(section: "updates").environmentObject(app)
+                }
+        }
+    }
+    private static func waitUntil(_ message: String, _ condition: () -> Bool) async throws {
+        for _ in 0..<150 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try expect(condition(), message)
+    }
+    private static func verifyHiddenQuickCapture(app: AppStore, updates: AppUpdateController) async throws {
+        let capture = QuickCaptureController(store: app)
+        defer { capture.stop(); updates.standardUserDriverWillFinishUpdateSession() }
+        capture.show()
+        func visiblePanel() -> NSWindow? { NSApp.windows.first { $0.isVisible && $0.title == "Быстрая заметка" } }
+        func textEditor(in view: NSView) -> PlainNoteTextView? {
+            if let editor = view as? PlainNoteTextView { return editor }
+            for child in view.subviews { if let editor = textEditor(in: child) { return editor } }
+            return nil
+        }
+        guard let panel = visiblePanel(), let content = panel.contentView else { throw AppError.message("Quick-capture panel did not open") }
+        try await waitUntil("Quick-capture native editor must appear") { textEditor(in: content) != nil }
+        guard let editor = textEditor(in: content) else { throw AppError.message("Quick-capture native editor is missing") }
+        editor.insertText("Не потерять мысль при обновлении", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await waitUntil("Native typing must register the unsaved quick-capture draft") { capture.hasUnsavedDraft && UnsavedEditorRegistry.hasUnsaved }
+        panel.performClose(nil)
+        try expect(visiblePanel() == nil, "Quick-capture fixture must hide its own native panel")
+        var installs = 0, reveals = 0
+        updates.configureForChecks(store: app, hasQuickDraft: { capture.hasUnsavedDraft }, showQuickDraft: {
+            reveals += 1; capture.show()
+        })
+        updates.postponeForChecks { installs += 1 }
+        updates.resumeForChecks(); updates.resumeForChecks()
+        try expect(reveals == 1 && installs == 0 && capture.hasUnsavedDraft && UnsavedEditorRegistry.hasUnsaved,
+                   "A registered hidden quick-capture draft must reveal its editor instead of being stranded behind the generic dirty gate")
+        guard let recoveredPanel = visiblePanel(), let recoveredContent = recoveredPanel.contentView else { throw AppError.message("Update recovery did not reveal quick capture") }
+        try await waitUntil("Recovered native editor must retain the full draft") { textEditor(in: recoveredContent)?.string == "Не потерять мысль при обновлении" }
+        guard let recovered = textEditor(in: recoveredContent) else { throw AppError.message("Recovered editor is missing") }
+        recovered.selectAll(nil); recovered.deleteBackward(nil)
+        try await waitUntil("Clearing the fixture draft must release its dirty registration") { !capture.hasUnsavedDraft && !UnsavedEditorRegistry.hasUnsaved }
+        recoveredPanel.performClose(nil)
+        updates.resumeForChecks(); updates.resumeForChecks()
+        try expect(installs == 1, "Resolving the quick-capture draft must resume installation exactly once")
+        updates.standardUserDriverWillFinishUpdateSession()
+        print("PASS: updater reveals a real hidden quick-capture draft without losing text or bypassing the install gate")
+    }
+    private static func verifySettingsInstallation(app: AppStore, updates: AppUpdateController) async throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 760),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.contentViewController = NSHostingController(rootView: SettingsHarness(app: app))
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            app.showingSettings = false; window.orderOut(nil); window.contentViewController = nil; window.contentView = nil
+            updates.standardUserDriverWillFinishUpdateSession()
+        }
+        var installs = 0, installedWhileAttached = false
+        app.showingSettings = true
+        try await waitUntil("The real Settings sheet must register its own native window") { updates.hasSettingsWindowForChecks }
+        app.settings.language = "en"
+        app.busy = true
+        updates.postponeForChecks {
+            installs += 1; installedWhileAttached = installedWhileAttached || window.attachedSheet != nil
+        }
+        updates.resumeForChecks()
+        try expect(app.showingSettings && installs == 0, "An install request must preserve Settings while processing is active")
+        app.busy = false
+        let dirty = UUID()
+        UnsavedEditorRegistry.set(id: dirty, title: "Шаблон", dirty: true)
+        updates.resumeForChecks()
+        try expect(!app.showingSettings && installs == 0 && UnsavedEditorRegistry.hasUnsaved,
+                   "Closing clean Settings must preserve a dirty document and block installation")
+        try await waitUntil("Clean Settings must detach while unrelated draft remains protected") { window.attachedSheet == nil }
+        updates.resumeForChecks()
+        try expect(installs == 0, "A hidden dirty document must keep the actual install callback blocked")
+        app.showingSettings = true
+        try await waitUntil("Settings must reopen without losing the protected draft") { updates.hasSettingsWindowForChecks }
+        guard let sheet = window.attachedSheet else { throw AppError.message("Settings sheet disappeared before install") }
+        let child = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 160, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.beginSheet(child, completionHandler: { _ in })
+        UnsavedEditorRegistry.remove(id: dirty)
+        updates.resumeForChecks()
+        try expect(app.showingSettings && installs == 0, "A nested editor must retain its sheet independently of registry timing")
+        sheet.endSheet(child); child.orderOut(nil)
+        try await waitUntil("The nested sheet must detach") { sheet.attachedSheet == nil }
+        updates.resumeForChecks()
+        try expect(!app.showingSettings && !installedWhileAttached, "Install must dismiss clean Settings without installing before native detach")
+        try await waitUntil("Settings must detach without a manual close") { window.attachedSheet == nil }
+        updates.resumeForChecks(); updates.resumeForChecks()
+        let persisted: AppSettings? = app.read(app.root.appendingPathComponent("settings.json"))
+        try expect(installs == 1 && !installedWhileAttached && updates.relaunchRequested && persisted?.language == "en",
+                   "Clean Settings must persist and resume installation exactly once")
+        updates.standardUserDriverWillFinishUpdateSession()
+        app.showingSettings = true
+        try await waitUntil("Settings must reopen for a failed-save regression") { updates.hasSettingsWindowForChecks }
+        let settingsURL = app.root.appendingPathComponent("settings.json")
+        try FileManager.default.removeItem(at: settingsURL)
+        try FileManager.default.createDirectory(at: settingsURL, withIntermediateDirectories: false)
+        app.settings.language = "ru"
+        updates.postponeForChecks {
+            installs += 1; installedWhileAttached = installedWhileAttached || window.attachedSheet != nil
+        }
+        updates.resumeForChecks(); updates.resumeForChecks()
+        try expect(app.showingSettings && installs == 1 && updates.settingsSaveFailed && !updates.canSafelyRelaunch,
+                   "A settings write failure must keep the sheet and live preferences intact without retrying each timer tick")
+        try FileManager.default.removeItem(at: settingsURL)
+        updates.retryInstallation()
+        try await waitUntil("Explicit retry must dismiss Settings after durable saving") { window.attachedSheet == nil }
+        updates.resumeForChecks(); updates.resumeForChecks()
+        let recovered: AppSettings? = app.read(settingsURL)
+        try expect(installs == 2 && !installedWhileAttached && !updates.settingsSaveFailed && recovered?.language == "ru",
+                   "Retry after disk recovery must install once with the latest saved preferences")
+        updates.standardUserDriverWillFinishUpdateSession()
+        app.error = nil
+        print("PASS: real Settings saves and dismisses for install; dirty documents, child sheets, work and failed writes remain protected")
     }
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         if !condition() { throw AppError.message(message) }

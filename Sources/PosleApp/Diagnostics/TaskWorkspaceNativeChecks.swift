@@ -6,6 +6,7 @@ import SwiftUI
 
 @MainActor
 private final class TaskCreationCheckPresentation: ObservableObject { @Published var showing = true }
+@MainActor private final class TaskEditingReadGate { var released = false; var attempts = 0 }
 private struct TaskCreationCheckSheet<Content: View>: View {
     @ObservedObject var state: TaskCreationCheckPresentation
     let content: Content
@@ -105,6 +106,7 @@ enum TaskWorkspaceNativeChecks {
         NSApp.accessibilitySetValue(true, forAttribute: ax)
         defer { NSApp.accessibilitySetValue(previousAX, forAttribute: ax) }
         try await creationDraft(notes)
+        try await authoritativeEditing(notes)
         try hiddenProjectScope(app, notes: notes, noteID: originalNote.id, taskID: first.id)
         try await freshMountNavigation(app, notes: notes, completedTaskID: done.id)
         let searchMarker = "УНИКАЛЬНЫЙ_ХВОСТ_ПОИСКА"
@@ -167,7 +169,7 @@ enum TaskWorkspaceNativeChecks {
         try expect(nodes(board).filter { $0.identifier?.hasPrefix("tasks.board.") == true }.count >= 4, "Board must expose real cards across the four statuses")
         notes.captureDrafts.removeAll(); _ = notes.flushCaptureDrafts()
         print("PASS: real native list/history/materials, exact external navigation, board and light/dark/narrow renders")
-        print("10 native task workspace E2E groups passed")
+        print("11 native task workspace E2E groups passed")
     }
 
     private static func nativeArrowSelection(_ host: NSView, window: NSWindow, notes: NotesStore) async throws {
@@ -243,6 +245,135 @@ enum TaskWorkspaceNativeChecks {
         try await waitForSheet { window.attachedSheet == nil && !UnsavedEditorRegistry.hasUnsaved }
         try expect(Set(notes.tasks.map(\.id)) == originalTaskIDs, "Discarding a task draft cannot create or change persisted tasks")
         print("PASS: native new-task sheet stays clean until description edit and clears the exit guard only after explicit discard")
+    }
+
+    /// A slow or failed detail read cannot turn a list excerpt into an editable
+    /// authoritative body. The native form must still preserve CAS afterwards.
+    private static func authoritativeEditing(_ notes: NotesStore) async throws {
+        let body = String(repeating: "Подробные условия проверки. ", count: 80) + "ПОЛНЫЙ_ХВОСТ"
+        let original = try required(notes.createWorkspaceTask(title: "Длинная задача", text: body), notes.error)
+        let metadata: TaskWorkspacesResponse = try request(notes, "task-list", ["includeDetails": false])
+        let excerpt = try required(metadata.tasks.first { $0.id == original.id }, nil)
+        try expect(excerpt.text.count <= 600 && !excerpt.text.contains("ПОЛНЫЙ_ХВОСТ"), "Edit regression requires an actual Rust metadata excerpt")
+        let gate = TaskEditingReadGate()
+        let state = TaskCreationCheckPresentation()
+        var saved: TaskWorkspace?
+        let form = TaskCreationSheet(notes: notes, task: excerpt, detailLoader: { id in
+            gate.attempts += 1
+            let attempt = gate.attempts
+            while !gate.released { try await Task.sleep(for: .milliseconds(20)) }
+            if attempt == 1 { throw AppError.message("Проверочная ошибка чтения задачи") }
+            return try await notes.taskWorkspaceForEditing(id)
+        }) { saved = $0 }
+        let host = NSHostingView(rootView: TaskCreationCheckSheet(state: state, content: form))
+        host.sizingOptions = []; host.frame = NSRect(x: 0, y: 0, width: 850, height: 720)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        func activeRoot() -> NSView { window.attachedSheet?.contentView ?? host }
+        func formNodes() -> [AXNode] { nodes(activeRoot()) }
+        var phase = "initial loading"
+        func waitForForm(_ condition: () -> Bool) async throws {
+            for _ in 0..<250 {
+                host.layoutSubtreeIfNeeded(); activeRoot().layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                if condition() { return }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            print("TASK EDIT phase=\(phase) attempts=\(gate.attempts) saved=\(saved != nil) sheet=\(window.attachedSheet != nil)")
+            for node in formNodes() where node.identifier?.hasPrefix("tasks.form.") == true {
+                print("TASK EDIT AX id=\(node.identifier ?? "nil") role=\(node.role ?? "nil") enabled=\(node.enabled) value=\(String((node.value ?? "nil").prefix(120)))")
+            }
+            throw AppError.message("Native authoritative task edit did not settle: " + phase)
+        }
+        func saveButton() -> AXNode? { formNodes().first { $0.identifier == "tasks.form.save" } }
+        try await waitForForm { gate.attempts == 1 && saveButton() != nil }
+        try expect(saveButton()?.enabled == false, "Save must be disabled before a full task read completes")
+        _ = saveButton()?.press()
+        let activeWindow = window.attachedSheet ?? window
+        if let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: activeWindow.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) {
+            activeWindow.sendEvent(enter)
+        } else { throw AppError.message("Could not create the owned task Return event") }
+        let beforeLoad = fresh(notes, original.id)
+        try expect(saved == nil && beforeLoad.text == body && beforeLoad.revision == original.revision, "An early native Save/Return cannot persist a metadata excerpt or change its revision")
+        phase = "failed read"
+        gate.released = true
+        try await waitForForm { formNodes().contains { $0.identifier == "tasks.form.retry" } }
+        try expect(saveButton()?.enabled == false, "A failed detail read must keep Save disabled")
+        phase = "retry loading"
+        gate.released = false
+        try press(activeRoot(), identifier: "tasks.form.retry")
+        try await waitForForm { gate.attempts == 2 }
+        try expect(saveButton()?.enabled == false, "Retry must not enable the form before the new detail arrives")
+        _ = try required(notes.updateTaskWorkspace(fresh(notes, original.id), patch: ["owner": "Роман"]), notes.error)
+        phase = "complete read"
+        gate.released = true
+        try await waitForForm {
+            !formNodes().contains { $0.identifier == "tasks.form.loading" }
+                && formNodes().contains { $0.identifier == "tasks.form.description" && $0.value == body }
+        }
+        try expect(!UnsavedEditorRegistry.hasUnsaved, "Loading the complete task cannot create an unsaved draft")
+        phase = "native title edit"
+        try editTaskTitle(activeRoot(), window: window.attachedSheet ?? window, text: "Проверить полное описание")
+        try await waitForForm { UnsavedEditorRegistry.hasUnsaved }
+        phase = "save and dismiss"
+        try press(activeRoot(), identifier: "tasks.form.save")
+        try await waitForForm { saved != nil && window.attachedSheet == nil }
+        let persisted = fresh(notes, original.id)
+        try expect(persisted.text == body && persisted.owner == "Роман" && persisted.title == "Проверить полное описание", "Saving after detail retry must retain the full body and latest revision fields")
+        try expect(!UnsavedEditorRegistry.hasUnsaved, "A successful full-body save must clear the edit guard")
+        window.orderOut(nil); window.contentView = nil
+        print("PASS: delayed/failed task detail retry and full-body native Save preserve complete data and the latest revision")
+
+        // The loaded revision remains fixed while typing. A concurrent writer
+        // must reject the save and leave the complete native draft recoverable.
+        let conflictState = TaskCreationCheckPresentation()
+        var conflictSaved = false
+        let conflictHost = NSHostingView(rootView: TaskCreationCheckSheet(state: conflictState,
+            content: TaskCreationSheet(notes: notes, task: excerpt) { _ in conflictSaved = true }))
+        conflictHost.sizingOptions = []; conflictHost.frame = NSRect(x: 0, y: 0, width: 850, height: 720)
+        let conflictWindow = NSWindow(contentRect: conflictHost.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        conflictWindow.contentView = conflictHost; conflictWindow.makeKeyAndOrderFront(nil)
+        defer { conflictWindow.orderOut(nil); conflictWindow.contentView = nil }
+        func conflictRoot() -> NSView { conflictWindow.attachedSheet?.contentView ?? conflictHost }
+        var conflictPhase = "complete detail"
+        func waitForConflict(_ condition: () -> Bool) async throws {
+            for _ in 0..<250 {
+                conflictHost.layoutSubtreeIfNeeded(); conflictRoot().layoutSubtreeIfNeeded(); conflictWindow.displayIfNeeded()
+                if condition() { return }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            throw AppError.message("Native conflicting task edit did not settle: " + conflictPhase)
+        }
+        try await waitForConflict { nodes(conflictRoot()).contains { $0.identifier == "tasks.form.description" && $0.value == body } }
+        try editTaskTitle(conflictRoot(), window: conflictWindow.attachedSheet ?? conflictWindow, text: "Несохранённое название после конфликта")
+        conflictPhase = "typed draft guard"
+        try await waitForConflict { UnsavedEditorRegistry.hasUnsaved }
+        _ = try required(notes.updateTaskWorkspace(fresh(notes, original.id), patch: ["owner": "Мария"]), notes.error)
+        conflictPhase = "CAS error"
+        try press(conflictRoot(), identifier: "tasks.form.save")
+        try await waitForConflict { notes.error != nil }
+        try expect(!conflictSaved && UnsavedEditorRegistry.hasUnsaved, "A stale revision must retain the open native edit draft")
+        try expect(nodes(conflictRoot()).contains { $0.value == "Несохранённое название после конфликта" }, "The conflicting save cannot reset typed fields")
+        let afterConflict = fresh(notes, original.id)
+        try expect(afterConflict.text == body && afterConflict.title == persisted.title && afterConflict.owner == "Мария", "A stale form cannot replace the canonical complete task")
+        // The Cancel/Discard workflow is covered by creationDraft above. End
+        // this disposable presentation after verifying the conflicting draft.
+        conflictPhase = "fixture teardown"
+        conflictState.showing = false
+        try await waitForConflict { conflictWindow.attachedSheet == nil && !UnsavedEditorRegistry.hasUnsaved }
+        notes.error = nil
+        print("PASS: native editing gates delayed/failed detail reads, saves full >600-character bodies and preserves a conflicting draft")
+    }
+
+    private static func editTaskTitle(_ host: NSView, window: NSWindow, text: String) throws {
+        func fields(_ view: NSView) -> [NSTextField] { (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields) }
+        guard let field = fields(host).first(where: { $0.placeholderString == "Что нужно сделать" }) else { throw AppError.message("Native task title field missing") }
+        window.makeFirstResponder(field)
+        guard let editor = field.currentEditor() as? NSTextView else { throw AppError.message("Native task title editor missing") }
+        let range = NSRange(location: 0, length: (editor.string as NSString).length)
+        guard editor.shouldChangeText(in: range, replacementString: text) else { throw AppError.message("Task title rejected native editing") }
+        editor.replaceCharacters(in: range, with: text); editor.didChangeText()
     }
 
     private static func hiddenProjectScope(_ app: AppStore, notes: NotesStore, noteID: String, taskID: String) throws {
@@ -360,6 +491,15 @@ enum TaskWorkspaceNativeChecks {
         var identifier: String? { (object as? any NSAccessibilityProtocol)?.accessibilityIdentifier() ?? get("accessibilityIdentifier") as? String }
         var value: String? { (object as? any NSAccessibilityProtocol)?.accessibilityValue() as? String ?? get("accessibilityValue") as? String }
         var label: String? { (object as? any NSAccessibilityProtocol)?.accessibilityLabel() ?? get("accessibilityLabel") as? String }
+        var enabled: Bool {
+            if let cell = object as? NSButtonCell, let button = cell.controlView as? NSButton { return button.isEnabled }
+            if let control = object as? NSControl { return control.isEnabled }
+            if let modern = object as? any NSAccessibilityProtocol { return modern.isAccessibilityEnabled() }
+            let selector = NSSelectorFromString("isAccessibilityEnabled")
+            guard object.responds(to: selector), let method = object.method(for: selector) else { return false }
+            typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+            return unsafeBitCast(method, to: Getter.self)(object, selector)
+        }
         var role: String? { (object as? any NSAccessibilityProtocol)?.accessibilityRole()?.rawValue ?? get("accessibilityRole") as? String }
         var children: [Any] { (object as? any NSAccessibilityProtocol)?.accessibilityChildren() ?? get("accessibilityChildren") as? [Any] ?? [] }
         func press() -> Bool {

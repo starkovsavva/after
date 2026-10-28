@@ -285,9 +285,12 @@ final class AppStore: ObservableObject {
         settingsSection = section
         showingSettings = true
     }
-    func saveSettings() {
-        do { try write(settings, root.appendingPathComponent("settings.json")); NotificationCenter.default.post(name: Notification.Name("PosleShortcutsChanged"), object: nil) }
-        catch { self.error = error.localizedDescription }
+    @discardableResult func saveSettings() -> Bool {
+        do {
+            try write(settings, root.appendingPathComponent("settings.json"))
+            NotificationCenter.default.post(name: Notification.Name("PosleShortcutsChanged"), object: nil)
+            return true
+        } catch { self.error = error.localizedDescription; return false }
     }
     func reloadLibrary() {
         struct Library: Decodable { var meetings: [Meeting] }

@@ -161,7 +161,7 @@ struct NotesLibraryView: View {
             }
         }.background(Ink.paper)
             .onAppear {
-                notes.reload()
+                Task { await notes.refresh() }
                 if let id = notes.selectedNoteID, let note = notes.workspace.notes.first(where: { $0.id == id }) { select(note, reveal: true) }
                 else if document.draft == nil, let note = visibleNotes.first { select(note) }
                 tagsInput = document.draft?.tags.map { "#" + $0 }.joined(separator: " ") ?? ""

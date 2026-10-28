@@ -86,7 +86,8 @@ enum CalendarNativeChecks {
         print("PASS: day boundaries, all-day exclusive ends, hidden calendars and view preferences work without calendar access")
         try CalendarStore.verifyPrivatePersistence(at: root)
         print("PASS: stable private calendar links roundtrip, symlinks/corrupt files are preserved, previews never instantiate EventKit")
-        print("5 native calendar checks passed")
+        try await CalendarConnectionChecks.run(root: root)
+        print("10 native calendar checks passed")
     }
     private static func expect(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
         guard try condition() else { throw AppError.message(message) }

@@ -4,8 +4,24 @@ import SwiftUI
 
 struct SpeechSettingsView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var key = ""
-    @State private var savedKey = ""
+    @State private var editorID = UUID()
+    @State private var mounted = false
+    @State private var drafts: [String: String] = [:]
+    @State private var savedKeys: [String: String] = [:]
+    @State private var loadedAccounts: Set<String> = []
+    private var account: String { Keychain.speechAccount(for: store.settings) }
+    private var key: String { drafts[account] ?? "" }
+    private var savedKey: String { savedKeys[account] ?? "" }
+    private var hasPendingKeys: Bool {
+        drafts.contains { account, value in value.trimmingCharacters(in: .whitespacesAndNewlines) != (savedKeys[account] ?? "") }
+    }
+    private var keyBinding: Binding<String> {
+        Binding(get: { key }, set: { value in drafts[account] = value; registerDrafts() })
+    }
+    private func registerDrafts() {
+        guard mounted else { return }
+        SettingsDraftRegistry.set(id: editorID, title: "API-ключи распознавания", dirty: hasPendingKeys)
+    }
     @State private var keyMessage = ""
     @State private var keyFailed = false
     private var lacksSpeakerTiming: Bool { store.settings.speechMode == "cloud" && store.settings.speechResponseFormat == "json" }
@@ -20,6 +36,10 @@ struct SpeechSettingsView: View {
                 Label("Облако", systemImage: "cloud").tag("cloud")
             }.pickerStyle(.segmented).tint(Ink.actionFill)
             if store.settings.speechMode == "local" { localSettings } else { cloudSettings }
+            if hasPendingKeys {
+                Button("Отменить правки ключей") { drafts = savedKeys; keyMessage = ""; registerDrafts() }
+                    .buttonStyle(.bordered).accessibilityIdentifier("speech.key.cancel")
+            }
             Divider()
             Toggle("Разделять собеседников", isOn: $store.settings.diarization)
                 .disabled(lacksSpeakerTiming).help(lacksSpeakerTiming ? "Ответ без таймкодов не позволяет точно разделить реплики." : "Разделять реплики по голосам.")
@@ -36,8 +56,11 @@ struct SpeechSettingsView: View {
                 Text("Для ответа с таймкодами без меток голосов используется локальное разделение. Его компоненты нужно установить на Mac.")
                     .font(AppTypography.caption).foregroundStyle(.secondary)
             }
-        }.onAppear(perform: loadKey)
+        }.onAppear { mounted = true; loadKey(); registerDrafts() }
             .onChange(of: store.settings.speechKeyAccount) { _, _ in loadKey() }
+            .onChange(of: drafts) { _, _ in registerDrafts() }
+            .onChange(of: savedKeys) { _, _ in registerDrafts() }
+            .onDisappear { mounted = false; SettingsDraftRegistry.remove(id: editorID) }
     }
     private var localSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -132,8 +155,8 @@ struct SpeechSettingsView: View {
                     .accessibilityLabel("Облачная модель распознавания")
             }
             LabeledContent("API-ключ") {
-                SecureField("Ключ выбранного сервиса", text: $key).textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("API-ключ распознавания")
+                SecureField("Ключ выбранного сервиса", text: keyBinding).textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("API-ключ распознавания").accessibilityIdentifier("speech.key")
             }
             HStack(spacing: 10) {
                 Button(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !savedKey.isEmpty ? "Удалить ключ" : "Сохранить ключ") { saveKey() }
@@ -169,15 +192,17 @@ struct SpeechSettingsView: View {
         }
     }
     private func loadKey() {
-        key = preview ? "" : Keychain.read(account: Keychain.speechAccount(for: store.settings))
-        savedKey = key; keyMessage = ""; keyFailed = false
+        guard !loadedAccounts.contains(account) else { return }
+        let value = preview ? "" : Keychain.read(account: account)
+        drafts[account] = value; savedKeys[account] = value; loadedAccounts.insert(account)
+        keyMessage = ""; keyFailed = false; registerDrafts()
     }
     private func saveKey() {
         guard !preview else { return }
         do {
             let value = key.trimmingCharacters(in: .whitespacesAndNewlines)
             try Keychain.save(value, account: Keychain.speechAccount(for: store.settings))
-            key = value; savedKey = value; keyMessage = value.isEmpty ? "Ключ удалён" : "Ключ сохранён"; keyFailed = false
+            drafts[account] = value; savedKeys[account] = value; registerDrafts(); keyMessage = value.isEmpty ? "Ключ удалён" : "Ключ сохранён"; keyFailed = false
             store.saveSettings()
         } catch { keyMessage = error.localizedDescription; keyFailed = true }
     }

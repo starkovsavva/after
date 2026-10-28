@@ -165,6 +165,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-responsiveness") {
+            Task { @MainActor in
+                do { try await ResponsivenessNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native responsiveness failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-contexts") {
+            Task { @MainActor in
+                do { try await ContextsNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native contexts failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-meeting-rename") {
             Task { @MainActor in
                 do { try await MeetingRenameNativeChecks.run(); NSApp.terminate(nil) }
