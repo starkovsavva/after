@@ -22,14 +22,39 @@ fn main() {
     };
     println!("cargo:rustc-env=AFTER_ENGINE_NAME={name}");
     println!("cargo:rustc-env=AFTER_ENGINE_SHA256={digest}");
-    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
-        tauri_build::AppManifest::new().commands(&[
+    let attributes =
+        tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "get_workspace",
             "get_meeting",
             "save_note",
             "save_folder",
             "search_library",
-        ]),
-    ))
-    .expect("Tauri build configuration");
+        ]));
+    let attributes = with_windows_test_manifest(attributes, &target);
+    tauri_build::try_build(attributes).expect("Tauri build configuration");
+}
+
+fn with_windows_test_manifest(
+    attributes: tauri_build::Attributes,
+    target: &str,
+) -> tauri_build::Attributes {
+    if !target.ends_with("-windows-msvc") {
+        return attributes;
+    }
+    // Tauri 2.7.4 links its resource manifest into application binaries only.
+    // The lib unit-test harness then loads legacy ComCtl32 and fails before
+    // Rust's test runner starts (STATUS_ENTRYPOINT_NOT_FOUND). Apply the same
+    // canonical manifest to every linked artifact, including unit/integration
+    // tests. Keep Common Controls v6 enabled and avoid embedding it twice in
+    // the application .res. Maintainer workaround:
+    // https://github.com/tauri-apps/tauri/issues/13419
+    let manifest =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"))
+            .join("windows-app-manifest.xml");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+    // Do not silently ship an artifact whose manifest was skipped by the linker.
+    println!("cargo:rustc-link-arg=/WX");
+    attributes.windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest())
 }
