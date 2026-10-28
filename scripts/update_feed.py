@@ -142,7 +142,7 @@ def make_appcast(release: Identity, repo: str, signature: str, files: dict[str, 
 
 
 def feed_signature(data: bytes) -> tuple[bytes, str]:
-    # Sparkle 2.10.0 common_cli/Signing.swift appends this block to the exact bytes
+    # Sparkle 2.10.1 common_cli/Signing.swift appends this block to the exact bytes
     # it signs. Never parse/re-serialize signed XML before verification.
     if len(data) > MAX_FEED:
         raise RuntimeError("Update feed is too large")

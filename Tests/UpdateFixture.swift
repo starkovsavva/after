@@ -97,23 +97,31 @@ final class FixtureApp: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
         }
     }
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem, untilInvokingBlock handler: @escaping () -> Void) -> Bool {
-        guard scenario == "deferred" else { return false }
+        guard ["deferred", "nfc-deferred"].contains(scenario) else { return false }
         emit("deferred")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self else { return }
-            let data = try? Data(contentsOf: Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist"))
-            let info = data.flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] }
-            self.emit("deferred-held", ["buildOnDisk": info?["CFBundleVersion"] as? String ?? "missing"])
+            self.emit("deferred-held", self.installedBundleState())
+            self.emit("installation-resumed")
             handler()
         }
         return true
     }
+    private func installedBundleState() -> [String: Any] {
+        let bundle = Bundle.main.bundleURL
+        let data = try? Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist"))
+        let info = data.flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] }
+        return ["buildOnDisk": info?["CFBundleVersion"] as? String ?? "missing",
+                "obsoleteExists": FileManager.default.fileExists(atPath: bundle.appendingPathComponent("Contents/Resources/obsolete.txt").path),
+                "newExists": FileManager.default.fileExists(atPath: bundle.appendingPathComponent("Contents/Resources/new.txt").path)]
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if scenario == "late-busy" && !blockedTerminationOnce {
+        if ["late-busy", "nfc-deferred"].contains(scenario) && !blockedTerminationOnce {
             blockedTerminationOnce = true
             emit("termination-blocked")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 guard let self, let retry = self.driver?.retryTermination else { return }
+                if self.scenario == "nfc-deferred" { self.emit("termination-held", self.installedBundleState()) }
                 self.emit("termination-retried"); retry()
             }
             return .terminateCancel

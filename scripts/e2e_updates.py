@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real Sparkle installer on disposable, signed localhost fixtures.
 
-Requires a graphical macOS login and Sparkle 2.10's official SwiftPM artifact.
+Requires a graphical macOS login and Sparkle 2.10.1's official SwiftPM artifact.
 No production application, feed, signing key, or recordings are accessed.
 """
 from __future__ import annotations
@@ -30,7 +30,8 @@ import uuid
 from xml.sax.saxutils import escape
 
 PROJECT = Path(__file__).resolve().parent.parent
-SUCCESS_SCENARIOS = ("valid", "deferred", "late-busy")
+DEFERRED_SCENARIOS = ("deferred", "nfc-deferred")
+SUCCESS_SCENARIOS = ("valid", *DEFERRED_SCENARIOS, "late-busy")
 REPLAY_SCENARIOS = ("same-build", "downgrade")
 SCENARIOS = (*SUCCESS_SCENARIOS, "bad-archive-signature", "tampered-archive", "bad-feed-signature",
              "truncated-archive", *REPLAY_SCENARIOS)
@@ -139,7 +140,13 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
     started = time.monotonic()
     scenario = root / name
     scenario.mkdir()
-    old = scenario / "installed/UpdateFixture.app"
+    # APFS preserves these NFC filename bytes, unlike Foundation's potentially
+    # decomposed NSRunningApplication path. This exercises Sparkle #2943.
+    installed_parent = scenario / "installed"
+    if name == "nfc-deferred":
+        installed_parent = installed_parent / "Caf\u00e9"
+        assert os.fsencode(installed_parent.name) == b"Caf\xc3\xa9"
+    old = installed_parent / "UpdateFixture.app"
     new = scenario / "source/UpdateFixture.app"
     identifier = "app.posle.updaterfixture." + uuid.uuid4().hex
     (scenario / "identifier.txt").write_text(identifier)
@@ -151,6 +158,8 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
     for build, destination in ((installed_build, old), (candidate_build, new)):
         make_app(destination, binary, framework, identifier=identifier, build=build,
                  scenario=scenario, feed=feed_url, public=public)
+    if name == "nfc-deferred":
+        assert "Caf\u00e9" in os.listdir(scenario / "installed"), "The on-disk fixture folder must preserve NFC encoding"
     library = scenario / "library.json"
     library.write_text('{"notes":["fixture note"],"models":["fixture model"]}')
     library_digest = hashlib.sha256(library.read_bytes()).digest()
@@ -224,14 +233,27 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
             assert not (old / "Contents/Resources/obsolete.txt").exists(), "Obsolete bundled files survived replacement"
             assert (old / "Contents/Resources/new.txt").read_text() == "build 2"
             run(["codesign", "--verify", "--deep", "--strict", str(old)])
-            if name == "deferred":
+            if name in DEFERRED_SCENARIOS:
                 assert len([e for e in observed if e["event"] == "deferred"]) == 1
                 held = [e for e in observed if e["event"] == "deferred-held"]
                 assert len(held) == 1 and held[0]["buildOnDisk"] == "1", "Postponement did not preserve the old installed bundle"
-            if name == "late-busy":
+            if name in ("late-busy", "nfc-deferred"):
                 sequence = [e["event"] for e in observed]
                 assert sequence.count("termination-blocked") == 1 and sequence.count("termination-retried") == 1
                 assert sequence.index("termination-blocked") < sequence.index("termination-retried") < sequence.index("terminate"), "Late-busy termination was not safely retried"
+            if name == "nfc-deferred":
+                sequence = [e["event"] for e in observed]
+                checkpoints = ("deferred", "deferred-held", "installation-resumed", "termination-blocked",
+                               "termination-held", "termination-retried", "terminate", "relaunched")
+                positions = [sequence.index(event) for event in checkpoints]
+                assert positions == sorted(positions), "The NFC path bypassed deferred installation or termination waiting"
+                held = [e for e in observed if e["event"] in ("deferred-held", "termination-held")]
+                assert len(held) == 2 and all(e["build"] == "1" and e["buildOnDisk"] == "1"
+                                            and e["obsoleteExists"] and not e["newExists"] for e in held), "The NFC bundle changed while its old host was still running"
+                old_pid = next(e["pid"] for e in observed if e["event"] == "started" and e["build"] == "1")
+                assert all(e["pid"] == old_pid for e in held), "The held NFC checkpoints must be emitted by the original running host"
+                relaunched = next(e for e in observed if e["event"] == "relaunched")
+                assert relaunched["pid"] != old_pid, "The new build must relaunch in a new process"
         else:
             assert actual_version == str(installed_build) and files(old) == before, "Rejected update modified the installed fixture"
             assert not any(e["event"] in ("ready", "installing", "installed", "relaunched") for e in observed), "Invalid update reached installation"
@@ -272,8 +294,8 @@ def main():
     framework = sdk / "Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
     sign_update = sdk / "bin/sign_update"
     with (framework / "Resources/Info.plist").open("rb") as stream:
-        if plistlib.load(stream).get("CFBundleShortVersionString") != "2.10.0":
-            parser.error("Use the pinned official Sparkle 2.10.0 artifact")
+        if plistlib.load(stream).get("CFBundleShortVersionString") != "2.10.1":
+            parser.error("Use the pinned official Sparkle 2.10.1 artifact")
     run(["codesign", "--verify", "--deep", "--strict", str(framework)])
     root = Path(tempfile.mkdtemp(prefix="posle-updater-e2e-", dir="/private/tmp")).resolve()
     private = root / "ephemeral-private.key"
@@ -327,7 +349,7 @@ def main():
                               server.server_address[1], name, requests)
             results.append(result)
             print("PASS:", name, f"({result['seconds']}s)", flush=True)
-        receipt = {"framework": "2.10.0", "fixtureRoot": str(root), "results": results,
+        receipt = {"framework": "2.10.1", "fixtureRoot": str(root), "results": results,
                    "requests": requests, "productionResourcesUsed": False}
         (root / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
         print(f"{len(SCENARIOS)} real Sparkle E2E scenarios passed")
