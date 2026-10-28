@@ -14,7 +14,7 @@ final class RustBridge: @unchecked Sendable {
         let handle = try NativeLibraryIntegrity.openCoreLibrary()
         guard let request = dlsym(handle, "posle_request"), let free = dlsym(handle, "posle_free_string") else {
             dlclose(handle)
-            throw AppError.message("Версия Rust-ядра не соответствует приложению.")
+            throw AppError.message(L("Версия Rust-ядра не соответствует приложению."))
         }
         self.handle = handle
         invoke = unsafeBitCast(request, to: Invoke.self)
@@ -26,15 +26,15 @@ final class RustBridge: @unchecked Sendable {
         let data = try JSONSerialization.data(withJSONObject: input, options: [.sortedKeys])
         let string = String(decoding: data, as: UTF8.self)
         let response: Data = try string.withCString { pointer in
-            guard let output = invoke(pointer) else { throw AppError.message("Rust-ядро вернуло пустой ответ") }
+            guard let output = invoke(pointer) else { throw AppError.message(L("Rust-ядро вернуло пустой ответ")) }
             defer { release(output) }
             return Data(String(cString: output).utf8)
         }
         guard let envelope = try JSONSerialization.jsonObject(with: response) as? [String: Any] else {
-            throw AppError.message("Некорректный ответ Rust-ядра")
+            throw AppError.message(L("Некорректный ответ Rust-ядра"))
         }
         guard envelope["ok"] as? Bool == true else {
-            throw AppError.message(envelope["error"] as? String ?? "Ошибка ядра библиотеки")
+            throw AppError.message(envelope["error"] as? String ?? L("Ошибка ядра библиотеки"))
         }
         return try JSONSerialization.data(withJSONObject: envelope["value"] ?? NSNull(), options: [.fragmentsAllowed])
     }
@@ -60,6 +60,6 @@ final class RustBridge: @unchecked Sendable {
             let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
             if path.hasPrefix(prefix) { return String(path.dropFirst(prefix.count)) }
         }
-        throw AppError.message("Файл находится вне библиотеки встреч")
+        throw AppError.message(L("Файл находится вне библиотеки встреч"))
     }
 }

@@ -40,7 +40,7 @@ struct ThemePalette: Codable, Equatable {
               hex.count == 6, hex.allSatisfy({ $0.isHexDigit && $0.isASCII }),
               (12...18).contains(textSize), ["regular", "compact"].contains(density),
               AppearanceMaterial(rawValue: material) != nil else {
-            throw AppError.message("В файле темы неверные параметры. Нужна тема После версии 1.")
+            throw AppError.message(L("В файле темы неверные параметры. Нужна тема После версии 1."))
         }
         var result = self; result.accent = hex
         return result
@@ -105,21 +105,21 @@ final class ThemeController: ObservableObject {
             if FileManager.default.fileExists(atPath: url.path) {
                 try rejectLink(url)
                 guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 65_536 else {
-                    throw AppError.message("Файл темы слишком большой.")
+                    throw AppError.message(L("Файл темы слишком большой."))
                 }
                 let decoded = try JSONDecoder().decode(ThemePalette.self, from: Data(contentsOf: url)).validated()
                 palette = decoded; ThemeRuntime.shared.set(decoded)
             } else { palette = .graphite; ThemeRuntime.shared.set(.graphite) }
         } catch {
             palette = .graphite; ThemeRuntime.shared.set(.graphite)
-            self.error = "Не удалось открыть тему. Используется «Графит»."
+            self.error = L("Не удалось открыть тему. Используется «Графит».")
         }
     }
     func change(_ mutate: (inout ThemePalette) -> Void) {
         var next = palette; mutate(&next)
         do {
             next = try next.validated()
-            guard let root else { throw AppError.message("Папка настроек ещё не открыта.") }
+            guard let root else { throw AppError.message(L("Папка настроек ещё не открыта.")) }
             let url = root.appendingPathComponent("theme.json")
             try rejectLink(url)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -129,28 +129,28 @@ final class ThemeController: ObservableObject {
     }
     func importPalette() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.canChooseDirectories = false
-        panel.prompt = "Выбрать тему"
+        panel.prompt = L("Выбрать тему")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 65_536 else {
-                throw AppError.message("Файл темы слишком большой.")
+                throw AppError.message(L("Файл темы слишком большой."))
             }
             let next = try JSONDecoder().decode(ThemePalette.self, from: Data(contentsOf: url)).validated()
             change { $0 = next }
-        } catch { self.error = "Не удалось импортировать тему: \(error.localizedDescription)" }
+        } catch { self.error = LF("Не удалось импортировать тему: {0}", arguments: [String(describing: (error.localizedDescription))]) }
     }
     func exportPalette() {
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "После — \(palette.name).json"
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = LF("После — {0}.json", arguments: [String(describing: (palette.name))])
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(palette).write(to: url, options: .atomic)
             error = nil
-        } catch { self.error = "Не удалось сохранить тему: \(error.localizedDescription)" }
+        } catch { self.error = LF("Не удалось сохранить тему: {0}", arguments: [String(describing: (error.localizedDescription))]) }
     }
     private func rejectLink(_ url: URL) throws {
         let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey])
-        guard values?.isSymbolicLink != true else { throw AppError.message("Файл темы не может быть ссылкой.") }
+        guard values?.isSymbolicLink != true else { throw AppError.message(L("Файл темы не может быть ссылкой.")) }
     }
 }
 
@@ -168,10 +168,10 @@ struct ThemeSettingsView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            AppPageHeader(title: "Оформление", compact: true)
+            AppPageHeader(title: L("Оформление"), compact: true)
             VStack(alignment: .leading, spacing: 18) {
-                row("Стиль") {
-                    Picker("Стиль", selection: binding(\.material)) {
+                row(L("Стиль")) {
+                    Picker(L("Стиль"), selection: binding(\.material)) {
                         ForEach(AppearanceMaterial.allCases) { material in Text(material.title).tag(material.rawValue) }
                     }.labelsHidden().frame(width: 210).accessibilityIdentifier("theme.material")
                 }
@@ -180,44 +180,44 @@ struct ThemeSettingsView: View {
                     Text(AppearanceMaterial.nativeLiquidGlass.availabilityDescription)
                         .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                 }
-                Picker("Внешний вид", selection: binding(\.appearance)) {
-                    Text("Как в macOS").tag("system"); Text("Светлый").tag("light"); Text("Тёмный").tag("dark")
-                }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Внешний вид")
-                row("Цвет акцента") {
+                Picker(L("Внешний вид"), selection: binding(\.appearance)) {
+                    Text(L("Как в macOS")).tag("system"); Text(L("Светлый")).tag("light"); Text(L("Тёмный")).tag("dark")
+                }.pickerStyle(.segmented).labelsHidden().accessibilityLabel(L("Внешний вид"))
+                row(L("Цвет акцента")) {
                     HStack(spacing: 10) {
-                        ForEach([("Графит", "65696F"), ("Синий", "2867B2"), ("Зелёный", "34745A"), ("Янтарный", "A26826")], id: \.1) { name, hex in
+                        ForEach([(L("Графит"), "65696F"), (L("Синий"), "2867B2"), (L("Зелёный"), "34745A"), (L("Янтарный"), "A26826")], id: \.1) { name, hex in
                             Button { theme.change { $0.name = name; $0.accent = hex } } label: {
                                 Circle().fill(Color(nsColor: ThemePalette(accent: hex).color)).frame(width: 22, height: 22)
                                     .overlay { if theme.palette.accent == hex { Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white) } }
                                     .padding(4).contentShape(Rectangle())
                             }.buttonStyle(.plain).accessibilityLabel(name).accessibilityAddTraits(theme.palette.accent == hex ? .isSelected : [])
                         }
-                        ColorPicker("Свой цвет", selection: Binding(get: { Color(nsColor: theme.palette.color) }, set: { color in
+                        ColorPicker(L("Свой цвет"), selection: Binding(get: { Color(nsColor: theme.palette.color) }, set: { color in
                             guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return }
                             let hex = String(format: "%02X%02X%02X", Int((rgb.redComponent * 255).rounded()), Int((rgb.greenComponent * 255).rounded()), Int((rgb.blueComponent * 255).rounded()))
-                            theme.change { $0.name = "Своя тема"; $0.accent = hex }
-                        }), supportsOpacity: false).fixedSize().accessibilityLabel("Свой цвет акцента")
+                            theme.change { $0.name = L("Своя тема"); $0.accent = hex }
+                        }), supportsOpacity: false).fixedSize().accessibilityLabel(L("Свой цвет акцента"))
                             .accessibilityIdentifier("theme.custom-accent")
                     }
                 }
-                row("Размер текста") {
-                    Picker("Размер текста", selection: binding(\.textSize)) {
-                        ForEach(12...18, id: \.self) { Text("\($0) пт").tag($0) }
+                row(L("Размер текста")) {
+                    Picker(L("Размер текста"), selection: binding(\.textSize)) {
+                        ForEach(12...18, id: \.self) { Text(LF("{0} пт", arguments: [String(describing: ($0))])).tag($0) }
                     }.labelsHidden().frame(width: 110)
                 }
-                row("Плотность") {
-                    Picker("Плотность", selection: binding(\.density)) {
-                        Text("Обычная").tag("regular"); Text("Компактная").tag("compact")
+                row(L("Плотность")) {
+                    Picker(L("Плотность"), selection: binding(\.density)) {
+                        Text(L("Обычная")).tag("regular"); Text(L("Компактная")).tag("compact")
                     }.labelsHidden().frame(width: 160)
                 }
             }
             ThemeApplicationPreview()
-                .accessibilityLabel("Предпросмотр оформления: список встреч, конспект и панель управления")
+                .accessibilityLabel(L("Предпросмотр оформления: список встреч, конспект и панель управления"))
             HStack {
-                Button("Импортировать тему…") { theme.importPalette() }
-                Button("Экспортировать…") { theme.exportPalette() }
+                Button(L("Импортировать тему…")) { theme.importPalette() }
+                Button(L("Экспортировать…")) { theme.exportPalette() }
                 Spacer()
-                Button("Сбросить") { theme.change { $0 = .graphite } }.disabled(theme.palette == .graphite)
+                Button(L("Сбросить")) { theme.change { $0 = .graphite } }.disabled(theme.palette == .graphite)
             }.buttonStyle(.bordered)
             if let error = theme.error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled) }
         }

@@ -18,11 +18,11 @@ extension AppStore {
     func startRecording(systemAudio: Bool, video: Bool = false, title: String, destination: RecordingDestination) async {
         guard !isTerminating, !startingRecording, !isRecording else { return }
         guard ![.authorizing, .capturing].contains(voice.phase) else {
-            error = "Завершите диктовку поручения перед записью встречи."
+            error = L("Завершите диктовку поручения перед записью встречи.")
             return
         }
         if let folderID = destination.folderID, notes.folder(folderID) == nil {
-            error = "Папка удалена. Выберите другую папку перед записью."
+            error = L("Папка удалена. Выберите другую папку перед записью.")
             return
         }
         startingRecording = true
@@ -37,14 +37,14 @@ extension AppStore {
             ? displays.first(where: \.isMain)
             : displays.first(where: { $0.persistentID == requestedDisplay })
         if video && selectedDisplay == nil {
-            error = "Выбранный экран недоступен. Выберите подключённый экран перед записью."
+            error = L("Выбранный экран недоступен. Выберите подключённый экран перед записью.")
             return
         }
         pause(); error = nil; audioLevels.clear()
         processAfterRecording = true
-        var meeting = Meeting(title: title.isEmpty ? "Встреча \(Date().formatted(date: .abbreviated, time: .shortened))" : title,
+        var meeting = Meeting(title: title.isEmpty ? LF("Встреча {0}", arguments: [String(describing: Date().formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(UILocale())))]) : title,
                               source: systemAudio || video ? "recording.mov" : "recording.m4a", status: "recording", focus: "")
-        meeting.recordingTracks = systemAudio; meeting.speakerNames["self"] = "Вы"
+        meeting.recordingTracks = systemAudio; meeting.speakerNames["self"] = L("Вы")
         meeting.hasVideo = video
         meeting.recordingAudioQuality = audioQuality.rawValue
         meeting.recordingVideoQuality = video ? videoQuality.rawValue : nil
@@ -62,11 +62,11 @@ extension AppStore {
             try write(meeting, directory.appendingPathComponent("meta.json"))
             if let destinationFolderID, !notes.assignMeetingFolder(meeting.id, folderID: destinationFolderID) {
                 recordingFolderFailures.insert(meeting.id)
-                self.error = "Запись началась без папки. Выберите папку после сохранения встречи."
+                self.error = L("Запись началась без папки. Выберите папку после сохранения встречи.")
             }
             isRecording = true; recordingID = meeting.id; recordingDate = Date()
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
-                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), "После записывает встречу" as CFString, &recordingAssertion)
+                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), L("После записывает встречу") as CFString, &recordingAssertion)
             jobs.setRecording(true)
             // Start already opens this meeting; its sidebar must describe the same destination.
             folderSelection = notes.context(for: meeting.id).folderID; libraryFilter = ""
@@ -91,11 +91,11 @@ extension AppStore {
         if recordingAssertion != 0 { IOPMAssertionRelease(recordingAssertion); recordingAssertion = 0 }
         updateMeeting(id) { $0.status = "imported"; $0.duration = duration }
         if let captureError {
-            error = "Запись остановлена. Проверьте сохранённые дорожки: \(captureError.localizedDescription)"
+            error = LF("Запись остановлена. Проверьте сохранённые дорожки: {0}", arguments: [String(describing: captureError.localizedDescription)])
             return
         }
         guard finalize, !isTerminating else {
-            notice = "Исходная запись сохранена. Обработку можно запустить после открытия приложения."
+            notice = L("Исходная запись сохранена. Обработку можно запустить после открытия приложения.")
             return
         }
         do {
@@ -103,11 +103,11 @@ extension AppStore {
             if let fresh: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")),
                let index = meetings.firstIndex(where: { $0.id == id }) { meetings[index] = fresh }
             if transcribeAfterSave && runtimeReady { await processMeeting(id) }
-            else { notice = runtimeReady ? "Встреча записана и сохранена в MP3." : "Встреча сохранена в MP3. Для транскрипции подготовьте распознавание в настройках." }
+            else { notice = runtimeReady ? L("Встреча записана и сохранена в MP3.") : L("Встреча сохранена в MP3. Для транскрипции подготовьте распознавание в настройках.") }
         } catch is CancellationError {
             notice = Self.stoppedProcessingMessage
         } catch {
-            self.error = "Исходная запись сохранена. Преобразование в MP3: \(error.localizedDescription)"
+            self.error = LF("Исходная запись сохранена. Преобразование в MP3: {0}", arguments: [String(describing: error.localizedDescription)])
         }
     }
     func prepareForTermination() async {

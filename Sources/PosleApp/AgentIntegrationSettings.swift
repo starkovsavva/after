@@ -12,17 +12,17 @@ struct AgentMCPConfiguration {
             switch self {
             case .codex: "Codex"
             case .claude: "Claude"
-            case .other: "Другой клиент"
+            case .other: L("Другой клиент")
             }
         }
         var instructions: String {
             switch self {
             case .codex:
-                "Добавьте блок в .codex/config.toml личного проекта или в ~/.codex/config.toml."
+                L("Добавьте блок в .codex/config.toml личного проекта или в ~/.codex/config.toml.")
             case .claude:
-                "Добавьте сервер в mcpServers в настройках Claude Desktop или в .mcp.json личного проекта Claude Code."
+                L("Добавьте сервер в mcpServers в настройках Claude Desktop или в .mcp.json личного проекта Claude Code.")
             case .other:
-                "Выберите локальный сервер (stdio). Укажите command и args из JSON ниже в настройках своего клиента."
+                L("Выберите локальный сервер (stdio). Укажите command и args из JSON ниже в настройках своего клиента.")
             }
         }
     }
@@ -78,16 +78,16 @@ struct AgentIntegrationSettings: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Text("Внешние агенты").font(AppTypography.sectionTitle)
+            Text(L("Внешние агенты")).font(AppTypography.sectionTitle)
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Разрешить подключение через MCP", isOn: Binding(get: { enabled }, set: save))
+                Toggle(L("Разрешить подключение через MCP"), isOn: Binding(get: { enabled }, set: save))
                     .disabled(loading).accessibilityIdentifier("integrations.mcp.enabled")
-                Text("Подходит любой агент с поддержкой локальных MCP-серверов (stdio). Выберите доступные задачи и материалы в меню «… → Доступ агентам» у задачи.")
+                Text(L("Подходит любой агент с поддержкой локальных MCP-серверов (stdio). Выберите доступные задачи и материалы в меню «… → Доступ агентам» у задачи."))
                     .font(AppTypography.caption).foregroundStyle(.secondary)
             }
             if enabled {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker("Клиент", selection: $client) {
+                    Picker(L("Клиент"), selection: $client) {
                         ForEach(AgentMCPConfiguration.Client.allCases) { client in
                             Text(client.title).tag(client)
                         }
@@ -103,10 +103,10 @@ struct AgentIntegrationSettings: View {
                     Button {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(configuration, forType: .string)
-                        failed = false; message = "Настройки подключения скопированы"
-                    } label: { Label("Скопировать настройки", systemImage: "doc.on.doc") }
+                        failed = false; message = L("Настройки подключения скопированы")
+                    } label: { Label(L("Скопировать настройки"), systemImage: "doc.on.doc") }
                         .buttonStyle(.bordered).accessibilityIdentifier("integrations.mcp.copy")
-                    Text("После добавления перезапустите подключение MCP в клиенте. Агент сможет брать разрешённые задачи в работу, добавлять результаты и завершать их. Папки передаются как ссылки; доступ к файлам задаётся в среде агента.")
+                    Text(L("После добавления перезапустите подключение MCP в клиенте. Агент сможет брать разрешённые задачи в работу, добавлять результаты и завершать их. Папки передаются как ссылки; доступ к файлам задаётся в среде агента."))
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }
                 .onChange(of: client) { _, _ in message = nil; failed = false }
@@ -133,7 +133,7 @@ struct AgentIntegrationSettings: View {
             ])
             let value = try JSONDecoder().decode(Access.self, from: data)
             enabled = value.enabled; revision = value.revision; failed = false
-            message = next ? "MCP включён для разрешённых задач" : "MCP выключен"
+            message = next ? L("MCP включён для разрешённых задач") : L("MCP выключен")
         } catch { load(); failed = true; message = error.localizedDescription }
     }
 }

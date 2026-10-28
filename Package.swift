@@ -13,6 +13,7 @@ let package = Package(
         .executableTarget(
             name: "PosleApp",
             dependencies: ["PosleCore", .product(name: "Sparkle", package: "Sparkle")],
+            exclude: ["Resources"],
             linkerSettings: [.unsafeFlags([
                 "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
                 "-Xlinker", "-rpath", "-Xlinker", "@executable_path"

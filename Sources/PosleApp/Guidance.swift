@@ -58,7 +58,7 @@ final class GuidanceController: ObservableObject {
         } catch {
             // Damaged preferences must not interrupt opening a working library.
             preferences.introSeen = true; preferences.knownVersion = currentVersion; preferences.knownFeatureRelease = featureRelease
-            self.error = "Не удалось открыть настройки подсказок."
+            self.error = L("Не удалось открыть настройки подсказок.")
         }
         hintsEnabled = preferences.hintsEnabled; dismissedHints = preferences.dismissedHints
     }
@@ -95,7 +95,7 @@ final class GuidanceController: ObservableObject {
     private func validateFile(_ url: URL) throws {
         let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .fileSizeKey])
         guard values.isSymbolicLink != true, (values.fileSize ?? 0) <= 65_536 else {
-            throw AppError.message("Неверный файл настроек подсказок.")
+            throw AppError.message(L("Неверный файл настроек подсказок."))
         }
     }
     private func persist() {
@@ -107,7 +107,7 @@ final class GuidanceController: ObservableObject {
             try encoder.encode(preferences).write(to: url, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             error = nil
-        } catch { self.error = "Не удалось сохранить настройки подсказок." }
+        } catch { self.error = L("Не удалось сохранить настройки подсказок.") }
     }
 }
 
@@ -116,39 +116,39 @@ struct GuidanceSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             HStack(alignment: .firstTextBaseline) {
-                AppPageHeader(title: controller.presentation == .gettingStarted ? "Начните со встречи" : "Что нового в «После»", modal: true)
+                AppPageHeader(title: controller.presentation == .gettingStarted ? L("Начните со встречи") : L("Что нового в «После»"), modal: true)
                 Button { controller.complete() } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
-                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Закрыть")
+                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel(L("Закрыть"))
             }
             if controller.presentation == .gettingStarted {
-                Text("Запишите звонок или добавьте готовое аудио. После соберёт транскрипт и конспект со ссылками на реплики. Дополнительные возможности можно включить в настройках.")
+                Text(L("Запишите звонок или добавьте готовое аудио. После соберёт транскрипт и конспект со ссылками на реплики. Дополнительные возможности можно включить в настройках."))
                     .font(AppTypography.body).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 12) {
-                    Button { controller.complete(with: .record) } label: { Label("Записать встречу", systemImage: "record.circle") }
+                    Button { controller.complete(with: .record) } label: { Label(L("Записать встречу"), systemImage: "record.circle") }
                         .buttonStyle(.borderedProminent).tint(Ink.actionFill)
-                    Button { controller.complete(with: .importFile) } label: { Label("Добавить файл…", systemImage: "arrow.down.doc") }.buttonStyle(.bordered)
+                    Button { controller.complete(with: .importFile) } label: { Label(L("Добавить файл…"), systemImage: "arrow.down.doc") }.buttonStyle(.bordered)
                 }
-                Button("Выбрать локальную или облачную модель") { controller.complete(with: .speechSettings) }.buttonStyle(.borderless)
+                Button(L("Выбрать локальную или облачную модель")) { controller.complete(with: .speechSettings) }.buttonStyle(.borderless)
             } else {
                 HStack {
-                    feature("Только нужные возможности", "Встречи, заметки, конспекты и транскрипты доступны сразу. Карточки, задачи, календарь, помощник и смысловой поиск включаются отдельно.", "square.grid.2x2")
-                    Button("Выбрать") { controller.complete(with: .features) }.buttonStyle(.bordered)
+                    feature(L("Только нужные возможности"), L("Встречи, заметки, конспекты и транскрипты доступны сразу. Карточки, задачи, календарь, помощник и смысловой поиск включаются отдельно."), "square.grid.2x2")
+                    Button(L("Выбрать")) { controller.complete(with: .features) }.buttonStyle(.bordered)
                 }
                 HStack {
-                    feature("Корзина на 30 дней", "Встречи, заметки, задачи и карточки можно восстановить после удаления.", "trash")
-                    Button("Открыть") { controller.complete(with: .trash) }.buttonStyle(.bordered)
+                    feature(L("Корзина на 30 дней"), L("Встречи, заметки, задачи и карточки можно восстановить после удаления."), "trash")
+                    Button(L("Открыть")) { controller.complete(with: .trash) }.buttonStyle(.bordered)
                 }
                 HStack {
-                    feature("Контекст конспекта", "Укажите свою роль и цель встречи, чтобы конспект точнее выделял главное.", "text.bubble")
-                    Button("Настроить") { controller.complete(with: .aiSettings) }.buttonStyle(.bordered)
+                    feature(L("Контекст конспекта"), L("Укажите свою роль и цель встречи, чтобы конспект точнее выделял главное."), "text.bubble")
+                    Button(L("Настроить")) { controller.complete(with: .aiSettings) }.buttonStyle(.bordered)
                 }
             }
             Divider()
             HStack(spacing: 14) {
-                Toggle("Подсказки по ходу работы", isOn: Binding(get: { controller.hintsEnabled }, set: { controller.setHintsEnabled($0) }))
+                Toggle(L("Подсказки по ходу работы"), isOn: Binding(get: { controller.hintsEnabled }, set: { controller.setHintsEnabled($0) }))
                     .toggleStyle(.checkbox)
                 Spacer()
-                Button(controller.presentation == .gettingStarted ? "Позже" : "Понятно") { controller.complete() }
+                Button(controller.presentation == .gettingStarted ? L("Позже") : L("Понятно")) { controller.complete() }
                     .buttonStyle(.bordered).keyboardShortcut(controller.presentation == .gettingStarted ? .cancelAction : .defaultAction)
             }
             if let error = controller.error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning) }
@@ -176,7 +176,7 @@ struct GuidanceHint: View {
                 Text(text).font(AppTypography.control).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 Button { controller.dismissHint(id) } label: { Image(systemName: "xmark").frame(width: 20, height: 20) }
-                    .buttonStyle(.plain).foregroundStyle(Ink.secondaryText).accessibilityLabel("Скрыть подсказку")
+                    .buttonStyle(.plain).foregroundStyle(Ink.secondaryText).accessibilityLabel(L("Скрыть подсказку"))
             }.padding(12).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
         }
     }

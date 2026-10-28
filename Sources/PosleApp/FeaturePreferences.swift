@@ -8,15 +8,15 @@ extension AppStore {
     func setFeature(_ feature: AppFeature, enabled: Bool) -> Bool {
         guard settings.isEnabled(feature) != enabled else { return true }
         guard !startingRecording && !isRecording && !stoppingRecording && !busy && jobs.activeCount == 0 else {
-            error = "Изменить возможности можно после завершения записи и обработки."
+            error = L("Изменить возможности можно после завершения записи и обработки.")
             return false
         }
         guard !UnsavedEditorRegistry.hasUnsaved else {
-            error = "Сохраните или отмените открытые правки перед изменением возможностей."
+            error = L("Сохраните или отмените открытые правки перед изменением возможностей.")
             return false
         }
         if feature == .assistant, !enabled, !voice.flushDraft() {
-            error = "Не удалось сохранить черновик помощника. Повторите попытку перед отключением."
+            error = L("Не удалось сохранить черновик помощника. Повторите попытку перед отключением.")
             return false
         }
         var candidate = settings
@@ -27,7 +27,7 @@ extension AppStore {
             NotificationCenter.default.post(name: Notification.Name("PosleShortcutsChanged"), object: nil)
             return true
         } catch {
-            self.error = "Не удалось сохранить выбор возможностей. " + error.localizedDescription
+            self.error = L("Не удалось сохранить выбор возможностей. ") + error.localizedDescription
             return false
         }
     }

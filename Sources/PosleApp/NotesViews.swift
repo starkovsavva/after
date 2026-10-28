@@ -16,7 +16,7 @@ extension AppStore {
 }
 
 private func noteKindTitle(_ kind: String) -> String {
-    ["note": "Заметка", "important": "Важно", "question": "Вопрос", "task": "Задача"][kind] ?? "Заметка"
+    ["note": L("Заметка"), "important": L("Важно"), "question": L("Вопрос"), "task": L("Задача")][kind] ?? L("Заметка")
 }
 private func noteKindIcon(_ kind: String) -> String {
     ["note": "text.alignleft", "important": "bookmark", "question": "questionmark.bubble", "task": "checkmark.circle"][kind] ?? "text.alignleft"
@@ -38,7 +38,7 @@ struct NotesWorkspaceView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     contextLine
-                    NoteComposer(text: text, kind: kind, placeholder: "Новая заметка…", documentID: "meeting:" + meeting.id) {
+                    NoteComposer(text: text, kind: kind, placeholder: L("Новая заметка…"), documentID: "meeting:" + meeting.id) {
                         let time = app.settings.notesAutoTimestamp ? (app.isRecording && app.captureMeetingID == meeting.id
                             ? Date().timeIntervalSince(app.recordingDate ?? Date()) : (app.transcript == nil ? nil : app.playbackTime)) : nil
                         if let saved = notes.capture(text: text.wrappedValue, kind: kind.wrappedValue, meetingID: meeting.id, timestamp: time) {
@@ -46,7 +46,7 @@ struct NotesWorkspaceView: View {
                         }
                     }.appLayoutAnchor("notes.composer")
                     if notes.notes(for: meeting.id).isEmpty && notes.error == nil {
-                        NotesEmpty(title: "Заметок пока нет", text: "", icon: "pencil.and.outline")
+                        NotesEmpty(title: L("Заметок пока нет"), text: "", icon: "pencil.and.outline")
                     }
                     ForEach(notes.notes(for: meeting.id)) { note in
                         NoteRow(note: note, notes: notes, meetingTitle: nil) { editing = note }
@@ -70,21 +70,21 @@ struct NotesWorkspaceView: View {
                 Button { openContext(context.project, mode: "project") } label: {
                     HStack(spacing: 7) { Image(systemName: "folder"); Text(context.project).lineLimit(1).truncationMode(.middle) }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                }.buttonStyle(.plain).foregroundStyle(Ink.accent).help("Встречи проекта «\(context.project)»")
+                }.buttonStyle(.plain).foregroundStyle(Ink.accent).help(LF("Встречи проекта «{0}»", arguments: [String(describing: (context.project))]))
             }
             if app.isFeatureEnabled(.tasks), !context.person.isEmpty {
                 Button { openContext(context.person, mode: "person") } label: {
                     HStack(spacing: 7) { Image(systemName: "person"); Text(context.person).lineLimit(1).truncationMode(.middle) }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                }.buttonStyle(.plain).foregroundStyle(Ink.accent).help("Встречи с \(context.person)")
+                }.buttonStyle(.plain).foregroundStyle(Ink.accent).help(LF("Встречи с {0}", arguments: [String(describing: (context.person))]))
             }
             if app.isFeatureEnabled(.tasks), context.project.isEmpty && context.person.isEmpty {
-                Button("Добавить проект или человека") { showingContext = true }.buttonStyle(.borderless)
+                Button(L("Добавить проект или человека")) { showingContext = true }.buttonStyle(.borderless)
             }
             Spacer(minLength: 0)
             Button { showingContext = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 24, height: 24) }
-                .buttonStyle(.plain).help(app.isFeatureEnabled(.tasks) ? "Проект, человек и шаблон" : "Шаблон заметок")
-                .accessibilityLabel(app.isFeatureEnabled(.tasks) ? "Изменить проект, человека и шаблон встречи" : "Выбрать шаблон заметок встречи")
+                .buttonStyle(.plain).help(app.isFeatureEnabled(.tasks) ? L("Проект, человек и шаблон") : L("Шаблон заметок"))
+                .accessibilityLabel(app.isFeatureEnabled(.tasks) ? L("Изменить проект, человека и шаблон встречи") : L("Выбрать шаблон заметок встречи"))
         }.font(AppTypography.control).frame(height: 24)
     }
     private func openContext(_ label: String, mode: String) {
@@ -111,19 +111,19 @@ struct NotesInboxView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(spacing: 12) {
-                        Text("Входящие").font(AppTypography.sectionTitle).accessibilityAddTraits(.isHeader)
+                        Text(L("Входящие")).font(AppTypography.sectionTitle).accessibilityAddTraits(.isHeader)
                         if notes.error == nil { Text("\(inbox.count)").font(AppTypography.caption).foregroundStyle(.secondary) }
                         Spacer()
-                        TextField("Поиск в заметках", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
-                            .accessibilityLabel("Поиск во входящих заметках")
+                        TextField(L("Поиск в заметках"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                            .accessibilityLabel(L("Поиск во входящих заметках"))
                     }
-                    NoteComposer(text: text, kind: kind, placeholder: "Новая заметка…", documentID: "capture:" + draftKey) {
+                    NoteComposer(text: text, kind: kind, placeholder: L("Новая заметка…"), documentID: "capture:" + draftKey) {
                         if notes.capture(text: text.wrappedValue, kind: kind.wrappedValue) != nil {
                             text.wrappedValue = ""
                             if app.showingCaptureDrafts { app.showingCaptureDrafts = false }
                         }
                     }
-                    if inbox.isEmpty && notes.error == nil { NotesEmpty(title: query.isEmpty ? "Входящие пусты" : "Заметки не найдены", text: "", icon: "tray") }
+                    if inbox.isEmpty && notes.error == nil { NotesEmpty(title: query.isEmpty ? L("Входящие пусты") : L("Заметки не найдены"), text: "", icon: "tray") }
                     ForEach(inbox) { note in
                         NoteRow(note: note, notes: notes, meetingTitle: nil, meetingUnavailable: note.meetingID != nil) { editing = note }
                             .id(note.id).padding(2).background(notes.highlightedNoteID == note.id ? Ink.accent.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 9))
@@ -154,18 +154,18 @@ private struct NoteComposer: View {
             PlainNoteInput(text: $text, placeholder: placeholder, isFocused: $focused, documentID: documentID)
                 .frame(height: editorHeight)
             HStack(spacing: 10) {
-                Picker("Тип заметки", selection: $kind) {
+                Picker(L("Тип заметки"), selection: $kind) {
                     ForEach(app.isFeatureEnabled(.tasks) ? ["note", "important", "question", "task"] : ["note", "important", "question"], id: \.self) { value in Label(noteKindTitle(value), systemImage: noteKindIcon(value)).tag(value) }
-                }.labelsHidden().frame(width: 130).accessibilityLabel("Тип заметки")
+                }.labelsHidden().frame(width: 130).accessibilityLabel(L("Тип заметки"))
                 Button { expanded.toggle(); focused = true } label: {
                     Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").frame(width: 24, height: 24)
                 }.buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help(expanded ? "Уменьшить поле заметки" : "Увеличить поле заметки")
-                    .accessibilityLabel(expanded ? "Уменьшить поле заметки" : "Увеличить поле заметки")
+                    .help(expanded ? L("Уменьшить поле заметки") : L("Увеличить поле заметки"))
+                    .accessibilityLabel(expanded ? L("Уменьшить поле заметки") : L("Увеличить поле заметки"))
                 Spacer()
-                Button("Сохранить", action: save).buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                Button(L("Сохранить"), action: save).buttonStyle(.borderedProminent).tint(Ink.actionFill)
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .keyboardShortcut(.return, modifiers: [.command]).help("Сохранить · ⌘↩")
+                    .keyboardShortcut(.return, modifiers: [.command]).help(L("Сохранить · ⌘↩"))
             }
         }.padding(12).background(Ink.field, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(focused ? Ink.accent.opacity(0.7) : Ink.line))
@@ -185,36 +185,36 @@ private struct NoteRow: View {
                 if note.kind == "task" && app.isFeatureEnabled(.tasks) {
                     Button { var value = note; value.completed.toggle(); _ = notes.save(value) } label: {
                         Image(systemName: note.completed ? "checkmark.circle.fill" : "circle").foregroundStyle(note.completed ? Ink.green : .secondary).frame(width: 24, height: 24)
-                    }.buttonStyle(.plain).accessibilityLabel(note.completed ? "Вернуть задачу в работу" : "Завершить задачу")
+                    }.buttonStyle(.plain).accessibilityLabel(note.completed ? L("Вернуть задачу в работу") : L("Завершить задачу"))
                 } else {
                     Image(systemName: noteKindIcon(note.kind)).foregroundStyle(note.kind == "important" ? Ink.accent : .secondary)
                         .frame(width: 24, height: 24).help(noteKindTitle(note.kind)).accessibilityLabel(noteKindTitle(note.kind))
                 }
                 Button(action: edit) {
-                    Text(note.text.isEmpty ? "Отмеченный момент" : note.text).font(AppTypography.body).lineSpacing(4).lineLimit(4)
+                    Text(note.text.isEmpty ? L("Отмеченный момент") : note.text).font(AppTypography.body).lineSpacing(4).lineLimit(4)
                         .strikethrough(note.kind == "task" && note.completed).foregroundStyle(.primary)
                         .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                }.buttonStyle(.plain).padding(.top, 3).accessibilityHint("Открыть заметку")
+                }.buttonStyle(.plain).padding(.top, 3).accessibilityHint(L("Открыть заметку"))
                 Menu {
-                    Button("Редактировать", action: edit)
-                    Button("Копировать текст") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(note.text, forType: .string) }
-                    if app.isFeatureEnabled(.tasks), note.kind != "task" { Button("Сделать задачей") { var value = note; value.kind = "task"; _ = notes.save(value) } }
-                    if note.meetingID != nil { Button("Во входящие") { var value = note; value.meetingID = nil; value.timestamp = nil; _ = notes.save(value) } }
-                    Button("Удалить заметку", role: .destructive) { notes.delete(note) }
+                    Button(L("Редактировать"), action: edit)
+                    Button(L("Копировать текст")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(note.text, forType: .string) }
+                    if app.isFeatureEnabled(.tasks), note.kind != "task" { Button(L("Сделать задачей")) { var value = note; value.kind = "task"; _ = notes.save(value) } }
+                    if note.meetingID != nil { Button(L("Во входящие")) { var value = note; value.meetingID = nil; value.timestamp = nil; _ = notes.save(value) } }
+                    Button(L("Удалить заметку"), role: .destructive) { notes.delete(note) }
                 } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
-                    .menuStyle(.borderlessButton).frame(width: 26).accessibilityLabel("Действия с заметкой")
+                    .menuStyle(.borderlessButton).frame(width: 26).accessibilityLabel(L("Действия с заметкой"))
             }
             HStack(spacing: 10) {
                 if let timestamp = note.timestamp, note.meetingID != nil, !meetingUnavailable {
-                    Button(Exporter.timestamp(timestamp)) { open() }.monospacedDigit().buttonStyle(.borderless).help("Открыть момент без воспроизведения")
+                    Button(Exporter.timestamp(timestamp)) { open() }.monospacedDigit().buttonStyle(.borderless).help(L("Открыть момент без воспроизведения"))
                 }
                 if !note.owner.isEmpty || !note.due.isEmpty { Text([note.owner, note.due].filter { !$0.isEmpty }.joined(separator: " · ")).lineLimit(1) }
-                if meetingUnavailable { Button("Встреча недоступна") { edit() }.buttonStyle(.borderless).help("Прикрепить заметку к другой встрече") }
+                if meetingUnavailable { Button(L("Встреча недоступна")) { edit() }.buttonStyle(.borderless).help(L("Прикрепить заметку к другой встрече")) }
                 else if let meetingTitle { Button(meetingTitle) { open() }.buttonStyle(.borderless).lineLimit(1) }
                 if !note.attachments.isEmpty { Label("\(note.attachments.count)", systemImage: "paperclip") }
-                if note.expansion != nil { Image(systemName: "sparkles").foregroundStyle(Ink.accent).help("Есть дополнение по записи").accessibilityLabel("Есть дополнение по записи") }
+                if note.expansion != nil { Image(systemName: "sparkles").foregroundStyle(Ink.accent).help(L("Есть дополнение по записи")).accessibilityLabel(L("Есть дополнение по записи")) }
                 Spacer(minLength: 0)
-                Text(Date(timeIntervalSince1970: note.createdAt).formatted(.dateTime.day().month(.abbreviated).hour().minute().locale(Locale(identifier: "ru_RU")))).lineLimit(1)
+                Text(Date(timeIntervalSince1970: note.createdAt).formatted(.dateTime.day().month(.abbreviated).hour().minute().locale(UILocale()))).lineLimit(1)
             }.font(AppTypography.caption).foregroundStyle(.secondary).padding(.leading, 33)
         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
             .background(Ink.paper, in: RoundedRectangle(cornerRadius: 9)).overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Ink.line))
@@ -240,19 +240,19 @@ struct NoteEditorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Заметка").font(AppTypography.modalTitle)
+                Text(L("Заметка")).font(AppTypography.modalTitle)
                 Spacer()
-                Button("Закрыть") { if dirty { dismissConfirmation = true } else { dismiss() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("notes.edit.cancel")
-                Button("Сохранить") { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command]).accessibilityIdentifier("notes.edit.save")
+                Button(L("Закрыть")) { if dirty { dismissConfirmation = true } else { dismiss() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("notes.edit.cancel")
+                Button(L("Сохранить")) { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command]).accessibilityIdentifier("notes.edit.save")
             }.padding(22)
             Divider()
             if session.conflicted {
                         VStack(alignment: .leading, spacing: 10) {
-                            Label("Заметка изменилась в другом окне. Ваши правки остались здесь.", systemImage: "exclamationmark.circle").font(AppTypography.control).foregroundStyle(Ink.warning)
-                            Text("Можно сохранить свой текст и поля новой заметкой. Вложения останутся в исходной.").font(AppTypography.caption).foregroundStyle(.secondary)
+                            Label(L("Заметка изменилась в другом окне. Ваши правки остались здесь."), systemImage: "exclamationmark.circle").font(AppTypography.control).foregroundStyle(Ink.warning)
+                            Text(L("Можно сохранить свой текст и поля новой заметкой. Вложения останутся в исходной.")).font(AppTypography.caption).foregroundStyle(.secondary)
                             HStack {
-                                Button("Сохранить как новую заметку") { saveAsNew() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
-                                if let persisted { Button("Открыть сохранённую версию") { session.didPersist(persisted); notes.error = nil } }
+                                Button(L("Сохранить как новую заметку")) { saveAsNew() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                                if let persisted { Button(L("Открыть сохранённую версию")) { session.didPersist(persisted); notes.error = nil } }
                             }
                         }.padding(14).background(Ink.warning.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
                     }
@@ -260,7 +260,7 @@ struct NoteEditorView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         if app.isFeatureEnabled(.tasks) || session.draft.kind != "task" {
-                            Picker("Тип", selection: $session.draft.kind) {
+                            Picker(L("Тип"), selection: $session.draft.kind) {
                                 ForEach(app.isFeatureEnabled(.tasks) ? ["note", "important", "question", "task"] : ["note", "important", "question"], id: \.self) { Text(noteKindTitle($0)).tag($0) }
                             }.frame(width: 190)
                         }
@@ -271,25 +271,25 @@ struct NoteEditorView: View {
                     RichNoteEditor(text: $session.draft.text, rtf: $session.draft.contentRTF, commands: richCommands, onAttachmentPaste: { board in
                         persistBeforeAttachment { note in notes.paste(into: note, board: board) }
                     }).frame(minHeight: 160, maxHeight: 240)
-                        .padding(10).background(Ink.field, in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel("Текст заметки")
-                    Picker("Встреча", selection: Binding(get: { session.draft.meetingID ?? "" }, set: { value in
+                        .padding(10).background(Ink.field, in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel(L("Текст заметки"))
+                    Picker(L("Встреча"), selection: Binding(get: { session.draft.meetingID ?? "" }, set: { value in
                         if session.draft.meetingID != (value.isEmpty ? nil : value) { session.draft.timestamp = nil }; session.draft.meetingID = value.isEmpty ? nil : value
                     })) {
-                        Text("Входящие · без встречи").tag("")
+                        Text(L("Входящие · без встречи")).tag("")
                         if let id = session.draft.meetingID, !app.noteMeetings.contains(where: { $0.id == id }) {
-                            Text(app.allNoteMeetings.first(where: { $0.id == id })?.title ?? "Встреча недоступна").tag(id)
+                            Text(app.allNoteMeetings.first(where: { $0.id == id })?.title ?? L("Встреча недоступна")).tag(id)
                         }
                         ForEach(app.noteMeetings) { Text($0.title).tag($0.id) }
                     }
-                    if showingSource || !session.draft.sourceURL.isEmpty { TextField("Ссылка", text: $session.draft.sourceURL).textFieldStyle(.roundedBorder).accessibilityLabel("Ссылка на источник") }
+                    if showingSource || !session.draft.sourceURL.isEmpty { TextField(L("Ссылка"), text: $session.draft.sourceURL).textFieldStyle(.roundedBorder).accessibilityLabel(L("Ссылка на источник")) }
                     if app.isFeatureEnabled(.tasks), session.draft.kind == "task" {
-                        HStack { TextField("Кто делает", text: $session.draft.owner); TextField("Срок, например до пятницы", text: $session.draft.due) }.textFieldStyle(.roundedBorder)
+                        HStack { TextField(L("Кто делает"), text: $session.draft.owner); TextField(L("Срок, например до пятницы"), text: $session.draft.due) }.textFieldStyle(.roundedBorder)
                     }
                     Divider()
                     HStack {
-                        Button { persistBeforeAttachment { notes.chooseAttachments(for: $0) } } label: { Label("Файл", systemImage: "paperclip") }.accessibilityLabel("Добавить файлы")
-                        Button { persistBeforeAttachment { notes.paste(into: $0) } } label: { Label("Вставить", systemImage: "doc.on.clipboard") }
-                        if !showingSource && session.draft.sourceURL.isEmpty { Button { showingSource = true } label: { Label("Ссылка", systemImage: "link") } }
+                        Button { persistBeforeAttachment { notes.chooseAttachments(for: $0) } } label: { Label(L("Файл"), systemImage: "paperclip") }.accessibilityLabel(L("Добавить файлы"))
+                        Button { persistBeforeAttachment { notes.paste(into: $0) } } label: { Label(L("Вставить"), systemImage: "doc.on.clipboard") }
+                        if !showingSource && session.draft.sourceURL.isEmpty { Button { showingSource = true } label: { Label(L("Ссылка"), systemImage: "link") } }
                         Spacer()
                         if notes.attachmentBusy { ProgressView().controlSize(.small) }
                     }
@@ -299,24 +299,24 @@ struct NoteEditorView: View {
                                 Button { notes.openAttachment(attachment, note: current) } label: { Label(attachment.name, systemImage: "doc") }.buttonStyle(.borderless).lineLimit(1)
                                 Spacer()
                                 if attachment.contentType.hasPrefix("image") || ["png", "jpg", "jpeg", "heic", "tiff", "webp"].contains(URL(fileURLWithPath: attachment.name).pathExtension.lowercased()) {
-                                    Button("Распознать текст") { notes.recognize(attachment, note: current) }.disabled(notes.attachmentBusy)
+                                    Button(L("Распознать текст")) { notes.recognize(attachment, note: current) }.disabled(notes.attachmentBusy)
                                 }
-                                Button { notes.removeAttachment(attachment, from: current) } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Удалить вложение \(attachment.name)")
+                                Button { notes.removeAttachment(attachment, from: current) } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel(LF("Удалить вложение {0}", arguments: [String(describing: (attachment.name))]))
                             }
                             if !attachment.extractedText.isEmpty { Text(attachment.extractedText).font(AppTypography.control).textSelection(.enabled).lineSpacing(4) }
                         }.padding(12).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
                     }
                     Divider()
                     HStack(alignment: .top) {
-                        Button { persistBeforeAttachment { note in Task { await app.expandCapturedNote(note); notes.reload() } } } label: { Label("Дополнить по записи", systemImage: "sparkles") }
+                        Button { persistBeforeAttachment { note in Task { await app.expandCapturedNote(note); notes.reload() } } } label: { Label(L("Дополнить по записи"), systemImage: "sparkles") }
                             .disabled(app.busy || current.meetingID == nil || current.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            .help(current.meetingID == nil ? "Сначала прикрепите заметку к встрече" : "Дополнить заметку подтверждёнными деталями. Исходный текст сохранится.")
+                            .help(current.meetingID == nil ? L("Сначала прикрепите заметку к встрече") : L("Дополнить заметку подтверждёнными деталями. Исходный текст сохранится."))
                         Spacer()
                         Image(systemName: profileSettings.mode == "cloud" ? "cloud" : "laptopcomputer").foregroundStyle(.secondary)
-                            .help(profileSettings.mode == "cloud" ? profileSettings.cloudProviderTitle : "ИИ на этом Mac")
+                            .help(profileSettings.mode == "cloud" ? profileSettings.cloudProviderTitle : L("ИИ на этом Mac"))
                     }
                     if profileSettings.mode == "cloud" {
-                        Label("\(profileSettings.cloudProviderTitle) получит пометку и выбранные фрагменты транскрипта. Аудио и вложения остаются на Mac.", systemImage: "cloud").font(AppTypography.control).foregroundStyle(.secondary)
+                        Label(LF("{0} получит пометку и выбранные фрагменты транскрипта. Аудио и вложения остаются на Mac.", arguments: [L(profileSettings.cloudProviderTitle)]), systemImage: "cloud").font(AppTypography.control).foregroundStyle(.secondary)
                     }
                     if let expansion = current.expansion { NoteExpansionView(expansion: expansion, note: current) }
                 }.padding(24)
@@ -327,10 +327,10 @@ struct NoteEditorView: View {
             .onAppear { registerDraft() }
             .onChange(of: dirty) { _, _ in registerDraft() }
             .onDisappear { UnsavedEditorRegistry.remove(id: editorID) }
-            .confirmationDialog("Сохранить изменения в заметке?", isPresented: $dismissConfirmation) {
-                Button("Сохранить") { save() }
-                Button("Не сохранять", role: .destructive) { UnsavedEditorRegistry.remove(id: editorID); dismiss() }.accessibilityIdentifier("notes.edit.discard")
-                Button("Продолжить редактирование", role: .cancel) {}
+            .confirmationDialog(L("Сохранить изменения в заметке?"), isPresented: $dismissConfirmation) {
+                Button(L("Сохранить")) { save() }
+                Button(L("Не сохранять"), role: .destructive) { UnsavedEditorRegistry.remove(id: editorID); dismiss() }.accessibilityIdentifier("notes.edit.discard")
+                Button(L("Продолжить редактирование"), role: .cancel) {}
             }
             .onDrop(of: [.fileURL, .url, .plainText, .image], isTargeted: $dropping) { providers in
                 let value = session.draft
@@ -341,7 +341,7 @@ struct NoteEditorView: View {
             .onChange(of: persisted) { _, value in session.receive(value) }
     }
     private func registerDraft() {
-        UnsavedEditorRegistry.set(id: editorID, title: "Заметка «\(session.draft.displayTitle.prefix(60))»", dirty: dirty)
+        UnsavedEditorRegistry.set(id: editorID, title: LF("Заметка «{0}»", arguments: [String(describing: (session.draft.displayTitle.prefix(60)))]), dirty: dirty)
     }
     private func save() {
         if let saved = notes.save(session.draft) { session.didPersist(saved); UnsavedEditorRegistry.remove(id: editorID); dismiss() }
@@ -355,7 +355,7 @@ struct NoteEditorView: View {
     private func saveAsNew() {
         let preserveMeeting = session.draft.meetingID.map { id in app.allNoteMeetings.contains { $0.id == id } } ?? true
         if let saved = notes.save(session.asNewNote(preserveMeeting: preserveMeeting)) {
-            notes.notice = "Ваш текст сохранён новой заметкой. Вложения остались в исходной."
+            notes.notice = L("Ваш текст сохранён новой заметкой. Вложения остались в исходной.")
             session.didPersist(saved); UnsavedEditorRegistry.remove(id: editorID); dismiss()
         }
     }
@@ -366,11 +366,11 @@ struct NotesTemplatesView: View {
     @State private var editing: NoteTemplate?
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack { Text("Шаблоны заметок").font(AppTypography.heading); Spacer(); Button("Создать шаблон") { editing = NoteTemplate(name: "Новый шаблон", body: "", focus: "") } }
+            HStack { Text(L("Шаблоны заметок")).font(AppTypography.heading); Spacer(); Button(L("Создать шаблон")) { editing = NoteTemplate(name: L("Новый шаблон"), body: "", focus: "") } }
             ForEach(notes.templates) { template in
                 HStack {
                     VStack(alignment: .leading, spacing: 4) { Text(template.name).font(AppTypography.bodyStrong); Text(template.focus).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2) }
-                    Spacer(); Button("Изменить") { editing = template }
+                    Spacer(); Button(L("Изменить")) { editing = template }
                 }.padding(12).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
             }
         }.overlay(alignment: .bottomTrailing) { NotesMessage(notes: notes).padding(8).frame(maxWidth: 440) }
@@ -390,17 +390,17 @@ private struct TemplateEditor: View {
     private var dirty: Bool { template != baseline }
     private func close() { UnsavedEditorRegistry.remove(id: editorID); dismiss() }
     private func registerDraft() {
-        UnsavedEditorRegistry.set(id: editorID, title: "Шаблон «\(template.name.prefix(60))»", dirty: dirty)
+        UnsavedEditorRegistry.set(id: editorID, title: LF("Шаблон «{0}»", arguments: [String(describing: (template.name.prefix(60)))]), dirty: dirty)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("Шаблон заметки").font(AppTypography.modalTitle); Spacer(); Button("Отмена") { close() }.accessibilityIdentifier("notes.template.cancel"); Button("Сохранить") { if notes.saveTemplate(template) { close() } }.accessibilityIdentifier("notes.template.save").buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(template.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
-            TextField("Название", text: $template.name).textFieldStyle(.roundedBorder)
-            Text("Структура заметки").font(AppTypography.control).foregroundStyle(.secondary)
+            HStack { Text(L("Шаблон заметки")).font(AppTypography.modalTitle); Spacer(); Button(L("Отмена")) { close() }.accessibilityIdentifier("notes.template.cancel"); Button(L("Сохранить")) { if notes.saveTemplate(template) { close() } }.accessibilityIdentifier("notes.template.save").buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(template.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            TextField(L("Название"), text: $template.name).textFieldStyle(.roundedBorder)
+            Text(L("Структура заметки")).font(AppTypography.control).foregroundStyle(.secondary)
             TextEditor(text: $template.body).font(AppTypography.body).frame(height: 180).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 8))
-            Text("Что выписать из встречи").font(AppTypography.control).foregroundStyle(.secondary)
+            Text(L("Что выписать из встречи")).font(AppTypography.control).foregroundStyle(.secondary)
             TextEditor(text: $template.focus).font(AppTypography.body).frame(height: 90).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 8))
-            HStack { Button("Удалить шаблон", role: .destructive) { if notes.deleteTemplate(template) { close() } }; Spacer() }
+            HStack { Button(L("Удалить шаблон"), role: .destructive) { if notes.deleteTemplate(template) { close() } }; Spacer() }
         }.padding(24).frame(width: 620)
             .interactiveDismissDisabled(dirty)
             .onAppear { registerDraft() }
@@ -442,7 +442,7 @@ private struct MeetingContextEditor: View {
     private func close() { finished = true; UnsavedEditorRegistry.remove(id: editorID); dismiss() }
     private func registerDraft() {
         guard !finished else { return }
-        UnsavedEditorRegistry.set(id: editorID, title: "Контекст встречи «\(meeting.title.prefix(60))»", dirty: dirty)
+        UnsavedEditorRegistry.set(id: editorID, title: LF("Контекст встречи «{0}»", arguments: [String(describing: (meeting.title.prefix(60)))]), dirty: dirty)
     }
     init(notes: NotesStore, meeting: Meeting) {
         self.notes = notes; self.meeting = meeting
@@ -453,33 +453,33 @@ private struct MeetingContextEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(app.isFeatureEnabled(.tasks) ? "Контекст встречи" : "Шаблон заметок").font(AppTypography.modalTitle)
+            Text(app.isFeatureEnabled(.tasks) ? L("Контекст встречи") : L("Шаблон заметок")).font(AppTypography.modalTitle)
             Text(meeting.title).font(AppTypography.control).foregroundStyle(Ink.secondaryText).lineLimit(2)
             if app.isFeatureEnabled(.tasks) {
-                TextField("Проект", text: $context.project).textFieldStyle(.roundedBorder).accessibilityIdentifier("notes.context.project")
-                TextField("Человек", text: $context.person).textFieldStyle(.roundedBorder).accessibilityIdentifier("notes.context.person")
-                Text("Встреча появится в «Проекты и люди». Папка и её настройки сохранятся.")
+                TextField(L("Проект"), text: $context.project).textFieldStyle(.roundedBorder).accessibilityIdentifier("notes.context.project")
+                TextField(L("Человек"), text: $context.person).textFieldStyle(.roundedBorder).accessibilityIdentifier("notes.context.person")
+                Text(L("Встреча появится в «Проекты и люди». Папка и её настройки сохранятся."))
                     .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
             }
-            Picker("Шаблон", selection: $selectedTemplate) {
-                Text("Без шаблона").tag(""); ForEach(notes.templates) { Text($0.name).tag($0.id) }
+            Picker(L("Шаблон"), selection: $selectedTemplate) {
+                Text(L("Без шаблона")).tag(""); ForEach(notes.templates) { Text($0.name).tag($0.id) }
             }.accessibilityIdentifier("notes.context.template")
-            if !selectedTemplate.isEmpty { Toggle("Создать заметку по шаблону", isOn: $insertTemplate).accessibilityIdentifier("notes.context.insertTemplate") }
+            if !selectedTemplate.isEmpty { Toggle(L("Создать заметку по шаблону"), isOn: $insertTemplate).accessibilityIdentifier("notes.context.insertTemplate") }
             if let detail = templateFailureDetail {
                 HStack(alignment: .top, spacing: 10) {
-                    Label((metadataChanged ? "" : "Параметры сохранены. ") + "Не удалось создать заметку по шаблону. Повторите сохранение.", systemImage: "exclamationmark.triangle")
+                    Label((metadataChanged ? "" : L("Параметры сохранены. ")) + L("Не удалось создать заметку по шаблону. Повторите сохранение."), systemImage: "exclamationmark.triangle")
                         .font(AppTypography.caption).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("notes.context.templateFailure")
                     Spacer(minLength: 0)
                     Button { showingTemplateFailure = true } label: { Image(systemName: "info.circle").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).help("Подробности ошибки").accessibilityLabel("Подробности ошибки создания заметки")
+                        .buttonStyle(.plain).help(L("Подробности ошибки")).accessibilityLabel(L("Подробности ошибки создания заметки"))
                         .popover(isPresented: $showingTemplateFailure) { Text(detail).font(AppTypography.control).textSelection(.enabled).padding(20).frame(width: 420) }
                 }
             }
             HStack {
                 Spacer()
-                Button("Отмена") { close() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("notes.context.cancel")
-                Button("Сохранить", action: save).keyboardShortcut(.defaultAction)
+                Button(L("Отмена")) { close() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("notes.context.cancel")
+                Button(L("Сохранить"), action: save).keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("notes.context.save").buttonStyle(.borderedProminent).tint(Ink.actionFill)
                     .disabled(app.isTerminating)
             }
@@ -513,10 +513,10 @@ private struct MeetingContextEditor: View {
         }
         if insertTemplate {
             guard let template = notes.templates.first(where: { $0.id == selectedTemplate }) else {
-                notes.error = "Шаблон больше недоступен. Выберите другой шаблон и повторите сохранение."; return
+                notes.error = L("Шаблон больше недоступен. Выберите другой шаблон и повторите сохранение."); return
             }
             guard notes.capture(text: template.body, meetingID: meeting.id) != nil else {
-                templateFailureDetail = notes.error ?? "Не удалось сохранить заметку."
+                templateFailureDetail = notes.error ?? L("Не удалось сохранить заметку.")
                 notes.error = nil; registerDraft(); return
             }
             // A later retry or a second queued default action must not insert
@@ -543,11 +543,11 @@ struct NotesMessage: View {
                     Text(text).font(AppTypography.control).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                     if notes.error != nil {
                         Button { details = true } label: { Image(systemName: "info.circle").frame(width: 24, height: 24) }
-                            .buttonStyle(.plain).help("Полный текст ошибки").accessibilityLabel("Полный текст ошибки")
+                            .buttonStyle(.plain).help(L("Полный текст ошибки")).accessibilityLabel(L("Полный текст ошибки"))
                             .popover(isPresented: $details) { Text(text).font(AppTypography.body).textSelection(.enabled).padding(20).frame(width: 420) }
                     }
                     Button { notes.error = nil; notes.notice = nil } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).accessibilityLabel("Закрыть сообщение")
+                        .buttonStyle(.plain).accessibilityLabel(L("Закрыть сообщение"))
                 }.padding(12).background(Ink.paper, in: RoundedRectangle(cornerRadius: 10))
                     .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(notes.error != nil ? Ink.warning.opacity(0.5) : Ink.line))
                     .shadow(color: .black.opacity(0.1), radius: 8, y: 3)
@@ -581,10 +581,10 @@ private struct NoteExpansionView: View {
     @State private var checking = true
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Дополнение ИИ", systemImage: "sparkles").font(AppTypography.bodyStrong).foregroundStyle(Ink.accent)
+            Label(L("Дополнение ИИ"), systemImage: "sparkles").font(AppTypography.bodyStrong).foregroundStyle(Ink.accent)
             if checking { ProgressView().controlSize(.small) }
             else if !valid {
-                Text("Исходная запись или заметка изменилась. Разверните заметку заново, чтобы получить актуальные ссылки.").font(AppTypography.control).foregroundStyle(Ink.warning)
+                Text(L("Исходная запись или заметка изменилась. Разверните заметку заново, чтобы получить актуальные ссылки.")).font(AppTypography.control).foregroundStyle(Ink.warning)
             } else {
                 ForEach(Array(expansion.statements.enumerated()), id: \.offset) { _, statement in
                     VStack(alignment: .leading, spacing: 8) {
@@ -601,7 +601,7 @@ private struct NoteExpansionView: View {
                     }
                 }
                 if !expansion.openQuestions.isEmpty {
-                    Text("ИИ предлагает уточнить").font(AppTypography.bodyStrong)
+                    Text(L("ИИ предлагает уточнить")).font(AppTypography.bodyStrong)
                     ForEach(expansion.openQuestions, id: \.self) { Text("• " + $0).font(AppTypography.body).lineSpacing(4) }
                 }
                 ForEach(expansion.warnings, id: \.self) { Label($0, systemImage: "info.circle").font(AppTypography.control).foregroundStyle(.secondary) }
@@ -612,7 +612,7 @@ private struct NoteExpansionView: View {
     private func sourceTitle(_ id: Int) -> String {
         guard let meetingID = note.meetingID,
               let transcript: Transcript = app.read(app.meetingDirectory(meetingID).appendingPathComponent("transcript.json")),
-              let segment = transcript.segments.first(where: { $0.id == id }) else { return "Источник \(id + 1)" }
+              let segment = transcript.segments.first(where: { $0.id == id }) else { return LF("Источник {0}", arguments: [String(describing: (id + 1))]) }
         return Exporter.timestamp(segment.start)
     }
     private func validate() async {
@@ -647,51 +647,51 @@ struct NotesContextsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
-                AppWorkspaceHeader(title: "Проекты и люди") {
-                    Picker("Группировать", selection: $mode) { Text("Проекты").tag("project"); Text("Люди").tag("person") }
-                        .pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 200).accessibilityLabel("Проекты или люди")
+                AppWorkspaceHeader(title: L("Проекты и люди")) {
+                    Picker(L("Группировать"), selection: $mode) { Text(L("Проекты")).tag("project"); Text(L("Люди")).tag("person") }
+                        .pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 200).accessibilityLabel(L("Проекты или люди"))
                         .accessibilityIdentifier("contexts.mode")
                 }
                 HStack(alignment: .top, spacing: 18) {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Встречи по общему проекту или человеку.").font(AppTypography.control).foregroundStyle(Ink.secondaryText)
+                        Text(L("Встречи по общему проекту или человеку.")).font(AppTypography.control).foregroundStyle(Ink.secondaryText)
                         if let folder = app.notes.folder(app.folderSelection) {
-                            Label("В папке «\(folder.name)»", systemImage: "folder").font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                            Label(LF("В папке «{0}»", arguments: [String(describing: (folder.name))]), systemImage: "folder").font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                         }
                     }
                     Spacer(minLength: 0)
                     if !allLabels.isEmpty {
-                        Button { assigning = true } label: { Label("Связать встречу…", systemImage: "plus") }
+                        Button { assigning = true } label: { Label(L("Связать встречу…"), systemImage: "plus") }
                             .accessibilityIdentifier("contexts.add").disabled(app.noteMeetings.isEmpty || app.isTerminating)
                     }
                 }
                 if !allLabels.isEmpty {
                     HStack(spacing: 12) {
-                        Picker(mode == "project" ? "Проект" : "Человек", selection: $selected) {
-                            if labels.isEmpty { Text("Ничего не найдено").tag("") }
+                        Picker(mode == "project" ? L("Проект") : L("Человек"), selection: $selected) {
+                            if labels.isEmpty { Text(L("Ничего не найдено")).tag("") }
                             ForEach(labels, id: \.self) { Text($0).tag($0) }
-                        }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading).accessibilityLabel(mode == "project" ? "Выбрать проект" : "Выбрать человека")
+                        }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading).accessibilityLabel(mode == "project" ? L("Выбрать проект") : L("Выбрать человека"))
                             .accessibilityIdentifier("contexts.selection")
-                        if !selected.isEmpty { Text("Встреч: \(related.count)").font(AppTypography.caption).foregroundStyle(.secondary) }
+                        if !selected.isEmpty { Text(LF("Встреч: {0}", arguments: [String(describing: (related.count))])).font(AppTypography.caption).foregroundStyle(.secondary) }
                         if allLabels.count > 7 || !query.isEmpty {
-                            TextField("Фильтр", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 180)
-                                .accessibilityLabel(mode == "project" ? "Найти проект" : "Найти человека")
+                            TextField(L("Фильтр"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 180)
+                                .accessibilityLabel(mode == "project" ? L("Найти проект") : L("Найти человека"))
                         }
                     }
                 }
                 if selected.isEmpty && notes.error == nil {
                     VStack(spacing: 0) {
-                        NotesEmpty(title: query.isEmpty ? (mode == "project" ? "Проектов пока нет" : "Людей пока нет") : "Ничего не найдено",
-                                   text: query.isEmpty ? (app.noteMeetings.isEmpty ? "Сначала добавьте встречу\(app.folderSelection == nil ? "" : " в эту папку")." : "Свяжите встречу с проектом или человеком, чтобы собрать её заметки и договорённости здесь.") : "", icon: mode == "project" ? "rectangle.3.group" : "person.2")
+                        NotesEmpty(title: query.isEmpty ? (mode == "project" ? L("Проектов пока нет") : L("Людей пока нет")) : L("Ничего не найдено"),
+                                   text: query.isEmpty ? (app.noteMeetings.isEmpty ? LF("Сначала добавьте встречу{0}.", arguments: [String(describing: (app.folderSelection == nil ? "" : L(" в эту папку")))]) : L("Свяжите встречу с проектом или человеком, чтобы собрать её заметки и договорённости здесь.")) : "", icon: mode == "project" ? "rectangle.3.group" : "person.2")
                         if query.isEmpty {
                             if app.noteMeetings.isEmpty {
-                                Button("Открыть встречи") { app.librarySection = "meetings" }
+                                Button(L("Открыть встречи")) { app.librarySection = "meetings" }
                                     .accessibilityIdentifier("contexts.openMeetings")
                             } else {
-                                Button("Связать встречу…") { assigning = true }
+                                Button(L("Связать встречу…")) { assigning = true }
                                     .buttonStyle(.borderedProminent).tint(Ink.actionFill).accessibilityIdentifier("contexts.add")
                             }
-                            Text("Папки задают настройки. Проекты и люди собирают связанные встречи.")
+                            Text(L("Папки задают настройки. Проекты и люди собирают связанные встречи."))
                                 .font(AppTypography.caption).foregroundStyle(Ink.secondaryText).multilineTextAlignment(.center).frame(maxWidth: 440).padding(.top, 16)
                         }
                     }.frame(maxWidth: .infinity)
@@ -728,7 +728,7 @@ struct NotesContextsView: View {
         VStack(alignment: .leading, spacing: 15) {
             HStack(alignment: .top) {
                 Button { app.openMeeting(meeting.id) } label: { Text(meeting.title).font(AppTypography.heading).multilineTextAlignment(.leading) }.buttonStyle(.borderless)
-                Spacer(); Text(Date(timeIntervalSince1970: meeting.createdAt).formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "ru_RU")))).font(AppTypography.control).foregroundStyle(.secondary)
+                Spacer(); Text(Date(timeIntervalSince1970: meeting.createdAt).formatted(.dateTime.day().month(.abbreviated).locale(UILocale()))).font(AppTypography.control).foregroundStyle(.secondary)
             }
             if let overview = summary?.overview, !overview.isEmpty { Text(overview).font(AppTypography.body).lineSpacing(4).textSelection(.enabled) }
             ForEach(actions.prefix(12)) { item in
@@ -740,10 +740,10 @@ struct NotesContextsView: View {
                     }
                 }.buttonStyle(.plain)
             }
-            if actions.count > 12 { Button("Все договорённости и вопросы") { app.openMeeting(meeting.id) }.buttonStyle(.borderless).font(AppTypography.control) }
+            if actions.count > 12 { Button(L("Все договорённости и вопросы")) { app.openMeeting(meeting.id) }.buttonStyle(.borderless).font(AppTypography.control) }
             if !own.isEmpty {
                 Divider()
-                DisclosureGroup("Мои заметки · \(own.count)") {
+                DisclosureGroup(LF("Мои заметки · {0}", arguments: [String(describing: (own.count))])) {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(own) { note in
                             Button { app.openMeeting(meeting.id, tab: "notes"); notes.highlightedNoteID = note.id } label: {
@@ -758,10 +758,10 @@ struct NotesContextsView: View {
                 }.font(AppTypography.controlStrong)
             }
             if summary == nil && own.isEmpty {
-                if briefs.loading { ProgressView().controlSize(.small).accessibilityLabel("Загрузка конспекта") }
-                else { Text("Конспект ещё не создан. Откройте встречу, чтобы добавить заметки.").font(AppTypography.control).foregroundStyle(.secondary) }
+                if briefs.loading { ProgressView().controlSize(.small).accessibilityLabel(L("Загрузка конспекта")) }
+                else { Text(L("Конспект ещё не создан. Откройте встречу, чтобы добавить заметки.")).font(AppTypography.control).foregroundStyle(.secondary) }
             }
-            HStack { Spacer(); Button("Изменить связь…") { editingContext = meeting }.buttonStyle(.borderless).font(AppTypography.control).accessibilityIdentifier("contexts.edit." + meeting.id) }
+            HStack { Spacer(); Button(L("Изменить связь…")) { editingContext = meeting }.buttonStyle(.borderless).font(AppTypography.control).accessibilityIdentifier("contexts.edit." + meeting.id) }
         }.padding(16).background(Ink.soft, in: RoundedRectangle(cornerRadius: 10))
     }
 }

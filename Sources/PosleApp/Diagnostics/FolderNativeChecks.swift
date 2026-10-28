@@ -222,6 +222,300 @@ enum FolderNativeChecks {
         try expect(app.effectiveSettings(for: meeting.id).localModel == app.settings.localModel && !app.effectiveSettings(for: meeting.id).features.cards, "Deleted profile must resolve current app defaults")
         try expect(!app.busy && !app.isRecording && app.jobs.activeCount == 0 && !app.calendar.connected, "Folder checks must not start inference, recording or calendar authorization")
         print("PASS: stale profile rejected; deleting folder preserves content and restores app inheritance")
+        try await featureDefaultsWorkflow(app, main: main, root: root)
+    }
+    /// Follow the visible scope shortcut and native controls, then reopen the real stored profiles.
+    private static func featureDefaultsWorkflow(_ app: AppStore, main: Host, root: URL) async throws {
+        app.settings.features = AppFeatures(); app.saveSettings()
+        var english = LibraryFolder(name: "Английский")
+        english.overrides.features = FolderFeatureOverrides()
+        english.overrides.features?.cards = true; english.overrides.features?.calendar = false
+        english.overrides.language = "en"; english.overrides.localModel = "fixture/english"
+        var work = LibraryFolder(name: "Работа · профиль")
+        work.overrides.features = FolderFeatureOverrides()
+        work.overrides.features?.cards = false; work.overrides.features?.calendar = true
+        var inherited = LibraryFolder(name: "Общие настройки")
+        guard let savedEnglish = app.notes.saveFolder(english), let savedWork = app.notes.saveFolder(work),
+              let savedInherited = app.notes.saveFolder(inherited) else { throw AppError.message(app.notes.error ?? "Cannot prepare feature scopes") }
+        english = savedEnglish; work = savedWork; inherited = savedInherited
+        let bridge = try RustBridge.shared.get()
+        func deck(_ title: String, folder: LibraryFolder) throws -> CardSaveResult {
+            let data = try bridge.request(root: root, command: "card-save", arguments: ["front": "Согласовать", "back": "To agree", "newDeckTitle": title])
+            let result = try JSONDecoder().decode(CardSaveResult.self, from: data)
+            // Keep a real saved card, but exercise ordinary meeting navigation.
+            // A standalone libraryKind=cards deck is intentionally absent from meetings.
+            var meeting = result.meeting; meeting.libraryKind = nil; meeting.source = "synthetic.mp3"
+            try app.write(meeting, app.meetingDirectory(meeting.id).appendingPathComponent("meta.json"))
+            try expect(app.notes.assignMeetingFolder(result.meeting.id, folderID: folder.id), "Synthetic deck folder assignment failed")
+            return result
+        }
+        let lesson = try deck("Английский · практика", folder: english)
+        let sync = try deck("Рабочий синк", folder: work)
+        let inheritedMeeting = Meeting(title: "Общий календарь", source: "synthetic.mp3")
+        try FileManager.default.createDirectory(at: app.meetingDirectory(inheritedMeeting.id), withIntermediateDirectories: true)
+        try app.write(inheritedMeeting, app.meetingDirectory(inheritedMeeting.id).appendingPathComponent("meta.json"))
+        try expect(app.notes.assignMeetingFolder(inheritedMeeting.id, folderID: inherited.id), "Synthetic calendar meeting folder assignment failed")
+        let lessonSummary = app.meetingDirectory(lesson.meeting.id).appendingPathComponent("summary.json")
+        let workSummary = app.meetingDirectory(sync.meeting.id).appendingPathComponent("summary.json")
+        let lessonBefore = try Data(contentsOf: lessonSummary), workBefore = try Data(contentsOf: workSummary)
+        app.reloadLibrary(); app.librarySection = "meetings"
+        try await settle(main) { ids(main).contains("folder.select." + english.id) }
+        try press(main, "folder.select." + english.id)
+        try await settle(main) { ids(main).contains("library.cards") && !ids(main).contains("library.calendar") && ids(main).contains("folder.features.open") }
+        try snapshot(main.view, root.appendingPathComponent("folder-features-english.png"))
+        try await folderListWorkflow(app, main: main, root: root, english: english, work: work)
+        try press(main, "folder.features.open")
+        try await settle(main) { ids(main).contains("folder.feature.calendar") && ids(main).contains("folder.features.defaults") }
+        try expect(selectedFeature(main, .cards) == "Включено" && selectedFeature(main, .calendar) == "Выключено",
+                   "The visible folder shortcut must open the selected folder's actual override controls")
+        try snapshot(main.window.attachedSheet?.contentView ?? main.view, root.appendingPathComponent("folder-features-clean.png"))
+        try chooseFeature(main, .calendar, title: "Включено")
+        try await settle(main) { UnsavedEditorRegistry.hasUnsaved }
+        try snapshot(main.window.attachedSheet?.contentView ?? main.view, root.appendingPathComponent("folder-features-customize.png"))
+        try press(main, "folder.save")
+        try await settle(main) { sheetsClosed(main) && ids(main).contains("library.calendar") && !UnsavedEditorRegistry.hasUnsaved }
+        try press(main, "folder.features.open")
+        try await settle(main) { ids(main).contains("folder.feature.calendar") }
+        try expect(selectedFeature(main, .calendar) == "Включено", "A saved native override must survive reopening the folder editor")
+        try chooseFeature(main, .calendar, title: "Выключено")
+        try press(main, "folder.save")
+        try await settle(main) { sheetsClosed(main) && !ids(main).contains("library.calendar") }
+        guard let darkFolder = app.notes.folder(english.id) else { throw AppError.message("Saved feature profile missing") }
+        let dark = Host(AnyView(FolderSettingsView(folder: darkFolder, section: "features").environmentObject(app).preferredColorScheme(.dark)), width: 840, height: 650)
+        try await settle(dark) { ids(dark).contains("folder.feature.calendar") && selectedFeature(dark, .cards) == "Включено" }
+        try snapshot(dark.view, root.appendingPathComponent("folder-features-dark.png"))
+        dark.close()
+        try expect(!UnsavedEditorRegistry.hasUnsaved, "Taking a dark appearance preview must not change the folder or create a draft")
+        print("PASS: visible scoped shortcut opens real tri-state controls; saving on/off updates the selected sidebar immediately and survives reopen")
+
+        try press(main, "library.cards")
+        try await settle(main) { app.librarySection == "cards" }
+        try press(main, "folder.select." + work.id)
+        try await settle(main) { app.librarySection == "meetings" && !ids(main).contains("library.cards") && ids(main).contains("library.calendar") }
+        try snapshot(main.view, root.appendingPathComponent("folder-features-work.png"))
+        try press(main, "folder.select." + english.id)
+        app.selection = lesson.meeting.id; app.loadSelection(); app.tab = "cards"
+        try await settle(main) { app.tab == "cards" && app.selection == lesson.meeting.id }
+        try press(main, "folder.select." + work.id)
+        try await settle(main) { app.selection == sync.meeting.id && app.tab == "summary" }
+        try expect(app.folderSelection == work.id && !app.isFeatureEnabled(.cards),
+                   "A destination without cards must select its meeting's summary rather than retaining the previous meeting's cards tab")
+        print("PASS: English and Work show independent sidebars; switching away from hidden library and meeting tabs selects an available destination")
+
+        app.settings.features.calendar = true; app.saveSettings()
+        try press(main, "library.calendar")
+        try await settle(main) { app.librarySection == "calendar" && app.selection == sync.meeting.id }
+        try press(main, "folder.select." + inherited.id)
+        try await settle(main) { app.librarySection == "calendar" && app.selection == inheritedMeeting.id }
+        try press(main, "library.meetings")
+        try await settle(main) { app.librarySection == "meetings" && app.selection == inheritedMeeting.id && app.selected?.id == inheritedMeeting.id }
+        try expect(app.filteredMeetings.contains(where: { $0.id == inheritedMeeting.id }) && app.folderSelection == inherited.id,
+                   "Changing folders while Calendar stays open must not retain another folder's stale meeting when returning to Meetings")
+        app.settings.features.calendar = false; app.saveSettings()
+        print("PASS: changing folders inside Calendar normalizes the selected meeting before returning to the meetings view")
+
+        try press(main, "folder.select." + inherited.id)
+        try await settle(main) { !ids(main).contains("library.cards") }
+        try press(main, "folder.features.open")
+        try await settle(main) { ids(main).contains("folder.features.defaults") }
+        try expect(selectedFeature(main, .cards)?.hasPrefix("Как в приложении") == true, "New folders must start with live inheritance")
+        try press(main, "folder.features.defaults")
+        try await settle(main) { ids(main).contains("features.cards") && ids(main).contains("features.defaults.close") }
+        try press(main, "features.cards")
+        try await settle(main) { app.settings.features.cards && ids(main).contains("library.cards") }
+        try expect(app.effectiveSettings(folderID: english.id).features.cards && !app.effectiveSettings(folderID: work.id).features.cards,
+                   "Changing global defaults must follow inheritance without rewriting explicit folder on/off choices")
+        try press(main, "features.defaults.close")
+        try await settle(main) { ids(main).contains("folder.save") && !ids(main).contains("features.defaults.close") }
+        try expect(selectedFeature(main, .cards)?.contains("вкл.") == true && !UnsavedEditorRegistry.hasUnsaved,
+                   "The inherited picker must refresh from global defaults without inventing a folder draft")
+        try press(main, "folder.save")
+        try await settle(main) { sheetsClosed(main) }
+        try press(main, "library.cards")
+        try await settle(main) { app.librarySection == "cards" }
+        try press(main, "folder.features.open")
+        try await settle(main) { ids(main).contains("folder.features.defaults") }
+        try press(main, "folder.features.defaults")
+        try await settle(main) { ids(main).contains("features.cards") }
+        try press(main, "features.cards")
+        try await settle(main) { !app.settings.features.cards && app.librarySection == "meetings" && !ids(main).contains("library.cards") }
+        try press(main, "features.defaults.close")
+        try await settle(main) { ids(main).contains("folder.save") && !ids(main).contains("features.defaults.close") }
+        try press(main, "folder.save")
+        try await settle(main) { sheetsClosed(main) }
+        try expect(app.notes.folder(inherited.id)?.overrides.features == nil,
+                   "Editing global defaults must not copy a feature snapshot into an inherited folder")
+        try press(main, "folder.select.all")
+        try await settle(main) { ids(main).contains("library.cards") && ids(main).contains("library.calendar") }
+        try press(main, "folder.features.open")
+        try await settle(main) { ids(main).contains("features.cards") && ids(main).contains("features.defaults.close") }
+        try expect(!app.settings.features.cards && app.visibleFeatures.cards && app.visibleFeatures.calendar,
+                   "All folders must include explicitly enabled folder content while global defaults remain off")
+        try snapshot(main.window.attachedSheet?.contentView ?? main.view, root.appendingPathComponent("folder-features-defaults.png"))
+        try press(main, "features.defaults.close")
+        try await settle(main) { sheetsClosed(main) }
+        print("PASS: global controls reached from both scopes update inheriting folders, preserve explicit choices and keep All folders' content discoverable")
+
+        try press(main, "folder.select." + english.id)
+        try await settle(main) { ids(main).contains("library.cards") }
+        try press(main, "library.cards")
+        try press(main, "folder.features.open")
+        try await settle(main) { ids(main).contains("folder.features.inheritAll") }
+        try press(main, "folder.features.inheritAll")
+        try await settle(main) { selectedFeature(main, .cards)?.hasPrefix("Как в приложении") == true && UnsavedEditorRegistry.hasUnsaved }
+        try press(main, "folder.save")
+        try await settle(main) { sheetsClosed(main) && app.librarySection == "meetings" && !ids(main).contains("library.cards") }
+        guard let reset = app.notes.folder(english.id) else { throw AppError.message("Reset folder missing") }
+        try expect(reset.overrides.features == nil && reset.overrides.localModel == "fixture/english" && reset.overrides.language == "en",
+                   "Resetting feature inheritance must preserve separate model and summary-language overrides")
+        let reopened = AppStore(preview: true)
+        try expect(reopened.notes.folder(english.id)?.overrides == reset.overrides
+                   && reopened.notes.folder(inherited.id)?.overrides.features == nil
+                   && reopened.effectiveSettings(folderID: work.id).features.calendar
+                   && !reopened.effectiveSettings(folderID: work.id).features.cards
+                   && !reopened.settings.features.cards,
+                   "Global defaults, sparse overrides and reset must survive a fresh store load")
+        try expect(try Data(contentsOf: lessonSummary) == lessonBefore && Data(contentsOf: workSummary) == workBefore,
+                   "Hiding cards, changing defaults and resetting folder features must preserve existing card bytes")
+        try expect(!app.busy && !app.isRecording && app.jobs.activeCount == 0 && !app.calendar.connected && !app.calendar.requesting,
+                   "Folder feature navigation must not start model inference, recording or calendar authorization")
+        print("PASS: reset returns only feature choices to inheritance, preserves model/language and existing cards, and persists through a fresh store load")
+    }
+    private static func folderListWorkflow(_ app: AppStore, main: Host, root: URL, english: LibraryFolder, work: LibraryFolder) async throws {
+        let settingsURL = root.appendingPathComponent("settings.json")
+        let settingsBefore = try Data(contentsOf: settingsURL)
+        let englishBefore = app.notes.folder(english.id), workBefore = app.notes.folder(work.id)
+        try expect(app.foldersExpanded && app.folderSelection == english.id, "Folder-list fixture must start expanded in English")
+        try await toggleFolders(main, app: app, expanded: false)
+        try await settle(main) {
+            !ids(main).contains("folder.select." + english.id) && !ids(main).contains("folder.new")
+                && ids(main).contains("folder.scope.menu") && ids(main).contains("folder.features.open")
+        }
+        try expect(app.folderSelection == english.id && ids(main).contains("library.cards") && !ids(main).contains("library.calendar"),
+                   "Collapsing folders must preserve the selected scope and its visible features")
+        try snapshot(main.view, root.appendingPathComponent("folder-sidebar-collapsed.png"))
+        let collapsed = AppStore(preview: true)
+        try expect(!collapsed.foldersExpanded, "Collapsed folder list must survive a fresh application store")
+        try press(main, "folder.features.open")
+        try await settle(main) { ids(main).contains("folder.feature.cards") }
+        try expect(selectedFeature(main, .cards) == "Включено" && selectedFeature(main, .calendar) == "Выключено",
+                   "The persistent header must open the selected folder's feature controls while its list is hidden")
+        try press(main, "folder.save")
+        try await settle(main) { sheetsClosed(main) && !app.foldersExpanded }
+        let selectedThroughMenu = choosePublishedScope(main, folder: work, folders: app.notes.folders)
+        if !selectedThroughMenu {
+            // Some SwiftUI versions create the NSMenu only inside blocking menu
+            // tracking. Keep this fallback explicit; it verifies UI response, not a menu click.
+            app.folderSelection = work.id
+            print("NOTE: closed scope menu does not publish native items; collapsed scope rendering checked through the actual store selection")
+        }
+        try await settle(main) { app.folderSelection == work.id && ids(main).contains("library.calendar") && !ids(main).contains("library.cards") }
+        try expect(!app.foldersExpanded && !ids(main).contains("folder.select." + work.id) && ids(main).contains("folder.scope.menu"),
+                   "Changing the active scope must preserve the collapsed list and expose the new folder's capabilities")
+        if selectedThroughMenu { print("PASS: actual native scope menu changes the active folder while the folder list stays collapsed") }
+        try press(main, "folder.features.open")
+        try await settle(main) { ids(main).contains("folder.feature.cards") }
+        try expect(selectedFeature(main, .cards) == "Выключено" && selectedFeature(main, .calendar) == "Включено",
+                   "Collapsed-scope settings must follow the new selection instead of the previous folder")
+        try press(main, "folder.save")
+        try await settle(main) { sheetsClosed(main) }
+        try await toggleFolders(main, app: app, expanded: true)
+        try await settle(main) { ids(main).contains("folder.select." + english.id) && ids(main).contains("folder.new") }
+        try expect(AppStore(preview: true).foldersExpanded && app.notes.folder(english.id) == englishBefore && app.notes.folder(work.id) == workBefore,
+                   "Expanding the folder list must persist its layout without changing either folder profile")
+        try expect(try Data(contentsOf: settingsURL) == settingsBefore, "Changing folder-list layout must not alter AI processing settings")
+        try press(main, "folder.select." + english.id)
+        try await settle(main) { app.folderSelection == english.id && ids(main).contains("library.cards") && !ids(main).contains("library.calendar") }
+        print("PASS: native collapse/expand persists across reopening, keeps scope and feature access usable, and never changes processing profiles")
+
+        let stateURL = root.appendingPathComponent("sidebar-state.json")
+        let backupURL = root.appendingPathComponent("sidebar-state-check-backup.json")
+        let persistedState = try Data(contentsOf: stateURL)
+        try FileManager.default.moveItem(at: stateURL, to: backupURL)
+        do {
+            defer {
+                try? FileManager.default.removeItem(at: stateURL)
+                try? FileManager.default.moveItem(at: backupURL, to: stateURL)
+            }
+            try FileManager.default.createDirectory(at: stateURL, withIntermediateDirectories: false)
+            try expect(!app.setFoldersExpanded(false) && app.foldersExpanded && app.error != nil,
+                       "A failed sidebar-preference write must retain the currently displayed layout")
+            try expect(try Data(contentsOf: backupURL) == persistedState && Data(contentsOf: settingsURL) == settingsBefore,
+                       "A failed layout save must preserve the last state and existing processing-settings bytes")
+        }
+        app.error = nil
+        try expect(try Data(contentsOf: stateURL) == persistedState && AppStore(preview: true).foldersExpanded,
+                   "Restoring the fixture must preserve the last successful expanded preference")
+        print("PASS: sidebar save failure preserves the live layout, prior preference and all processing settings")
+    }
+    private static func toggleFolders(_ host: Host, app: AppStore, expanded: Bool) async throws {
+        guard app.foldersExpanded != expanded else { return }
+        let candidates = roots(host).flatMap(nodes).filter { $0.identifier == "folder.list.toggle" }
+        for node in candidates { if node.press() { break } }
+        for _ in 0..<5 {
+            if app.foldersExpanded == expanded { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard let frame = roots(host).flatMap(nodes).first(where: { $0.identifier == "folder.list.label" })?.frame else {
+            throw AppError.message("Native folder disclosure label missing")
+        }
+        // Standard DisclosureGroup has a real arrow at the sidebar's leading
+        // inset. Its virtual AX group can include all expanded child rows.
+        let bounds = host.window.convertToScreen(host.view.convert(host.view.bounds, to: nil))
+        let point = host.window.convertPoint(fromScreen: NSPoint(x: bounds.minX + 18, y: frame.midY))
+        host.window.makeKeyAndOrderFront(nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: host.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
+                host.window.sendEvent(event)
+            }
+        }
+        try await settle(host) { app.foldersExpanded == expanded }
+    }
+    private static func choosePublishedScope(_ host: Host, folder: LibraryFolder, folders: [LibraryFolder]) -> Bool {
+        let values = roots(host).flatMap(nodes)
+        for node in values where node.identifier == "folder.scope.select." + folder.id { if node.press() { return true } }
+        let menus = values.compactMap { ($0.object as? NSMenu) ?? ($0.object as? NSView)?.menu }
+        for menu in menus {
+            menu.update()
+            if let index = menu.items.firstIndex(where: { $0.title == folder.name && $0.isEnabled }) {
+                menu.performActionForItem(at: index); return true
+            }
+        }
+        if let node = values.first(where: { $0.identifier == "folder.scope.menu" }),
+           let index = folders.firstIndex(where: { $0.id == folder.id }) {
+            // Drive AppKit's real menu tracking with events queued only to this
+            // disposable test application, never the global event stream.
+            let keys: [(String, UInt16)] = [("\u{f729}", 115)] + Array(repeating: ("\u{f701}", 125), count: index + 1) + [("\r", 36), ("\u{1b}", 53)]
+            for (characters, keyCode) in keys {
+                if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: host.window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                                               isARepeat: false, keyCode: keyCode) { NSApp.postEvent(event, atStart: false) }
+            }
+            return node.press()
+        }
+        return false
+    }
+    private static func featurePopup(_ host: Host, _ feature: AppFeature) -> NSPopUpButton? {
+        func popups(_ view: NSView) -> [NSPopUpButton] { (view as? NSPopUpButton).map { [$0] } ?? view.subviews.flatMap(popups) }
+        let controls = roots(host).reversed().flatMap(popups).filter {
+            $0.itemTitles.contains("Включено") && $0.itemTitles.contains("Выключено") && $0.itemTitles.contains(where: { $0.hasPrefix("Как в приложении") })
+        }
+        let identifier = "folder.feature." + feature.rawValue
+        if let control = controls.first(where: { $0.accessibilityIdentifier() == identifier }) { return control }
+        if let frame = roots(host).flatMap(nodes).first(where: { $0.identifier == identifier })?.frame,
+           let control = controls.first(where: { frame.intersects($0.accessibilityFrame()) }) { return control }
+        // SwiftUI may expose the identifier on its virtual accessibility wrapper.
+        // The native controls retain the feature order from the real form.
+        let ordered: [AppFeature] = [.tasks, .cards, .calendar, .assistant, .semanticSearch]
+        guard let index = ordered.firstIndex(of: feature), controls.indices.contains(index) else { return nil }
+        return controls[index]
+    }
+    private static func selectedFeature(_ host: Host, _ feature: AppFeature) -> String? { featurePopup(host, feature)?.titleOfSelectedItem }
+    private static func chooseFeature(_ host: Host, _ feature: AppFeature, title: String) throws {
+        guard let popup = featurePopup(host, feature), let menu = popup.menu,
+              let item = menu.items.first(where: { $0.title == title }) else { throw AppError.message("Native feature popup option missing: " + feature.rawValue + " / " + title) }
+        popup.select(item); menu.performActionForItem(at: popup.indexOfSelectedItem)
     }
     private static func expect(_ value: Bool, _ message: String) throws { if !value { throw AppError.message(message) } }
     private static func sheetsClosed(_ host: Host) -> Bool {
@@ -315,7 +609,13 @@ enum FolderNativeChecks {
             typealias Frame = @convention(c) (AnyObject, Selector) -> NSRect
             return unsafeBitCast(method, to: Frame.self)(object, selector)
         }
-        var children: [Any] { modern?.accessibilityChildren() ?? get("accessibilityChildren") as? [Any] ?? [] }
+        var children: [Any] {
+            let children = modern?.accessibilityChildren() ?? get("accessibilityChildren") as? [Any] ?? []
+            let visible = get("accessibilityVisibleChildren") as? [Any] ?? []
+            let contents = get("accessibilityContents") as? [Any] ?? []
+            let navigation = get("accessibilityChildrenInNavigationOrder") as? [Any] ?? []
+            return children + visible + contents + navigation
+        }
         func press() -> Bool {
             if let cell = object as? NSButtonCell, let button = cell.controlView as? NSButton, button.isEnabled { button.performClick(nil); return true }
             if let control = object as? NSControl, control.isEnabled { control.performClick(nil); return true }

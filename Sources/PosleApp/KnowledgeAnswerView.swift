@@ -38,7 +38,7 @@ struct KnowledgeAnswerView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if answer.truncated && answer.warnings.isEmpty {
-                        Text("Ответ подготовлен по части найденных материалов. Уточните тему или период, чтобы сузить поиск.")
+                        Text(L("Ответ подготовлен по части найденных материалов. Уточните тему или период, чтобы сузить поиск."))
                             .font(AppTypography.caption).foregroundStyle(.secondary)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.trailing, 3)
@@ -66,7 +66,7 @@ struct KnowledgeAnswerView: View {
     static func copy(_ answer: KnowledgeAnswer) {
         let lines = answer.paragraphs.map { paragraph in
             let references = paragraph.sourceIDs.compactMap { id in answer.sources.first { $0.id == id }?.title }
-            return paragraph.text + (references.isEmpty ? "" : "\n\nИсточник: " + references.joined(separator: "; "))
+            return paragraph.text + (references.isEmpty ? "" : L("\n\nИсточник: ") + references.joined(separator: "; "))
         }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString((["# " + answer.title] + lines + answer.warnings).joined(separator: "\n\n"), forType: .string)

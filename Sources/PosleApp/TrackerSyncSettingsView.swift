@@ -10,20 +10,20 @@ struct TrackerSyncSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Text("Трекеры").font(AppTypography.sectionTitle)
+                Text(L("Трекеры")).font(AppTypography.sectionTitle)
                 Spacer()
                 Menu {
                     Button("Google Tasks") { editor = newConfiguration(provider: "google") }
-                    Button("Яндекс Трекер") { editor = newConfiguration(provider: "yandex") }
-                } label: { Label("Подключить", systemImage: "plus") }
+                    Button(L("Яндекс Трекер")) { editor = newConfiguration(provider: "yandex") }
+                } label: { Label(L("Подключить"), systemImage: "plus") }
                     .disabled(coordinator.busy).accessibilityIdentifier("tracker.add")
             }
             Text(coordinator.state.configurations.isEmpty
-                 ? "Подключите Google Tasks или Яндекс Трекер и выберите списки задач."
-                 : "Синхронизируются выбранные списки. Материалы задач остаются на Mac.")
+                 ? L("Подключите Google Tasks или Яндекс Трекер и выберите списки задач.")
+                 : L("Синхронизируются выбранные списки. Материалы задач остаются на Mac."))
                 .font(AppTypography.control).foregroundStyle(.secondary)
             if coordinator.state.configurations.isEmpty {
-                Text("Нет подключений").font(AppTypography.control).foregroundStyle(.secondary)
+                Text(L("Нет подключений")).font(AppTypography.control).foregroundStyle(.secondary)
             }
             ForEach(coordinator.state.configurations) { config in
                 VStack(alignment: .leading, spacing: 10) {
@@ -35,19 +35,19 @@ struct TrackerSyncSettingsView: View {
                         Spacer()
                         if coordinator.busy { ProgressView().controlSize(.small) }
                         Menu {
-                            Button("Настроить…") { editor = config }
-                            Button("Синхронизировать") { Task { await coordinator.synchronize(config) } }
+                            Button(L("Настроить…")) { editor = config }
+                            Button(L("Синхронизировать")) { Task { await coordinator.synchronize(config) } }
                                 .disabled(!config.enabled || config.paused || config.scopes.isEmpty)
                             Divider()
-                            Button("Отключить…", role: .destructive) { disconnecting = config }
+                            Button(L("Отключить…"), role: .destructive) { disconnecting = config }
                         } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
-                            .accessibilityLabel("Настройки подключения \(config.account)")
+                            .accessibilityLabel(LF("Настройки подключения {0}", arguments: [String(describing: (config.account))]))
                     }
                     if !config.scopes.isEmpty {
                         Text(scopeDescription(config)).font(AppTypography.caption).foregroundStyle(.secondary)
                             .lineLimit(2).help(scopeDescription(config))
                     }
-                    Label("Новые задачи: " + (app.notes.folder(config.folderID)?.name ?? (config.folderID == nil ? "без папки" : "удалённая папка")), systemImage: "folder")
+                    Label(L("Новые задачи: ") + (app.notes.folder(config.folderID)?.name ?? (config.folderID == nil ? L("без папки") : L("удалённая папка"))), systemImage: "folder")
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                     Text(status(config)).font(AppTypography.caption).foregroundStyle(config.requiresAuth || config.error != nil ? Ink.warning : .secondary)
                     if let message = config.error { Text(message).font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled) }
@@ -55,7 +55,7 @@ struct TrackerSyncSettingsView: View {
             }
             if !coordinator.state.conflicts.isEmpty {
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("Нужна сверка · \(coordinator.state.conflicts.count)").font(AppTypography.controlStrong)
+                    Text(LF("Нужна сверка · {0}", arguments: [String(describing: (coordinator.state.conflicts.count))])).font(AppTypography.controlStrong)
                     ForEach(coordinator.state.conflicts) { conflict in
                         Button { comparison = conflict } label: {
                             HStack {
@@ -70,9 +70,9 @@ struct TrackerSyncSettingsView: View {
                 }
             }
             if !coordinator.state.pending.isEmpty {
-                Text("Ожидают отправки: \(coordinator.state.pending.count)").font(AppTypography.caption).foregroundStyle(.secondary)
+                Text(LF("Ожидают отправки: {0}", arguments: [String(describing: (coordinator.state.pending.count))])).font(AppTypography.caption).foregroundStyle(.secondary)
                 if coordinator.state.pending.contains(where: \.uncertain) {
-                    Text("Проверяем результат последней отправки. Повторное создание остановлено до сверки, чтобы избежать дубликатов.")
+                    Text(L("Проверяем результат последней отправки. Повторное создание остановлено до сверки, чтобы избежать дубликатов."))
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }
             }
@@ -82,9 +82,9 @@ struct TrackerSyncSettingsView: View {
         .onAppear { coordinator.reload() }
         .sheet(item: $editor) { config in TrackerSyncConnectionEditor(coordinator: coordinator, initial: config, folders: app.notes.folders, defaults: app.settings) }
         .sheet(item: $comparison) { conflict in TrackerSyncConflictView(coordinator: coordinator, conflict: conflict) }
-        .confirmationDialog("Отключить \(disconnecting?.account ?? "трекер")?", isPresented: Binding(get: { disconnecting != nil }, set: { if !$0 { disconnecting = nil } })) {
-            Button("Отключить", role: .destructive) { if let config = disconnecting { coordinator.disconnect(config) }; disconnecting = nil }
-        } message: { Text("Локальные задачи и материалы сохранятся. Токен будет удалён из Связки ключей.") }
+        .confirmationDialog(LF("Отключить {0}?", arguments: [String(describing: (disconnecting?.account ?? L("трекер")))]), isPresented: Binding(get: { disconnecting != nil }, set: { if !$0 { disconnecting = nil } })) {
+            Button(L("Отключить"), role: .destructive) { if let config = disconnecting { coordinator.disconnect(config) }; disconnecting = nil }
+        } message: { Text(L("Локальные задачи и материалы сохранятся. Токен будет удалён из Связки ключей.")) }
     }
     private func newConfiguration(provider: String) -> TrackerSyncConfiguration {
         var configuration = TrackerSyncConfiguration()
@@ -94,18 +94,18 @@ struct TrackerSyncSettingsView: View {
     private func scopeDescription(_ config: TrackerSyncConfiguration) -> String {
         let titles = config.scopes.compactMap { config.scopeTitles[$0] }.filter { !$0.isEmpty }
         if titles.count == config.scopes.count {
-            return (config.provider == "google" ? "Списки: " : "Очереди: ") + titles.joined(separator: ", ")
+            return (config.provider == "google" ? L("Списки: ") : L("Очереди: ")) + titles.joined(separator: ", ")
         }
-        return (config.provider == "google" ? "Выбрано списков: " : "Выбрано очередей: ") + String(config.scopes.count)
+        return (config.provider == "google" ? L("Выбрано списков: ") : L("Выбрано очередей: ")) + String(config.scopes.count)
     }
     private func status(_ config: TrackerSyncConfiguration) -> String {
-        if !config.enabled { return "Отключено" }
-        if config.paused { return "На паузе" }
-        if config.requiresAuth { return "Обновите доступ" }
-        if config.scopes.isEmpty { return "Выберите списки задач" }
-        if let date = config.retryAt, date > Date().timeIntervalSince1970 { return "Повтор после \(Date(timeIntervalSince1970: date).formatted(.dateTime.hour().minute().locale(Locale(identifier: "ru_RU"))))" }
-        if let date = config.lastSync { return "Обновлено \(Date(timeIntervalSince1970: date).formatted(.dateTime.day().month(.abbreviated).hour().minute().locale(Locale(identifier: "ru_RU")))) · \(config.pushEnabled ? "В обе стороны" : "Только получение")" }
-        return config.pushEnabled ? "Готово к синхронизации в обе стороны" : "Готово к получению задач"
+        if !config.enabled { return L("Отключено") }
+        if config.paused { return L("На паузе") }
+        if config.requiresAuth { return L("Обновите доступ") }
+        if config.scopes.isEmpty { return L("Выберите списки задач") }
+        if let date = config.retryAt, date > Date().timeIntervalSince1970 { return LF("Повтор после {0}", arguments: [String(describing: (Date(timeIntervalSince1970: date).formatted(.dateTime.hour().minute().locale(UILocale()))))]) }
+        if let date = config.lastSync { return LF("Обновлено {0} · {1}", arguments: [String(describing: (Date(timeIntervalSince1970: date).formatted(.dateTime.day().month(.abbreviated).hour().minute().locale(UILocale())))), String(describing: (config.pushEnabled ? L("В обе стороны") : L("Только получение")))]) }
+        return config.pushEnabled ? L("Готово к синхронизации в обе стороны") : L("Готово к получению задач")
     }
 }
 
@@ -134,62 +134,62 @@ private struct TrackerSyncConnectionEditor: View {
             Text(config.providerTitle).font(AppTypography.sectionTitle)
             ScrollView {
                 Form {
-                    TextField("Название аккаунта", text: $config.account).disabled(savedOnce)
-                        .help("Например, «Личный». Подключается только указанный вами аккаунт.")
+                    TextField(L("Название аккаунта"), text: $config.account).disabled(savedOnce)
+                        .help(L("Например, «Личный». Подключается только указанный вами аккаунт."))
                     if config.provider == "yandex" {
-                        TextField("ID организации", text: $config.organizationId).disabled(savedOnce)
-                        Toggle("Организация Yandex Identity Hub", isOn: $config.cloudOrganization).disabled(savedOnce)
-                        Toggle("IAM-токен", isOn: $config.iamToken).disabled(!config.cloudOrganization)
+                        TextField(L("ID организации"), text: $config.organizationId).disabled(savedOnce)
+                        Toggle(L("Организация Yandex Identity Hub"), isOn: $config.cloudOrganization).disabled(savedOnce)
+                        Toggle(L("IAM-токен"), isOn: $config.iamToken).disabled(!config.cloudOrganization)
                     }
-                    SecureField(savedOnce ? "Новый токен (текущий сохранён)" : "Токен доступа", text: $token)
+                    SecureField(savedOnce ? L("Новый токен (текущий сохранён)") : L("Токен доступа"), text: $token)
                         .accessibilityIdentifier("tracker.token")
                     if config.provider == "google" || config.iamToken {
-                        DatePicker("Действует до", selection: $expiry, displayedComponents: [.date, .hourAndMinute])
+                        DatePicker(L("Действует до"), selection: $expiry, displayedComponents: [.date, .hourAndMinute])
                         if config.provider == "google" {
-                            Text("Access token действует ограниченное время. Для автоматического продления добавьте refresh token своего OAuth-клиента.")
+                            Text(L("Access token действует ограниченное время. Для автоматического продления добавьте refresh token своего OAuth-клиента."))
                                 .font(AppTypography.caption).foregroundStyle(.secondary)
                         }
                     }
                     if config.provider == "google" {
-                        DisclosureGroup("Продление доступа Google", isExpanded: $advanced) {
+                        DisclosureGroup(L("Продление доступа Google"), isExpanded: $advanced) {
                             TextField("OAuth Desktop client ID", text: $clientID)
-                            SecureField("Client secret, если выдан", text: $clientSecret)
+                            SecureField(L("Client secret, если выдан"), text: $clientSecret)
                             SecureField("Refresh token", text: $refreshToken)
-                            Text("Нужен собственный OAuth-клиент с разрешением Google Tasks. Эти данные сохраняются только в Связке ключей.")
+                            Text(L("Нужен собственный OAuth-клиент с разрешением Google Tasks. Эти данные сохраняются только в Связке ключей."))
                                 .font(AppTypography.caption).foregroundStyle(.secondary)
-                            Link("Как получить доступ", destination: URL(string: "https://developers.google.com/identity/protocols/oauth2/native-app")!)
+                            Link(L("Как получить доступ"), destination: URL(string: "https://developers.google.com/identity/protocols/oauth2/native-app")!)
                         }
                     }
                     Section {
-                        Picker("Новые задачи сохранять в", selection: Binding(get: { config.folderID ?? "" }, set: { config.folderID = $0.isEmpty ? nil : $0 })) {
-                            Text("Без папки · настройки приложения").tag("")
+                        Picker(L("Новые задачи сохранять в"), selection: Binding(get: { config.folderID ?? "" }, set: { config.folderID = $0.isEmpty ? nil : $0 })) {
+                            Text(L("Без папки · настройки приложения")).tag("")
                             ForEach(folders) { folder in Text(folder.name).tag(folder.id) }
                             if let id = config.folderID, !folders.contains(where: { $0.id == id }) {
-                                Text("Удалённая папка").tag(id).disabled(true)
+                                Text(L("Удалённая папка")).tag(id).disabled(true)
                             }
                         }.accessibilityIdentifier("tracker.folder")
-                        Text("Выбор действует для новых задач. Уже сохранённые задачи остаются в своих папках.")
+                        Text(L("Выбор действует для новых задач. Уже сохранённые задачи остаются в своих папках."))
                             .font(AppTypography.caption).foregroundStyle(.secondary)
                         if let id = config.folderID, !folders.contains(where: { $0.id == id }) {
-                            Text("Папка назначения удалена. Выберите другую папку или «Без папки».")
+                            Text(L("Папка назначения удалена. Выберите другую папку или «Без папки»."))
                                 .font(AppTypography.caption).foregroundStyle(Ink.warning)
                         } else if !destinationTasksEnabled {
-                            Text("Для синхронизации включите «Задачи и проекты» в настройках выбранной папки или приложения.")
+                            Text(L("Для синхронизации включите «Задачи и проекты» в настройках выбранной папки или приложения."))
                                 .font(AppTypography.caption).foregroundStyle(Ink.warning)
                         }
                     }
                     Section {
-                        Toggle("Синхронизировать автоматически", isOn: $config.enabled)
-                        Toggle("Отправлять изменения в трекер", isOn: $config.pushEnabled)
-                        Toggle("Приостановить синхронизацию", isOn: $config.paused)
-                        Text("Отправляются название, описание, статус и срок связанных задач. Материалы, записи встреч и заметки к задаче остаются в «После». Удаления автоматически не передаются.")
+                        Toggle(L("Синхронизировать автоматически"), isOn: $config.enabled)
+                        Toggle(L("Отправлять изменения в трекер"), isOn: $config.pushEnabled)
+                        Toggle(L("Приостановить синхронизацию"), isOn: $config.paused)
+                        Text(L("Отправляются название, описание, статус и срок связанных задач. Материалы, записи встреч и заметки к задаче остаются в «После». Удаления автоматически не передаются."))
                             .font(AppTypography.caption).foregroundStyle(.secondary)
                     }
                     Section {
                         HStack {
-                            Text(config.provider == "google" ? "Списки задач" : "Очереди").font(AppTypography.controlStrong)
+                            Text(config.provider == "google" ? L("Списки задач") : L("Очереди")).font(AppTypography.controlStrong)
                             Spacer()
-                            Button("Загрузить списки") { Task { await loadScopes() } }.disabled(coordinator.busy || !destinationAvailable)
+                            Button(L("Загрузить списки")) { Task { await loadScopes() } }.disabled(coordinator.busy || !destinationAvailable)
                         }
                         ForEach(scopes) { scope in
                             Toggle(scope.title, isOn: Binding(get: { config.scopes.contains(scope.id) }, set: { selected in
@@ -198,16 +198,16 @@ private struct TrackerSyncConnectionEditor: View {
                             }))
                         }
                         if scopes.isEmpty && !config.scopes.isEmpty {
-                            Text("Выбрано: \(config.scopes.joined(separator: ", "))").font(AppTypography.caption).foregroundStyle(.secondary)
+                            Text(LF("Выбрано: {0}", arguments: [String(describing: (config.scopes.joined(separator: ", ")))])).font(AppTypography.caption).foregroundStyle(.secondary)
                         }
                     }
                     if config.provider == "yandex" {
-                        DisclosureGroup("Соответствие статусов") {
-                            statusField("К выполнению", key: "todo")
-                            statusField("В работе", key: "doing")
-                            statusField("Ожидает", key: "blocked")
-                            statusField("Готово", key: "done")
-                            Text("Укажите ключи статусов вашей очереди. Переходы выполняются по её рабочему процессу.")
+                        DisclosureGroup(L("Соответствие статусов")) {
+                            statusField(L("К выполнению"), key: "todo")
+                            statusField(L("В работе"), key: "doing")
+                            statusField(L("Ожидает"), key: "blocked")
+                            statusField(L("Готово"), key: "done")
+                            Text(L("Укажите ключи статусов вашей очереди. Переходы выполняются по её рабочему процессу."))
                                 .font(AppTypography.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -215,10 +215,10 @@ private struct TrackerSyncConnectionEditor: View {
             }
             if let error = coordinator.error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled) }
             HStack {
-                Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(L("Отмена")) { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
                 if coordinator.busy { ProgressView().controlSize(.small) }
-                Button("Сохранить") { Task { if await save() { dismiss() } } }
+                Button(L("Сохранить")) { Task { if await save() { dismiss() } } }
                     .keyboardShortcut(.defaultAction).disabled(coordinator.busy || !destinationAvailable || config.account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.padding(24).frame(width: 600, height: 700)
@@ -255,23 +255,23 @@ private struct TrackerSyncConflictView: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Сверка изменений").font(AppTypography.sectionTitle)
+            Text(L("Сверка изменений")).font(AppTypography.sectionTitle)
             Text(conflict.reason).font(AppTypography.control).foregroundStyle(.secondary)
             ScrollView {
                 HStack(alignment: .top, spacing: 20) {
-                    version("В «После»", fields: conflict.local, unavailable: "Локальная задача удалена")
+                    version(L("В «После»"), fields: conflict.local, unavailable: L("Локальная задача удалена"))
                     Divider()
-                    version("В трекере", fields: conflict.remote.deleted ? nil : conflict.remote.fields, unavailable: "Внешняя задача удалена")
+                    version(L("В трекере"), fields: conflict.remote.deleted ? nil : conflict.remote.fields, unavailable: L("Внешняя задача удалена"))
                 }
             }
             if let error = coordinator.error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning) }
             HStack {
-                Button("Позже") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(L("Позже")) { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Разорвать связь") { resolve("unlink") }
+                Button(L("Разорвать связь")) { resolve("unlink") }
                 if conflict.local != nil && !conflict.remote.deleted {
-                    Button("Версия трекера") { resolve("remote") }
-                    Button("Моя версия") { resolve("local") }
+                    Button(L("Версия трекера")) { resolve("remote") }
+                    Button(L("Моя версия")) { resolve("local") }
                 }
             }.disabled(coordinator.busy)
         }.padding(24).frame(width: 760, height: 520)

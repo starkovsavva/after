@@ -5,6 +5,7 @@ import SwiftUI
 /// Turning a workflow off changes availability, never its stored content.
 struct FeatureSettingsView: View {
     @EnvironmentObject private var store: AppStore
+    var showsTitle = true
     private let features = AppFeature.allCases
     private var locked: Bool {
         store.isRecording || store.startingRecording || store.stoppingRecording || store.busy || store.jobs.activeCount > 0
@@ -12,9 +13,11 @@ struct FeatureSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Label("Возможности", systemImage: "square.grid.2x2").font(AppTypography.heading)
-                .accessibilityAddTraits(.isHeader)
-            Text("Это настройки по умолчанию. У папок могут быть свои возможности.")
+            if showsTitle {
+                Label(L("Возможности"), systemImage: "square.grid.2x2").font(AppTypography.heading)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            Text(L("По умолчанию для всех папок. В каждой папке можно оставить «Как в приложении» или выбрать свои возможности."))
                 .font(AppTypography.control).foregroundStyle(Ink.secondaryText)
             VStack(spacing: 0) {
                 ForEach(Array(features.enumerated()), id: \.offset) { index, feature in
@@ -34,10 +37,10 @@ struct FeatureSettingsView: View {
                 }
             }.disabled(locked)
             if locked {
-                Text("Изменить возможности можно после завершения записи и обработки.")
+                Text(L("Изменить возможности можно после завершения записи и обработки."))
                     .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
             }
-            Text("При отключении данные сохраняются. Их можно снова открыть, включив возможность здесь.")
+            Text(L("«Все папки» показывает разделы, включённые хотя бы в одной папке или здесь. При отключении данные сохраняются."))
                 .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -50,19 +53,56 @@ struct FeatureSettingsView: View {
     }
 }
 
+/// Shared entry point from the sidebar and a clean folder editor.
+struct FeatureDefaultsSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(L("Общие возможности")).font(AppTypography.modalTitle)
+                Spacer()
+                Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 28, height: 28) }
+                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel(L("Закрыть общие возможности"))
+            }.padding(22)
+            Divider()
+            ScrollView { FeatureSettingsView(showsTitle: false).padding(26) }
+            Divider()
+            HStack {
+                if let error = store.error {
+                    Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning).lineLimit(2).help(error)
+                }
+                Spacer()
+                Button(L("Готово")) { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                    .tint(Ink.actionFill).accessibilityIdentifier("features.defaults.close")
+            }.padding(18)
+        }.frame(width: 620, height: 650).background(Ink.paper).tint(Ink.accent).appControlDefaults()
+    }
+}
+
 /// Deep links and previously selected screens must not silently enable features.
 struct OptionalFeatureGate: View {
     @EnvironmentObject private var store: AppStore
     let feature: AppFeature
+    private var folder: LibraryFolder? {
+        if store.librarySection == "meetings", let id = store.selection {
+            return store.notes.folder(store.folderID(for: id))
+        }
+        return store.notes.folder(store.folderSelection)
+    }
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: FeaturePresentation.icon(feature)).font(.system(size: 32, weight: .light))
                 .foregroundStyle(Ink.secondaryText).accessibilityHidden(true)
             Text(FeaturePresentation.title(feature)).font(AppTypography.sectionTitle)
-            Text("Включите эту возможность в настройках. Сохранённые данные останутся на месте.")
+            Text(folder == nil ? L("Включите эту возможность в общих настройках. Сохранённые данные останутся на месте.") : L("Включите эту возможность в настройках папки. Сохранённые данные останутся на месте."))
                 .font(AppTypography.control).foregroundStyle(Ink.secondaryText)
                 .multilineTextAlignment(.center).frame(maxWidth: 340)
-            Button("Выбрать возможности…") { store.openSettings("features") }
+            Button(folder == nil ? L("Общие возможности…") : L("Возможности папки…")) {
+                if let folder {
+                    NotificationCenter.default.post(name: Notification.Name("PosleEditFolder"), object: folder.id, userInfo: ["section": "features"])
+                } else { store.openSettings("features") }
+            }
                 .buttonStyle(.borderedProminent).tint(Ink.actionFill)
                 .accessibilityIdentifier("features.openSettings")
         }.padding(AppLayout.contentInset).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -71,7 +111,7 @@ struct OptionalFeatureGate: View {
 
 enum FeaturePresentation {
     static func identifier(_ feature: AppFeature) -> String { feature.rawValue }
-    static func title(_ feature: AppFeature) -> String { feature.title }
+    static func title(_ feature: AppFeature) -> String { L(feature.title) }
     static func icon(_ feature: AppFeature) -> String {
         switch feature {
         case .cards: "rectangle.on.rectangle"
@@ -83,11 +123,11 @@ enum FeaturePresentation {
     }
     static func detail(_ feature: AppFeature) -> String {
         switch feature {
-        case .cards: "Создание, импорт и повторение карточек."
-        case .tasks: "Задачи, материалы проектов, подключения трекеров и доступ агентов."
-        case .calendar: "События и подключение календарей macOS."
-        case .assistant: "Вопросы по библиотеке и поручения текстом или голосом."
-        case .semanticSearch: "Поиск по смыслу с отдельной моделью. Поиск по словам доступен всегда."
+        case .cards: L("Создание, импорт и повторение карточек.")
+        case .tasks: L("Задачи, материалы проектов, подключения трекеров и доступ агентов.")
+        case .calendar: L("События и подключение календарей macOS.")
+        case .assistant: L("Вопросы по библиотеке и поручения текстом или голосом.")
+        case .semanticSearch: L("Поиск по смыслу с отдельной моделью. Поиск по словам доступен всегда.")
         }
     }
 }

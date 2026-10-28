@@ -22,7 +22,7 @@ struct AudioLevelView: View {
     var compact = false
     var active = true
     private func meter(_ label: String, value: Double, seen: Bool) -> some View {
-        let status = !active ? "Не проверен" : seen ? value > 0.005 ? "Звук поступает" : "Тишина" : "Ожидаю звук"
+        let status = !active ? L("Не проверен") : seen ? value > 0.005 ? L("Звук поступает") : L("Тишина") : L("Ожидаю звук")
         return HStack(spacing: 8) {
             Text(label).frame(width: compact ? 44 : 92, alignment: .leading)
             GeometryReader { proxy in
@@ -41,13 +41,13 @@ struct AudioLevelView: View {
         Group {
             if compact {
                 HStack(spacing: 12) {
-                    meter("Микр.", value: levels.microphone, seen: levels.microphoneSeen)
+                    meter(L("Микр."), value: levels.microphone, seen: levels.microphoneSeen)
                     if systemAudio { meter("Mac", value: levels.system, seen: levels.systemSeen) }
                 }
             } else {
                 VStack(alignment: .leading, spacing: 10) {
-                    meter("Микрофон", value: levels.microphone, seen: levels.microphoneSeen)
-                    if systemAudio { meter("Звук Mac", value: levels.system, seen: levels.systemSeen) }
+                    meter(L("Микрофон"), value: levels.microphone, seen: levels.microphoneSeen)
+                    if systemAudio { meter(L("Звук Mac"), value: levels.system, seen: levels.systemSeen) }
                 }
             }
         }
@@ -80,7 +80,7 @@ final class AudioCheckController: ObservableObject {
                 guard let self, self.directory?.lastPathComponent == failure.sessionID,
                       self.running || self.starting else { return }
                 await self.stop()
-                self.error = "Проверка прервалась: \(failure.message)"
+                self.error = LF("Проверка прервалась: {0}", arguments: [String(describing: failure.message)])
             }
         }
         startTask = Task {
@@ -118,9 +118,9 @@ struct RecordingAudioCheck: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Проверка звука").font(AppTypography.controlStrong)
+                Text(L("Проверка звука")).font(AppTypography.controlStrong)
                 Spacer()
-                Button(check.running || check.stopping ? "Остановить проверку" : "Проверить звук") {
+                Button(check.running || check.stopping ? L("Остановить проверку") : L("Проверить звук")) {
                     if check.running { Task { await check.stop() } }
                     else if !app.isPreview { check.start(systemAudio: systemAudio) }
                 }.buttonStyle(.borderless).disabled(check.starting || check.stopping || app.isPreview)

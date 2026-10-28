@@ -6,11 +6,12 @@ import PosleCore
 struct PosleApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var store = AppStore(preview: ProcessInfo.processInfo.arguments.contains("--preview"))
+    @ObservedObject private var localization = UILocalization.shared
 
     var body: some Scene {
-        WindowGroup("После") {
+        WindowGroup(L("После")) {
             MainView().environmentObject(store)
-                .environment(\.locale, Locale(identifier: "ru_RU"))
+                .environment(\.locale, localization.locale)
                 .frame(minWidth: 1040, minHeight: 700)
                 .onAppear { delegate.connect(store) }
                 .onOpenURL { url in
@@ -23,27 +24,32 @@ struct PosleApp: App {
         .defaultSize(width: 1260, height: 820)
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button(LF("О программе {0}", arguments: [L("После")])) {
+                    NSApp.orderFrontStandardAboutPanel(options: [.applicationName: L("После")])
+                }
+            }
             CommandGroup(after: .appInfo) {
                 CheckForAppUpdates(updates: store.updates)
                 OpenUpdateDraft(updates: store.updates)
             }
             CommandGroup(replacing: .newItem) {
-                Button("Добавить запись…") { store.chooseFile() }.keyboardShortcut("o")
-                Button(store.librarySection == "inbox" ? "Новая заметка" : "Записать встречу…") {
+                Button(L("Добавить запись…")) { store.chooseFile() }.keyboardShortcut("o")
+                Button(store.librarySection == "inbox" ? L("Новая заметка") : L("Записать встречу…")) {
                     if store.librarySection == "inbox" { store.notes.newLibraryNoteRequest = UUID() }
                     else { store.showingRecord = true }
                 }.keyboardShortcut("n")
             }
             CommandGroup(after: .newItem) {
                 if store.isFeatureEnabled(.assistant) {
-                    Button("Голосовое поручение…") { store.presentVoice() }.keyboardShortcut("m", modifiers: [.command, .shift])
+                    Button(L("Голосовое поручение…")) { store.presentVoice() }.keyboardShortcut("m", modifiers: [.command, .shift])
                 }
-                Button("Быстрая заметка…") { store.quickCaptureAction?() }.keyboardShortcut("n", modifiers: [.command, .shift])
-                Button("Отметить важный момент") { store.bookmarkAction?() }
-                Button("Поиск по библиотеке…") { store.openGlobalSearch() }.keyboardShortcut("k")
+                Button(L("Быстрая заметка…")) { store.quickCaptureAction?() }.keyboardShortcut("n", modifiers: [.command, .shift])
+                Button(L("Отметить важный момент")) { store.bookmarkAction?() }
+                Button(L("Поиск по библиотеке…")) { store.openGlobalSearch() }.keyboardShortcut("k")
             }
-            CommandMenu("Встреча") {
-                Button("Переименовать встречу…") {
+            CommandMenu(L("Встреча")) {
+                Button(L("Переименовать встречу…")) {
                     if let meeting = store.selected {
                         store.librarySection = "meetings"
                         store.meetingTitleEdits.begin(meeting)
@@ -51,25 +57,25 @@ struct PosleApp: App {
                 }.keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(store.selected == nil || store.captureMeetingID == store.selection)
                 Divider()
-                Button("Конспект") { store.librarySection = "meetings"; store.tab = "summary" }.keyboardShortcut("1")
-                Button("Транскрипт") { store.librarySection = "meetings"; store.tab = "transcript" }.keyboardShortcut("2")
+                Button(L("Конспект")) { store.librarySection = "meetings"; store.tab = "summary" }.keyboardShortcut("1")
+                Button(L("Транскрипт")) { store.librarySection = "meetings"; store.tab = "transcript" }.keyboardShortcut("2")
                 if store.isFeatureEnabled(.cards) {
-                    Button("Карточки встречи") { store.librarySection = "meetings"; store.tab = "cards" }.keyboardShortcut("3")
+                    Button(L("Карточки встречи")) { store.librarySection = "meetings"; store.tab = "cards" }.keyboardShortcut("3")
                 }
-                Button("Заметки встречи") { store.librarySection = "meetings"; store.tab = "notes" }.keyboardShortcut("4")
+                Button(L("Заметки встречи")) { store.librarySection = "meetings"; store.tab = "notes" }.keyboardShortcut("4")
             }
             CommandGroup(replacing: .help) {
-                Button("Начало работы с После") { GuidanceController.shared.presentGettingStarted() }
-                Button("Что нового") { GuidanceController.shared.presentWhatsNew() }
+                Button(L("Начало работы с После")) { GuidanceController.shared.presentGettingStarted() }
+                Button(L("Что нового")) { GuidanceController.shared.presentWhatsNew() }
                 Divider()
                 Button {
                     let settings = store.librarySection == "meetings" ? store.effectiveSettings(for: store.selection, folderID: store.folderSelection) : store.activeSettings
                     let failure = store.jobs.jobs.filter { ["failed", "interrupted"].contains($0.state) }.max { $0.updatedAt < $1.updatedAt }
                     BugReportController.shared.present(settings: settings, lastFailure: failure)
-                } label: { Label("Сообщить об ошибке…", systemImage: "ladybug") }
+                } label: { Label(L("Сообщить об ошибке…"), systemImage: "ladybug") }
             }
             CommandGroup(replacing: .appSettings) {
-                Button("Настройки…") { store.openSettings() }.keyboardShortcut(",")
+                Button(L("Настройки…")) { store.openSettings() }.keyboardShortcut(",")
             }
         }
     }
@@ -79,6 +85,7 @@ struct PosleApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: AppStore?
     private var capture: QuickCaptureController?
+    private var localizationObserver: NSObjectProtocol?
     func connect(_ store: AppStore) {
         self.store = store
         let args = ProcessInfo.processInfo.arguments
@@ -93,9 +100,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationWillTerminate(_ notification: Notification) { ChatGPTAccount.shared.cancelSignIn(); capture?.stop(); store?.localService.stop(); store?.calendar.stop() }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        localizationObserver = NotificationCenter.default.addObserver(forName: .posleUILanguageChanged, object: nil, queue: .main) { _ in
+            DispatchQueue.main.async { refreshLocalizedApplicationMenu() }
+        }
+        DispatchQueue.main.async { refreshLocalizedApplicationMenu() }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--check-localization") {
+            Task { @MainActor in
+                do { try await LocalizationNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Localization check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-embedded-speech") {
             Task {
                 do { try await EmbeddedSpeechNativeChecks.run(); NSApp.terminate(nil) }
@@ -392,7 +410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "sources", "sources-missing":
                 let ids = (previewStore.transcript?.segments.map(\.id) ?? []) + (screen == "sources-missing" ? [999999] : [])
                 content = AnyView(VStack(alignment: .leading, spacing: 14) {
-                    Text("Источники").font(AppTypography.heading)
+                    Text(L("Источники")).font(AppTypography.heading)
                     ScrollView { SourceQuotes(ids: ids, snapshot: previewStore.transcript?.segments, meetingID: previewStore.selection) { _, _ in } }
                 }.padding(20).environmentObject(previewStore))
             case "search", "search-semantic":
@@ -415,7 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let width = option("--width").flatMap(Double.init) ?? defaultWidth
             let height = option("--height").flatMap(Double.init) ?? defaultHeight
             let view = NSHostingView(rootView: content
-                .environment(\.locale, Locale(identifier: "ru_RU"))
+                .environment(\.locale, UILocalization.shared.locale)
                 .environment(\.colorScheme, dark ? .dark : .light)
                 .frame(width: width, height: height)
                 .background(Ink.paper).clipped())
@@ -449,15 +467,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if store?.isTerminating == true { return .terminateLater }
         if let store, store.updates.relaunchRequested && !store.updates.canSafelyRelaunch {
-            store.notice = "Завершите работу и сохраните правки перед обновлением"
+            store.notice = L("Завершите работу и сохраните правки перед обновлением")
             return .terminateCancel
         }
         if UnsavedEditorRegistry.hasUnsaved {
             let alert = NSAlert()
-            alert.messageText = "Есть несохранённые правки"
+            alert.messageText = L("Есть несохранённые правки")
             alert.informativeText = UnsavedEditorRegistry.titles.joined(separator: "\n")
-            alert.addButton(withTitle: "Вернуться к редактированию")
-            alert.addButton(withTitle: "Выйти без сохранения")
+            alert.addButton(withTitle: L("Вернуться к редактированию"))
+            alert.addButton(withTitle: L("Выйти без сохранения"))
             guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
         }
         if store?.notes.flushCaptureDrafts() == false { store?.error = store?.notes.error; return .terminateCancel }
@@ -466,11 +484,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !NoteDraftPersistence.flushAll() {
             sender.activate(ignoringOtherApps: true)
             let alert = NSAlert()
-            alert.messageText = "Не удалось сохранить заметку"
-            alert.informativeText = "Ваши правки остались в редакторе. Повторите сохранение или сохраните копию перед выходом."
+            alert.messageText = L("Не удалось сохранить заметку")
+            alert.informativeText = L("Ваши правки остались в редакторе. Повторите сохранение или сохраните копию перед выходом.")
             alert.alertStyle = .warning
-            alert.addButton(withTitle: "К заметкам")
-            alert.addButton(withTitle: "Выйти без сохранения")
+            alert.addButton(withTitle: L("К заметкам"))
+            alert.addButton(withTitle: L("Выйти без сохранения"))
             if alert.runModal() != .alertSecondButtonReturn {
                 store?.librarySection = "inbox"
                 return .terminateCancel
@@ -478,10 +496,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let store, store.isRecording || store.startingRecording || store.stoppingRecording || store.busy || store.voice.isWorking || store.jobs.activeCount > 0 else { return .terminateNow }
         let alert = NSAlert()
-        alert.messageText = store.isRecording ? "Сохранить запись перед выходом?" : "Остановить обработку и выйти?"
-        alert.informativeText = store.isRecording ? "Приложение завершит сохранение звуковых дорожек." : "Исходная запись останется на Mac. Обработку можно повторить."
-        alert.addButton(withTitle: store.isRecording ? "Сохранить и выйти" : "Остановить и выйти")
-        alert.addButton(withTitle: "Остаться")
+        alert.messageText = store.isRecording ? L("Сохранить запись перед выходом?") : L("Остановить обработку и выйти?")
+        alert.informativeText = store.isRecording ? L("Приложение завершит сохранение звуковых дорожек.") : L("Исходная запись останется на Mac. Обработку можно повторить.")
+        alert.addButton(withTitle: store.isRecording ? L("Сохранить и выйти") : L("Остановить и выйти"))
+        alert.addButton(withTitle: L("Остаться"))
         guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
         Task {
             await store.prepareForTermination()

@@ -42,8 +42,8 @@ struct CardsWorkspaceView: View {
                 header
                 Divider()
                 if let error = workspace.error { problem(error) }
-                if !workspace.errors.isEmpty { problem("Не удалось загрузить часть карточек. " + workspace.errors.joined(separator: "\n")) }
-                if workspace.loading && !hasContent { ProgressView("Загружаю карточки…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                if !workspace.errors.isEmpty { problem(L("Не удалось загрузить часть карточек. ") + workspace.errors.joined(separator: "\n")) }
+                if workspace.loading && !hasContent { ProgressView(L("Загружаю карточки…")).frame(maxWidth: .infinity, maxHeight: .infinity) }
                 else if mode == "all" && !visible.isEmpty { browser }
                 else {
                     ScrollView {
@@ -88,45 +88,45 @@ struct CardsWorkspaceView: View {
             }
         }
         .sheet(isPresented: $showingMeetings) { meetingPicker }
-        .alert("Переместить карточку в Корзину?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
-            Button("Отмена", role: .cancel) { deleting = nil }
-            Button("В Корзину", role: .destructive) {
+        .alert(L("Переместить карточку в Корзину?"), isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button(L("Отмена"), role: .cancel) { deleting = nil }
+            Button(L("В Корзину"), role: .destructive) {
                 if let entry = deleting { Task { await workspace.mutate(root: app.root, entry: entry, delete: true, meetingID: meetingID); app.refreshResults(entry.meeting.id) } }; deleting = nil
             }
-        } message: { Text("Карточку можно будет восстановить в течение 30 дней.") }
+        } message: { Text(L("Карточку можно будет восстановить в течение 30 дней.")) }
     }
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
-                if !embedded { Text("Карточки").font(AppTypography.pageTitle).accessibilityAddTraits(.isHeader) }
+                if !embedded { Text(L("Карточки")).font(AppTypography.pageTitle).accessibilityAddTraits(.isHeader) }
                 if hasContent {
-                    Picker("Режим", selection: $mode) { Text("Повторение").tag("study"); Text("Все карточки").tag("all") }
+                    Picker(L("Режим"), selection: $mode) { Text(L("Повторение")).tag("study"); Text(L("Все карточки")).tag("all") }
                         .pickerStyle(.segmented).labelsHidden().frame(width: 225)
                 }
                 Spacer(minLength: 8)
                 if workspace.canUndo && (app.folderSelection == nil || workspace.lastReviewMeetingID.flatMap { app.folderID(for: $0) } == app.folderSelection) {
                     Button { Task { await workspace.undo(root: app.root, meetingID: meetingID); flipped = false } } label: { Image(systemName: "arrow.uturn.backward").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).help("Отменить последнюю оценку").accessibilityLabel("Отменить последнюю оценку").disabled(workspace.saving)
+                        .buttonStyle(.plain).help(L("Отменить последнюю оценку")).accessibilityLabel(L("Отменить последнюю оценку")).disabled(workspace.saving)
                 }
                 if hasContent {
                     Button { editor = CardEditorRequest(meeting: scopeMeeting) } label: { Image(systemName: "plus").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).help("Новая карточка").accessibilityLabel("Новая карточка")
+                        .buttonStyle(.plain).help(L("Новая карточка")).accessibilityLabel(L("Новая карточка"))
                 }
                 Menu {
-                    if !embedded { Button("Импортировать TSV или CSV…") { chooseImport() } }
-                    Button("Экспортировать TSV…") { exportCards() }.disabled(matching.isEmpty)
-                    if !embedded { Button("Взять из встречи…") { showingMeetings = true } }
+                    if !embedded { Button(L("Импортировать TSV или CSV…")) { chooseImport() } }
+                    Button(L("Экспортировать TSV…")) { exportCards() }.disabled(matching.isEmpty)
+                    if !embedded { Button(L("Взять из встречи…")) { showingMeetings = true } }
                 } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
-                    .menuStyle(.borderlessButton).frame(width: 28).accessibilityLabel("Действия с карточками")
+                    .menuStyle(.borderlessButton).frame(width: 28).accessibilityLabel(L("Действия с карточками"))
             }
             if hasContent {
                 HStack(spacing: 12) {
                     if !embedded && decks.count > 1 {
-                        Picker("Колода", selection: $deck) { Text("Все колоды").tag(""); ForEach(decks) { Text($0.title).tag($0.id) } }.labelsHidden().frame(maxWidth: 210, alignment: .leading)
+                        Picker(L("Колода"), selection: $deck) { Text(L("Все колоды")).tag(""); ForEach(decks) { Text($0.title).tag($0.id) } }.labelsHidden().frame(maxWidth: 210, alignment: .leading)
                     }
-                    TextField("Найти карточку", text: $query).textFieldStyle(.roundedBorder).frame(minWidth: 120, maxWidth: 320)
+                    TextField(L("Найти карточку"), text: $query).textFieldStyle(.roundedBorder).frame(minWidth: 120, maxWidth: 320)
                     Spacer()
-                    Text(mode == "study" ? "\(visible.count) к повторению" : "Всего: \(matching.count)").font(AppTypography.caption).foregroundStyle(.secondary)
+                    Text(mode == "study" ? LF("{0} к повторению", arguments: [String(describing: (visible.count))]) : LF("Всего: {0}", arguments: [String(describing: (matching.count))])).font(AppTypography.caption).foregroundStyle(.secondary)
                     if workspace.loading || workspace.saving { ProgressView().controlSize(.small) }
                 }
             }
@@ -139,7 +139,7 @@ struct CardsWorkspaceView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(alignment: .firstTextBaseline) {
                             Text(entry.card.front).font(AppTypography.bodyStrong).lineLimit(2)
-                            if entry.suspended { Image(systemName: "pause.circle").foregroundStyle(.secondary).accessibilityLabel("Не повторяется") }
+                            if entry.suspended { Image(systemName: "pause.circle").foregroundStyle(.secondary).accessibilityLabel(L("Не повторяется")) }
                         }
                         Text(entry.card.back).font(AppTypography.control).foregroundStyle(.secondary).lineLimit(2)
                         if !embedded { Text(entry.meeting.title).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1) }
@@ -170,44 +170,44 @@ struct CardsWorkspaceView: View {
     private var empty: some View {
         VStack(alignment: .leading, spacing: 14) {
             if workspace.error != nil || !workspace.errors.isEmpty {
-                Text(hasContent ? "Нет доступных карточек" : "Не удалось загрузить карточки").font(AppTypography.heading)
-                Button("Повторить загрузку") { Task { await reload() } }.buttonStyle(.bordered)
+                Text(hasContent ? L("Нет доступных карточек") : L("Не удалось загрузить карточки")).font(AppTypography.heading)
+                Button(L("Повторить загрузку")) { Task { await reload() } }.buttonStyle(.bordered)
             } else if !hasContent {
-                Text("Карточек пока нет").font(AppTypography.heading)
+                Text(L("Карточек пока нет")).font(AppTypography.heading)
                 if embedded, scopeMeeting?.libraryKind != "cards" {
                     Text(scopeMeeting.map { app.generatesCards(for: $0) } == true
-                         ? "Создайте карточку вручную или обновите конспект: генерация для этой встречи включена."
-                         : "Создайте карточку вручную. Для генерации откройте меню встречи → «Автосоздание карточек».")
+                         ? L("Создайте карточку вручную или обновите конспект: генерация для этой встречи включена.")
+                         : L("Создайте карточку вручную. Для генерации откройте меню встречи → «Автосоздание карточек»."))
                         .font(AppTypography.body).foregroundStyle(.secondary)
                 } else {
-                    Text("Сохраняйте фразы и понятия из встреч и повторяйте их здесь.").font(AppTypography.body).foregroundStyle(.secondary)
+                    Text(L("Сохраняйте фразы и понятия из встреч и повторяйте их здесь.")).font(AppTypography.body).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 12) {
-                    Button("Создать карточку") { editor = CardEditorRequest(meeting: scopeMeeting) }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
-                    Button(embedded ? "Открыть конспект" : "Взять из встречи…") {
+                    Button(L("Создать карточку")) { editor = CardEditorRequest(meeting: scopeMeeting) }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    Button(embedded ? L("Открыть конспект") : L("Взять из встречи…")) {
                         if embedded { app.tab = "summary" } else { showingMeetings = true }
                     }.buttonStyle(.bordered)
                 }
                 if !embedded {
-                    Button("Импортировать…") { chooseImport() }.buttonStyle(.plain).font(AppTypography.control).foregroundStyle(.secondary)
+                    Button(L("Импортировать…")) { chooseImport() }.buttonStyle(.plain).font(AppTypography.control).foregroundStyle(.secondary)
                 }
             } else if !query.isEmpty {
-                Text("Ничего не найдено").font(AppTypography.heading)
-                Button("Очистить поиск") { query = "" }.buttonStyle(.bordered)
+                Text(L("Ничего не найдено")).font(AppTypography.heading)
+                Button(L("Очистить поиск")) { query = "" }.buttonStyle(.bordered)
             } else if mode == "study" {
-                Text("На сегодня всё").font(AppTypography.heading)
-                Text(matching.allSatisfy(\.suspended) ? "Эти карточки исключены из повторения." : "Можно посмотреть все карточки или вернуться позже.").font(AppTypography.body).foregroundStyle(.secondary)
-                Button("Все карточки") { mode = "all" }.buttonStyle(.bordered)
+                Text(L("На сегодня всё")).font(AppTypography.heading)
+                Text(matching.allSatisfy(\.suspended) ? L("Эти карточки исключены из повторения.") : L("Можно посмотреть все карточки или вернуться позже.")).font(AppTypography.body).foregroundStyle(.secondary)
+                Button(L("Все карточки")) { mode = "all" }.buttonStyle(.bordered)
             } else {
-                Text("В этой колоде нет карточек").font(AppTypography.heading)
-                Button("Все колоды") { deck = "" }.buttonStyle(.bordered)
+                Text(L("В этой колоде нет карточек")).font(AppTypography.heading)
+                Button(L("Все колоды")) { deck = "" }.buttonStyle(.bordered)
             }
         }.frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading).padding(.vertical, 30)
     }
     private var meetingPicker: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("Карточки из встречи").font(AppTypography.modalTitle); Spacer(); Button("Готово") { showingMeetings = false }.keyboardShortcut(.cancelAction) }
-            Text("Выберите встречу. Создание карточек включается в контексте её конспекта.").font(AppTypography.body).foregroundStyle(.secondary)
+            HStack { Text(L("Карточки из встречи")).font(AppTypography.modalTitle); Spacer(); Button(L("Готово")) { showingMeetings = false }.keyboardShortcut(.cancelAction) }
+            Text(L("Выберите встречу. Создание карточек включается в контексте её конспекта.")).font(AppTypography.body).foregroundStyle(.secondary)
             List(app.filteredMeetings) { meeting in
                 Button {
                     showingMeetings = false; app.openMeeting(meeting.id, tab: "summary")
@@ -216,7 +216,7 @@ struct CardsWorkspaceView: View {
                 }.buttonStyle(.plain)
             }.frame(height: 260)
             if app.filteredMeetings.isEmpty {
-                Button("Открыть встречи") { showingMeetings = false; app.librarySection = "meetings" }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                Button(L("Открыть встречи")) { showingMeetings = false; app.librarySection = "meetings" }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
             }
         }.padding(24).frame(width: 540).appControlDefaults()
     }
@@ -225,7 +225,7 @@ struct CardsWorkspaceView: View {
             Image(systemName: "exclamationmark.triangle").foregroundStyle(Ink.warning)
             Text(text).font(AppTypography.control).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             Spacer()
-            Button("Повторить") { Task { await reload() } }.buttonStyle(.bordered).disabled(workspace.loading)
+            Button(L("Повторить")) { Task { await reload() } }.buttonStyle(.bordered).disabled(workspace.loading)
         }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Ink.warning.opacity(0.07))
     }
     private func reload() async { await workspace.reload(root: app.root, meetingID: meetingID); revealTarget() }
@@ -237,13 +237,13 @@ struct CardsWorkspaceView: View {
     private var previewAnswer: Bool { ProcessInfo.processInfo.arguments.contains("--preview") && ProcessInfo.processInfo.arguments.contains("--preview-answer") }
     private func chooseImport() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.tabSeparatedText, .commaSeparatedText, .plainText]; panel.canChooseDirectories = false
-        panel.message = "TSV или CSV: вопрос, ответ и необязательный контекст. Текстовый экспорт Anki поддерживается."
+        panel.message = L("TSV или CSV: вопрос, ответ и необязательный контекст. Текстовый экспорт Anki поддерживается.")
         if panel.runModal() == .OK, let url = panel.url { importURL = url; showingImport = true }
     }
     private func exportCards() {
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.tabSeparatedText]; panel.nameFieldStringValue = "После — карточки.tsv"
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.tabSeparatedText]; panel.nameFieldStringValue = L("После — карточки.tsv")
         if panel.runModal() == .OK, let url = panel.url {
-            do { try Exporter.anki(cards: matching.map(\.card), title: "После").write(to: url, atomically: true, encoding: .utf8) }
+            do { try Exporter.anki(cards: matching.map(\.card), title: L("После")).write(to: url, atomically: true, encoding: .utf8) }
             catch { workspace.error = error.localizedDescription }
         }
     }
@@ -264,18 +264,18 @@ private struct CardImportView: View {
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Импорт карточек").font(AppTypography.modalTitle)
+            Text(L("Импорт карточек")).font(AppTypography.modalTitle)
             if let folder = app.notes.folder(app.folderSelection) {
                 Label(folder.name, systemImage: "folder").font(AppTypography.caption).foregroundStyle(.secondary)
             }
             Text(url.lastPathComponent).font(AppTypography.control).foregroundStyle(.secondary)
-            TextField("Название колоды", text: $title).textFieldStyle(.roundedBorder)
-            Picker("Разделитель", selection: $separator) { Text("Автоматически").tag("auto"); Text("Табуляция").tag("tab"); Text("Запятая").tag("comma"); Text("Точка с запятой").tag("semicolon") }
-            Text("Первые два столбца — вопрос и ответ. Столбец Context или «Контекст» добавляется отдельно. Карточки начнут повторяться как новые.").font(AppTypography.control).foregroundStyle(.secondary)
+            TextField(L("Название колоды"), text: $title).textFieldStyle(.roundedBorder)
+            Picker(L("Разделитель"), selection: $separator) { Text(L("Автоматически")).tag("auto"); Text(L("Табуляция")).tag("tab"); Text(L("Запятая")).tag("comma"); Text(L("Точка с запятой")).tag("semicolon") }
+            Text(L("Первые два столбца — вопрос и ответ. Столбец Context или «Контекст» добавляется отдельно. Карточки начнут повторяться как новые.")).font(AppTypography.control).foregroundStyle(.secondary)
             if loading { ProgressView().frame(maxWidth: .infinity) }
             if let error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).textSelection(.enabled) }
             if let preview {
-                Text("Карточек: \(preview.total) · Пропущено: \(preview.skipped)").font(AppTypography.control).fontWeight(.medium)
+                Text(LF("Карточек: {0} · Пропущено: {1}", arguments: [String(describing: (preview.total)), String(describing: (preview.skipped))])).font(AppTypography.control).fontWeight(.medium)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         ForEach(Array(preview.cards.prefix(6))) { card in
@@ -286,9 +286,9 @@ private struct CardImportView: View {
                 }.frame(minHeight: 160, maxHeight: 310)
             }
             HStack {
-                Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
+                Button(L("Отмена")) { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
                 Spacer()
-                Button(saving ? "Импортирую…" : "Импортировать") { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(loading || saving || preview?.cards.isEmpty != false || app.busy).keyboardShortcut(.defaultAction)
+                Button(saving ? L("Импортирую…") : L("Импортировать")) { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(loading || saving || preview?.cards.isEmpty != false || app.busy).keyboardShortcut(.defaultAction)
             }
         }.padding(28).frame(width: 650).task(id: separator) { await loadPreview() }
             .onAppear { title = url.deletingPathExtension().lastPathComponent }
@@ -318,7 +318,7 @@ private struct CardImportView: View {
                     let data = try RustBridge.shared.get().request(root: root, command: "cards-import", arguments: arguments)
                     return try JSONDecoder().decode(CardImportResult.self, from: data)
                 }.value
-                app.notice = "Импортировано карточек: \(result.count)"; imported(result.meeting)
+                app.notice = LF("Импортировано карточек: {0}", arguments: [String(describing: (result.count))]); imported(result.meeting)
             } catch { self.error = error.localizedDescription }
         }
     }

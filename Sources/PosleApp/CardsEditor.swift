@@ -15,7 +15,8 @@ struct CardEditorView: View {
     @State private var back: String
     @State private var kind: String
     @State private var destination: String
-    @State private var deckTitle = "Мои карточки"
+    @State private var deckTitle = L("Мои карточки")
+    @State private var initialDeckTitle = L("Мои карточки")
     @State private var saving = false
     @State private var error: String?
     @State private var confirmingDiscard = false
@@ -29,48 +30,48 @@ struct CardEditorView: View {
     }
     private var dirty: Bool {
         front != (request.entry?.card.front ?? "") || back != (request.entry?.card.back ?? "") ||
-        kind != (request.entry?.card.kind ?? "phrase") || destination != (request.entry?.meeting.id ?? request.meeting?.id ?? "") || deckTitle != "Мои карточки"
+        kind != (request.entry?.card.kind ?? "phrase") || destination != (request.entry?.meeting.id ?? request.meeting?.id ?? "") || deckTitle != initialDeckTitle
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(request.entry == nil ? "Новая карточка" : "Изменить карточку").font(AppTypography.modalTitle)
+            Text(request.entry == nil ? L("Новая карточка") : L("Изменить карточку")).font(AppTypography.modalTitle)
             if request.entry == nil, request.meeting == nil, let folder = app.notes.folder(app.folderSelection) {
                 Label(folder.name, systemImage: "folder").font(AppTypography.caption).foregroundStyle(.secondary)
             }
             if request.entry == nil && request.meeting == nil {
-                Picker("Сохранить в", selection: $destination) {
-                    Text("Новая колода").tag("")
+                Picker(L("Сохранить в"), selection: $destination) {
+                    Text(L("Новая колода")).tag("")
                     ForEach(app.meetings.filter { $0.status == "ready" && (app.folderSelection == nil || app.folderID(for: $0.id) == app.folderSelection) }) { Text($0.title).tag($0.id) }
                 }
-                if destination.isEmpty { TextField("Название колоды", text: $deckTitle).textFieldStyle(.roundedBorder) }
+                if destination.isEmpty { TextField(L("Название колоды"), text: $deckTitle).textFieldStyle(.roundedBorder) }
             } else {
                 Text(request.entry?.meeting.title ?? request.meeting?.title ?? "").font(AppTypography.control).foregroundStyle(.secondary).lineLimit(2)
             }
-            Picker("Тип", selection: $kind) { Text("Фраза").tag("phrase"); Text("Понятие").tag("concept") }.pickerStyle(.segmented)
+            Picker(L("Тип"), selection: $kind) { Text(L("Фраза")).tag("phrase"); Text(L("Понятие")).tag("concept") }.pickerStyle(.segmented)
             VStack(alignment: .leading, spacing: 7) {
-                Text("Вопрос или фраза").font(AppTypography.controlStrong)
+                Text(L("Вопрос или фраза")).font(AppTypography.controlStrong)
                 TextEditor(text: $front).font(AppTypography.body).frame(height: 78)
                     .scrollContentBackground(.hidden).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Ink.line)).accessibilityLabel("Вопрос карточки").accessibilityIdentifier("cards.edit.front")
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Ink.line)).accessibilityLabel(L("Вопрос карточки")).accessibilityIdentifier("cards.edit.front")
             }
             VStack(alignment: .leading, spacing: 7) {
-                Text("Ответ или перевод").font(AppTypography.controlStrong)
+                Text(L("Ответ или перевод")).font(AppTypography.controlStrong)
                 TextEditor(text: $back).font(AppTypography.body).frame(height: 100)
                     .scrollContentBackground(.hidden).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Ink.line)).accessibilityLabel("Ответ карточки").accessibilityIdentifier("cards.edit.back")
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Ink.line)).accessibilityLabel(L("Ответ карточки")).accessibilityIdentifier("cards.edit.back")
             }
             if let entry = request.entry, !entry.card.context.isEmpty {
-                DisclosureGroup("Контекст встречи") {
+                DisclosureGroup(L("Контекст встречи")) {
                     Text(entry.card.context).font(AppTypography.body).foregroundStyle(.secondary).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
                 }.font(AppTypography.control)
             }
             if let error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true) }
             HStack {
-                Button("Отмена") { close() }.keyboardShortcut(.cancelAction).disabled(saving).accessibilityIdentifier("cards.edit.cancel")
+                Button(L("Отмена")) { close() }.keyboardShortcut(.cancelAction).disabled(saving).accessibilityIdentifier("cards.edit.cancel")
                 Spacer()
                 if saving { ProgressView().controlSize(.small) }
-                Button("Сохранить") { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                Button(L("Сохранить")) { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
                     .disabled(saving || front.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || back.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || destination.isEmpty && deckTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .keyboardShortcut(.defaultAction).accessibilityIdentifier("cards.edit.save")
             }
@@ -79,14 +80,14 @@ struct CardEditorView: View {
             .onAppear { editorClosed = false; registerDraft() }
             .onChange(of: dirty) { _, _ in registerDraft() }
             .onDisappear { editorClosed = true; UnsavedEditorRegistry.remove(id: request.id) }
-            .confirmationDialog("Закрыть без сохранения?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-                Button("Закрыть без сохранения", role: .destructive) { finish() }.accessibilityIdentifier("cards.edit.discard")
-                Button("Продолжить правку", role: .cancel) {}
+            .confirmationDialog(L("Закрыть без сохранения?"), isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button(L("Закрыть без сохранения"), role: .destructive) { finish() }.accessibilityIdentifier("cards.edit.discard")
+                Button(L("Продолжить правку"), role: .cancel) {}
             }
     }
     private func registerDraft() {
         guard !editorClosed else { return }
-        let title = request.entry.map { "Карточка «\($0.card.front.prefix(60))»" } ?? "Новая карточка"
+        let title = request.entry.map { LF("Карточка «{0}»", arguments: [String(describing: ($0.card.front.prefix(60)))]) } ?? L("Новая карточка")
         UnsavedEditorRegistry.set(id: request.id, title: title, dirty: dirty)
     }
     private func finish() {

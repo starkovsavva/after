@@ -8,9 +8,9 @@ struct IntegrationSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            Picker("Вид интеграции", selection: $section) {
-                Text("Трекеры").tag("trackers")
-                Text("Агенты").tag("agents")
+            Picker(L("Вид интеграции"), selection: $section) {
+                Text(L("Трекеры")).tag("trackers")
+                Text(L("Агенты")).tag("agents")
             }
             .pickerStyle(.segmented)
             .labelsHidden()

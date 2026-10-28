@@ -94,16 +94,16 @@ struct TasksWorkspaceView: View {
         .sheet(isPresented: $trackerSheet) { TaskTrackerSheet(notes: notes).environmentObject(app) }
         .sheet(isPresented: $boardDetail) {
             VStack(spacing: 0) {
-                HStack { Spacer(); Button("Готово") { boardDetail = false }.keyboardShortcut(.cancelAction) }.padding(16)
+                HStack { Spacer(); Button(L("Готово")) { boardDetail = false }.keyboardShortcut(.cancelAction) }.padding(16)
                 Divider(); detail
             }.frame(minWidth: 620, idealWidth: 720, minHeight: 620, idealHeight: 780)
         }
     }
     private var header: some View {
-        AppWorkspaceHeader(title: "Задачи") {
-            Button { trackerSheet = true } label: { Label("Трекеры", systemImage: "point.3.connected.trianglepath.dotted") }
+        AppWorkspaceHeader(title: L("Задачи")) {
+            Button { trackerSheet = true } label: { Label(L("Трекеры"), systemImage: "point.3.connected.trianglepath.dotted") }
                 .buttonStyle(.borderless).accessibilityIdentifier("tasks.trackers")
-            Button { newTaskSheet = true } label: { Label("Задача", systemImage: "plus") }
+            Button { newTaskSheet = true } label: { Label(L("Задача"), systemImage: "plus") }
                 .buttonStyle(.borderedProminent).tint(Ink.actionFill).accessibilityIdentifier("tasks.create")
         }.padding(.horizontal, AppLayout.contentInset).padding(.top, 20).padding(.bottom, 16)
     }
@@ -114,21 +114,21 @@ struct TasksWorkspaceView: View {
         }.padding(.horizontal, AppLayout.contentInset).padding(.bottom, 16)
     }
     private var viewPicker: some View {
-        Picker("Представление задач", selection: $presentation) {
-            Label("Список", systemImage: "list.bullet").tag("list")
-            Label("Доска", systemImage: "rectangle.split.3x1").tag("board")
+        Picker(L("Представление задач"), selection: $presentation) {
+            Label(L("Список"), systemImage: "list.bullet").tag("list")
+            Label(L("Доска"), systemImage: "rectangle.split.3x1").tag("board")
         }.pickerStyle(.segmented).labelsHidden().frame(width: 200).accessibilityIdentifier("tasks.presentation")
     }
     @ViewBuilder private var filters: some View {
-        Picker("Состояние", selection: $statusFilter) { Text("Открытые").tag("open"); Text("Все задачи").tag("all"); Text("Готовые").tag("done") }
+        Picker(L("Состояние"), selection: $statusFilter) { Text(L("Открытые")).tag("open"); Text(L("Все задачи")).tag("all"); Text(L("Готовые")).tag("done") }
             .labelsHidden().frame(width: 132).accessibilityIdentifier("tasks.status-filter")
-        Picker("Источник", selection: $sourceFilter) {
-            Text("Все источники").tag("all")
-            ForEach(TaskWorkspaceSource.allCases) { Text($0.title).tag($0.rawValue) }
+        Picker(L("Источник"), selection: $sourceFilter) {
+            Text(L("Все источники")).tag("all")
+            ForEach(TaskWorkspaceSource.allCases) { Text(L($0.title)).tag($0.rawValue) }
         }.labelsHidden().frame(width: 168).accessibilityIdentifier("tasks.source-filter")
         if !projects.isEmpty {
-            Picker("Проект", selection: $notes.selectedTaskProject) {
-                Text("Все проекты").tag("all")
+            Picker(L("Проект"), selection: $notes.selectedTaskProject) {
+                Text(L("Все проекты")).tag("all")
                 ForEach(projects, id: \.self) { Text($0).tag($0) }
             }.labelsHidden().frame(width: 144).accessibilityIdentifier("tasks.project-filter")
         }
@@ -141,16 +141,16 @@ struct TasksWorkspaceView: View {
         VStack(spacing: 14) {
             Image(systemName: allTasks.isEmpty ? "checklist" : "line.3.horizontal.decrease.circle")
                 .font(.system(size: 28, weight: .light)).foregroundStyle(.secondary).accessibilityHidden(true)
-            Text(allTasks.isEmpty ? "Добавьте первую задачу" : filtered.isEmpty ? "Задачи не найдены" : "Выберите задачу")
+            Text(allTasks.isEmpty ? L("Добавьте первую задачу") : filtered.isEmpty ? L("Задачи не найдены") : L("Выберите задачу"))
                 .font(AppTypography.emptyTitle)
             if allTasks.isEmpty {
                 HStack(spacing: 12) {
-                    Button("Новая задача") { newTaskSheet = true }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    Button(L("Новая задача")) { newTaskSheet = true }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
                         .accessibilityIdentifier("tasks.empty-create")
-                    Button("Надиктовать") { app.voice.present(projectID: notes.selectedTaskProject == "all" ? nil : notes.selectedTaskProject) }.buttonStyle(.bordered)
+                    Button(L("Надиктовать")) { app.voice.present(projectID: notes.selectedTaskProject == "all" ? nil : notes.selectedTaskProject) }.buttonStyle(.bordered)
                 }
             } else if filtered.isEmpty {
-                Button("Сбросить фильтры") { resetFilters() }.buttonStyle(.bordered)
+                Button(L("Сбросить фильтры")) { resetFilters() }.buttonStyle(.bordered)
                     .accessibilityIdentifier("tasks.empty-reset")
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)

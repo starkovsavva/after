@@ -6,14 +6,14 @@ enum AppearanceMaterial: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .graphite: return "Графит"
-        case .matteGlass: return "Матовое стекло"
+        case .graphite: return L("Графит")
+        case .matteGlass: return L("Матовое стекло")
         case .nativeLiquidGlass: return "Liquid Glass"
         }
     }
     var availabilityDescription: String {
         if #available(macOS 26, *) { return "" }
-        return "На этом Mac используется матовое стекло. Liquid Glass доступно в macOS 26."
+        return L("На этом Mac используется матовое стекло. Liquid Glass доступно в macOS 26.")
     }
 }
 
@@ -67,33 +67,33 @@ struct ThemeApplicationPreview: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("После").font(AppTypography.controlStrong)
+                Text(L("После")).font(AppTypography.controlStrong)
                 Spacer()
                 Image(systemName: "mic")
-                Label("Записать", systemImage: "record.circle")
+                Label(L("Записать"), systemImage: "record.circle")
                     .padding(.horizontal, 9).padding(.vertical, 5).background(Ink.soft, in: RoundedRectangle(cornerRadius: 6))
             }.font(AppTypography.control).padding(.horizontal, 14).frame(height: 42).appSurface(.toolbar)
             Divider()
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 9) {
-                    Label("Встречи", systemImage: "waveform").font(AppTypography.controlStrong)
+                    Label(L("Встречи"), systemImage: "waveform").font(AppTypography.controlStrong)
                         .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                         .background(Ink.selection, in: RoundedRectangle(cornerRadius: 6))
-                    Label("Заметки", systemImage: "note.text").padding(.horizontal, 8)
-                    Label("Задачи", systemImage: "checklist").padding(.horizontal, 8)
+                    Label(L("Заметки"), systemImage: "note.text").padding(.horizontal, 8)
+                    Label(L("Задачи"), systemImage: "checklist").padding(.horizontal, 8)
                     Spacer(minLength: 0)
                 }.font(AppTypography.control).padding(10).frame(width: 132).appSurface(.sidebar)
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("План запуска").font(AppTypography.sectionTitle)
-                    Text("Решили начать с небольшой группы. В пятницу проверим первые результаты.")
+                    Text(L("План запуска")).font(AppTypography.sectionTitle)
+                    Text(L("Решили начать с небольшой группы. В пятницу проверим первые результаты."))
                         .font(AppTypography.body).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 6) {
                         Image(systemName: "quote.bubble")
-                        Text("Открыть исходную реплику")
+                        Text(L("Открыть исходную реплику"))
                     }.font(AppTypography.control).foregroundStyle(Ink.accent)
                     Spacer(minLength: 0)
-                    Label("Подготовить сценарий", systemImage: "circle")
+                    Label(L("Подготовить сценарий"), systemImage: "circle")
                         .font(AppTypography.control).padding(8)
                         .frame(maxWidth: .infinity, alignment: .leading).background(Ink.soft, in: RoundedRectangle(cornerRadius: 7))
                 }.padding(18).frame(maxWidth: .infinity, alignment: .topLeading).background(Ink.paper)

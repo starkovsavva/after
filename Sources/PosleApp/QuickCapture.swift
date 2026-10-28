@@ -15,6 +15,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
     private var voiceKey: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
     private var settingsObserver: NSObjectProtocol?
+    private var languageObserver: NSObjectProtocol?
     private var started = false
     private let draft = QuickCaptureDraft()
     init(store: AppStore) { self.store = store; super.init() }
@@ -24,14 +25,14 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = SunsetArtwork.menuBarImage()
         let menu = NSMenu()
-        let capture = NSMenuItem(title: "Быстрая заметка…", action: #selector(showFromMenu), keyEquivalent: "")
+        let capture = NSMenuItem(title: L("Быстрая заметка…"), action: #selector(showFromMenu), keyEquivalent: "")
         capture.target = self; menu.addItem(capture)
-        let mark = NSMenuItem(title: "Отметить важный момент", action: #selector(markFromMenu), keyEquivalent: "")
+        let mark = NSMenuItem(title: L("Отметить важный момент"), action: #selector(markFromMenu), keyEquivalent: "")
         mark.target = self; menu.addItem(mark)
-        let voice = NSMenuItem(title: "Голосовое поручение…", action: #selector(voiceFromMenu), keyEquivalent: "")
+        let voice = NSMenuItem(title: L("Голосовое поручение…"), action: #selector(voiceFromMenu), keyEquivalent: "")
         voice.target = self; voice.isHidden = store?.isFeatureEnabled(.assistant) != true; menu.addItem(voice)
         menu.addItem(.separator())
-        let library = NSMenuItem(title: "Открыть После", action: #selector(openMain), keyEquivalent: "")
+        let library = NSMenuItem(title: L("Открыть После"), action: #selector(openMain), keyEquivalent: "")
         library.target = self; menu.addItem(library)
         item.menu = menu; statusItem = item
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -46,10 +47,13 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
             Task { @MainActor in if identifier == 1 { owner.show() } else if identifier == 2 { owner.markImportant() } else if identifier == 3 { owner.showVoice() } }
             return noErr
         }, 1, &eventType, pointer, &eventHandler)
-        if result != noErr { store?.notes.hotkeyNotice = "Горячие клавиши недоступны. Быстрая заметка работает из строки меню." }
+        if result != noErr { store?.notes.hotkeyNotice = L("Горячие клавиши недоступны. Быстрая заметка работает из строки меню.") }
         registerShortcuts()
         settingsObserver = NotificationCenter.default.addObserver(forName: Notification.Name("PosleShortcutsChanged"), object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.registerShortcuts() }
+        }
+        languageObserver = NotificationCenter.default.addObserver(forName: .posleUILanguageChanged, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.refreshLanguage() }
         }
     }
     func stop() {
@@ -58,8 +62,23 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
         if let voiceKey { UnregisterEventHotKey(voiceKey) }; voiceKey = nil
         if let eventHandler { RemoveEventHandler(eventHandler) }; eventHandler = nil
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }; settingsObserver = nil
+        if let languageObserver { NotificationCenter.default.removeObserver(languageObserver) }; languageObserver = nil
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }; statusItem = nil
         panel?.close(); panel = nil; started = false
+    }
+    /// Change chrome in place: a language switch must not recreate an editor or its draft.
+    private func refreshLanguage() {
+        panel?.title = L("Быстрая заметка")
+        statusItem?.button?.image?.accessibilityDescription = L("После")
+        for item in statusItem?.menu?.items ?? [] {
+            switch item.action {
+            case #selector(showFromMenu): item.title = L("Быстрая заметка…")
+            case #selector(markFromMenu): item.title = L("Отметить важный момент")
+            case #selector(voiceFromMenu): item.title = L("Голосовое поручение…")
+            case #selector(openMain): item.title = L("Открыть После")
+            default: break
+            }
+        }
     }
     private func registerShortcuts() {
         if let captureKey { UnregisterEventHotKey(captureKey) }; captureKey = nil
@@ -73,15 +92,15 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
             let code = UInt32(alternate ? kVK_Space : kVK_ANSI_N)
             let modifiers = UInt32(alternate ? (controlKey | shiftKey) : (controlKey | optionKey))
             let result = RegisterEventHotKey(code, modifiers, EventHotKeyID(signature: 0x50534C45, id: 1), GetApplicationEventTarget(), 0, &captureKey)
-            if result != noErr { store.notes.hotkeyNotice = "Сочетание быстрой заметки занято. Выберите другое в настройках или используйте строку меню." }
+            if result != noErr { store.notes.hotkeyNotice = L("Сочетание быстрой заметки занято. Выберите другое в настройках или используйте строку меню.") }
         }
         if store.isFeatureEnabled(.assistant), store.settings.voiceShortcutEnabled {
             let result = RegisterEventHotKey(UInt32(kVK_ANSI_M), UInt32(controlKey | optionKey), EventHotKeyID(signature: 0x50534C45, id: 3), GetApplicationEventTarget(), 0, &voiceKey)
-            if result != noErr { store.notes.hotkeyNotice = "Сочетание ⌃⌥M занято. Поручение можно открыть кнопкой микрофона." }
+            if result != noErr { store.notes.hotkeyNotice = L("Сочетание ⌃⌥M занято. Поручение можно открыть кнопкой микрофона.") }
         }
         if store.settings.bookmarkShortcutEnabled {
             let result = RegisterEventHotKey(UInt32(kVK_ANSI_B), UInt32(controlKey | optionKey), EventHotKeyID(signature: 0x50534C45, id: 2), GetApplicationEventTarget(), 0, &bookmarkKey)
-            if result != noErr { store.notes.hotkeyNotice = "Сочетание ⌃⌥B занято. Отметить момент можно кнопкой во время записи." }
+            if result != noErr { store.notes.hotkeyNotice = L("Сочетание ⌃⌥B занято. Отметить момент можно кнопкой во время записи.") }
         }
     }
     func show() {
@@ -93,9 +112,9 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
             ? max(0, Date().timeIntervalSince(store.recordingDate ?? Date())) : target != nil ? store.playbackTime : nil
         let view = QuickCaptureView(notes: store.notes, initialMeetingID: target, initialTimestamp: timestamp, initialFolderID: store.folderSelection, draft: draft) { [weak self] in self?.panel?.close() }.environmentObject(store)
         let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 490, height: 320), styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
-        window.title = "Быстрая заметка"; window.isFloatingPanel = true; window.level = .floating
+        window.title = L("Быстрая заметка"); window.isFloatingPanel = true; window.level = .floating
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]; window.hidesOnDeactivate = false
-        window.isReleasedWhenClosed = false; window.delegate = self; window.contentView = NSHostingView(rootView: view)
+        window.isReleasedWhenClosed = false; window.delegate = self; window.contentView = NSHostingView(rootView: LocalizedInterfaceRoot(content: view))
         window.center(); panel = window; NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
     }
     func windowWillClose(_ notification: Notification) {
@@ -107,8 +126,8 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
         guard let meetingID, store.allNoteMeetings.contains(where: { $0.id == meetingID }) else { show(); return }
         let time = store.isRecording && meetingID == store.captureMeetingID
             ? max(0, Date().timeIntervalSince(store.recordingDate ?? Date())) : store.playbackTime
-        if let note = store.notes.capture(text: "Важный момент", kind: "important", meetingID: meetingID, timestamp: time) {
-            store.notes.highlightedNoteID = note.id; store.notice = "Отмечено · \(Exporter.timestamp(time))"
+        if let note = store.notes.capture(text: L("Важный момент"), kind: "important", meetingID: meetingID, timestamp: time) {
+            store.notes.highlightedNoteID = note.id; store.notice = LF("Отмечено · {0}", arguments: [String(describing: (Exporter.timestamp(time)))])
         }
     }
     func showVoice() {
@@ -130,7 +149,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
 final class QuickCaptureDraft: ObservableObject {
     private let editorID = UUID()
     @Published var text = "" {
-        didSet { UnsavedEditorRegistry.set(id: editorID, title: "Быстрая заметка", dirty: !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+        didSet { UnsavedEditorRegistry.set(id: editorID, title: L("Быстрая заметка"), dirty: !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
     }
     @Published var kind = "note"
     @Published var meetingID = ""
@@ -159,10 +178,10 @@ final class QuickCaptureDraft: ObservableObject {
     @discardableResult func save(in app: AppStore) -> CapturedNote? {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         if hasMeeting && !app.allNoteMeetings.contains(where: { $0.id == meetingID }) {
-            app.notes.error = "Встреча недоступна. Выберите другую встречу или сохранение без встречи."; return nil
+            app.notes.error = L("Встреча недоступна. Выберите другую встречу или сохранение без встречи."); return nil
         }
         if !hasMeeting, let folderID, app.notes.folder(folderID) == nil {
-            app.notes.error = "Папка удалена. Выберите папку для заметки."; return nil
+            app.notes.error = L("Папка удалена. Выберите папку для заметки."); return nil
         }
         let target = destination(in: app.allNoteMeetings)
         guard let note = app.notes.capture(text: text, kind: kind == "task" && !settings(in: app).features.tasks ? "note" : kind,
@@ -252,52 +271,52 @@ struct QuickCaptureView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            PlainNoteInput(text: $draft.text, placeholder: "Новая заметка…", isFocused: $focused, accessibilityLabel: "Текст быстрой заметки")
+            PlainNoteInput(text: $draft.text, placeholder: L("Новая заметка…"), isFocused: $focused, accessibilityLabel: L("Текст быстрой заметки"))
                 .frame(height: 106).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 9))
                 .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(focused ? Ink.accent.opacity(0.7) : Ink.line))
             HStack(spacing: 12) {
-                Picker("Тип", selection: Binding(get: {
+                Picker(L("Тип"), selection: Binding(get: {
                     draft.kind == "task" && !draft.settings(in: app).features.tasks ? "note" : draft.kind
                 }, set: { draft.kind = $0 })) {
-                    Text("Заметка").tag("note"); Text("Важно").tag("important"); Text("Вопрос").tag("question")
-                    if draft.settings(in: app).features.tasks { Text("Задача").tag("task") }
+                    Text(L("Заметка")).tag("note"); Text(L("Важно")).tag("important"); Text(L("Вопрос")).tag("question")
+                    if draft.settings(in: app).features.tasks { Text(L("Задача")).tag("task") }
                 }
-                    .labelsHidden().frame(width: 116).accessibilityLabel("Тип заметки")
-                Picker("Куда сохранить", selection: $draft.meetingID) {
-                    Text("Без встречи").tag("")
-                    if !draft.meetingID.isEmpty && !app.allNoteMeetings.contains(where: { $0.id == draft.meetingID }) { Text("Встреча недоступна · выберите другую").tag(draft.meetingID) }
+                    .labelsHidden().frame(width: 116).accessibilityLabel(L("Тип заметки"))
+                Picker(L("Куда сохранить"), selection: $draft.meetingID) {
+                    Text(L("Без встречи")).tag("")
+                    if !draft.meetingID.isEmpty && !app.allNoteMeetings.contains(where: { $0.id == draft.meetingID }) { Text(L("Встреча недоступна · выберите другую")).tag(draft.meetingID) }
                     ForEach(app.allNoteMeetings) { Text($0.title).tag($0.id) }
-                }.labelsHidden().accessibilityLabel("Куда сохранить заметку")
-                    .help("Куда сохранить заметку")
+                }.labelsHidden().accessibilityLabel(L("Куда сохранить заметку"))
+                    .help(L("Куда сохранить заметку"))
             }
             if !draft.hasMeeting {
-                Picker("Папка", selection: Binding(get: { draft.folderID ?? "" }, set: { draft.selectFolder($0.isEmpty ? nil : $0) })) {
-                    Text("Без папки").tag("")
+                Picker(L("Папка"), selection: Binding(get: { draft.folderID ?? "" }, set: { draft.selectFolder($0.isEmpty ? nil : $0) })) {
+                    Text(L("Без папки")).tag("")
                     ForEach(app.notes.folders) { Text($0.name).tag($0.id) }
-                    if let id = draft.folderID, app.notes.folder(id) == nil { Text("Удалённая папка · выберите другую").tag(id) }
-                }.font(AppTypography.caption).accessibilityLabel("Папка быстрой заметки")
+                    if let id = draft.folderID, app.notes.folder(id) == nil { Text(L("Удалённая папка · выберите другую")).tag(id) }
+                }.font(AppTypography.caption).accessibilityLabel(L("Папка быстрой заметки"))
             }
             HStack(spacing: 10) {
                 if let error = notes.error {
                     Button { showingError = true } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "exclamationmark.circle")
-                            Text("Ошибка")
+                            Text(L("Ошибка"))
                             Image(systemName: "chevron.right")
                         }
                     }.buttonStyle(.borderless).font(AppTypography.caption).foregroundStyle(Ink.warning).frame(maxWidth: 190, alignment: .leading)
                         .popover(isPresented: $showingError) { Text(error).font(AppTypography.body).textSelection(.enabled).padding(18).frame(width: 360) }
-                        .help(error).accessibilityLabel("Ошибка заметок. Показать подробности").accessibilityValue(error)
+                        .help(error).accessibilityLabel(L("Ошибка заметок. Показать подробности")).accessibilityValue(error)
                 } else if let time = destination.timestamp {
                     Label(Exporter.timestamp(time), systemImage: "clock").font(AppTypography.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
                 Spacer()
-                Button("Скрыть", action: close).keyboardShortcut(.cancelAction)
-                    .help("Закрыть окно и оставить черновик до выхода из приложения")
-                Button("Сохранить") {
+                Button(L("Скрыть"), action: close).keyboardShortcut(.cancelAction)
+                    .help(L("Закрыть окно и оставить черновик до выхода из приложения"))
+                Button(L("Сохранить")) {
                     if draft.save(in: app) != nil { close() }
                 }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command])
-                    .disabled(draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).help("Сохранить · ⌘↩")
+                    .disabled(draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).help(L("Сохранить · ⌘↩"))
             }
         }.padding(18).frame(width: 490).background(Ink.paper).appControlDefaults()
             .modifier(PosleThemeRoot(root: notes.root))

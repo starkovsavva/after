@@ -43,52 +43,52 @@ struct TaskCreationSheet: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            AppPageHeader(title: task == nil ? "Новая задача" : "Изменить задачу", modal: true)
+            AppPageHeader(title: task == nil ? L("Новая задача") : L("Изменить задачу"), modal: true)
             if task == nil, let folder = notes.folder(initialFolderID) {
                 Label(folder.name, systemImage: "folder").font(AppTypography.caption).foregroundStyle(.secondary)
             }
             if loading {
-                HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Загружаю задачу…").font(AppTypography.control).foregroundStyle(.secondary) }
+                HStack(spacing: 10) { ProgressView().controlSize(.small); Text(L("Загружаю задачу…")).font(AppTypography.control).foregroundStyle(.secondary) }
                     .accessibilityIdentifier("tasks.form.loading")
             }
             if let loadError {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(loadError).font(AppTypography.control).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true)
-                    Button("Повторить") { Task { await loadForEditing() } }.accessibilityIdentifier("tasks.form.retry")
+                    Button(L("Повторить")) { Task { await loadForEditing() } }.accessibilityIdentifier("tasks.form.retry")
                 }
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    field("Название") { TextField("Что нужно сделать", text: $title).accessibilityIdentifier("tasks.form.title") }
-                    field("Описание") { TextField("Детали задачи", text: $text, axis: .vertical).lineLimit(3...8).accessibilityIdentifier("tasks.form.description") }
+                    field(L("Название")) { TextField(L("Что нужно сделать"), text: $title).accessibilityIdentifier("tasks.form.title") }
+                    field(L("Описание")) { TextField(L("Детали задачи"), text: $text, axis: .vertical).lineLimit(3...8).accessibilityIdentifier("tasks.form.description") }
                     HStack(alignment: .top, spacing: 16) {
-                        field("Проект") { TextField("Не указан", text: $project) }
-                        field("Ответственный") { TextField("Не указан", text: $owner) }
+                        field(L("Проект")) { TextField(L("Не указан"), text: $project) }
+                        field(L("Ответственный")) { TextField(L("Не указан"), text: $owner) }
                     }
-                    field("Срок") {
+                    field(L("Срок")) {
                         HStack {
-                            TextField("ГГГГ-ММ-ДД или без срока", text: $due).accessibilityIdentifier("tasks.due-date")
+                            TextField(L("ГГГГ-ММ-ДД или без срока"), text: $due).accessibilityIdentifier("tasks.due-date")
                             Menu {
-                                Button("Сегодня") { due = TaskDueDate.storage(Date()) }.accessibilityIdentifier("tasks.due-today")
-                                Button("Завтра") { if let date = Calendar.current.date(byAdding: .day, value: 1, to: Date()) { due = TaskDueDate.storage(date) } }.accessibilityIdentifier("tasks.due-tomorrow")
-                                Button("Без срока") { due = "" }.accessibilityIdentifier("tasks.due-none")
-                            } label: { Image(systemName: "calendar") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("Выбрать срок")
+                                Button(L("Сегодня")) { due = TaskDueDate.storage(Date()) }.accessibilityIdentifier("tasks.due-today")
+                                Button(L("Завтра")) { if let date = Calendar.current.date(byAdding: .day, value: 1, to: Date()) { due = TaskDueDate.storage(date) } }.accessibilityIdentifier("tasks.due-tomorrow")
+                                Button(L("Без срока")) { due = "" }.accessibilityIdentifier("tasks.due-none")
+                            } label: { Image(systemName: "calendar") }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel(L("Выбрать срок"))
                         }
                     }
-                    field("Источник") {
-                        Picker("Источник", selection: $source) { ForEach(TaskWorkspaceSource.allCases) { Text($0.title).tag($0) } }.labelsHidden()
+                    field(L("Источник")) {
+                        Picker(L("Источник"), selection: $source) { ForEach(TaskWorkspaceSource.allCases) { Text(L($0.title)).tag($0) } }.labelsHidden()
                     }
                     if source != .local {
-                        field("Ссылка на оригинал") { TextField("https://…", text: $externalURL).accessibilityIdentifier("tasks.form.external-url") }
-                        Text("Статус и материалы хранятся в «После». Оригинал по ссылке обновляется отдельно.").font(AppTypography.caption).foregroundStyle(.secondary)
+                        field(L("Ссылка на оригинал")) { TextField("https://…", text: $externalURL).accessibilityIdentifier("tasks.form.external-url") }
+                        Text(L("Статус и материалы хранятся в «После». Оригинал по ссылке обновляется отдельно.")).font(AppTypography.caption).foregroundStyle(.secondary)
                     }
                 }.textFieldStyle(.roundedBorder).disabled(!ready || loading || notes.taskWorkspaceBusy)
             }
             if let error = notes.error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true) }
             HStack {
                 Spacer()
-                Button("Отмена") { if dirty { confirmingDiscard = true } else { close() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("tasks.form.cancel")
-                Button(task == nil ? "Создать" : "Сохранить", action: save)
+                Button(L("Отмена")) { if dirty { confirmingDiscard = true } else { close() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("tasks.form.cancel")
+                Button(task == nil ? L("Создать") : L("Сохранить"), action: save)
                     .buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.defaultAction)
                     .disabled(!ready || loading || !valid || notes.taskWorkspaceBusy).accessibilityIdentifier("tasks.form.save")
             }
@@ -99,9 +99,9 @@ struct TaskCreationSheet: View {
             .task(id: task?.id) { await loadForEditing() }
             .onChange(of: dirty) { _, _ in registerDraft() }
             .onDisappear { UnsavedEditorRegistry.remove(id: editorID) }
-            .confirmationDialog("Отменить изменения задачи?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-                Button("Продолжить редактирование", role: .cancel) {}
-                Button("Отменить изменения", role: .destructive) { close() }.accessibilityIdentifier("tasks.form.discard")
+            .confirmationDialog(L("Отменить изменения задачи?"), isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button(L("Продолжить редактирование"), role: .cancel) {}
+                Button(L("Отменить изменения"), role: .destructive) { close() }.accessibilityIdentifier("tasks.form.discard")
             }
     }
     private var ready: Bool { task == nil || editingTask?.id == task?.id }
@@ -113,7 +113,7 @@ struct TaskCreationSheet: View {
         do {
             let loaded = try await detailLoader(taskID)
             try Task.checkCancellation()
-            guard loaded.id == taskID else { throw AppError.message("Не удалось загрузить выбранную задачу. Повторите попытку.") }
+            guard loaded.id == taskID else { throw AppError.message(L("Не удалось загрузить выбранную задачу. Повторите попытку.")) }
             title = loaded.title; text = loaded.text; project = loaded.project; source = loaded.source
             externalURL = loaded.externalURL; owner = loaded.owner; due = loaded.due
             initialValues = [title, text, project, source.rawValue, externalURL, owner, due]
@@ -124,7 +124,7 @@ struct TaskCreationSheet: View {
         } catch { loadError = error.localizedDescription }
     }
     private func registerDraft() {
-        UnsavedEditorRegistry.set(id: editorID, title: task == nil ? "Новая задача" : "Правка задачи", dirty: dirty)
+        UnsavedEditorRegistry.set(id: editorID, title: task == nil ? L("Новая задача") : L("Правка задачи"), dirty: dirty)
     }
     private func close() { UnsavedEditorRegistry.remove(id: editorID); dismiss() }
     private var valid: Bool {

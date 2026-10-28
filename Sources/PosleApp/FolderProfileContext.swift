@@ -48,8 +48,8 @@ extension AppStore {
         notes.folder(for: meetingID)?.overrides.generateCards ?? false
     }
     func cardGenerationInheritanceTitle(for meetingID: String) -> String {
-        let source = folderID(for: meetingID) == nil ? "По умолчанию" : "Как в папке"
-        return source + (inheritedCardGeneration(for: meetingID) ? " · создавать" : " · не создавать")
+        let source = folderID(for: meetingID) == nil ? L("По умолчанию") : L("Как в папке")
+        return source + (inheritedCardGeneration(for: meetingID) ? L(" · создавать") : L(" · не создавать"))
     }
     func generatesCards(for meeting: Meeting) -> Bool {
         guard effectiveSettings(for: meeting.id).features.cards else { return false }

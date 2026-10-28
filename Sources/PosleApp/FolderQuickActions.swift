@@ -31,18 +31,18 @@ struct FolderNameSheet: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(isNew ? "Новая папка" : "Переименовать папку").font(AppTypography.modalTitle)
-            TextField("Название папки", text: $name).textFieldStyle(.roundedBorder).focused($nameFocused)
+            Text(isNew ? L("Новая папка") : L("Переименовать папку")).font(AppTypography.modalTitle)
+            TextField(L("Название папки"), text: $name).textFieldStyle(.roundedBorder).focused($nameFocused)
                 .accessibilityIdentifier("folder.quick.name").onSubmit { save() }
             if isNew {
-                Text("Настройки приложения наследуются. Изменить их можно в настройках папки.")
+                Text(L("Настройки приложения наследуются. Изменить их можно в настройках папки."))
                     .font(AppTypography.caption).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
             }
             if !failure.isEmpty { Text(failure).font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled) }
             HStack {
                 Spacer()
-                Button("Отмена") { finish() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("folder.quick.cancel")
-                Button(isNew ? "Создать папку" : "Сохранить") { save() }.keyboardShortcut(.defaultAction)
+                Button(L("Отмена")) { finish() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("folder.quick.cancel")
+                Button(isNew ? L("Создать папку") : L("Сохранить")) { save() }.keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent).tint(Ink.actionFill)
                     .disabled(app.isTerminating || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("folder.quick.save")
@@ -51,7 +51,7 @@ struct FolderNameSheet: View {
             .onAppear { nameFocused = true }
             .onChange(of: name) { _, value in
                 guard !finished else { return }
-                UnsavedEditorRegistry.set(id: editorID, title: "Название папки", dirty: value != folder.name)
+                UnsavedEditorRegistry.set(id: editorID, title: L("Название папки"), dirty: value != folder.name)
             }
             .interactiveDismissDisabled(name != folder.name)
             .onDisappear { UnsavedEditorRegistry.remove(id: editorID) }
@@ -61,7 +61,7 @@ struct FolderNameSheet: View {
         guard !app.isTerminating, !trimmed.isEmpty, !finished else { return }
         if !isNew && trimmed == folder.name { finish(); onSaved?(folder); return }
         var updated = folder; updated.name = trimmed
-        guard let saved = app.notes.saveFolder(updated) else { failure = app.notes.error ?? "Не удалось сохранить папку."; return }
+        guard let saved = app.notes.saveFolder(updated) else { failure = app.notes.error ?? L("Не удалось сохранить папку."); return }
         finish(); onSaved?(saved)
     }
     private func finish() {
@@ -83,33 +83,33 @@ struct MeetingFolderMoveSheet: View {
     private var locked: Bool { app.captureMeetingID == meeting.id || app.isTerminating }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Переместить встречу").font(AppTypography.modalTitle)
+            Text(L("Переместить встречу")).font(AppTypography.modalTitle)
             Text(meeting.title).font(AppTypography.control).foregroundStyle(Ink.secondaryText).lineLimit(2)
             ScrollView {
                 VStack(spacing: 2) {
-                    destination(nil, name: "Без папки", icon: "tray")
+                    destination(nil, name: L("Без папки"), icon: "tray")
                     ForEach(app.notes.folders) { folder in destination(folder.id, name: folder.name, icon: "folder") }
                 }
             }.frame(minHeight: 80, maxHeight: 240)
             if creating {
                 HStack {
-                    TextField("Название папки", text: $newName).textFieldStyle(.roundedBorder).focused($newNameFocused).onSubmit { createAndMove() }
+                    TextField(L("Название папки"), text: $newName).textFieldStyle(.roundedBorder).focused($newNameFocused).onSubmit { createAndMove() }
                         .accessibilityIdentifier("folder.move.newName")
-                    Button("Создать и переместить") { createAndMove() }
+                    Button(L("Создать и переместить")) { createAndMove() }
                         .disabled(locked || newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .accessibilityIdentifier("folder.move.create")
                 }
             } else {
-                Button { creating = true } label: { Label("Новая папка…", systemImage: "folder.badge.plus") }
+                Button { creating = true } label: { Label(L("Новая папка…"), systemImage: "folder.badge.plus") }
                     .buttonStyle(.borderless).accessibilityIdentifier("folder.move.new")
             }
             if !failure.isEmpty { Text(failure).font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled) }
-            HStack { Spacer(); Button("Отмена") { finish() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("folder.move.cancel") }
+            HStack { Spacer(); Button(L("Отмена")) { finish() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("folder.move.cancel") }
         }.padding(24).frame(width: 470).background(Ink.paper).appControlDefaults()
             .onChange(of: creating) { _, value in newNameFocused = value }
             .onChange(of: newName) { _, value in
                 guard !finished else { return }
-                UnsavedEditorRegistry.set(id: editorID, title: "Название папки", dirty: !value.isEmpty)
+                UnsavedEditorRegistry.set(id: editorID, title: L("Название папки"), dirty: !value.isEmpty)
             }
             .interactiveDismissDisabled(!newName.isEmpty)
             .onDisappear { finished = true; UnsavedEditorRegistry.remove(id: editorID) }
@@ -130,7 +130,7 @@ struct MeetingFolderMoveSheet: View {
     private func move(to folderID: String?) {
         guard !locked else { return }
         if app.folderID(for: meeting.id) != folderID {
-            guard app.notes.assignMeetingFolder(meeting.id, folderID: folderID) else { failure = app.notes.error ?? "Не удалось переместить встречу."; return }
+            guard app.notes.assignMeetingFolder(meeting.id, folderID: folderID) else { failure = app.notes.error ?? L("Не удалось переместить встречу."); return }
         }
         app.folderSelection = folderID
         app.selection = meeting.id; app.librarySection = "meetings"; app.loadSelection(); finish()
@@ -138,7 +138,7 @@ struct MeetingFolderMoveSheet: View {
     private func createAndMove() {
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !locked, !name.isEmpty else { return }
-        guard let folder = app.notes.saveFolder(LibraryFolder(name: name)) else { failure = app.notes.error ?? "Не удалось создать папку."; return }
+        guard let folder = app.notes.saveFolder(LibraryFolder(name: name)) else { failure = app.notes.error ?? L("Не удалось создать папку."); return }
         creating = false; newName = ""; move(to: folder.id)
     }
 }
@@ -158,32 +158,32 @@ struct FolderMeetingPicker: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Переместить в «\(folder.name)»").font(AppTypography.modalTitle).lineLimit(2)
-            TextField("Найти встречу", text: $query).textFieldStyle(.roundedBorder).accessibilityIdentifier("folder.add.search")
+            Text(LF("Переместить в «{0}»", arguments: [String(describing: (folder.name))])).font(AppTypography.modalTitle).lineLimit(2)
+            TextField(L("Найти встречу"), text: $query).textFieldStyle(.roundedBorder).accessibilityIdentifier("folder.add.search")
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(candidates) { meeting in
                         Button {
                             guard app.captureMeetingID != meeting.id, !app.isTerminating else { return }
-                            guard app.notes.assignMeetingFolder(meeting.id, folderID: folder.id) else { failure = app.notes.error ?? "Не удалось переместить встречу."; return }
+                            guard app.notes.assignMeetingFolder(meeting.id, folderID: folder.id) else { failure = app.notes.error ?? L("Не удалось переместить встречу."); return }
                             app.librarySection = "meetings"; app.folderSelection = folder.id; app.selection = meeting.id; app.loadSelection(); dismiss()
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "waveform").foregroundStyle(.secondary)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(meeting.title).lineLimit(2)
-                                    Text(app.notes.folder(for: meeting.id)?.name ?? "Без папки").font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                                    Text(app.notes.folder(for: meeting.id)?.name ?? L("Без папки")).font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                                 }
                                 Spacer(minLength: 0)
                             }.padding(9).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                         }.buttonStyle(.plain).disabled(app.captureMeetingID == meeting.id || app.isTerminating)
                             .accessibilityIdentifier("folder.add.meeting." + meeting.id)
                     }
-                    if candidates.isEmpty { Text(query.isEmpty ? "Нет встреч для перемещения" : "Встречи не найдены").foregroundStyle(Ink.secondaryText).padding(9) }
+                    if candidates.isEmpty { Text(query.isEmpty ? L("Нет встреч для перемещения") : L("Встречи не найдены")).foregroundStyle(Ink.secondaryText).padding(9) }
                 }
             }.frame(minHeight: 120, maxHeight: 300)
             if !failure.isEmpty { Text(failure).font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled) }
-            HStack { Spacer(); Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("folder.add.cancel") }
+            HStack { Spacer(); Button(L("Отмена")) { dismiss() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("folder.add.cancel") }
         }.padding(24).frame(width: 470).background(Ink.paper).appControlDefaults()
     }
 }

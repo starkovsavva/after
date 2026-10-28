@@ -22,14 +22,14 @@ extension AppStore {
     func cloudCredential(for configuration: AppSettings) async throws -> String {
         if configuration.cloudProvider == "chatgpt" {
             guard !disconnectingChatGPTAccounts.contains(configuration.chatGPTAccountID) else {
-                throw AppError.message("Выполняется выход из ChatGPT. Дождитесь завершения выхода.")
+                throw AppError.message(L("Выполняется выход из ChatGPT. Дождитесь завершения выхода."))
             }
-            guard !isPreview else { throw AppError.message("В режиме предпросмотра вход в ChatGPT отключён.") }
+            guard !isPreview else { throw AppError.message(L("В режиме предпросмотра вход в ChatGPT отключён.")) }
             guard !configuration.chatGPTAccountID.isEmpty else {
-                throw AppError.message("Подключите подписку в настройках: Конспект и карточки → ChatGPT.")
+                throw AppError.message(L("Подключите подписку в настройках: Конспект и карточки → ChatGPT."))
             }
             guard !configuration.cloudModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw AppError.message("Выберите доступную модель ChatGPT в настройках.")
+                throw AppError.message(L("Выберите доступную модель ChatGPT в настройках."))
             }
             return try await ChatGPTAccount.shared.accessToken(expectedAccountID: configuration.chatGPTAccountID)
         }

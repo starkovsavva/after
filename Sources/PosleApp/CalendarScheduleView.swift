@@ -46,7 +46,7 @@ struct CalendarScheduleView: View {
             ForEach(period.days, id: \.self) { date in
                 Button { showDay(date) } label: {
                     VStack(spacing: 4) {
-                        Text(date.formatted(.dateTime.weekday(.abbreviated).locale(Locale(identifier: "ru_RU"))))
+                        Text(date.formatted(.dateTime.weekday(.abbreviated).locale(UILocale())))
                             .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                         Text(date.formatted(.dateTime.day())).font(AppTypography.heading)
                             .frame(width: 30, height: 30)
@@ -54,7 +54,7 @@ struct CalendarScheduleView: View {
                             .background(clock.isDateInToday(date) ? Ink.actionFill : Color.clear, in: Circle())
                     }.frame(maxWidth: .infinity).padding(.vertical, 8)
                         .contentShape(Rectangle())
-                }.buttonStyle(.plain).help("Открыть день")
+                }.buttonStyle(.plain).help(L("Открыть день"))
                     .accessibilityLabel(date.formatted(date: .complete, time: .omitted))
                     .accessibilityIdentifier("calendar.day.\(clock.component(.weekday, from: date))")
             }
@@ -67,7 +67,7 @@ struct CalendarScheduleView: View {
         if rows > 0 {
             let columnWidth = (width - gutter) / CGFloat(period.days.count)
             HStack(alignment: .top, spacing: 0) {
-                Text("Весь день").font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                Text(L("Весь день")).font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                     .frame(width: gutter).padding(.top, 10)
                 ScrollView(.vertical) {
                     ZStack(alignment: .topLeading) {
@@ -124,8 +124,8 @@ struct CalendarScheduleView: View {
                             .overlay(alignment: .top) { Rectangle().fill(Ink.line.opacity(halfHour.isMultiple(of: 2) ? 1 : 0.45)).frame(height: 0.5) }
                     }.buttonStyle(.plain).frame(height: hourHeight / 2).disabled(!canCreate || availableDate == nil)
                         .background(availableDate == nil ? Ink.soft : Color.clear)
-                        .help(availableDate == nil ? "Время пропущено при переводе часов" : "Добавить событие")
-                        .accessibilityLabel("Добавить событие, \(day.formatted(date: .abbreviated, time: .omitted)), \(halfHour / 2):\(halfHour.isMultiple(of: 2) ? "00" : "30")")
+                        .help(availableDate == nil ? L("Время пропущено при переводе часов") : L("Добавить событие"))
+                        .accessibilityLabel(LF("Добавить событие, {0}, {1}:{2}", arguments: [String(describing: (day.formatted(date: .abbreviated, time: .omitted))), String(describing: (halfHour / 2)), String(describing: (halfHour.isMultiple(of: 2) ? "00" : "30"))]))
                         .accessibilityIdentifier("calendar.slot.\(clock.component(.weekday, from: day)).\(halfHour)")
                 }
             }
@@ -176,7 +176,7 @@ struct CalendarScheduleView: View {
         return VStack(spacing: 0) {
             HStack(spacing: 0) {
                 ForEach(Array(period.days.prefix(7)), id: \.self) { day in
-                    Text(day.formatted(.dateTime.weekday(.abbreviated).locale(Locale(identifier: "ru_RU"))))
+                    Text(day.formatted(.dateTime.weekday(.abbreviated).locale(UILocale())))
                         .font(AppTypography.captionStrong).foregroundStyle(Ink.secondaryText)
                         .frame(maxWidth: .infinity).frame(height: 28)
                 }
@@ -203,7 +203,7 @@ struct CalendarScheduleView: View {
                     .foregroundStyle(clock.isDateInToday(day) ? Color.white : currentMonth ? Color.primary : Ink.secondaryText)
                     .frame(width: 27, height: 27)
                     .background(clock.isDateInToday(day) ? Ink.actionFill : Color.clear, in: Circle())
-            }.buttonStyle(.plain).accessibilityLabel("Открыть \(day.formatted(date: .complete, time: .omitted))")
+            }.buttonStyle(.plain).accessibilityLabel(LF("Открыть {0}", arguments: [String(describing: (day.formatted(date: .complete, time: .omitted)))]))
                 .accessibilityIdentifier("calendar.month.day.\(Int(day.timeIntervalSince1970))")
             ForEach(events.prefix(maxEvents)) { event in
                 Button { open(event) } label: {
@@ -215,7 +215,7 @@ struct CalendarScheduleView: View {
                     .accessibilityIdentifier("calendar.month.event.\(Int(day.timeIntervalSince1970)).\(event.id)")
             }
             if events.count > maxEvents {
-                Button("Ещё \(events.count - maxEvents)") { showDay(day) }
+                Button(LF("Ещё {0}", arguments: [String(describing: (events.count - maxEvents))])) { showDay(day) }
                     .font(AppTypography.caption).foregroundStyle(Ink.accent).buttonStyle(.plain)
             }
             Spacer(minLength: 0).frame(maxWidth: .infinity).contentShape(Rectangle())
@@ -246,7 +246,7 @@ struct CalendarScheduleView: View {
     }
     private func eventLabel(_ event: CalendarAgendaEvent) -> String {
         let time: String
-        if event.allDay { time = "Весь день" }
+        if event.allDay { time = L("Весь день") }
         else if !clock.isDate(event.start, inSameDayAs: event.end) {
             time = "\(event.start.formatted(date: .abbreviated, time: .shortened)) — \(event.end.formatted(date: .abbreviated, time: .shortened))"
         } else { time = "\(event.start.formatted(date: .omitted, time: .shortened))–\(event.end.formatted(date: .omitted, time: .shortened))" }
@@ -282,7 +282,7 @@ private struct CalendarEventChip: View {
                             Text(timeLabel(short: geometry.size.width <= 260))
                                 .font(AppTypography.caption).monospacedDigit().fixedSize().layoutPriority(2)
                         }
-                        if event.taskID != nil { Image(systemName: "checklist").font(AppTypography.caption).accessibilityLabel("Задача") }
+                        if event.taskID != nil { Image(systemName: "checklist").font(AppTypography.caption).accessibilityLabel(L("Задача")) }
                         if event.allDay || geometry.size.width > 85 {
                             Text(event.title).font(AppTypography.captionStrong).lineLimit(1)
                                 .frame(maxWidth: .infinity, alignment: .leading)

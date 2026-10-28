@@ -53,11 +53,19 @@ enum BackgroundJobPresentation {
             return left.id > right.id
         }
     }
+    /// Only generated operation labels are translated. Meeting titles remain verbatim.
+    static func title(_ job: BackgroundJob) -> String {
+        let labels = ["Распознавание", "Собеседники", "Подготовка MP3", "Конспект", "Пример к карточке", "Голосовое поручение", "Диктовка поручения", "Дополнение заметки"]
+        for label in labels where job.title == label || job.title.hasPrefix(label + " · ") {
+            return L(label) + job.title.dropFirst(label.count)
+        }
+        return job.title
+    }
     static func metadata(_ job: BackgroundJob, historical: Bool) -> String {
         let time = Date(timeIntervalSince1970: job.createdAt)
-            .formatted(.dateTime.day().month(.abbreviated).hour().minute().locale(Locale(identifier: "ru_RU")))
-        var parts = historical ? ["Ранее", time] : [time]
-        if job.attempt > 0 { parts.append("Попытка \(job.attempt)") }
+            .formatted(.dateTime.day().month(.abbreviated).hour().minute().locale(UILocale()))
+        var parts = historical ? [L("Ранее"), time] : [time]
+        if job.attempt > 0 { parts.append(LF("Попытка {0}", arguments: [String(describing: job.attempt)])) }
         let settings = job.config.settings
         let model: String
         switch job.kind {

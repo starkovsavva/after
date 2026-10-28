@@ -66,7 +66,7 @@ final class KnowledgeSearchController: ObservableObject {
                 guard current == generation, !Task.isCancelled else { return }
                 guard store.visibleFeatures == features && store.folderSelection == folderID else { cancel(); sources = []; return }
                 sources = results.sources.filter { store.permitsKnowledgeSource($0) }; warnings = results.warnings
-                if results.truncated { warnings.append("Показана часть найденных источников. Уточните запрос, чтобы сузить поиск.") }
+                if results.truncated { warnings.append(L("Показана часть найденных источников. Уточните запрос, чтобы сузить поиск.")) }
                 searching = false
             } catch {
                 guard current == generation else { return }
@@ -93,7 +93,7 @@ final class KnowledgeSearchController: ObservableObject {
                 guard current == generation, !Task.isCancelled, sources.contains(source) else { return }
                 guard store.visibleFeatures == features && store.folderSelection == folderID, store.permitsKnowledgeSource(source) else { cancel(); sources = []; return }
                 openingID = nil
-                guard valid else { throw AppError.message("Источник изменился или удалён. Повторите поиск.") }
+                guard valid else { throw AppError.message(L("Источник изменился или удалён. Повторите поиск.")) }
                 try store.revealKnowledgeSource(source)
                 store.showingSearch = false
             } catch {

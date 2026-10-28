@@ -51,7 +51,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     private var editorOpen: Bool {
         guard let store else { return false }
         return store.voice.isPresented || store.editingOverview || store.notes.editingNewTask || store.showingCaptureDrafts || store.showingSettings || store.showingRecord || store.showingSearch || NSApp.modalWindow != nil ||
-            NSApp.windows.contains { $0.attachedSheet != nil || ($0 is NSPanel && $0.isVisible && $0.title == "Быстрая заметка") }
+            NSApp.windows.contains { $0.attachedSheet != nil || ($0 is NSPanel && $0.isVisible && $0.title == L("Быстрая заметка")) }
     }
     var canSafelyRelaunch: Bool { !SettingsDraftRegistry.hasUnsaved && !UnsavedEditorRegistry.hasUnsaved && !workInProgress && !editorOpen && !hasQuickDraft() && store?.notes.hasUnsavedCaptureDrafts != true && !failedLibraryFlush && !failedOverviewFlush && !settingsSaveFailed }
 
@@ -99,10 +99,10 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         guard canCheck, let controller else { return }
         NSApp.keyWindow?.makeFirstResponder(nil)
         guard store?.saveSettings() != false else {
-            status = "Не удалось сохранить настройки. Повторите сохранение перед обновлением."
+            status = L("Не удалось сохранить настройки. Повторите сохранение перед обновлением.")
             return
         }
-        status = "Проверяю обновления…"
+        status = L("Проверяю обновления…")
         controller.checkForUpdates(nil)
     }
     func setAutomaticChecks(_ enabled: Bool) {
@@ -141,7 +141,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
                 try data.write(to: url, options: .atomic)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             }
-        } catch { status = "Не удалось сохранить выбор. Обновление можно открыть в настройках." }
+        } catch { status = L("Не удалось сохранить выбор. Обновление можно открыть в настройках.") }
         refreshAvailability()
     }
     private var reminderURL: URL? { store?.root.appendingPathComponent("update-reminders.json") }
@@ -149,7 +149,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey, .fileSizeKey])
         guard values.isSymbolicLink != true, (values.fileSize ?? 0) <= 16_384 else {
-            throw AppError.message("Неверный файл настроек обновлений.")
+            throw AppError.message(L("Неверный файл настроек обновлений."))
         }
     }
     private func loadReminderPreferences() {
@@ -163,7 +163,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     }
     private func foundUpdate(version: String, build: String) {
         availableVersion = version; availableBuild = build
-        status = "Доступна версия \(version)"
+        status = LF("Доступна версия {0}", arguments: [String(describing: (version))])
         refreshAvailability()
     }
     private func deferUntilIdle() {
@@ -187,7 +187,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
             }
             if revealCaptureDraftIfNeeded() { return }
             guard !UnsavedEditorRegistry.hasUnsaved else {
-                status = "Сохраните правки перед установкой обновления"
+                status = L("Сохраните правки перед установкой обновления")
                 refreshAvailability(); return
             }
             guard store?.flushOverviewDrafts() != false else {
@@ -201,7 +201,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
             }
             failedLibraryFlush = false
             installHandler = nil; relaunchRequested = true
-            status = "Устанавливаю обновление…"; refreshAvailability()
+            status = L("Устанавливаю обновление…"); refreshAvailability()
             handler()
         } else if automaticallyChecks && pendingCheck, let controller {
             guard controller.updater.canCheckForUpdates else { return }
@@ -223,7 +223,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         guard !SettingsDraftRegistry.hasUnsaved else { revealSettingsDrafts(); return }
         guard window.makeFirstResponder(nil) else {
             settingsSaveFailed = true
-            status = "Завершите ввод в настройках и повторите установку."
+            status = L("Завершите ввод в настройках и повторите установку.")
             refreshAvailability(); return
         }
         // Resigning a field editor can present another editor. Only the known
@@ -232,17 +232,17 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         guard !SettingsDraftRegistry.hasUnsaved else { revealSettingsDrafts(); return }
         guard store.saveSettings() else {
             settingsSaveFailed = true
-            status = "Не удалось сохранить настройки. Правки сохранены в окне; повторите установку."
+            status = L("Не удалось сохранить настройки. Правки сохранены в окне; повторите установку.")
             refreshAvailability(); return
         }
         store.showingSettings = false
-        status = "Закрываю настройки перед установкой…"
+        status = L("Закрываю настройки перед установкой…")
         // SwiftUI detaches the native sheet asynchronously. editorOpen remains
         // the final boundary until that happens; never end a sheet behind it.
     }
     func revealSettingsDrafts() {
         guard SettingsDraftRegistry.hasUnsaved else { return }
-        settingsDraftStatus = "Сохраните или отмените изменения: " + SettingsDraftRegistry.titles + "."
+        settingsDraftStatus = L("Сохраните или отмените изменения: ") + SettingsDraftRegistry.titles + "."
         status = settingsDraftStatus
     }
     func settingsDidSave() {
@@ -279,14 +279,14 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
               let id = store.overviewDrafts.keys.sorted().first else { return }
         promptedOverviewDraft = true
         store.openMeeting(id, tab: "summary")
-        status = "Сохраните черновик конспекта перед обновлением"
+        status = L("Сохраните черновик конспекта перед обновлением")
         store.notice = status
     }
     private func revealLibraryDraftIfNeeded() {
         guard failedLibraryFlush, !promptedLibraryDraft, let store else { return }
         promptedLibraryDraft = true
         store.librarySection = "inbox"
-        status = "Сохраните черновик заметки перед обновлением"
+        status = L("Сохраните черновик заметки перед обновлением")
         store.notice = status
     }
     @discardableResult private func revealCaptureDraftIfNeeded() -> Bool {
@@ -306,19 +306,19 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
                     // A removed source must not strand the user's remaining text.
                     if key.hasPrefix("taskmeta:"), let text = store.notes.captureDrafts[key],
                        let data = text.data(using: .utf8), let metadata = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        store.notes.captureDrafts[key] = ["Уточнение к задаче", metadata["owner"].map { "Ответственный: \($0)" } ?? "", metadata["due"].map { "Срок: \($0)" } ?? ""].filter { !$0.isEmpty }.joined(separator: "\n")
+                        store.notes.captureDrafts[key] = [L("Уточнение к задаче"), metadata["owner"].map { LF("Ответственный: {0}", arguments: [String(describing: ($0))]) } ?? "", metadata["due"].map { LF("Срок: {0}", arguments: [String(describing: ($0))]) } ?? ""].filter { !$0.isEmpty }.joined(separator: "\n")
                     }
                     store.recoveryCaptureDraftKey = key; store.showingCaptureDrafts = true
                 }
             }
             else { store.recoveryCaptureDraftKey = key; store.showingCaptureDrafts = true }
-            store.notice = "Сохраните черновик заметки перед обновлением"
+            store.notice = L("Сохраните черновик заметки перед обновлением")
         }
         return true
     }
     private func blockedError() -> NSError {
         NSError(domain: "app.posle.meetings.updates", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Обновление будет доступно после завершения записи или обработки."])
+                userInfo: [NSLocalizedDescriptionKey: L("Обновление будет доступно после завершения записи или обработки.")])
     }
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
         if workInProgress || (updateCheck != .updates && editorOpen) {
@@ -339,7 +339,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     }
     func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
         availableVersion = nil; availableBuild = nil; attendedBuild = nil
-        status = "Установлена последняя версия"
+        status = L("Установлена последняя версия")
         refreshAvailability()
     }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
@@ -350,7 +350,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
             refreshAvailability(); return
         }
         if failure.domain != "app.posle.meetings.updates" {
-            status = "Не удалось проверить обновления. Попробуйте позже."
+            status = L("Не удалось проверить обновления. Попробуйте позже.")
         }
         refreshAvailability()
     }
@@ -367,9 +367,9 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         installHandler = handler
         let closingSettings = store?.showingSettings == false && settingsWindow?.sheetParent != nil
         if !settingsSaveFailed && settingsDraftStatus == nil {
-            status = workInProgress ? "Установлю после завершения обработки"
-                : closingSettings ? "Закрываю настройки перед установкой…"
-                : "Сохраните правки и закройте редакторы для установки"
+            status = workInProgress ? L("Установлю после завершения обработки")
+                : closingSettings ? L("Закрываю настройки перед установкой…")
+                : L("Сохраните правки и закройте редакторы для установки")
         }
         if !closingSettings { store?.notice = status }
         if !workInProgress && !editorOpen && !settingsSaveFailed {
@@ -404,8 +404,8 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     func standardUserDriverWillFinishUpdateSession() {
         let installationWasDeferred = installHandler != nil
         clearDeferredInstallation()
-        if installationWasDeferred { status = "Установка отложена. Проверьте обновления ещё раз." }
-        else if status == "Проверяю обновления…" { status = nil }
+        if installationWasDeferred { status = L("Установка отложена. Проверьте обновления ещё раз.") }
+        else if status == L("Проверяю обновления…") { status = nil }
     }
 
     #if DEBUG
@@ -430,7 +430,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
 struct CheckForAppUpdates: View {
     @ObservedObject var updates: AppUpdateController
     var body: some View {
-        Button("Проверить обновления…") { updates.checkForUpdates() }.disabled(!updates.canCheck)
+        Button(L("Проверить обновления…")) { updates.checkForUpdates() }.disabled(!updates.canCheck)
     }
 }
 
@@ -438,9 +438,9 @@ struct OpenUpdateDraft: View {
     @ObservedObject var updates: AppUpdateController
     var body: some View {
         if updates.hasDeferredDraft {
-            Button("Открыть черновик") { updates.revealPendingDraft() }
+            Button(L("Открыть черновик")) { updates.revealPendingDraft() }
                 .disabled(!updates.canRevealDraft)
-                .help("Сохранить черновик перед установкой обновления")
+                .help(L("Сохранить черновик перед установкой обновления"))
         }
     }
 }

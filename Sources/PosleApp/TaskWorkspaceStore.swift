@@ -97,14 +97,14 @@ extension NotesStore {
             return try JSONDecoder().decode(TaskWorkspace.self, from: data)
         }.value
         try Task.checkCancellation()
-        guard task.id == taskID else { throw AppError.message("Не удалось загрузить выбранную задачу. Повторите попытку.") }
+        guard task.id == taskID else { throw AppError.message(L("Не удалось загрузить выбранную задачу. Повторите попытку.")) }
         return task
     }
 
     func taskWorkspace(for task: LibraryTask) -> TaskWorkspace {
         if let value = taskWorkspaces[task.id] { return value }
         let title = task.taskTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return TaskWorkspace(id: task.id, title: title.isEmpty ? task.text.split(separator: "\n").first.map(String.init) ?? "Новая задача" : title,
+        return TaskWorkspace(id: task.id, title: title.isEmpty ? task.text.split(separator: "\n").first.map(String.init) ?? L("Новая задача") : title,
             text: task.text, status: task.completed ? .done : .todo, completed: task.completed,
             owner: task.owner, due: task.due, revision: task.noteRevision ?? 0,
             virtual: task.noteID == nil, meetingID: task.meetingID)
@@ -188,7 +188,7 @@ extension NotesStore {
         let key = "taskthought:\(task.id)"
         let text = (captureDrafts[key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        let title = String(text.split(separator: "\n").first.map(String.init)?.prefix(100) ?? "Мысль к задаче")
+        let title = text.split(separator: "\n").first.map { String($0.prefix(100)) } ?? L("Мысль к задаче")
         if linkTaskMaterial(TaskMaterial(kind: "note", title: title, text: text, shared: task.agentAccess.enabled), to: task) != nil {
             captureDrafts.removeValue(forKey: key)
         }
@@ -197,8 +197,8 @@ extension NotesStore {
     @discardableResult func chooseTaskFolder(_ task: TaskWorkspace, repository: Bool) -> Bool {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
-        panel.message = repository ? "Выберите папку репозитория. Сохранится только ссылка." : "Выберите папку. Файлы не копируются и не читаются."
-        panel.prompt = "Прикрепить"
+        panel.message = repository ? L("Выберите папку репозитория. Сохранится только ссылка.") : L("Выберите папку. Файлы не копируются и не читаются.")
+        panel.prompt = L("Прикрепить")
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         return linkTaskMaterial(TaskMaterial(kind: repository ? "repository" : "folder",
             title: url.lastPathComponent, path: url.path), to: task) != nil
@@ -208,7 +208,7 @@ extension NotesStore {
         guard !attachmentBusy else { return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false; panel.canChooseFiles = true; panel.allowsMultipleSelection = false
-        panel.message = "Прикрепить выбранный файл к задаче"; panel.prompt = "Прикрепить"
+        panel.message = L("Прикрепить выбранный файл к задаче"); panel.prompt = L("Прикрепить")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         attachTaskFile(url, to: task)
     }
@@ -216,7 +216,7 @@ extension NotesStore {
     /// Import only the file explicitly selected by the user; Rust owns the copy
     /// and its limits. Linking uses the real attachment identity, never a fake path.
     func attachTaskFile(_ url: URL, to task: TaskWorkspace) {
-        guard !attachmentBusy else { error = "Дождитесь добавления текущего файла."; return }
+        guard !attachmentBusy else { error = L("Дождитесь добавления текущего файла."); return }
         var holder = CapturedNote(); holder.title = url.lastPathComponent
         guard let saved = save(holder) else { return }
         attachmentBusy = true
@@ -229,7 +229,7 @@ extension NotesStore {
                 }.value
                 let imported = try JSONDecoder().decode(CapturedNote.self, from: data)
                 reload()
-                guard let attachment = imported.attachments.last else { throw AppError.message("Файл не был добавлен к заметке.") }
+                guard let attachment = imported.attachments.last else { throw AppError.message(L("Файл не был добавлен к заметке.")) }
                 _ = linkTaskMaterial(TaskMaterial(kind: "file", title: attachment.name, noteID: imported.id, attachmentID: attachment.id), to: task)
             } catch {
                 let message = error.localizedDescription

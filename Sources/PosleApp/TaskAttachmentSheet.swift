@@ -5,7 +5,7 @@ enum TaskAttachmentKind: String, Identifiable {
     case note, meeting, repository, link
     var id: String { rawValue }
     var title: String {
-        switch self { case .note: return "Прикрепить заметку"; case .meeting: return "Фрагмент встречи"; case .repository: return "Прикрепить репозиторий"; case .link: return "Прикрепить ссылку" }
+        switch self { case .note: return L("Прикрепить заметку"); case .meeting: return L("Фрагмент встречи"); case .repository: return L("Прикрепить репозиторий"); case .link: return L("Прикрепить ссылку") }
     }
 }
 
@@ -39,11 +39,11 @@ struct TaskAttachmentSheet: View {
             if let error = notes.error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true) }
             HStack {
                 if kind == .repository {
-                    Button("Выбрать папку…") { if notes.chooseTaskFolder(task, repository: true) { dismiss() } }
+                    Button(L("Выбрать папку…")) { if notes.chooseTaskFolder(task, repository: true) { dismiss() } }
                 }
                 Spacer()
-                Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Прикрепить", action: attach).buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                Button(L("Отмена")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(L("Прикрепить"), action: attach).buttonStyle(.borderedProminent).tint(Ink.actionFill)
                     .disabled(!canAttach || notes.taskWorkspaceBusy).keyboardShortcut(.defaultAction).accessibilityIdentifier("tasks.attach-confirm")
             }
         }.padding(24).frame(width: 580).frame(minHeight: 360, idealHeight: kind == .note || kind == .meeting ? 620 : 380).appControlDefaults()
@@ -51,7 +51,7 @@ struct TaskAttachmentSheet: View {
     }
     private var notePicker: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("Найти заметку", text: $query).textFieldStyle(.roundedBorder).accessibilityIdentifier("tasks.attach-note-search")
+            TextField(L("Найти заметку"), text: $query).textFieldStyle(.roundedBorder).accessibilityIdentifier("tasks.attach-note-search")
             ScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(availableNotes) { note in
@@ -65,19 +65,19 @@ struct TaskAttachmentSheet: View {
                             }.padding(10).contentShape(Rectangle()).background(selectedNoteID == note.id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: AppLayout.controlRadius))
                         }.buttonStyle(.plain).accessibilityIdentifier("tasks.attach-note." + note.id)
                     }
-                    if availableNotes.isEmpty { Text("Заметки не найдены").foregroundStyle(.secondary).padding(20) }
+                    if availableNotes.isEmpty { Text(L("Заметки не найдены")).foregroundStyle(.secondary).padding(20) }
                 }
             }
-            Text("Сохранится связь с заметкой. Её можно будет открыть и изменить.").font(AppTypography.caption).foregroundStyle(.secondary)
+            Text(L("Сохранится связь с заметкой. Её можно будет открыть и изменить.")).font(AppTypography.caption).foregroundStyle(.secondary)
         }
     }
     private var meetingPicker: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("Встреча", selection: $meetingID) {
-                Text("Выберите встречу").tag("")
+            Picker(L("Встреча"), selection: $meetingID) {
+                Text(L("Выберите встречу")).tag("")
                 ForEach(app.noteMeetings) { Text($0.title).tag($0.id) }
             }.onChange(of: meetingID) { _, _ in selectedSegments = []; query = ""; loadTranscript() }
-            TextField("Найти реплику", text: $query).textFieldStyle(.roundedBorder)
+            TextField(L("Найти реплику"), text: $query).textFieldStyle(.roundedBorder)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(segments.prefix(200)) { segment in
@@ -90,18 +90,18 @@ struct TaskAttachmentSheet: View {
                             }.padding(.vertical, 7)
                         }.toggleStyle(.checkbox).accessibilityIdentifier("tasks.attach-segment.\(segment.id)")
                     }
-                    if !meetingID.isEmpty && transcript == nil { Text("У этой встречи пока нет транскрипта").foregroundStyle(.secondary).padding(.vertical, 20) }
-                    else if segments.isEmpty && transcript != nil { Text("Реплики не найдены").foregroundStyle(.secondary).padding(.vertical, 20) }
+                    if !meetingID.isEmpty && transcript == nil { Text(L("У этой встречи пока нет транскрипта")).foregroundStyle(.secondary).padding(.vertical, 20) }
+                    else if segments.isEmpty && transcript != nil { Text(L("Реплики не найдены")).foregroundStyle(.secondary).padding(.vertical, 20) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
-            Text("Выбрано реплик: \(selectedSegments.count)").font(AppTypography.caption).foregroundStyle(.secondary)
+            Text(LF("Выбрано реплик: {0}", arguments: [String(describing: (selectedSegments.count))])).font(AppTypography.caption).foregroundStyle(.secondary)
         }
     }
     private var linkForm: some View {
         VStack(alignment: .leading, spacing: 14) {
-            TextField("Название", text: $title).textFieldStyle(.roundedBorder)
+            TextField(L("Название"), text: $title).textFieldStyle(.roundedBorder)
             TextField(kind == .repository ? "https://github.com/…" : "https://…", text: $url).textFieldStyle(.roundedBorder)
-            Text(kind == .repository ? "Сохранится адрес репозитория или ссылка на выбранную папку. Поиск по содержимому папки можно включить отдельно в меню материала." : "Ссылка появится среди материалов задачи.")
+            Text(kind == .repository ? L("Сохранится адрес репозитория или ссылка на выбранную папку. Поиск по содержимому папки можно включить отдельно в меню материала.") : L("Ссылка появится среди материалов задачи."))
                 .font(AppTypography.control).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -120,7 +120,7 @@ struct TaskAttachmentSheet: View {
             guard let note = availableNotes.first(where: { $0.id == selectedNoteID }) else { return }
             material = TaskMaterial(kind: "note", title: note.displayTitle, noteID: note.id)
         case .meeting:
-            let name = app.noteMeetings.first { $0.id == meetingID }?.title ?? "Фрагмент встречи"
+            let name = app.noteMeetings.first { $0.id == meetingID }?.title ?? L("Фрагмент встречи")
             material = TaskMaterial(kind: "meeting", title: name, meetingID: meetingID, segmentIDs: selectedSegments.sorted())
         case .repository, .link:
             material = TaskMaterial(kind: kind.rawValue, title: title.trimmingCharacters(in: .whitespacesAndNewlines), url: url.trimmingCharacters(in: .whitespacesAndNewlines))

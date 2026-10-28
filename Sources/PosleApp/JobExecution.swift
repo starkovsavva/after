@@ -21,7 +21,7 @@ extension AppStore {
         try validateOptionalJob(command, features: snapshot.features)
         if snapshot.mode == "cloud", snapshot.cloudProvider == "chatgpt", Self.chatGPTAICommands.contains(command),
            disconnectingChatGPTAccounts.contains(snapshot.chatGPTAccountID) {
-            throw AppError.message("Выполняется выход из ChatGPT. Повторите после входа в нужный аккаунт.")
+            throw AppError.message(L("Выполняется выход из ChatGPT. Повторите после входа в нужный аккаунт."))
         }
         // EventKit evidence is permission-scoped and volatile. Persist only the
         // request; each execution attempt obtains its own authorized snapshot.
@@ -61,7 +61,7 @@ extension AppStore {
     static func persistableJobInput(command: String, input: Data?) throws -> Data? {
         guard command == "voice-plan", let input else { return input }
         guard var request = try JSONSerialization.jsonObject(with: input) as? [String: Any] else {
-            throw AppError.message("Не удалось прочитать запрос голосового поручения.")
+            throw AppError.message(L("Не удалось прочитать запрос голосового поручения."))
         }
         request.removeValue(forKey: "restartOfJobID")
         request.removeValue(forKey: "calendar")
@@ -80,7 +80,7 @@ extension AppStore {
         let source = previous.config.input.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         guard previous.canReopenVoiceCommand, let sourceText = source?["text"] as? String,
               let text = request["text"] as? String, sourceText == text else {
-            throw AppError.message("Исходное поручение изменилось. Откройте его заново из фоновых задач.")
+            throw AppError.message(L("Исходное поручение изменилось. Откройте его заново из фоновых задач."))
         }
         return id
     }
@@ -92,7 +92,7 @@ extension AppStore {
             return config.input
         }
         guard var request = try JSONSerialization.jsonObject(with: input) as? [String: Any] else {
-            throw AppError.message("Не удалось прочитать запрос голосового поручения.")
+            throw AppError.message(L("Не удалось прочитать запрос голосового поручения."))
         }
         if !isPreview, effectiveSettings(for: config.profileMeetingID, folderID: config.folderID).features.semanticSearch {
             struct SemanticSettings: Decodable { var config: SemanticSearchConfiguration; var fingerprint: String }
@@ -106,7 +106,7 @@ extension AppStore {
         }
         if request["questionOnly"] as? Bool == true {
             guard let question = request["text"] as? String else {
-                throw AppError.message("Нет вопроса помощнику.")
+                throw AppError.message(L("Нет вопроса помощнику."))
             }
             let now = Date()
             let resolved = (request["query"] as? String).map { question + "\n" + $0 } ?? question
@@ -123,7 +123,7 @@ extension AppStore {
     func executeBackgroundJob(_ job: BackgroundJob, cancellation: JobCancellation,
                               event: @escaping @Sendable (WorkerEvent) -> Void) async throws -> WorkerEvent? {
         let config = job.config
-        guard Self.queuedCommands.contains(config.command) else { throw AppError.message("Неизвестная фоновая операция.") }
+        guard Self.queuedCommands.contains(config.command) else { throw AppError.message(L("Неизвестная фоновая операция.")) }
         guard !cancellation.isCancelled else { throw CancellationError() }
         try validateJobProfile(config)
         try validateOptionalJob(config.command, features: effectiveSettings(for: config.profileMeetingID ?? config.meetingID, folderID: config.folderID).features)
@@ -137,7 +137,7 @@ extension AppStore {
         try validateOptionalJob(config.command, features: effectiveSettings(for: config.profileMeetingID ?? config.meetingID, folderID: config.folderID).features)
         try validateJobRevision(job)
         if ["transcribe", "diarize"].contains(config.command), !runtimeReady {
-            throw AppError.message("Запись сохранена. Подготовьте распознавание в настройках и повторите операцию.")
+            throw AppError.message(L("Запись сохранена. Подготовьте распознавание в настройках и повторите операцию."))
         }
         if snapshot.mode == "local", ["summarize", "example", "expand-notes", "voice-plan"].contains(config.command) {
             try await localService.ensure(root: root, settings: snapshot, cancelled: { cancellation.isCancelled })
@@ -164,7 +164,7 @@ extension AppStore {
         guard !cancellation.isCancelled, !isTerminating else { throw CancellationError() }
         let result: WorkerEvent?
         if config.command == "dictate" {
-            guard let index = config.extra.firstIndex(of: "--audio"), config.extra.indices.contains(index + 1) else { throw AppError.message("Не выбрана запись поручения.") }
+            guard let index = config.extra.firstIndex(of: "--audio"), config.extra.indices.contains(index + 1) else { throw AppError.message(L("Не выбрана запись поручения.")) }
             embeddedSpeech.resetCancellation()
             try cancellation.attachEmbedded { [embeddedSpeech] in embeddedSpeech.cancel() }
             let value = try await embeddedSpeech.dictate(root: root, interpreter: python, backend: backend,
@@ -246,7 +246,7 @@ extension AppStore {
         default: feature = nil
         }
         if let feature, !features[feature] {
-            throw AppError.message("Включите «\(feature.title)» в настройках → Возможности.")
+            throw AppError.message(LF("Включите «{0}» в настройках → Возможности.", arguments: [L(feature.title)]))
         }
     }
 

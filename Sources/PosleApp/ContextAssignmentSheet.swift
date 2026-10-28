@@ -15,7 +15,7 @@ struct ContextLibraryIndex {
         var unique: [String: String] = [:]
         for context in contexts where ids.contains(context.meetingID) {
             let label = Self.label(context, mode: mode)
-            let key = label.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "ru_RU"))
+            let key = label.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: UILocale())
             if !label.isEmpty && unique[key] == nil { unique[key] = label }
         }
         return unique.values.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
@@ -64,25 +64,25 @@ struct ContextAssignmentSheet: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(mode == "project" ? "Связать встречу с проектом" : "Добавить человека к встрече").font(AppTypography.modalTitle)
-            Picker("Встреча", selection: $meetingID) {
-                if candidates.isEmpty { Text("Нет встреч").tag("") }
-                if !meetingID.isEmpty && !candidates.contains(where: { $0.id == meetingID }) { Text("Встреча недоступна").tag(meetingID) }
+            Text(mode == "project" ? L("Связать встречу с проектом") : L("Добавить человека к встрече")).font(AppTypography.modalTitle)
+            Picker(L("Встреча"), selection: $meetingID) {
+                if candidates.isEmpty { Text(L("Нет встреч")).tag("") }
+                if !meetingID.isEmpty && !candidates.contains(where: { $0.id == meetingID }) { Text(L("Встреча недоступна")).tag(meetingID) }
                 ForEach(candidates) { Text($0.title).tag($0.id) }
             }.accessibilityIdentifier("contexts.link.meeting")
-            TextField(mode == "project" ? "Название проекта" : "Имя человека", text: $label)
+            TextField(mode == "project" ? L("Название проекта") : L("Имя человека"), text: $label)
                 .textFieldStyle(.roundedBorder).focused($labelFocused).accessibilityIdentifier("contexts.link.label")
                 .onSubmit { save() }
             if let original = draft.map({ ContextLibraryIndex.label($0.baseline, mode: mode) }), !original.isEmpty, dirty {
-                Text("Заменит связь с «\(original)».").font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                Text(LF("Заменит связь с «{0}».", arguments: [String(describing: (original))])).font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
             }
-            Text("Заметки и договорённости встречи появятся здесь. Папка и её настройки сохранятся.")
+            Text(L("Заметки и договорённости встречи появятся здесь. Папка и её настройки сохранятся."))
                 .font(AppTypography.caption).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
             if !failure.isEmpty { Text(failure).font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled) }
             HStack {
                 Spacer()
-                Button("Отмена") { finish() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("contexts.link.cancel")
-                Button("Связать") { save() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                Button(L("Отмена")) { finish() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("contexts.link.cancel")
+                Button(L("Связать")) { save() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).tint(Ink.actionFill)
                     .disabled(app.isTerminating || currentDraft?.normalizedLabel.isEmpty != false || !candidates.contains(where: { $0.id == meetingID }))
                     .accessibilityIdentifier("contexts.link.save")
             }
@@ -103,13 +103,13 @@ struct ContextAssignmentSheet: View {
     }
     private func registerDraft() {
         guard !finished else { return }
-        UnsavedEditorRegistry.set(id: editorID, title: "Связь встречи", dirty: dirty)
+        UnsavedEditorRegistry.set(id: editorID, title: L("Связь встречи"), dirty: dirty)
     }
     private func finish() { finished = true; UnsavedEditorRegistry.remove(id: editorID); dismiss() }
     private func save() {
         guard !finished, !app.isTerminating, let value = currentDraft, !value.normalizedLabel.isEmpty,
               candidates.contains(where: { $0.id == meetingID }) else { return }
-        if value.dirty, !notes.saveContext(value.updated) { failure = notes.error ?? "Не удалось связать встречу. Ваш текст сохранён в этом окне."; return }
+        if value.dirty, !notes.saveContext(value.updated) { failure = notes.error ?? L("Не удалось связать встречу. Ваш текст сохранён в этом окне."); return }
         finish(); onSaved(value.normalizedLabel)
     }
 }

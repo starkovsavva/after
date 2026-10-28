@@ -109,24 +109,24 @@ final class SemanticIndexController: ObservableObject {
                     self.wantsRefresh = false
                     while app.isRecording || app.startingRecording || app.stoppingRecording || app.busy || app.jobs.activeCount > 0 || ProcessInfo.processInfo.thermalState == .serious || ProcessInfo.processInfo.thermalState == .critical {
                         guard self.isCurrent(app, root: root, generation: current) else { throw CancellationError() }
-                        self.message = "Продолжим после записи и обработки"
+                        self.message = L("Продолжим после записи и обработки")
                         try await Task.sleep(nanoseconds: 2_000_000_000)
                     }
                     try Task.checkCancellation()
                     guard self.isCurrent(app, root: root, generation: current) else { throw CancellationError() }
-                    self.message = "Обновляем смысловой индекс…"
+                    self.message = L("Обновляем смысловой индекс…")
                     let data = try await Task.detached(priority: .utility) { try RustBridge.shared.get().request(root: root, command: "semantic-refresh", arguments: ["maxDocuments": 8, "apiKey": key, "configFingerprint": fingerprint]) }.value
                     guard self.isCurrent(app, root: root, generation: current) else { throw CancellationError() }
                     try Task.checkCancellation()
                     let result = try JSONDecoder().decode(Result.self, from: data)
                     self.indexed = result.indexed ?? 0; self.total = result.total ?? 0
                     if let warning = result.warnings?.first { self.message = warning }
-                    else { self.message = result.complete == true ? "Индекс обновлён: \(self.indexed) фрагментов" : "\(self.indexed) из \(self.total) фрагментов" }
+                    else { self.message = result.complete == true ? LF("Индекс обновлён: {0} фрагментов", arguments: [String(describing: (self.indexed))]) : LF("{0} из {1} фрагментов", arguments: [String(describing: (self.indexed)), String(describing: (self.total))]) }
                     if result.complete != true { self.wantsRefresh = true }
                     if self.wantsRefresh { try await Task.sleep(nanoseconds: 250_000_000) }
                 } while self.wantsRefresh && !Task.isCancelled
             } catch is CancellationError {
-                if self.isCurrent(app, root: root, generation: current) { self.message = "Обновление индекса приостановлено" }
+                if self.isCurrent(app, root: root, generation: current) { self.message = L("Обновление индекса приостановлено") }
             } catch {
                 if self.isCurrent(app, root: root, generation: current) { self.failed = true; self.message = error.localizedDescription }
             }
@@ -172,7 +172,7 @@ struct SemanticSearchSettings: View {
     }
     private func registerDrafts() {
         guard mounted else { return }
-        SettingsDraftRegistry.set(id: editorID, title: "Настройки смыслового поиска", dirty: hasUnsaved, busy: busy)
+        SettingsDraftRegistry.set(id: editorID, title: L("Настройки смыслового поиска"), dirty: hasUnsaved, busy: busy)
     }
     private func cancelChanges() {
         config = savedConfig; draftKeys = savedKeys; loadKey()
@@ -184,59 +184,59 @@ struct SemanticSearchSettings: View {
     @State private var failed = false
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Смысловой поиск").font(AppTypography.sectionTitle)
-            Toggle("Находить по смыслу", isOn: enabledBinding).accessibilityIdentifier("semantic.enabled")
-            Text("Помогает вспомнить карточку или заметку другими словами, в том числе на другом языке. Тексты индексируются небольшими пакетами; запись и распознавание имеют приоритет.")
+            Text(L("Смысловой поиск")).font(AppTypography.sectionTitle)
+            Toggle(L("Находить по смыслу"), isOn: enabledBinding).accessibilityIdentifier("semantic.enabled")
+            Text(L("Помогает вспомнить карточку или заметку другими словами, в том числе на другом языке. Тексты индексируются небольшими пакетами; запись и распознавание имеют приоритет."))
                 .font(AppTypography.control).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 14) {
-                Picker("Модель поиска", selection: Binding(get: { config.provider }, set: { provider in
+                Picker(L("Модель поиска"), selection: Binding(get: { config.provider }, set: { provider in
                     config.provider = provider; config.endpoint = provider == "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234/v1"; config.modelRevision = ""; loadKey()
-                })) { Text("Ollama").tag("ollama"); Text("LM Studio / совместимый API").tag("openai") }
-                LabeledContent("Адрес") { TextField("http://127.0.0.1:11434", text: endpointBinding).textFieldStyle(.roundedBorder).accessibilityIdentifier("semantic.endpoint") }
-                LabeledContent("Модель") { TextField("qwen3-embedding:0.6b", text: modelBinding).textFieldStyle(.roundedBorder).accessibilityIdentifier("semantic.model") }
+                })) { Text("Ollama").tag("ollama"); Text(L("LM Studio / совместимый API")).tag("openai") }
+                LabeledContent(L("Адрес")) { TextField("http://127.0.0.1:11434", text: endpointBinding).textFieldStyle(.roundedBorder).accessibilityIdentifier("semantic.endpoint") }
+                LabeledContent(L("Модель")) { TextField("qwen3-embedding:0.6b", text: modelBinding).textFieldStyle(.roundedBorder).accessibilityIdentifier("semantic.model") }
                 HStack {
-                    Button("Найти установленные модели") { discover() }.disabled(busy).accessibilityIdentifier("semantic.discover")
+                    Button(L("Найти установленные модели")) { discover() }.disabled(busy).accessibilityIdentifier("semantic.discover")
                     if !availableModels.isEmpty {
-                        Menu("Выбрать модель") { ForEach(availableModels, id: \.self) { name in Button(name) { config.model = name; config.modelRevision = "" } } }
+                        Menu(L("Выбрать модель")) { ForEach(availableModels, id: \.self) { name in Button(name) { config.model = name; config.modelRevision = "" } } }
                     }
                 }
                 if !config.isLocal {
-                    Toggle("Разрешить отправку текстов провайдеру поиска", isOn: $config.allowCloud).accessibilityIdentifier("semantic.cloud-consent")
-                    Text("Это отдельное разрешение для embeddings. Календарь не сохраняется в индекс; для папок разрешение задаётся у каждого материала.").font(AppTypography.caption).foregroundStyle(.secondary)
+                    Toggle(L("Разрешить отправку текстов провайдеру поиска"), isOn: $config.allowCloud).accessibilityIdentifier("semantic.cloud-consent")
+                    Text(L("Это отдельное разрешение для embeddings. Календарь не сохраняется в индекс; для папок разрешение задаётся у каждого материала.")).font(AppTypography.caption).foregroundStyle(.secondary)
                 }
-                DisclosureGroup("Дополнительно") {
+                DisclosureGroup(L("Дополнительно")) {
                     VStack(alignment: .leading, spacing: 12) {
-                        LabeledContent("Размерность") { TextField("1024", value: $config.dimensions, format: .number).frame(width: 100).textFieldStyle(.roundedBorder) }
-                        LabeledContent("Версия модели") { TextField("Определяется при проверке", text: $config.modelRevision).textFieldStyle(.roundedBorder) }
-                        Text("Для Ollama проверяется digest модели. Если заменили модель в LM Studio под тем же ID, проверьте подключение и измените версию перед перестройкой.").font(AppTypography.caption).foregroundStyle(.secondary)
-                        LabeledContent("Префикс запроса") { TextField("Зависит от модели", text: $config.queryPrefix).textFieldStyle(.roundedBorder) }
-                        LabeledContent("Префикс документа") { TextField("Зависит от модели", text: $config.documentPrefix).textFieldStyle(.roundedBorder) }
-                        LabeledContent("Ключ, если нужен") { SecureField("Хранится в Связке ключей", text: keyBinding).textFieldStyle(.roundedBorder).disabled(config.keyAccount == nil).accessibilityIdentifier("semantic.key") }
+                        LabeledContent(L("Размерность")) { TextField("1024", value: $config.dimensions, format: .number).frame(width: 100).textFieldStyle(.roundedBorder) }
+                        LabeledContent(L("Версия модели")) { TextField(L("Определяется при проверке"), text: $config.modelRevision).textFieldStyle(.roundedBorder) }
+                        Text(L("Для Ollama проверяется digest модели. Если заменили модель в LM Studio под тем же ID, проверьте подключение и измените версию перед перестройкой.")).font(AppTypography.caption).foregroundStyle(.secondary)
+                        LabeledContent(L("Префикс запроса")) { TextField(L("Зависит от модели"), text: $config.queryPrefix).textFieldStyle(.roundedBorder) }
+                        LabeledContent(L("Префикс документа")) { TextField(L("Зависит от модели"), text: $config.documentPrefix).textFieldStyle(.roundedBorder) }
+                        LabeledContent(L("Ключ, если нужен")) { SecureField(L("Хранится в Связке ключей"), text: keyBinding).textFieldStyle(.roundedBorder).disabled(config.keyAccount == nil).accessibilityIdentifier("semantic.key") }
                     }.padding(.top, 8)
                 }
                 HStack(spacing: 10) {
-                    Button("Проверить и сохранить") { checkAndSave() }.disabled(busy).accessibilityIdentifier("semantic.check")
+                    Button(L("Проверить и сохранить")) { checkAndSave() }.disabled(busy).accessibilityIdentifier("semantic.check")
                     if hasUnsaved {
-                        Button("Отменить изменения") { cancelChanges() }.disabled(busy).accessibilityIdentifier("semantic.cancel")
+                        Button(L("Отменить изменения")) { cancelChanges() }.disabled(busy).accessibilityIdentifier("semantic.cancel")
                     }
                     if config.provider == "ollama", config.isLocal, config.model == "qwen3-embedding:0.6b" {
-                        Button("Скачать модель · 639 МБ") { download() }.disabled(busy).accessibilityIdentifier("semantic.download")
+                        Button(L("Скачать модель · 639 МБ")) { download() }.disabled(busy).accessibilityIdentifier("semantic.download")
                     }
                 }
             }
-            if busy { HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Подключаемся к модели…").font(AppTypography.caption).foregroundStyle(.secondary) } }
+            if busy { HStack(spacing: 8) { ProgressView().controlSize(.small); Text(L("Подключаемся к модели…")).font(AppTypography.caption).foregroundStyle(.secondary) } }
             if !message.isEmpty { Text(message).font(AppTypography.caption).foregroundStyle(failed ? Ink.warning : .secondary).textSelection(.enabled).accessibilityIdentifier("semantic.connection-status") }
             Divider()
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(index.message.isEmpty ? "Индекс ещё не обновлён" : index.message).font(AppTypography.control).foregroundStyle(index.failed ? Ink.warning : .secondary).accessibilityIdentifier("semantic.index-status")
+                    Text(index.message.isEmpty ? L("Индекс ещё не обновлён") : index.message).font(AppTypography.control).foregroundStyle(index.failed ? Ink.warning : .secondary).accessibilityIdentifier("semantic.index-status")
                     if index.running, index.total > 0 { ProgressView(value: Double(index.indexed), total: Double(max(index.total, 1))).frame(maxWidth: 300) }
                 }
                 Spacer()
-                if index.running { Button("Приостановить") { index.stop() } }
-                else { Button("Обновить индекс") { index.requestRefresh() }.disabled(!config.enabled || busy).accessibilityIdentifier("semantic.refresh") }
+                if index.running { Button(L("Приостановить")) { index.stop() } }
+                else { Button(L("Обновить индекс")) { index.requestRefresh() }.disabled(!config.enabled || busy).accessibilityIdentifier("semantic.refresh") }
             }
-            Text("Папки подключаются отдельно в материалах задачи. Файлы .env, ключи, скрытые файлы и исключения gitignore не индексируются; свои исключения добавьте в .posleignore.")
+            Text(L("Папки подключаются отдельно в материалах задачи. Файлы .env, ключи, скрытые файлы и исключения gitignore не индексируются; свои исключения добавьте в .posleignore."))
                 .font(AppTypography.caption).foregroundStyle(.secondary)
         }
         .onAppear { mounted = true; lifecycleID = UUID(); index.connect(app); load(); registerDrafts() }
@@ -283,17 +283,17 @@ struct SemanticSearchSettings: View {
                     _ = try RustBridge.shared.get().request(root: root, command: "semantic-config", arguments: ["config": draft.arguments])
                     savedConfig = draft
                     if let account = draft.keyAccount { savedKeys[account] = draftKey }
-                    registerDrafts(); message = "Настройки сохранены"; return
+                    registerDrafts(); message = L("Настройки сохранены"); return
                 }
                 let result = try await Task.detached(priority: .utility) { try RustBridge.shared.get().request(root: root, command: "semantic-check", arguments: ["config": draft.arguments, "apiKey": draftKey]) }.value
                 guard mounted && lifecycleID == generation else { return }
                 struct Checked: Decodable { var config: SemanticSearchConfiguration }
                 let confirmed = try JSONDecoder().decode(Checked.self, from: result).config
-                guard draft == config, draftKey == key, loadedKeyAccount == draft.keyAccount, config.enabled else { message = "Настройки изменились. Повторите проверку."; return }
+                guard draft == config, draftKey == key, loadedKeyAccount == draft.keyAccount, config.enabled else { message = L("Настройки изменились. Повторите проверку."); return }
                 if let account = confirmed.keyAccount, draftKey != (savedKeys[account] ?? ""), !app.isPreview { try Keychain.save(draftKey, account: account) }
                 _ = try RustBridge.shared.get().request(root: root, command: "semantic-config", arguments: ["config": confirmed.arguments]); savedConfig = confirmed; config = confirmed
                 if let account = confirmed.keyAccount { savedKeys[account] = draftKey }
-                registerDrafts(); message = "Модель подключена"; index.requestRefresh()
+                registerDrafts(); message = L("Модель подключена"); index.requestRefresh()
             } catch { if mounted && lifecycleID == generation { failed = true; message = error.localizedDescription } }
         }
     }
@@ -308,12 +308,12 @@ struct SemanticSearchSettings: View {
                 guard mounted && lifecycleID == generation else { return }
                 let result = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                 availableModels = ((result?["models"] as? [[String: Any]]) ?? []).compactMap { ($0["name"] ?? $0["id"]) as? String }.sorted()
-                message = availableModels.isEmpty ? "Установленные модели не найдены" : "Выберите embedding-модель из списка"
+                message = availableModels.isEmpty ? L("Установленные модели не найдены") : L("Выберите embedding-модель из списка")
             } catch { if mounted && lifecycleID == generation { failed = true; message = error.localizedDescription } }
         }
     }
     private func download() {
-        guard !busy else { return }; busy = true; registerDrafts(); failed = false; message = "Скачиваем модель в Ollama…"
+        guard !busy else { return }; busy = true; registerDrafts(); failed = false; message = L("Скачиваем модель в Ollama…")
         let root = app.root, draft = config, draftKey = key, generation = lifecycleID
         Task { @MainActor in
             defer { if mounted && lifecycleID == generation { busy = false; registerDrafts() } }
@@ -321,7 +321,7 @@ struct SemanticSearchSettings: View {
             do {
                 _ = try await Task.detached(priority: .utility) { try RustBridge.shared.get().request(root: root, command: "semantic-pull", arguments: ["config": draft.arguments, "apiKey": draftKey]) }.value
                 guard mounted && lifecycleID == generation else { return }
-                message = "Модель скачана. Включите поиск и проверьте подключение."
+                message = L("Модель скачана. Включите поиск и проверьте подключение.")
             } catch { if mounted && lifecycleID == generation { failed = true; message = error.localizedDescription } }
         }
     }

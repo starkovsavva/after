@@ -18,13 +18,13 @@ struct LibraryCardEntry: Decodable, Identifiable {
 private struct CardLibraryResponse: Decodable { let entries: [LibraryCardEntry]; let errors: [String] }
 struct CardReviewOption: Decodable { let rating: Int; let due: String; let intervalSeconds: Int
     var title: String {
-        if intervalSeconds < 60 { return "\(max(1, intervalSeconds)) с" }
+        if intervalSeconds < 60 { return LF("{0} с", arguments: [String(describing: max(1, intervalSeconds))]) }
         if intervalSeconds < 3600 {
             let remainder = intervalSeconds % 60
-            return "\(intervalSeconds / 60) мин" + (remainder == 0 ? "" : " \(remainder) с")
+            return LF("{0} мин", arguments: [String(describing: intervalSeconds / 60)]) + (remainder == 0 ? "" : LF(" {0} с", arguments: [String(describing: remainder)]))
         }
-        if intervalSeconds < 86400 { return "\(intervalSeconds / 3600) ч" }
-        return "\(intervalSeconds / 86400) дн."
+        if intervalSeconds < 86400 { return LF("{0} ч", arguments: [String(describing: intervalSeconds / 3600)]) }
+        return LF("{0} дн.", arguments: [String(describing: intervalSeconds / 86400)])
     }
 }
 private struct CardReviewOptions: Decodable { let options: [CardReviewOption] }
@@ -86,7 +86,7 @@ final class CardsWorkspace: ObservableObject {
                 let data = try RustBridge.shared.get().request(root: root, command: "cards-review", arguments: args)
                 return try JSONDecoder().decode(CardReviewReceipt.self, from: data)
             }.value
-            lastReview = receipt; message = "Ответ сохранён"; error = nil
+            lastReview = receipt; message = L("Ответ сохранён"); error = nil
             await reload(root: root, meetingID: meetingID)
         } catch { self.error = error.localizedDescription }
     }
@@ -97,7 +97,7 @@ final class CardsWorkspace: ObservableObject {
             _ = try await Task.detached(priority: .userInitiated) {
                 try RustBridge.shared.get().request(root: root, command: "cards-review-undo", arguments: ["meetingID": receipt.meetingID, "undoID": receipt.undoID])
             }.value
-            lastReview = nil; message = "Последняя оценка отменена"; error = nil
+            lastReview = nil; message = L("Последняя оценка отменена"); error = nil
             await reload(root: root, meetingID: meetingID)
         } catch { self.error = error.localizedDescription }
     }
@@ -109,7 +109,7 @@ final class CardsWorkspace: ObservableObject {
                 var args = Self.arguments(entry); args["suspended"] = !entry.suspended
                 return try RustBridge.shared.get().request(root: root, command: delete ? "card-delete" : "card-suspend", arguments: args)
             }.value
-            message = delete ? "Карточка в Корзине" : entry.suspended ? "Карточка вернулась в повторение" : "Карточка исключена из повторения"
+            message = delete ? L("Карточка в Корзине") : entry.suspended ? L("Карточка вернулась в повторение") : L("Карточка исключена из повторения")
             error = nil
             await reload(root: root, meetingID: meetingID)
         } catch { self.error = error.localizedDescription }

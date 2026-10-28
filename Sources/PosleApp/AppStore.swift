@@ -9,6 +9,8 @@ import UniformTypeIdentifiers
 final class AppStore: ObservableObject {
     @Published var meetings: [Meeting] = []
     @Published var folderSelection: String? { didSet { if folderSelection != oldValue, featureLifecycleReady { folderSelectionDidChange() } } }
+    struct SidebarPreferences: Codable { var foldersExpanded = true }
+    @Published private(set) var foldersExpanded = true
     @Published var librarySection = "meetings"
     let notes: NotesStore
     let calendar: CalendarStore
@@ -21,6 +23,7 @@ final class AppStore: ObservableObject {
     private var jobsSubscription: AnyCancellable?
     private var folderSubscription: AnyCancellable?
     private var notesSubscription: AnyCancellable?
+    private var languageSubscription: AnyCancellable?
     private var lifecycleFeatures: AppFeatures?
     @Published var startingRecording = false
     @Published var isTerminating = false
@@ -127,7 +130,7 @@ final class AppStore: ObservableObject {
     var cancellationRequested = false
     private var jobGeneration = UUID()
     private var confirmingCloudSpeech = false
-    static let stoppedProcessingMessage = "Обработка остановлена. Запись сохранена."
+    static var stoppedProcessingMessage: String { L("Обработка остановлена. Запись сохранена.") }
     private var preview: Bool
     private var featureLifecycleReady = false
 
@@ -166,6 +169,7 @@ final class AppStore: ObservableObject {
                 .appendingPathComponent(preview ? "PoslePreview" : "Posle")
         }
         root = dataRoot
+        UILocalization.shared.configure(root: dataRoot)
         jobs = BackgroundJobsController(root: dataRoot)
         let initialNotes = NotesStore(root: dataRoot)
         notes = initialNotes
@@ -184,6 +188,7 @@ final class AppStore: ObservableObject {
                                                    attributes: [.posixPermissions: 0o700])
             if let saved: AppSettings = read(root.appendingPathComponent("settings.json")) { settings = saved }
             overviewDrafts = read(root.appendingPathComponent("overview-drafts.json")) ?? [:]
+            if let sidebar: SidebarPreferences = read(root.appendingPathComponent("sidebar-state.json")) { foldersExpanded = sidebar.foldersExpanded }
             // Finish only previously committed, explicitly authorized operations.
             do { _ = try RustBridge.shared.get().request(root: root, command: "voice-recover") }
             catch { self.error = "Не удалось завершить прерванное поручение: \(error.localizedDescription)" }
@@ -211,6 +216,11 @@ final class AppStore: ObservableObject {
             return profile.features?.tasks ?? self.effectiveSettings(folderID: config.folderID).features.tasks
         }
         notesSubscription = notes.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        languageSubscription = NotificationCenter.default.publisher(for: .posleUILanguageChanged).receive(on: RunLoop.main).sink { [weak self] _ in
+            guard let self else { return }
+            self.objectWillChange.send()
+            self.notes.objectWillChange.send(); self.calendar.objectWillChange.send(); self.jobs.objectWillChange.send()
+        }
         featureLifecycleReady = true
         applyFeatureChanges()
         folderSubscription = notes.$workspace.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in
@@ -225,15 +235,28 @@ final class AppStore: ObservableObject {
         recorder.failed = { [weak self] failure in
             Task { @MainActor in
                 guard let self, self.isRecording, self.recordingID == failure.sessionID else { return }
-                self.error = "Запись прервалась: \(failure.message). Завершаю сохранение доступного аудио."
+                self.error = LF("Запись прервалась: {0}. Завершаю сохранение доступного аудио.", arguments: [failure.message])
                 await self.stopRecording()
             }
         }
     }
 
+    /// Layout preferences do not alter processing profiles or library content.
+    @discardableResult
+    func setFoldersExpanded(_ expanded: Bool) -> Bool {
+        guard foldersExpanded != expanded else { return true }
+        do {
+            try write(SidebarPreferences(foldersExpanded: expanded), root.appendingPathComponent("sidebar-state.json"))
+            foldersExpanded = expanded
+            return true
+        } catch {
+            self.error = L("Не удалось сохранить вид папок. ") + error.localizedDescription
+            return false
+        }
+    }
     private func folderSelectionDidChange() {
         if !visibleFeaturesSection(librarySection) { librarySection = "meetings" }
-        if librarySection == "meetings", !filteredMeetings.contains(where: { $0.id == selection }) {
+        if !filteredMeetings.contains(where: { $0.id == selection }) {
             selection = filteredMeetings.first?.id; loadSelection()
         }
         if showingSearch { updateSearch(immediate: true) }
@@ -303,7 +326,7 @@ final class AppStore: ObservableObject {
         for i in meetings.indices where ["processing", "recording"].contains(meetings[i].status) && !busy && !isRecording && !jobs.contains(objectID: meetings[i].id) {
             meetings[i].status = FileManager.default.fileExists(atPath: meetingDirectory(meetings[i].id).appendingPathComponent("transcript.json").path)
                 ? "transcribed" : "imported"
-            meetings[i].error = "Предыдущая обработка прервалась. Можно продолжить."
+            meetings[i].error = L("Предыдущая обработка прервалась. Можно продолжить.")
             try? write(meetings[i], meetingDirectory(meetings[i].id).appendingPathComponent("meta.json"))
         }
     }
@@ -312,7 +335,8 @@ final class AppStore: ObservableObject {
     }
     func loadSelection() {
         loadedSelectionID = selection
-        if selected?.libraryKind == "cards", availableFeatures.cards { tab = "cards" }
+        if selected?.libraryKind == "cards", effectiveSettings(for: selection).features.cards { tab = "cards" }
+        if tab == "cards", !effectiveSettings(for: selection).features.cards { tab = "summary" }
         navigationTarget = nil
         pause()
         if let observer = playerObserver { player?.removeTimeObserver(observer) }; playerObserver = nil
@@ -353,7 +377,7 @@ final class AppStore: ObservableObject {
         // Finalization can replace a temporary MOV with MP3 in the worker.
         // Always patch its latest metadata, including after cancellation/error.
         guard var current: Meeting = read(url) else {
-            error = "Не удалось прочитать данные встречи. Откройте её заново."
+            error = L("Не удалось прочитать данные встречи. Откройте её заново.")
             return
         }
         let original = current
@@ -362,7 +386,7 @@ final class AppStore: ObservableObject {
             let encoder = JSONEncoder()
             guard let before = try JSONSerialization.jsonObject(with: encoder.encode(original)) as? [String: Any],
                   let after = try JSONSerialization.jsonObject(with: encoder.encode(current)) as? [String: Any] else {
-                throw AppError.message("Не удалось подготовить изменения встречи.")
+                throw AppError.message(L("Не удалось подготовить изменения встречи."))
             }
             var patch: [String: Any] = [:]
             for key in Set(before.keys).union(after.keys) {
@@ -402,18 +426,18 @@ final class AppStore: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio, .movie, .mpeg4Audio, .mp3, .wav]
         panel.allowsMultipleSelection = false
-        panel.message = "Добавьте запись встречи на русском или английском"
+        panel.message = L("Добавьте запись встречи на русском или английском")
         if panel.runModal() == .OK, let url = panel.url { importFile(url) }
     }
     func importFile(_ source: URL) {
         guard !isTerminating else { return }
-        guard !busy, !startingRecording else { error = "Дождитесь сохранения файла или завершения настройки компонентов."; return }
+        guard !busy, !startingRecording else { error = L("Дождитесь сохранения файла или завершения настройки компонентов."); return }
         let ext = source.pathExtension.lowercased()
         guard ["mp4", "mov", "m4a", "mp3", "wav", "aiff", "aif", "caf", "flac", "ogg", "webm", "mkv", "aac"].contains(ext) else {
-            error = "Добавьте аудио или видео: MP4, MOV, M4A, MP3, WAV, FLAC или WebM."; return
+            error = L("Добавьте аудио или видео: MP4, MOV, M4A, MP3, WAV, FLAC или WebM."); return
         }
         canCancelJob = false
-        busy = true; progress = -1; progressText = "Сохраняю запись…"; error = nil
+        busy = true; progress = -1; progressText = L("Сохраняю запись…"); error = nil
         let focus = ""
         let destinationFolderID = folderSelection
         let root = self.root
@@ -431,10 +455,10 @@ final class AppStore: ObservableObject {
                 // that saved meeting even if the sidebar or its folder changed.
                 folderSelection = notes.context(for: meeting.id).folderID; libraryFilter = ""
                 reloadLibrary(); librarySection = "meetings"; selection = meeting.id; tab = "transcript"; loadSelection()
-                guard assigned else { error = "Запись сохранена без папки. Выберите папку перед обработкой."; return }
+                guard assigned else { error = L("Запись сохранена без папки. Выберите папку перед обработкой."); return }
                 applyDefaultNoteTemplate(to: meeting.id)
                 if runtimeReady { await processMeeting(meeting.id) }
-                else { notice = "Запись сохранена. Установите модели один раз, чтобы начать распознавание."; showingSettings = true }
+                else { notice = L("Запись сохранена. Установите модели один раз, чтобы начать распознавание."); showingSettings = true }
             } catch { busy = false; self.error = error.localizedDescription }
         }
     }
@@ -461,10 +485,10 @@ final class AppStore: ObservableObject {
         guard !cancellationRequested, !isTerminating else { throw CancellationError() }
         let configuration = settings
         if ["transcribe", "install-local", "import-gguf"].contains(command) && !runtimeReady {
-            throw AppError.message("Сначала подготовьте распознавание в настройках.")
+            throw AppError.message(L("Сначала подготовьте распознавание в настройках."))
         }
         if command == "pull" && configuration.localProvider != "managed" {
-            throw AppError.message("Выберите установленную модель в настройках. Для Ollama и LM Studio скачивание выполняется в самом приложении.")
+            throw AppError.message(L("Выберите установленную модель в настройках. Для Ollama и LM Studio скачивание выполняется в самом приложении."))
         }
         let requestedASR = asrSelectionIdentity
         let requestedLocalASR = command == "transcribe" && configuration.speechMode == "local"
@@ -472,7 +496,7 @@ final class AppStore: ObservableObject {
         if ["check", "pull", "discover-local", "import-gguf"].contains(command) || (configuration.mode == "local" && ["summarize", "example", "expand-notes", "voice-plan"].contains(command)) {
             try await localService.ensure(root: root, settings: configuration, cancelled: { self.cancellationRequested })
         }
-        guard !cancellationRequested else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
+        guard !cancellationRequested else { throw AppError.message(L("Обработка остановлена. Запись сохранена.")) }
         var arguments = [command, "--root", root.path, "--backend", backend.path]
         if let id { arguments += ["--meeting", meetingDirectory(id).path] }
         arguments += extra
@@ -520,7 +544,7 @@ final class AppStore: ObservableObject {
     }
     func checkCloudConnection() {
         guard !busy, !isRecording else { return }
-        beginJob(id: nil); progressText = "Проверяю подключение…"
+        beginJob(id: nil); progressText = L("Проверяю подключение…")
         clearCloudConnectionResult()
         let configuration = settings
         cloudCheckAccountID = configuration.cloudProvider == "chatgpt" ? configuration.chatGPTAccountID : nil
@@ -529,7 +553,7 @@ final class AppStore: ObservableObject {
             do {
                 try await worker("check-cloud")
                 guard Self.sameCloudCheckConfiguration(settings, configuration) else { return }
-                cloudConnectionStatus = "Подключение работает"
+                cloudConnectionStatus = L("Подключение работает")
             } catch {
                 guard Self.sameCloudCheckConfiguration(settings, configuration) else { return }
                 recordCloudConnectionFailure(error, configuration: configuration)
@@ -566,10 +590,10 @@ final class AppStore: ObservableObject {
         jobGeneration = UUID()
         cancellationRequested = false; runner.resetCancellation()
         canCancelJob = true
-        busy = true; processingID = id; progress = -1; progressText = "Начинаю обработку…"; error = nil; notice = nil
+        busy = true; processingID = id; progress = -1; progressText = L("Начинаю обработку…"); error = nil; notice = nil
         if assertions == 0 {
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
-                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), "После обрабатывает встречу" as CFString, &assertions)
+                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), L("После обрабатывает встречу") as CFString, &assertions)
         }
     }
     func endJob() {
@@ -583,7 +607,7 @@ final class AppStore: ObservableObject {
         guard canCancelJob else { return }
         if voice.isWorking { voice.cancelWork(); return }
         cancellationRequested = true; runner.cancel()
-        progressText = "Останавливаю обработку…"
+        progressText = L("Останавливаю обработку…")
     }
     /// Importing or finishing a recording never authorizes a cloud upload by
     /// itself. Confirm this meeting and the current destination on every run.
@@ -594,25 +618,25 @@ final class AppStore: ObservableObject {
         let endpoint = settings.resolvedSpeechEndpoint
         let model = settings.speechCloudModel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty, !model.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
-            error = "Укажите корректное имя модели распознавания в настройках."; return false
+            error = L("Укажите корректное имя модели распознавания в настройках."); return false
         }
         guard ["openai", "custom"].contains(provider), let destination = URLComponents(string: endpoint),
               let host = destination.host?.lowercased(), !host.isEmpty,
               destination.user == nil, destination.password == nil, destination.query == nil, destination.fragment == nil,
               destination.scheme?.lowercased() == "https" ||
                 (destination.scheme?.lowercased() == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)) else {
-            error = "Укажите HTTPS-адрес API распознавания без логина, пароля и параметров. HTTP доступен только на этом Mac."; return false
+            error = L("Укажите HTTPS-адрес API распознавания без логина, пароля и параметров. HTTP доступен только на этом Mac."); return false
         }
-        let title = meetings.first(where: { $0.id == id })?.title ?? "Встреча"
+        let title = meetings.first(where: { $0.id == id })?.title ?? L("Встреча")
         let service = provider == "openai" ? "OpenAI" : settings.speechDestinationLabel
         confirmingCloudSpeech = true
         defer { confirmingCloudSpeech = false }
         let alert = NSAlert()
-        alert.messageText = "Отправить запись в облако?"
-        alert.informativeText = "«\(title)»\n\nСервис: \(service)\nАдрес API: \(endpoint)\nМодель: \(model)\n\nАудиозапись этой встречи будет отправлена выбранному сервису для распознавания. Запрос оплачивается по его тарифам."
+        alert.messageText = L("Отправить запись в облако?")
+        alert.informativeText = LF("«{0}»\n\nСервис: {1}\nАдрес API: {2}\nМодель: {3}\n\nАудиозапись этой встречи будет отправлена выбранному сервису для распознавания. Запрос оплачивается по его тарифам.", arguments: [String(describing: title), String(describing: service), String(describing: endpoint), String(describing: model)])
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Отправить и распознать")
-        alert.addButton(withTitle: "Отмена")
+        alert.addButton(withTitle: L("Отправить и распознать"))
+        alert.addButton(withTitle: L("Отмена"))
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else {
             self.error = nil; notice = Self.stoppedProcessingMessage
@@ -621,7 +645,7 @@ final class AppStore: ObservableObject {
         guard settings.speechMode == "cloud", settings.speechCloudProvider == provider,
               settings.resolvedSpeechEndpoint == endpoint,
               settings.speechCloudModel.trimmingCharacters(in: .whitespacesAndNewlines) == model else {
-            notice = "Настройки распознавания изменились. Запустите обработку ещё раз."
+            notice = L("Настройки распознавания изменились. Запустите обработку ещё раз.")
             return false
         }
         return true
@@ -648,9 +672,9 @@ final class AppStore: ObservableObject {
             refreshResults(id)
             let profileSettings = effectiveSettings(for: id)
             if profileSettings.mode == "cloud" {
-                notice = "Транскрипция готова. Создайте конспект через \(profileSettings.cloudProviderTitle)."
+                notice = LF("Транскрипция готова. Создайте конспект через {0}.", arguments: [String(describing: profileSettings.cloudProviderTitle)])
             } else if settings.autoSummary {
-                notice = "Транскрипция готова. Конспект поставлен в очередь."
+                notice = L("Транскрипция готова. Конспект поставлен в очередь.")
             }
             if selection == id { loadSelection() }
         } catch {
@@ -679,7 +703,7 @@ final class AppStore: ObservableObject {
             try await worker("diarize", id: id, extra: ["--speakers", String(speakers)])
             reloadLibrary(); refreshResults(id)
             if selection == id { tab = "transcript" }
-            notice = "Собеседники пересчитаны. Проверьте реплики и задайте имена голосам. Предыдущая версия сохранена в истории."
+            notice = L("Собеседники пересчитаны. Проверьте реплики и задайте имена голосам. Предыдущая версия сохранена в истории.")
         } catch {
             if error is CancellationError { self.error = nil; notice = Self.stoppedProcessingMessage }
             else { self.error = error.localizedDescription }
@@ -691,9 +715,9 @@ final class AppStore: ObservableObject {
         var extra: [String] = []
         if summary?.manuallyEdited == true {
             let alert = NSAlert()
-            alert.messageText = "Обновить конспект с ручными правками?"
-            alert.informativeText = "Новый конспект заменит исправленные пункты. Предыдущая версия сохранится в истории; ваши карточки сохранятся."
-            alert.addButton(withTitle: "Обновить"); alert.addButton(withTitle: "Отмена")
+            alert.messageText = L("Обновить конспект с ручными правками?")
+            alert.informativeText = L("Новый конспект заменит исправленные пункты. Предыдущая версия сохранится в истории; ваши карточки сохранятся.")
+            alert.addButton(withTitle: L("Обновить")); alert.addButton(withTitle: L("Отмена"))
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             extra = ["--replace-manual-summary"]
         }
@@ -723,25 +747,25 @@ final class AppStore: ObservableObject {
             overviewDraftsDirty = false
             return true
         } catch {
-            self.error = "Не удалось сохранить черновик конспекта. Ваш текст остался в редакторе. \(error.localizedDescription)"
+            self.error = LF("Не удалось сохранить черновик конспекта. Ваш текст остался в редакторе. {0}", arguments: [String(describing: error.localizedDescription)])
             return false
         }
     }
     @discardableResult
     func saveOverview(_ text: String, meetingID: String, expectedOverview: String, expectedGeneratedAt: Double) -> Bool {
         guard selection == meetingID else {
-            error = "Выбрана другая встреча. Откройте её конспект для редактирования."
+            error = L("Выбрана другая встреча. Откройте её конспект для редактирования.")
             return false
         }
         let overview = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !overview.isEmpty else { error = "Краткий конспект не должен быть пустым."; return false }
+        guard !overview.isEmpty else { error = L("Краткий конспект не должен быть пустым."); return false }
         do {
             let data = try RustBridge.shared.get().request(root: root, command: "summary-overview-save", arguments: [
                 "meetingID": meetingID, "text": overview, "expectedOverview": expectedOverview,
                 "expectedGeneratedAt": expectedGeneratedAt
             ])
             summary = try JSONDecoder().decode(Summary.self, from: data)
-            notice = "Краткий конспект сохранён."
+            notice = L("Краткий конспект сохранён.")
             error = nil
             return true
         } catch {
@@ -755,7 +779,7 @@ final class AppStore: ObservableObject {
     }
     func rate(_ card: Flashcard, _ value: Int) {
         guard let id = selection, !busy, !isRecording else { return }
-        beginJob(id: id); progressText = "Сохраняю повторение…"
+        beginJob(id: id); progressText = L("Сохраняю повторение…")
         Task {
             defer { endJob() }
             do {
@@ -766,9 +790,9 @@ final class AppStore: ObservableObject {
     }
     func installRuntime() {
         guard !busy, !isRecording else { return }
-        guard jobs.activeCount == 0 else { error = "Дождитесь фоновых задач перед обновлением компонентов распознавания."; return }
+        guard jobs.activeCount == 0 else { error = L("Дождитесь фоновых задач перед обновлением компонентов распознавания."); return }
         let requestedASR = settings.speechMode == "local" ? asrSelectionIdentity : nil
-        beginJob(id: nil); progressText = "Подготавливаю распознавание и проверяю скачанные модели…"
+        beginJob(id: nil); progressText = L("Подготавливаю распознавание и проверяю скачанные модели…")
         let generation = jobGeneration
         Task {
             defer { endJob() }
@@ -788,7 +812,7 @@ final class AppStore: ObservableObject {
                 }
                 runtimeReady = true
                 if let requestedASR { verifiedASRSelection = requestedASR }
-                notice = "Распознавание готово. Добавьте или выберите запись."
+                notice = L("Распознавание готово. Добавьте или выберите запись.")
             } catch { reportJobFailure(error) }
         }
     }
@@ -799,7 +823,7 @@ final class AppStore: ObservableObject {
             defer { endJob() }
             do {
                 let result = try await worker(command)
-                localStatus = command == "pull" ? "Модель \(settings.localModel) готова" : (result?.message ?? "Локальный сервер доступен.")
+                localStatus = command == "pull" ? LF("Модель {0} готова", arguments: [String(describing: settings.localModel)]) : (result?.message ?? L("Локальный сервер доступен."))
             }
             catch { localStatus = error.localizedDescription }
         }
@@ -818,7 +842,7 @@ final class AppStore: ObservableObject {
                 try await legacyWorker("install-local")
                 try await localService.ensure(root: root, settings: settings, cancelled: { self.cancellationRequested || self.isTerminating })
                 try await legacyWorker("pull")
-                localStatus = "Локальный ИИ готов. Интернет больше не требуется."
+                localStatus = L("Локальный ИИ готов. Интернет больше не требуется.")
             } catch { self.error = error.localizedDescription; localStatus = error.localizedDescription }
         }
     }
@@ -835,13 +859,13 @@ final class AppStore: ObservableObject {
     }
     func discoverLocalModels() {
         guard !busy, !isRecording else { return }
-        beginJob(id: nil); progressText = "Ищу установленные модели…"
+        beginJob(id: nil); progressText = L("Ищу установленные модели…")
         installedLocalModels = []
         Task {
             defer { endJob() }
             do {
                 let result = try await worker("discover-local")
-                localStatus = result?.message ?? (installedLocalModels.isEmpty ? "Установленные модели не найдены." : "Найдено моделей: \(installedLocalModels.count). Выберите модель из списка.")
+                localStatus = result?.message ?? (installedLocalModels.isEmpty ? L("Установленные модели не найдены.") : LF("Найдено моделей: {0}. Выберите модель из списка.", arguments: [String(describing: installedLocalModels.count)]))
             } catch { localStatus = error.localizedDescription; self.error = error.localizedDescription }
         }
     }
@@ -852,15 +876,15 @@ final class AppStore: ObservableObject {
     }
     func discoverGGUFModels() {
         guard !busy, !isRecording else { return }
-        beginJob(id: nil); progressText = "Ищу скачанные модели GGUF…"
+        beginJob(id: nil); progressText = L("Ищу скачанные модели GGUF…")
         installedGGUFModels = []; ggufNotes = []
         Task {
             defer { endJob() }
             do {
                 let result = try await worker("discover-gguf")
                 ggufStatus = result?.message ?? (installedGGUFModels.isEmpty
-                    ? "Файлы GGUF не найдены. Можно выбрать скачанную модель вручную."
-                    : "Найдены скачанные модели. Подключите нужную ниже.")
+                    ? L("Файлы GGUF не найдены. Можно выбрать скачанную модель вручную.")
+                    : L("Найдены скачанные модели. Подключите нужную ниже."))
             } catch { ggufStatus = error.localizedDescription; self.error = error.localizedDescription }
         }
     }
@@ -869,17 +893,17 @@ final class AppStore: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [UTType(filenameExtension: "gguf") ?? .data]
-        panel.prompt = "Подключить модель"
-        panel.message = "Выберите уже скачанный файл модели в формате GGUF, например Qwen."
+        panel.prompt = L("Подключить модель")
+        panel.message = L("Выберите уже скачанный файл модели в формате GGUF, например Qwen.")
         if panel.runModal() == .OK, let url = panel.url { importGGUFModel(url) }
     }
     func importGGUFModel(_ url: URL) {
         guard !busy, !isRecording, settings.localProvider == "managed" else { return }
         guard runtimeReady else {
-            error = "Сначала подготовьте распознавание в настройках: эта среда нужна для локального движка. Затем подключите файл модели."
+            error = L("Сначала подготовьте распознавание в настройках: эта среда нужна для локального движка. Затем подключите файл модели.")
             return
         }
-        beginJob(id: nil); progressText = "Подключаю скачанную модель…"
+        beginJob(id: nil); progressText = L("Подключаю скачанную модель…")
         Task {
             defer { endJob() }
             do {
@@ -887,18 +911,18 @@ final class AppStore: ObservableObject {
                 try await worker("install-local")
                 let result = try await worker("import-gguf", extra: ["--path", url.path])
                 guard let model = result?.model, !model.isEmpty else {
-                    throw AppError.message("Локальный движок не подтвердил подключение модели. Исходный файл сохранён.")
+                    throw AppError.message(L("Локальный движок не подтвердил подключение модели. Исходный файл сохранён."))
                 }
                 settings.localModel = model
                 saveSettings()
-                localStatus = result?.message ?? "Скачанная модель подключена и выбрана."
+                localStatus = result?.message ?? L("Скачанная модель подключена и выбрана.")
                 ggufStatus = localStatus
             } catch { ggufStatus = error.localizedDescription; self.error = error.localizedDescription }
         }
     }
     func discoverASRModels(path: URL? = nil) {
         guard !busy, !isRecording else { return }
-        beginJob(id: nil); progressText = "Ищу модели распознавания…"
+        beginJob(id: nil); progressText = L("Ищу модели распознавания…")
         installedASRModels = []; asrNotes = []
         Task {
             defer { endJob() }
@@ -908,12 +932,12 @@ final class AppStore: ObservableObject {
                     if let model = installedASRModels.first(where: { $0.compatible && URL(fileURLWithPath: $0.path).standardizedFileURL == path.standardizedFileURL })
                         ?? installedASRModels.first(where: { $0.compatible }) {
                         selectASRModel(model)
-                        asrStatus = "Выбрана установленная модель \(model.name)."
+                        asrStatus = LF("Выбрана установленная модель {0}.", arguments: [String(describing: model.name)])
                     } else {
-                        asrStatus = installedASRModels.first?.reason ?? result?.message ?? "В этой папке не найдена совместимая модель Parakeet."
+                        asrStatus = installedASRModels.first?.reason ?? result?.message ?? L("В этой папке не найдена совместимая модель Parakeet.")
                     }
                 } else {
-                    asrStatus = result?.message ?? (installedASRModels.isEmpty ? "Модели не найдены. Можно выбрать папку вручную." : "Найдены модели. Выберите совместимую ниже.")
+                    asrStatus = result?.message ?? (installedASRModels.isEmpty ? L("Модели не найдены. Можно выбрать папку вручную.") : L("Найдены модели. Выберите совместимую ниже."))
                 }
             } catch { asrStatus = error.localizedDescription; self.error = error.localizedDescription }
         }
@@ -922,8 +946,8 @@ final class AppStore: ObservableObject {
         guard !busy, !isRecording else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
-        panel.prompt = "Проверить модель"
-        panel.message = "Выберите папку с уже скачанной моделью распознавания. После проверит её формат."
+        panel.prompt = L("Проверить модель")
+        panel.message = L("Выберите папку с уже скачанной моделью распознавания. После проверит её формат.")
         if panel.runModal() == .OK, let url = panel.url { discoverASRModels(path: url) }
     }
     func selectASRModel(_ model: InstalledASRModel) {
@@ -936,7 +960,7 @@ final class AppStore: ObservableObject {
         saveSettings()
     }
     func togglePlayback() {
-        guard let player else { error = "Аудиофайл не найден. Откройте папку данных встречи и проверьте MP3."; return }
+        guard let player else { error = L("Аудиофайл не найден. Откройте папку данных встречи и проверьте MP3."); return }
         if isPlaying { pause() }
         else {
             if playbackTime >= playbackDuration - 0.2 { seek(0) }
@@ -949,14 +973,14 @@ final class AppStore: ObservableObject {
         player?.seek(to: CMTime(seconds: value, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         playbackTime = value
         if play {
-            guard let player else { error = "Аудиофайл не найден. Исходный текст доступен в транскрипте."; return }
+            guard let player else { error = L("Аудиофайл не найден. Исходный текст доступен в транскрипте."); return }
             player.play(); isPlaying = true
         }
     }
     /// Navigate to a precise source without starting playback unexpectedly.
     func openSegment(_ segmentID: Int, play: Bool = false) {
         guard let meetingID = selection, let segment = transcript?.segments.first(where: { $0.id == segmentID }) else {
-            error = "Исходная реплика больше недоступна. Откройте актуальный конспект."
+            error = L("Исходная реплика больше недоступна. Откройте актуальный конспект.")
             return
         }
         transcriptSearch = ""; tab = "transcript"
@@ -964,22 +988,22 @@ final class AppStore: ObservableObject {
         seek(segment.start, play: play)
     }
     func expandCapturedNote(_ note: CapturedNote) async {
-        guard !busy && !isRecording else { notes.error = "Дождитесь завершения текущей обработки или записи."; return }
-        guard let id = note.meetingID else { notes.error = "Прикрепите заметку к встрече с транскриптом."; return }
+        guard !busy && !isRecording else { notes.error = L("Дождитесь завершения текущей обработки или записи."); return }
+        guard let id = note.meetingID else { notes.error = L("Прикрепите заметку к встрече с транскриптом."); return }
         guard let _: Transcript = read(meetingDirectory(id).appendingPathComponent("transcript.json")) else {
-            notes.error = "Сначала распознайте запись этой встречи."; return
+            notes.error = L("Сначала распознайте запись этой встречи."); return
         }
-        beginJob(id: id); progressText = "Дополняю ваши пометки по записи…"
+        beginJob(id: id); progressText = L("Дополняю ваши пометки по записи…")
         defer { notes.reload(); endJob() }
         do {
             try await worker("expand-notes", extra: ["--note", note.id])
-            notes.notice = "Дополнение сохранено отдельно от вашей заметки"
+            notes.notice = L("Дополнение сохранено отдельно от вашей заметки")
         } catch { notes.error = error.localizedDescription }
     }
     func openMeeting(_ id: String, tab: String = "summary", segmentID: Int? = nil, timestamp: Double? = nil) {
         guard tab != "cards" || availableFeatures.cards else { openSettings("features"); return }
         guard let meeting: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")) else {
-            error = "Встреча больше недоступна."; return
+            error = L("Встреча больше недоступна."); return
         }
         guard meeting.libraryKind != "cards" || availableFeatures.cards else { openSettings("features"); return }
         if folderSelection != nil, folderSelection != folderID(for: id) { folderSelection = folderID(for: id) }
@@ -1002,20 +1026,20 @@ final class AppStore: ObservableObject {
         if !template.focus.isEmpty { updateMeeting(id) { $0.focus = template.focus } }
     }
     func exportManualNotes() {
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.plainText]; panel.nameFieldStringValue = "Мои заметки — После.md"
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.plainText]; panel.nameFieldStringValue = L("Мои заметки — После.md")
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        var text = "# Мои заметки\n\n"
+        var text = L("# Мои заметки\n\n")
         for note in notes.notes.reversed() {
-            let title = note.meetingID.flatMap { id in meetings.first { $0.id == id }?.title } ?? "Входящие"
+            let title = note.meetingID.flatMap { id in meetings.first { $0.id == id }?.title } ?? L("Входящие")
             text += "## \(title)\n\n\(note.text)\n\n"
-            if let timestamp = note.timestamp { text += "Таймкод: \(Exporter.timestamp(timestamp))\n\n" }
-            if !note.sourceURL.isEmpty { text += "Источник: \(note.sourceURL)\n\n" }
+            if let timestamp = note.timestamp { text += LF("Таймкод: {0}\n\n", arguments: [String(describing: Exporter.timestamp(timestamp))]) }
+            if !note.sourceURL.isEmpty { text += LF("Источник: {0}\n\n", arguments: [String(describing: note.sourceURL)]) }
             for attachment in note.attachments {
-                text += "Вложение: \(attachment.name)\n\n"
+                text += LF("Вложение: {0}\n\n", arguments: [String(describing: attachment.name)])
                 if !attachment.extractedText.isEmpty { text += attachment.extractedText + "\n\n" }
             }
             if let expansion = note.expansion {
-                text += "### Дополнение ИИ\n\n" + expansion.statements.map { "- " + $0.text }.joined(separator: "\n") + "\n\n"
+                text += L("### Дополнение ИИ\n\n") + expansion.statements.map { "- " + $0.text }.joined(separator: "\n") + "\n\n"
             }
         }
         do { try text.write(to: url, atomically: true, encoding: .utf8) }
@@ -1072,7 +1096,7 @@ final class AppStore: ObservableObject {
                 self.searchOpeningID = nil
                 guard valid else {
                     self.updateSearch(immediate: true)
-                    self.searchError = "Данные встречи изменились. Выберите актуальный фрагмент в обновлённых результатах."
+                    self.searchError = L("Данные встречи изменились. Выберите актуальный фрагмент в обновлённых результатах.")
                     return
                 }
                 self.navigateToSearchHit(hit)
@@ -1087,7 +1111,7 @@ final class AppStore: ObservableObject {
         if let noteID = hit.noteID {
             notes.reload()
             guard let note = notes.workspace.notes.first(where: { $0.id == noteID && $0.revision == hit.noteRevision }) else {
-                updateSearch(immediate: true); searchError = "Заметка изменилась. Выберите актуальный результат."; return
+                updateSearch(immediate: true); searchError = L("Заметка изменилась. Выберите актуальный результат."); return
             }
             guard note.kind != "task" || availableFeatures.tasks else { openSettings("features"); return }
             if let meetingID = note.meetingID, let meeting: Meeting = read(meetingDirectory(meetingID).appendingPathComponent("meta.json")), meeting.libraryKind != "cards" { openMeeting(meetingID, tab: "notes") }
@@ -1097,7 +1121,7 @@ final class AppStore: ObservableObject {
         }
         let directory = meetingDirectory(hit.meetingID)
         guard let freshMeeting: Meeting = read(directory.appendingPathComponent("meta.json")) else {
-            updateSearch(immediate: true); searchError = "Встреча больше недоступна. Результаты обновляются."; return
+            updateSearch(immediate: true); searchError = L("Встреча больше недоступна. Результаты обновляются."); return
         }
         guard freshMeeting.libraryKind != "cards" || availableFeatures.cards else { openSettings("features"); return }
         let freshTranscript: Transcript? = read(directory.appendingPathComponent("transcript.json"))
@@ -1119,7 +1143,7 @@ final class AppStore: ObservableObject {
         let validSegments = Set(freshTranscript?.segments.map(\.id) ?? [])
         guard valid, hit.segmentIDs.allSatisfy(validSegments.contains) else {
             updateSearch(immediate: true)
-            searchError = "Данные встречи изменились. Выберите актуальный фрагмент в обновлённых результатах."
+            searchError = L("Данные встречи изменились. Выберите актуальный фрагмент в обновлённых результатах.")
             return
         }
         if let index = meetings.firstIndex(where: { $0.id == freshMeeting.id }) { meetings[index] = freshMeeting }
@@ -1144,7 +1168,7 @@ final class AppStore: ObservableObject {
         item.setString(text, forType: NSPasteboard.PasteboardType("net.daringfireball.markdown"))
         pasteboard.clearContents()
         guard pasteboard.writeObjects([item]) else {
-            error = "Не удалось скопировать транскрипт. Попробуйте ещё раз."
+            error = L("Не удалось скопировать транскрипт. Попробуйте ещё раз.")
             return false
         }
         return true
@@ -1159,7 +1183,7 @@ final class AppStore: ObservableObject {
                 let text = cards ? Exporter.anki(cards: summary?.cards ?? [], title: meeting.title)
                     : Exporter.markdown(meeting: meeting, transcript: transcript, summary: summary)
                 try text.write(to: url, atomically: true, encoding: .utf8)
-                notice = cards ? "Карточки экспортированы. В Anki выберите «Импортировать файл»." : "Конспект и транскрипция сохранены."
+                notice = cards ? L("Карточки экспортированы. В Anki выберите «Импортировать файл».") : L("Конспект и транскрипция сохранены.")
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -1172,17 +1196,17 @@ final class AppStore: ObservableObject {
             let expected = try JSONDecoder().decode(Snapshot.self, from: snapshot)
             _ = try bridge.request(root: root, command: "trash-change", arguments: ["kind": "meeting", "id": meeting.id, "restore": false, "expectedFingerprint": expected.fingerprint, "operationID": UUID().uuidString.lowercased()])
             reloadLibrary(); selection = meetings.first?.id; loadSelection()
-            notice = "Встреча в Корзине. Её можно восстановить в течение 30 дней."
+            notice = L("Встреча в Корзине. Её можно восстановить в течение 30 дней.")
         } catch { self.error = error.localizedDescription }
     }
     func exportAudio() {
         guard let meeting = selected, let directory = selectedDirectory else { return }
         let recording = directory.appendingPathComponent("recording.mp3")
         let source = FileManager.default.fileExists(atPath: recording.path) ? recording : directory.appendingPathComponent("playback.mp3")
-        guard FileManager.default.fileExists(atPath: source.path) else { error = "Сначала завершите обработку аудио."; return }
+        guard FileManager.default.fileExists(atPath: source.path) else { error = L("Сначала завершите обработку аудио."); return }
         let panel = NSSavePanel(); panel.allowedContentTypes = [.mp3]; panel.nameFieldStringValue = "\(meeting.title).mp3"
         if panel.runModal() == .OK, let destination = panel.url {
-            do { try Data(contentsOf: source).write(to: destination, options: .atomic); notice = "Аудиозапись сохранена в MP3." }
+            do { try Data(contentsOf: source).write(to: destination, options: .atomic); notice = L("Аудиозапись сохранена в MP3.") }
             catch { self.error = error.localizedDescription }
         }
     }

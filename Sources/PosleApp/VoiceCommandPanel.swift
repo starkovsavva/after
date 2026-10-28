@@ -19,14 +19,14 @@ struct VoiceCommandPanel: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "mic").foregroundStyle(.secondary)
-                Text("Помощник").font(AppTypography.control.weight(.semibold))
+                Text(L("Помощник")).font(AppTypography.control.weight(.semibold))
                 Spacer()
                 if controller.result == nil && controller.hasDraft && !controller.isWorking {
                     Button { controller.reset(); commandFocused = true } label: { Image(systemName: "plus").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).help("Новое поручение").accessibilityLabel("Новое поручение")
+                        .buttonStyle(.plain).help(L("Новое поручение")).accessibilityLabel(L("Новое поручение"))
                 }
                 Button { controller.dismiss() } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
-                    .buttonStyle(.plain).help("Закрыть поручение").accessibilityLabel("Закрыть поручение")
+                    .buttonStyle(.plain).help(L("Закрыть поручение")).accessibilityLabel(L("Закрыть поручение"))
                     .disabled(controller.phase == .applying)
             }
             Text(controller.knowledgeAnswer == nil ? controller.contextLabel : controller.text).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -34,10 +34,10 @@ struct VoiceCommandPanel: View {
                 KnowledgeAnswerView(answer: answer, openingID: controller.knowledgeOpeningID, open: controller.openKnowledgeSource)
                 HStack {
                     Button { KnowledgeAnswerView.copy(answer) } label: { Image(systemName: "doc.on.doc").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).help("Скопировать ответ").accessibilityLabel("Скопировать ответ")
+                        .buttonStyle(.plain).help(L("Скопировать ответ")).accessibilityLabel(L("Скопировать ответ"))
                     Spacer()
-                    Button("Уточнить") { controller.continueQuestion(); commandFocused = true }.buttonStyle(.borderless)
-                    Button("Новый вопрос") { controller.reset(); commandFocused = true }.buttonStyle(.borderless)
+                    Button(L("Уточнить")) { controller.continueQuestion(); commandFocused = true }.buttonStyle(.borderless)
+                    Button(L("Новый вопрос")) { controller.reset(); commandFocused = true }.buttonStyle(.borderless)
                 }
             } else if let result = controller.result {
                 HStack(alignment: .top, spacing: 8) {
@@ -48,22 +48,22 @@ struct VoiceCommandPanel: View {
                     }
                 }
                 HStack {
-                    Button("Открыть") { controller.openResult() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(controller.isWorking)
-                    if result.canUndo { Button("Отменить изменение") { controller.undo() }.buttonStyle(.borderless).disabled(controller.isWorking) }
+                    Button(L("Открыть")) { controller.openResult() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(controller.isWorking)
+                    if result.canUndo { Button(L("Отменить изменение")) { controller.undo() }.buttonStyle(.borderless).disabled(controller.isWorking) }
                     if controller.isWorking { ProgressView().controlSize(.small) }
                     Spacer()
-                    Button("Продолжить") { controller.continueCommand(); commandFocused = true }.buttonStyle(.borderless).disabled(controller.isWorking)
+                    Button(L("Продолжить")) { controller.continueCommand(); commandFocused = true }.buttonStyle(.borderless).disabled(controller.isWorking)
                     Button { controller.reset(); commandFocused = true } label: { Image(systemName: "plus").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).disabled(controller.isWorking).help("Новое поручение").accessibilityLabel("Новое поручение")
+                        .buttonStyle(.plain).disabled(controller.isWorking).help(L("Новое поручение")).accessibilityLabel(L("Новое поручение"))
                 }
             } else if let plan = controller.plan, plan.reviewRequired == true, [.reviewing, .applying].contains(controller.phase) {
                 Text(plan.title).font(AppTypography.heading)
                 if ["appendTaskContext", "appendTaskContexts", "appendTask"].contains(plan.action ?? "") {
-                    TextField("Что добавить к задачам", text: $controller.reviewText, axis: .vertical)
+                    TextField(L("Что добавить к задачам"), text: $controller.reviewText, axis: .vertical)
                         .font(AppTypography.body).lineLimit(3...6)
                         .textFieldStyle(.plain).padding(10)
                         .background(Ink.soft, in: RoundedRectangle(cornerRadius: 7))
-                        .accessibilityLabel("Текст дополнения")
+                        .accessibilityLabel(L("Текст дополнения"))
                         .accessibilityIdentifier("voice-review-text").disabled(controller.isWorking)
                 } else {
                     Text(plan.detail).font(AppTypography.control).foregroundStyle(.secondary)
@@ -71,7 +71,7 @@ struct VoiceCommandPanel: View {
                 HStack {
                     Text(reviewLabel(plan.action)).font(AppTypography.control.weight(.medium))
                     Spacer()
-                    Text("Выбрано: \(controller.selectedTargetIDs.count)")
+                    Text(LF("Выбрано: {0}", arguments: [String(describing: (controller.selectedTargetIDs.count))]))
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }
                 ScrollView {
@@ -85,7 +85,7 @@ struct VoiceCommandPanel: View {
                                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                                         Text(candidate.title).font(AppTypography.body).lineLimit(2)
                                         if candidate.completed == true {
-                                            Text("Выполнена").font(AppTypography.caption).foregroundStyle(.secondary)
+                                            Text(L("Выполнена")).font(AppTypography.caption).foregroundStyle(.secondary)
                                         }
                                     }
                                     if let reason = candidate.reason, !reason.isEmpty {
@@ -102,13 +102,13 @@ struct VoiceCommandPanel: View {
                     }
                 }.frame(maxHeight: 240)
                 HStack {
-                    Button("Изменить поручение") { controller.editCommand(); commandFocused = true }
+                    Button(L("Изменить поручение")) { controller.editCommand(); commandFocused = true }
                         .buttonStyle(.borderless).disabled(controller.isWorking)
                     Spacer()
                     Button { controller.confirmReview() } label: {
                         HStack(spacing: 7) {
                             if controller.phase == .applying { ProgressView().controlSize(.small) }
-                            Text(controller.phase == .applying ? "Сохраняю…" : "Применить")
+                            Text(controller.phase == .applying ? L("Сохраняю…") : L("Применить"))
                         }
                     }
                         .buttonStyle(.borderedProminent).tint(Ink.actionFill)
@@ -133,12 +133,12 @@ struct VoiceCommandPanel: View {
                         }
                     }
                 }.frame(maxHeight: 200)
-                Button("Изменить поручение") { controller.editCommand(); commandFocused = true }.buttonStyle(.borderless)
+                Button(L("Изменить поручение")) { controller.editCommand(); commandFocused = true }.buttonStyle(.borderless)
             } else {
-                TextField("Спросите о встречах или поручите добавить мысль к задаче", text: $controller.text, axis: .vertical)
+                TextField(L("Спросите о встречах или поручите добавить мысль к задаче"), text: $controller.text, axis: .vertical)
                     .font(AppTypography.body).lineLimit(3...6).textFieldStyle(.plain)
                     .focused($commandFocused).disabled(controller.isWorking)
-                    .accessibilityLabel("Текст поручения").accessibilityIdentifier("voice-command-text")
+                    .accessibilityLabel(L("Текст поручения")).accessibilityIdentifier("voice-command-text")
                 HStack(spacing: 10) {
                     Button {
                         if controller.phase == .capturing { controller.finishDictation() }
@@ -149,18 +149,18 @@ struct VoiceCommandPanel: View {
                             .foregroundStyle(controller.phase == .capturing ? Ink.recordFill : Ink.accent)
                     }.buttonStyle(.borderless)
                         .disabled(controller.isWorking && controller.phase != .capturing)
-                        .help(controller.phase == .capturing ? "Завершить диктовку" : "Надиктовать поручение")
-                        .accessibilityLabel(controller.phase == .capturing ? "Завершить диктовку" : "Надиктовать поручение")
+                        .help(controller.phase == .capturing ? L("Завершить диктовку") : L("Надиктовать поручение"))
+                        .accessibilityLabel(controller.phase == .capturing ? L("Завершить диктовку") : L("Надиктовать поручение"))
                     if controller.isWorking {
                         if controller.phase != .capturing { ProgressView().controlSize(.small) }
                         Text(phaseLabel).font(AppTypography.caption).foregroundStyle(.secondary)
                         Spacer(minLength: 0)
-                        if controller.phase != .applying { Button("Остановить") { controller.cancelWork() }.buttonStyle(.borderless) }
+                        if controller.phase != .applying { Button(L("Остановить")) { controller.cancelWork() }.buttonStyle(.borderless) }
                     } else {
-                        Text(app.settings.speechMode == "local" ? "Диктовка на Mac" : app.settings.speechDestinationLabel)
+                        Text(app.settings.speechMode == "local" ? L("Диктовка на Mac") : L(app.settings.speechDestinationLabel))
                             .font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
                         Spacer(minLength: 0)
-                        Button("Выполнить") { commandFocused = false; controller.perform() }
+                        Button(L("Выполнить")) { commandFocused = false; controller.perform() }
                             .buttonStyle(.borderedProminent).tint(Ink.actionFill)
                             .disabled(controller.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || app.busy)
                             .keyboardShortcut(.return, modifiers: [.command])
@@ -178,22 +178,22 @@ struct VoiceCommandPanel: View {
         .shadow(color: .black.opacity(0.15), radius: 18, y: 5)
         .onAppear { commandFocused = true }
         .onExitCommand { controller.dismiss() }
-        .accessibilityElement(children: .contain).accessibilityLabel("Помощник")
+        .accessibilityElement(children: .contain).accessibilityLabel(L("Помощник"))
     }
     private func reviewLabel(_ action: String?) -> String {
         let value = action ?? ""
-        if value.contains("Cards") { return "Карточки" }
-        if value.hasSuffix("Meeting") { return "Встреча" }
-        if value.hasSuffix("Note") { return "Заметка" }
-        return "Задачи"
+        if value.contains("Cards") { return L("Карточки") }
+        if value.hasSuffix("Meeting") { return L("Встреча") }
+        if value.hasSuffix("Note") { return L("Заметка") }
+        return L("Задачи")
     }
     private var phaseLabel: String {
         switch controller.phase {
-        case .authorizing: "Включаю микрофон…"
-        case .capturing: "Слушаю…"
-        case .transcribing: "Распознаю…"
-        case .planning: "Разбираю…"
-        case .applying: "Сохраняю…"
+        case .authorizing: L("Включаю микрофон…")
+        case .capturing: L("Слушаю…")
+        case .transcribing: L("Распознаю…")
+        case .planning: L("Разбираю…")
+        case .applying: L("Сохраняю…")
         default: ""
         }
     }

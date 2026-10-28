@@ -11,17 +11,17 @@ enum ChatGPTCallbackPage {
     }
 
     static func body(received: Bool) -> Data {
-        let title = received ? "Возвращаемся в «После»" : "Вернитесь в «После»"
+        let title = received ? L("Возвращаемся в «После»") : L("Вернитесь в «После»")
         let message = received
-            ? "Результат входа появится в приложении."
-            : "Не удалось продолжить вход. Начните подключение заново в приложении."
+            ? L("Результат входа появится в приложении.")
+            : L("Не удалось продолжить вход. Начните подключение заново в приложении.")
         let guidance = received
-            ? "Если окно не появилось, откройте «После» из Dock."
-            : "Откройте «После» из Dock, чтобы попробовать ещё раз."
+            ? L("Если окно не появилось, откройте «После» из Dock.")
+            : L("Откройте «После» из Dock, чтобы попробовать ещё раз.")
         let favicon = Data(replica.utf8).base64EncodedString()
         return Data("""
         <!doctype html>
-        <html lang="ru">
+        <html lang="\(UILocale().language.languageCode?.identifier ?? "en")">
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -38,7 +38,7 @@ enum ChatGPTCallbackPage {
             <p class="message">\(message)</p>
             <div class="guidance">
               <p>\(guidance)</p>
-              <p>Эту вкладку можно закрыть.</p>
+              <p>\(L("Эту вкладку можно закрыть."))</p>
             </div>
           </main>
         </body>

@@ -34,39 +34,39 @@ struct RecordingOptionsView: View {
     private var videoDescription: String {
         guard let display = selectedDisplay,
               let size = videoQuality.dimensions(width: Double(display.pixelWidth), height: Double(display.pixelHeight)) else {
-            return "MP4 · H.264 · 30 кадров/с"
+            return L("MP4 · H.264 · 30 кадров/с")
         }
-        return "MP4 · \(size.width) × \(size.height) · 30 кадров/с"
+        return LF("MP4 · {0} × {1} · 30 кадров/с", arguments: [String(describing: (size.width)), String(describing: (size.height))])
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Picker("Качество аудио", selection: $audioQuality) {
-                ForEach(RecordingAudioQuality.allCases) { Text($0.title).tag($0) }
+            Picker(L("Качество аудио"), selection: $audioQuality) {
+                ForEach(RecordingAudioQuality.allCases) { Text(L($0.title)).tag($0) }
             }.accessibilityIdentifier("record.audioQuality")
-            Toggle("Сохранять видео экрана", isOn: $video)
+            Toggle(L("Сохранять видео экрана"), isOn: $video)
                 .accessibilityIdentifier("record.video")
             if video {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker("Экран целиком", selection: $displayUUID) {
-                        Text("Основной экран · автоматически").tag("")
+                    Picker(L("Экран целиком"), selection: $displayUUID) {
+                        Text(L("Основной экран · автоматически")).tag("")
                         ForEach(displays) { display in
                             Text("\(display.title) · \(display.pixelWidth) × \(display.pixelHeight)").tag(display.persistentID)
                         }
                         if !displayUUID.isEmpty && !displayIsAvailable {
-                            Text("Экран недоступен").tag(displayUUID)
+                            Text(L("Экран недоступен")).tag(displayUUID)
                         }
                     }.accessibilityIdentifier("record.display")
-                    Picker("Качество видео", selection: $videoQuality) {
-                        ForEach(RecordingVideoQuality.allCases) { Text($0.title).tag($0) }
-                    }.accessibilityIdentifier("record.videoQuality").help(videoQuality.detail)
+                    Picker(L("Качество видео"), selection: $videoQuality) {
+                        ForEach(RecordingVideoQuality.allCases) { Text(L($0.title)).tag($0) }
+                    }.accessibilityIdentifier("record.videoQuality").help(L(videoQuality.detail))
                     if displayIsAvailable {
                         Text(videoDescription).font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                             .accessibilityIdentifier("record.dimensions")
-                        Text("Весь экран, включая меню, Dock и другие окна.")
+                        Text(L("Весь экран, включая меню, Dock и другие окна."))
                             .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                     } else {
-                        Label("Экран отключён. Выберите доступный.", systemImage: "exclamationmark.triangle")
+                        Label(L("Экран отключён. Выберите доступный."), systemImage: "exclamationmark.triangle")
                             .font(AppTypography.caption).foregroundStyle(Ink.warning)
                             .accessibilityIdentifier("record.displayUnavailable")
                     }
@@ -83,12 +83,12 @@ struct CardGenerationPicker: View {
     let inheritedTitle: String
     let identifier: String
     var body: some View {
-        Picker("Автосоздание карточек", selection: $selection) {
-            Text(inheritedTitle + (inherited ? " · создавать" : " · не создавать")).tag("inherit")
+        Picker(L("Автосоздание карточек"), selection: $selection) {
+            Text(inheritedTitle + (inherited ? L(" · создавать") : L(" · не создавать"))).tag("inherit")
                 .accessibilityIdentifier(identifier + ".inherit")
-            Text("Создавать при обновлении конспекта").tag("on")
+            Text(L("Создавать при обновлении конспекта")).tag("on")
                 .accessibilityIdentifier(identifier + ".on")
-            Text("Не создавать для этой встречи").tag("off")
+            Text(L("Не создавать для этой встречи")).tag("off")
                 .accessibilityIdentifier(identifier + ".off")
         }.pickerStyle(.radioGroup).accessibilityIdentifier(identifier)
     }

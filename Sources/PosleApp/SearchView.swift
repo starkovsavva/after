@@ -13,56 +13,56 @@ struct SearchView: View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Image(systemName: "magnifyingglass").font(.system(size: 21)).foregroundStyle(Ink.accent)
-                TextField("Слово или фраза", text: $store.searchQuery)
+                TextField(L("Слово или фраза"), text: $store.searchQuery)
                     .font(.system(size: 20)).textFieldStyle(.plain).focused($queryFocused)
-                    .accessibilityLabel(store.notes.folder(store.folderSelection).map { "Поиск в папке «" + $0.name + "»" } ?? "Поиск по всей библиотеке")
+                    .accessibilityLabel(store.notes.folder(store.folderSelection).map { L("Поиск в папке «") + $0.name + "»" } ?? L("Поиск по всей библиотеке"))
                     .onSubmit { openSelected() }
                     .onKeyPress(.downArrow) { move(1); return .handled }
                     .onKeyPress(.upArrow) { move(-1); return .handled }
                 if byMeaning ? knowledge.searching || knowledge.openingID != nil : store.searching || store.searchOpeningID != nil { ProgressView().controlSize(.small) }
                 if !store.searchQuery.isEmpty {
                     Button { store.searchQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                        .buttonStyle(.plain).accessibilityLabel("Очистить поиск")
+                        .buttonStyle(.plain).accessibilityLabel(L("Очистить поиск"))
                 }
-                Button("Закрыть") { store.showingSearch = false }
+                Button(L("Закрыть")) { store.showingSearch = false }
                     .buttonStyle(.borderless).keyboardShortcut(.cancelAction)
             }.padding(22)
             if let folder = store.notes.folder(store.folderSelection) {
                 HStack(spacing: 12) {
-                    Label("В папке «" + folder.name + "»", systemImage: "folder").lineLimit(1)
+                    Label(L("В папке «") + folder.name + "»", systemImage: "folder").lineLimit(1)
                     Spacer()
-                    Button("Искать во всей библиотеке") { store.folderSelection = nil }
+                    Button(L("Искать во всей библиотеке")) { store.folderSelection = nil }
                         .buttonStyle(.borderless).accessibilityIdentifier("search.allFolders")
                 }.font(AppTypography.caption).foregroundStyle(.secondary)
                     .padding(.horizontal, 22).padding(.bottom, 12)
             }
             if store.isFeatureEnabled(.semanticSearch) {
-                Picker("Способ поиска", selection: $byMeaning) {
-                    Text("По словам").tag(false); Text("По смыслу").tag(true)
+                Picker(L("Способ поиска"), selection: $byMeaning) {
+                    Text(L("По словам")).tag(false); Text(L("По смыслу")).tag(true)
                 }.pickerStyle(.segmented).labelsHidden().frame(width: 230).padding(.horizontal, 22).padding(.bottom, 12)
                     .accessibilityIdentifier("search.mode")
             }
-            Picker("Область поиска", selection: $store.searchScope) {
-                Text("Всё").tag("all")
-                Text("Заметки").tag("notes")
-                Text("Транскрипт").tag("transcript")
-                if store.isFeatureEnabled(.cards) { Text("Карточки").tag("cards") }
-                Text("Названия").tag("meetings")
-                if byMeaning && store.isFeatureEnabled(.tasks) { Text("Задачи").tag("tasks"); Text("Код").tag("code") }
-            }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Область поиска").tint(Ink.actionFill).padding(.horizontal, 22).padding(.bottom, 16)
+            Picker(L("Область поиска"), selection: $store.searchScope) {
+                Text(L("Всё")).tag("all")
+                Text(L("Заметки")).tag("notes")
+                Text(L("Транскрипт")).tag("transcript")
+                if store.isFeatureEnabled(.cards) { Text(L("Карточки")).tag("cards") }
+                Text(L("Названия")).tag("meetings")
+                if byMeaning && store.isFeatureEnabled(.tasks) { Text(L("Задачи")).tag("tasks"); Text(L("Код")).tag("code") }
+            }.pickerStyle(.segmented).labelsHidden().accessibilityLabel(L("Область поиска")).tint(Ink.actionFill).padding(.horizontal, 22).padding(.bottom, 16)
             Rectangle().fill(Ink.line).frame(height: 1)
             if let message = byMeaning ? knowledge.error : store.searchError {
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: "exclamationmark.circle").foregroundStyle(Ink.warning)
                     Text(message).font(AppTypography.control).frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Повторить") { updateSearch(immediate: true) }.buttonStyle(.borderless)
+                    Button(L("Повторить")) { updateSearch(immediate: true) }.buttonStyle(.borderless)
                 }.padding(14).background(Ink.warning.opacity(0.07))
             }
             Group { if byMeaning { meaningContent } else { content } }.frame(maxWidth: .infinity, maxHeight: .infinity)
             Rectangle().fill(Ink.line).frame(height: 1)
             HStack {
                 Spacer()
-                Text("↑ ↓ выбрать · Return открыть · Esc закрыть").foregroundStyle(.secondary)
+                Text(L("↑ ↓ выбрать · Return открыть · Esc закрыть")).foregroundStyle(.secondary)
             }.font(AppTypography.caption).padding(.horizontal, 22).padding(.vertical, 13)
         }.frame(width: 760, height: 650).background(Ink.paper).tint(Ink.accent).appControlDefaults()
             .onAppear {
@@ -109,11 +109,11 @@ struct SearchView: View {
     }
     @ViewBuilder private var meaningContent: some View {
         if store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            placeholder("Найдите по смыслу", "Опишите, что помните: например, выражение о возвращении к вопросу.", icon: "sparkle.magnifyingglass")
+            placeholder(L("Найдите по смыслу"), L("Опишите, что помните: например, выражение о возвращении к вопросу."), icon: "sparkle.magnifyingglass")
         } else if knowledge.searching && knowledge.sources.isEmpty {
-            ProgressView("Ищу в библиотеке…").font(AppTypography.control)
+            ProgressView(L("Ищу в библиотеке…")).font(AppTypography.control)
         } else if knowledge.sources.isEmpty && knowledge.error == nil {
-            placeholder("Ничего не найдено", "Уточните тему или проверьте, обновлён ли смысловой индекс.", icon: "magnifyingglass")
+            placeholder(L("Ничего не найдено"), L("Уточните тему или проверьте, обновлён ли смысловой индекс."), icon: "magnifyingglass")
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -139,28 +139,28 @@ struct SearchView: View {
         }
     }
     private func meaningIcon(_ kind: String) -> String { ["task":"checklist","note":"note.text","code":"curlybraces","card":"rectangle.on.rectangle","meeting":"rectangle.stack","transcript":"quote.bubble"][kind] ?? "doc.text" }
-    private func meaningLabel(_ kind: String) -> String { ["task":"Задача","note":"Заметка","code":"Код","card":"Карточка","meeting":"Встреча","transcript":"Реплика","summary":"Конспект"][kind] ?? "Источник" }
+    private func meaningLabel(_ kind: String) -> String { ["task":L("Задача"),"note":L("Заметка"),"code":L("Код"),"card":L("Карточка"),"meeting":L("Встреча"),"transcript":L("Реплика"),"summary":L("Конспект")][kind] ?? L("Источник") }
 
     @ViewBuilder private var content: some View {
         if store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            placeholder(store.folderSelection == nil ? "Поиск по библиотеке" : "Поиск в папке", "Например: бюджет, доступы или follow up.", icon: "text.magnifyingglass")
+            placeholder(store.folderSelection == nil ? L("Поиск по библиотеке") : L("Поиск в папке"), L("Например: бюджет, доступы или follow up."), icon: "text.magnifyingglass")
         } else if store.searching && visibleSearchHits.isEmpty {
-            VStack(spacing: 12) { ProgressView(); Text(store.folderSelection == nil ? "Ищу в библиотеке…" : "Ищу в папке…").font(AppTypography.control).foregroundStyle(.secondary) }
+            VStack(spacing: 12) { ProgressView(); Text(store.folderSelection == nil ? L("Ищу в библиотеке…") : L("Ищу в папке…")).font(AppTypography.control).foregroundStyle(.secondary) }
         } else if visibleSearchHits.isEmpty && store.searchError == nil {
-            placeholder("Ничего не найдено", "Попробуйте другое слово или сократите запрос.", icon: "magnifyingglass")
+            placeholder(L("Ничего не найдено"), L("Попробуйте другое слово или сократите запрос."), icon: "magnifyingglass")
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 5) {
                         HStack {
-                            Text(store.searchTruncated ? "Показаны первые \(visibleSearchHits.count) результатов" : "Результатов: \(visibleSearchHits.count)")
+                            Text(store.searchTruncated ? LF("Показаны первые {0} результатов", arguments: [String(describing: (visibleSearchHits.count))]) : LF("Результатов: {0}", arguments: [String(describing: (visibleSearchHits.count))]))
                             Spacer()
                         }.font(AppTypography.caption).foregroundStyle(.secondary).padding(.horizontal, 10).padding(.vertical, 8)
                         ForEach(visibleSearchHits) { hit in
                             Button { selectedID = hit.id; store.openSearchHit(hit) } label: { row(hit) }
                                 .buttonStyle(.plain).id(hit.id).disabled(store.searchOpeningID != nil)
                                 .accessibilityAddTraits(selectedID == hit.id ? .isSelected : [])
-                                .accessibilityHint("Открыть фрагмент встречи")
+                                .accessibilityHint(L("Открыть фрагмент встречи"))
                         }
                         ForEach(store.searchWarnings, id: \.self) { Text($0).font(AppTypography.caption).foregroundStyle(Ink.warning).padding(10) }
                     }.padding(12)
@@ -175,7 +175,7 @@ struct SearchView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(hit.meetingTitle).font(AppTypography.controlStrong).lineLimit(1)
                     Spacer()
-                    Text(Date(timeIntervalSince1970: hit.createdAt).formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "ru_RU"))))
+                    Text(Date(timeIntervalSince1970: hit.createdAt).formatted(.dateTime.day().month(.abbreviated).year().locale(UILocale())))
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }
                 if hit.kind != "title" {
@@ -239,7 +239,7 @@ struct SearchView: View {
         }
     }
     private func label(_ kind: String) -> String {
-        ["title": "Название встречи", "overview": "Краткий конспект", "item": "Факт из конспекта", "transcript": "Исходная реплика", "card": "Карточка", "manual": "Моя заметка"][kind] ?? "Встреча"
+        ["title": L("Название встречи"), "overview": L("Краткий конспект"), "item": L("Факт из конспекта"), "transcript": L("Исходная реплика"), "card": L("Карточка"), "manual": L("Моя заметка")][kind] ?? L("Встреча")
     }
     private func icon(_ kind: String) -> String {
         ["title": "rectangle.stack", "overview": "text.bubble", "item": "pin", "transcript": "quote.bubble", "card": "rectangle.on.rectangle.angled", "manual": "square.and.pencil"][kind] ?? "doc.text"

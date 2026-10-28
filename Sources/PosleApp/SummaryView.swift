@@ -23,47 +23,47 @@ struct SummaryView: View {
                 HStack(spacing: 12) {
                     Menu {
                         if let id = store.selection.flatMap({ store.folderID(for: $0) }) {
-                            Button("Настройки модели папки…") { store.showFolderSettings(id) }
+                            Button(L("Настройки модели папки…")) { store.showFolderSettings(id) }
                         }
-                        Button("Общие настройки моделей…") { store.openSettings("ai") }
+                        Button(L("Общие настройки моделей…")) { store.openSettings("ai") }
                     } label: {
-                        Label(profileSettings.mode == "cloud" ? "Облако" : "На Mac", systemImage: profileSettings.mode == "cloud" ? "cloud" : "laptopcomputer")
+                        Label(profileSettings.mode == "cloud" ? L("Облако") : L("На Mac"), systemImage: profileSettings.mode == "cloud" ? "cloud" : "laptopcomputer")
                     }.menuStyle(.borderlessButton).frame(width: 110).disabled(overviewLocked || overviewEditing)
                     Button { showingFocus = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).foregroundStyle(.secondary).disabled(overviewLocked || overviewEditing).accessibilityLabel("Контекст встречи")
-                        .help("Цель встречи и что важно выписать")
+                        .buttonStyle(.plain).foregroundStyle(.secondary).disabled(overviewLocked || overviewEditing).accessibilityLabel(L("Контекст встречи"))
+                        .help(L("Цель встречи и что важно выписать"))
                         .popover(isPresented: $showingFocus) {
                             VStack(alignment: .leading, spacing: 12) {
-                                Text("Контекст встречи").font(AppTypography.heading)
-                                Text("Цель встречи").font(AppTypography.control)
-                                TextField("Например: синк с руководителем о прогрессе и следующих шагах", text: Binding(get: { store.selected?.meetingPurpose ?? "" }, set: { value in
+                                Text(L("Контекст встречи")).font(AppTypography.heading)
+                                Text(L("Цель встречи")).font(AppTypography.control)
+                                TextField(L("Например: синк с руководителем о прогрессе и следующих шагах"), text: Binding(get: { store.selected?.meetingPurpose ?? "" }, set: { value in
                                     if let id = store.selection {
                                         store.updateMeeting(id) { $0.meetingPurpose = String(value.prefix(300)) }
                                     }
                                 }), axis: .vertical)
                                     .font(AppTypography.control).lineLimit(2...4).textFieldStyle(.roundedBorder)
-                                    .accessibilityLabel("Цель встречи")
-                                Text("На что обратить внимание").font(AppTypography.control)
+                                    .accessibilityLabel(L("Цель встречи"))
+                                Text(L("На что обратить внимание")).font(AppTypography.control)
                                 TextEditor(text: Binding(get: { store.selected?.focus ?? "" }, set: { value in
                                     if let id = store.selection { store.updateMeeting(id) { $0.focus = value } }
                                 })).font(AppTypography.body).frame(height: 110).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 6))
                                 if store.selected?.focus.isEmpty == false, store.selection.flatMap({ store.folderID(for: $0) }) != nil {
-                                    Button("Использовать фокус из настроек папки") {
+                                    Button(L("Использовать фокус из настроек папки")) {
                                         if let id = store.selection { store.updateMeeting(id) { $0.focus = "" } }
                                     }.font(AppTypography.caption)
                                 }
                                 MeetingCardGenerationToggle()
-                                Text("Факты берутся из транскрипта. После изменения контекста обновите конспект.")
+                                Text(L("Факты берутся из транскрипта. После изменения контекста обновите конспект."))
                                     .font(AppTypography.caption).foregroundStyle(.secondary)
-                                HStack { Spacer(); Button("Готово") { showingFocus = false } }
+                                HStack { Spacer(); Button(L("Готово")) { showingFocus = false } }
                             }.padding(20).frame(width: 420)
                         }
                     Image(systemName: "info.circle").foregroundStyle(.secondary)
-                        .help("Создано ИИ. Проверяйте цифры и договорённости по исходным репликам.")
-                        .accessibilityLabel("Создано ИИ. Проверяйте цифры и договорённости по исходным репликам.")
+                        .help(L("Создано ИИ. Проверяйте цифры и договорённости по исходным репликам."))
+                        .accessibilityLabel(L("Создано ИИ. Проверяйте цифры и договорённости по исходным репликам."))
                     Spacer()
                     Button { store.summarizeSelected() } label: {
-                        Label(store.summary == nil ? "Создать конспект" : "Обновить", systemImage: "sparkles").frame(minWidth: 120)
+                        Label(store.summary == nil ? L("Создать конспект") : L("Обновить"), systemImage: "sparkles").frame(minWidth: 120)
                     }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(overviewLocked || overviewEditing)
                 }
                 if profileSettings.mode == "cloud" {
@@ -73,21 +73,21 @@ struct SummaryView: View {
 
                 if store.summary == nil && overviewEditing {
                     VStack(alignment: .leading, spacing: 13) {
-                        Text("Черновик конспекта").font(AppTypography.heading)
+                        Text(L("Черновик конспекта")).font(AppTypography.heading)
                         overviewEditor
                     }
                 }
                 if let summary = store.summary {
                     if summary.sourceStale || summary.overviewStale {
-                        Label(summary.sourceStale ? "Транскрипт исправлен. Проверьте конспект или обновите его." : "Пункты исправлены. Краткий конспект может требовать обновления.", systemImage: "arrow.triangle.2.circlepath")
+                        Label(summary.sourceStale ? L("Транскрипт исправлен. Проверьте конспект или обновите его.") : L("Пункты исправлены. Краткий конспект может требовать обновления."), systemImage: "arrow.triangle.2.circlepath")
                             .font(AppTypography.control).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true)
                     }
                     VStack(alignment: .leading, spacing: 13) {
                         HStack {
-                            Text("Кратко").font(AppTypography.heading)
+                            Text(L("Кратко")).font(AppTypography.heading)
                             Spacer()
                             if !overviewEditing {
-                                Button("Изменить") { beginOverviewEdit(summary) }
+                                Button(L("Изменить")) { beginOverviewEdit(summary) }
                                     .buttonStyle(.borderless).disabled(overviewLocked)
                             }
                         }
@@ -107,9 +107,9 @@ struct SummaryView: View {
                                 Text(summary.overview).font(AppTypography.body).lineSpacing(5).textSelection(.enabled)
                                     .frame(maxWidth: 700, alignment: .leading)
                                 if !summary.items.isEmpty {
-                                    DisclosureGroup("Факты этой встречи") {
+                                    DisclosureGroup(L("Факты этой встречи")) {
                                         VStack(alignment: .leading, spacing: 14) {
-                                            Text("Проверяйте конспект по фактам и исходным репликам ниже. Новый конспект добавит ссылки к отдельным утверждениям.")
+                                            Text(L("Проверяйте конспект по фактам и исходным репликам ниже. Новый конспект добавит ссылки к отдельным утверждениям."))
                                                 .font(AppTypography.caption).foregroundStyle(.secondary)
                                             ForEach(summary.items) { item in
                                                 HStack(alignment: .top, spacing: 12) {
@@ -134,8 +134,8 @@ struct SummaryView: View {
                 } else if !overviewEditing {
                     VStack(alignment: .leading, spacing: 15) {
                         Image(systemName: "text.badge.star").font(.system(size: 35)).foregroundStyle(Ink.accent)
-                        Text("Конспект не создан").font(AppTypography.emptyTitle)
-                        Button("Настройки ИИ") { store.openSettings("ai") }.buttonStyle(.bordered)
+                        Text(L("Конспект не создан")).font(AppTypography.emptyTitle)
+                        Button(L("Настройки ИИ")) { store.openSettings("ai") }.buttonStyle(.bordered)
                     }.padding(.vertical, 45).frame(maxWidth: 540, alignment: .leading)
                 }
             }.appContentLayout()
@@ -156,10 +156,10 @@ struct SummaryView: View {
     private var cloudContextDisclosure: String {
         let hasContext = !profileSettings.summaryUserContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !(store.selected?.meetingPurpose ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let content = hasContext ? "текст встречи и указанный контекст" : "текст встречи"
+        let content = hasContext ? L("текст встречи и указанный контекст") : L("текст встречи")
         return profileSettings.cloudProvider == "chatgpt"
-            ? "ChatGPT получит \(content). Используются лимиты вашей подписки."
-            : "\(profileSettings.cloudProviderTitle) получит \(content). Запрос оплачивается через API."
+            ? LF("ChatGPT получит {0}. Используются лимиты вашей подписки.", arguments: [String(describing: (content))])
+            : LF("{0} получит {1}. Запрос оплачивается через API.", arguments: [L(profileSettings.cloudProviderTitle), String(describing: (content))])
     }
 
     private var overviewEditor: some View {
@@ -175,30 +175,30 @@ struct SummaryView: View {
                 .frame(minHeight: 150, maxHeight: 280).padding(10)
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Ink.line))
-                .accessibilityLabel("Редактирование краткого конспекта")
+                .accessibilityLabel(L("Редактирование краткого конспекта"))
                 .focused($overviewFocused)
                 .disabled(overviewLocked)
             if overviewConflict {
                 HStack {
-                    Text("Исходный конспект изменился. Правку можно сохранить в заметки.")
+                    Text(L("Исходный конспект изменился. Правку можно сохранить в заметки."))
                         .font(AppTypography.control).foregroundStyle(Ink.warning)
                     Spacer()
-                    Button("В заметки") {
+                    Button(L("В заметки")) {
                         guard let id = overviewMeetingID,
                               store.notes.capture(text: overviewDraft, meetingID: id) != nil else { return }
                         cancelOverviewEdit()
-                        store.notice = "Правка сохранена в заметки встречи"
+                        store.notice = L("Правка сохранена в заметки встречи")
                     }.buttonStyle(.bordered)
                 }
             }
             HStack(spacing: 10) {
                 if overviewDraft != originalOverview {
-                    Text("Есть несохранённые изменения").font(AppTypography.control).foregroundStyle(.secondary)
+                    Text(L("Есть несохранённые изменения")).font(AppTypography.control).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Отмена") { cancelOverviewEdit() }
+                Button(L("Отмена")) { cancelOverviewEdit() }
                     .buttonStyle(.bordered).disabled(overviewLocked)
-                Button("Сохранить") {
+                Button(L("Сохранить")) {
                     guard let id = overviewMeetingID else { return }
                     if store.saveOverview(overviewDraft, meetingID: id, expectedOverview: originalOverview,
                                           expectedGeneratedAt: originalGeneratedAt) {
@@ -250,7 +250,7 @@ struct SummaryView: View {
         originalGeneratedAt = 0
     }
     private func section(_ kind: String, _ items: [Insight]) -> some View {
-        let title = ["decision": "Решения", "action": "Задачи", "detail": "Детали", "question": "Вопросы"][kind]!
+        let title = ["decision": L("Решения"), "action": L("Задачи"), "detail": L("Детали"), "question": L("Вопросы")][kind]!
         let icon = ["decision": "checkmark.seal", "action": "checklist", "detail": "pin", "question": "questionmark.bubble"][kind]!
         return VStack(alignment: .leading, spacing: 15) {
             Label(title, systemImage: icon).font(AppTypography.heading)
@@ -262,8 +262,8 @@ struct SummaryView: View {
                         Button { store.toggleTask(item) } label: {
                             Image(systemName: store.taskCompleted(item) ? "checkmark.circle.fill" : "circle")
                                 .foregroundStyle(Ink.accent).font(.system(size: 18)).frame(width: 30, height: 30).contentShape(Rectangle())
-                        }.buttonStyle(.plain).disabled(store.busy || store.isRecording).accessibilityLabel("Выполнение задачи")
-                            .accessibilityValue(store.taskCompleted(item) ? "Выполнена" : "Не выполнена")
+                        }.buttonStyle(.plain).disabled(store.busy || store.isRecording).accessibilityLabel(L("Выполнение задачи"))
+                            .accessibilityValue(store.taskCompleted(item) ? L("Выполнена") : L("Не выполнена"))
                     } else { Circle().fill(Ink.accent.opacity(0.45)).frame(width: 5, height: 5).padding(.top, 6) }
                     VStack(alignment: .leading, spacing: 7) {
                         Text(item.text).font(AppTypography.body).lineSpacing(5).textSelection(.enabled)
@@ -279,7 +279,7 @@ struct SummaryView: View {
                     Button {
                         if let id = store.selection, index >= 0 { editingInsight = InsightEditTarget(meetingID: id, index: index) }
                     } label: { Image(systemName: "pencil").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).foregroundStyle(.secondary).help("Изменить пункт").accessibilityLabel("Изменить пункт конспекта")
+                        .buttonStyle(.plain).foregroundStyle(.secondary).help(L("Изменить пункт")).accessibilityLabel(L("Изменить пункт конспекта"))
                 }.padding(.vertical, 9).padding(.horizontal, 10)
                     .background(targeted ? Ink.accent.opacity(0.09) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
                     .id("summary-item-\(index)")
@@ -293,7 +293,7 @@ struct MeetingCardGenerationToggle: View {
     @EnvironmentObject private var store: AppStore
     var body: some View {
         if store.effectiveSettings(for: store.selection).features.cards {
-            Toggle("Создавать карточки при обновлении конспекта", isOn: Binding(get: {
+            Toggle(L("Создавать карточки при обновлении конспекта"), isOn: Binding(get: {
                 store.selected.map { store.generatesCards(for: $0) } ?? false
             }, set: { enabled in
                 if let id = store.selection { store.updateMeeting(id) { $0.generateCards = enabled } }

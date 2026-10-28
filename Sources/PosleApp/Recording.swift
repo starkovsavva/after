@@ -49,17 +49,17 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
     static func shareableContentError(_ error: Error) -> AppError {
         let value = error as NSError
         let code = value.code
-        let diagnostic = value.domain == SCStreamErrorDomain ? "ScreenCaptureKit, код \(code)" : "код \(code)"
+        let diagnostic = value.domain == SCStreamErrorDomain ? LF("ScreenCaptureKit, код {0}", arguments: [String(describing: code)]) : LF("код {0}", arguments: [String(describing: code)])
         let message: String
         if value.domain == SCStreamErrorDomain, code == SCStreamError.Code.userDeclined.rawValue {
-            message = "macOS не разрешила запись экрана или звука. Разрешите доступ для открытой копии «После» в настройках конфиденциальности, затем завершите и откройте приложение снова."
+            message = L("macOS не разрешила запись экрана или звука. Разрешите доступ для открытой копии «После» в настройках конфиденциальности, затем завершите и откройте приложение снова.")
         } else if value.domain == SCStreamErrorDomain,
                   [SCStreamError.Code.noDisplayList.rawValue, SCStreamError.Code.noCaptureSource.rawValue].contains(code) {
-            message = "macOS не нашла доступный экран. Проверьте подключение дисплея и повторите запись."
+            message = L("macOS не нашла доступный экран. Проверьте подключение дисплея и повторите запись.")
         } else if value.domain == SCStreamErrorDomain, code == SCStreamError.Code.failedNoMatchingApplicationContext.rawValue {
-            message = "macOS потеряла подключение к этой копии «После». Завершите приложение и откройте установленную копию снова."
+            message = L("macOS потеряла подключение к этой копии «После». Завершите приложение и откройте установленную копию снова.")
         } else {
-            message = "macOS не смогла получить доступные экраны и звук. Повторите попытку; если ошибка сохранится, перезапустите «После»."
+            message = L("macOS не смогла получить доступные экраны и звук. Повторите попытку; если ошибка сохранится, перезапустите «После».")
         }
         return .message("\(message) (\(diagnostic))")
     }
@@ -74,7 +74,7 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
                audioQuality: RecordingAudioQuality = .standard,
                displayID: UInt32? = nil, expectedDisplayUUID: String? = nil) async throws {
         guard stream == nil, microphone == nil else {
-            throw AppError.message("Запись уже идёт. Сначала остановите её.")
+            throw AppError.message(L("Запись уже идёт. Сначала остановите её."))
         }
         // Snapshot the target before a potentially long permission prompt. A display ID
         // can be reused after disconnect; compare its persistent identity after the await.
@@ -82,16 +82,16 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         let initialDisplayUUID = video ? (expectedDisplayUUID ?? Self.persistentDisplayID(initialDisplayID)) : nil
         if video {
             guard CGDisplayIsActive(initialDisplayID) != 0 else {
-                throw AppError.message("Выбранный экран отключён. Выберите подключённый экран перед записью.")
+                throw AppError.message(L("Выбранный экран отключён. Выберите подключённый экран перед записью."))
             }
             guard let initialDisplayUUID,
                   Self.persistentDisplayID(initialDisplayID) == initialDisplayUUID else {
-                throw AppError.message("Выбранный экран изменился. Выберите экран повторно перед записью.")
+                throw AppError.message(L("Выбранный экран изменился. Выберите экран повторно перед записью."))
             }
         }
         let permission = await AVCaptureDevice.requestAccess(for: .audio)
         guard permission else {
-            throw AppError.message("Разрешите микрофон: Системные настройки → Конфиденциальность и безопасность → Микрофон → После.")
+            throw AppError.message(L("Разрешите микрофон: Системные настройки → Конфиденциальность и безопасность → Микрофон → После."))
         }
         if !systemAudio && !video {
             let recorder = try AVAudioRecorder(url: url, settings: [
@@ -99,7 +99,7 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
                 AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: audioQuality.bitRate
             ])
             guard recorder.prepareToRecord(), recorder.record() else {
-                throw AppError.message("Не удалось включить микрофон. Проверьте выбранный микрофон в системных настройках.")
+                throw AppError.message(L("Не удалось включить микрофон. Проверьте выбранный микрофон в системных настройках."))
             }
             recorder.isMeteringEnabled = true
             microphone = recorder
@@ -123,11 +123,11 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
             available: content.displays.map(\.displayID), main: CGMainDisplayID()),
               let display = content.displays.first(where: { $0.displayID == selectedID }) else {
             throw AppError.message(video && displayID != nil
-                ? "Выбранный экран отключён. Выберите подключённый экран перед записью."
-                : "Основной экран недоступен. Проверьте подключение дисплея и повторите запись.")
+                ? L("Выбранный экран отключён. Выберите подключённый экран перед записью.")
+                : L("Основной экран недоступен. Проверьте подключение дисплея и повторите запись."))
         }
         if video, Self.persistentDisplayID(selectedID) != initialDisplayUUID {
-            throw AppError.message("Выбранный экран отключён или заменён. Выберите экран повторно перед записью.")
+            throw AppError.message(L("Выбранный экран отключён или заменён. Выберите экран повторно перед записью."))
         }
         // Empty exclusion list includes the entire selected display, including all windows.
         // Leave sourceRect unset: a source rectangle would crop the display.
@@ -135,7 +135,7 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         filter.includeMenuBar = true
         guard let size = videoQuality.dimensions(width: filter.contentRect.width,
             height: filter.contentRect.height, scale: Double(filter.pointPixelScale)) else {
-            throw AppError.message("Не удалось определить разрешение экрана. Повторно выберите экран для записи.")
+            throw AppError.message(L("Не удалось определить разрешение экрана. Повторно выберите экран для записи."))
         }
         let configuration = SCStreamConfiguration()
         configuration.width = video ? size.width : 2; configuration.height = video ? size.height : 2
@@ -169,8 +169,8 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
             bindFailure(stream: nil, sessionID: nil)
             self.stream = nil; self.sink = nil
             await sink.cancel()
-            let hint = video && videoQuality == .native ? " Попробуйте качество 1080p." : ""
-            throw AppError.message("Не удалось начать запись: \(error.localizedDescription)\(hint)")
+            let hint = video && videoQuality == .native ? L(" Попробуйте качество 1080p.") : ""
+            throw AppError.message(LF("Не удалось начать запись: {0}{1}", arguments: [String(describing: error.localizedDescription), String(describing: hint)]))
         }
     }
 
@@ -236,9 +236,9 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
         microphone = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
         system?.expectsMediaDataInRealTime = true; microphone.expectsMediaDataInRealTime = true
         guard writer.canAdd(microphone) else {
-            throw AppError.message("macOS не смогла создать звуковые дорожки.")
+            throw AppError.message(L("macOS не смогла создать звуковые дорожки."))
         }
-        if let system { guard writer.canAdd(system) else { throw AppError.message("Не удалось создать системную аудиодорожку") }; writer.add(system) }
+        if let system { guard writer.canAdd(system) else { throw AppError.message(L("Не удалось создать системную аудиодорожку")) }; writer.add(system) }
         writer.add(microphone)
         if let size = videoSize {
             let outputSettings: [String: Any] = [
@@ -249,11 +249,11 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                     AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel]
             ]
             guard writer.canApply(outputSettings: outputSettings, forMediaType: .video) else {
-                throw AppError.message("macOS не поддерживает H.264 для разрешения \(size.width) × \(size.height). Выберите качество 1080p.")
+                throw AppError.message(LF("macOS не поддерживает H.264 для разрешения {0} × {1}. Выберите качество 1080p.", arguments: [String(describing: size.width), String(describing: size.height)]))
             }
             let input = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
             input.expectsMediaDataInRealTime = true
-            guard writer.canAdd(input) else { throw AppError.message("Не удалось включить кодирование видео H.264") }
+            guard writer.canAdd(input) else { throw AppError.message(L("Не удалось включить кодирование видео H.264")) }
             writer.add(input); video = input
         } else { video = nil }
         // Fragmented QuickTime preserves completed fragments after an abnormal termination.
@@ -367,8 +367,8 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     private var writingError: Error {
-        let message = writer.error?.localizedDescription ?? "Не удалось записать аудио или видео."
-        return AppError.message(message + (nativeVideo ? " Попробуйте качество 1080p." : ""))
+        let message = writer.error?.localizedDescription ?? L("Не удалось записать аудио или видео.")
+        return AppError.message(message + (nativeVideo ? L(" Попробуйте качество 1080p.") : ""))
     }
 
     private func report() {
@@ -404,7 +404,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
         }
         guard started else {
             writer.cancelWriting()
-            continuation.resume(throwing: AppError.message("В записи нет звука. Проверьте микрофон и звук звонка."))
+            continuation.resume(throwing: AppError.message(L("В записи нет звука. Проверьте микрофон и звук звонка.")))
             return
         }
         flushVideoFrame()
@@ -424,7 +424,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                     }
                     return
                 }
-                finishingError = AppError.message("Не удалось сохранить последний видеокадр. Исходная запись со звуком сохранена.")
+                finishingError = AppError.message(L("Не удалось сохранить последний видеокадр. Исходная запись со звуком сохранена."))
             } else {
                 var timing = CMSampleTimingInfo(duration: frameDuration,
                     presentationTimeStamp: tailTime, decodeTimeStamp: .invalid)
@@ -435,7 +435,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                 if status == noErr, let tail {
                     if !video.append(tail) { finishingError = writingError }
                 } else {
-                    finishingError = AppError.message("Не удалось завершить видеодорожку. Исходная запись со звуком сохранена.")
+                    finishingError = AppError.message(L("Не удалось завершить видеодорожку. Исходная запись со звуком сохранена."))
                 }
             }
         }
@@ -444,7 +444,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
             return
         }
         if video != nil && writtenVideoFrames == 0 {
-            finishingError = AppError.message("macOS не передала ни одного видеокадра. Исходная запись со звуком сохранена. Проверьте доступ к записи экрана и повторите попытку.")
+            finishingError = AppError.message(L("macOS не передала ни одного видеокадра. Исходная запись со звуком сохранена. Проверьте доступ к записи экрана и повторите попытку."))
         }
         if captureEndTime.isValid { writer.endSession(atSourceTime: captureEndTime) }
         system?.markAsFinished(); microphone.markAsFinished(); video?.markAsFinished()

@@ -15,7 +15,7 @@ enum SunsetArtwork {
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = "После"
+        image.accessibilityDescription = L("После")
         return image
     }
 }

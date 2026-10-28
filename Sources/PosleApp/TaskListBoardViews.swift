@@ -6,7 +6,7 @@ struct TaskStatusMark: View {
     var body: some View {
         Image(systemName: status.symbol).font(.system(size: 16))
             .foregroundStyle(status == .done ? Ink.green : status == .blocked ? Ink.warning : status == .doing ? Ink.accent : Color.secondary)
-            .accessibilityLabel(status.title)
+            .accessibilityLabel(L(status.title))
     }
 }
 
@@ -29,10 +29,10 @@ struct TaskListPane: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Найти задачу…", text: $query).textFieldStyle(.plain).accessibilityIdentifier("tasks.search")
+                TextField(L("Найти задачу…"), text: $query).textFieldStyle(.plain).accessibilityIdentifier("tasks.search")
             }.padding(9).background(Ink.soft, in: RoundedRectangle(cornerRadius: AppLayout.controlRadius)).padding(12)
             HStack {
-                Text("Задачи").font(AppTypography.captionStrong)
+                Text(L("Задачи")).font(AppTypography.captionStrong)
                 Spacer(); Text("\(tasks.count)").font(AppTypography.caption).monospacedDigit()
             }.foregroundStyle(.secondary).padding(.horizontal, 16).padding(.bottom, 10)
             List(selection: selection) {
@@ -45,17 +45,17 @@ struct TaskListPane: View {
                 .accessibilityIdentifier("tasks.list")
                 .overlay(alignment: .top) {
                     if tasks.isEmpty {
-                        Text(hasAnyTasks ? "Нет подходящих задач" : "Здесь пока нет задач")
+                        Text(hasAnyTasks ? L("Нет подходящих задач") : L("Здесь пока нет задач"))
                             .foregroundStyle(.secondary).font(AppTypography.control).padding(24).allowsHitTesting(false)
                     }
                 }
             Divider()
             HStack(spacing: 7) {
                 Image(systemName: "plus").foregroundStyle(.secondary)
-                TextField("Новая задача", text: newTask).textFieldStyle(.plain).onSubmit(addTask).accessibilityIdentifier("tasks.new-text")
+                TextField(L("Новая задача"), text: newTask).textFieldStyle(.plain).onSubmit(addTask).accessibilityIdentifier("tasks.new-text")
                 Button(action: addTask) { Image(systemName: "arrow.up.circle").frame(width: 24, height: 24) }
                     .buttonStyle(.plain).disabled(newTask.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityLabel("Добавить задачу").accessibilityIdentifier("tasks.new-submit")
+                    .accessibilityLabel(L("Добавить задачу")).accessibilityIdentifier("tasks.new-submit")
             }.padding(12)
         }.background(Ink.field.opacity(0.3))
     }
@@ -63,7 +63,7 @@ struct TaskListPane: View {
         HStack(alignment: .top, spacing: 7) {
             Button { changeStatus(task, task.status == .done ? .todo : .done) } label: {
                 TaskStatusMark(status: task.status).frame(width: 24, height: 24)
-            }.buttonStyle(.plain).accessibilityLabel((task.status == .done ? "Вернуть в работу: " : "Завершить задачу: ") + task.title)
+            }.buttonStyle(.plain).accessibilityLabel((task.status == .done ? L("Вернуть в работу: ") : L("Завершить задачу: ")) + task.title)
             Button { select(task) } label: {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(task.title).font(notes.selectedTaskID == task.id ? AppTypography.controlStrong : AppTypography.control)
@@ -72,7 +72,7 @@ struct TaskListPane: View {
                 }.padding(.vertical, 3).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("tasks.row." + task.id)
                 .accessibilityAddTraits(notes.selectedTaskID == task.id ? .isSelected : [])
-                .accessibilityValue(notes.selectedTaskID == task.id ? "Выбрана" : "")
+                .accessibilityValue(notes.selectedTaskID == task.id ? L("Выбрана") : "")
         }.padding(10)
     }
 }
@@ -81,7 +81,7 @@ struct TaskRowMetadata: View {
     let task: TaskWorkspace
     var body: some View {
         HStack(spacing: 6) {
-            Text(task.source.title).lineLimit(1)
+            Text(L(task.source.title)).lineLimit(1)
             if !task.due.isEmpty { Text("·").accessibilityHidden(true); Text(TaskDueDate.display(task.due, reference: task.createdAt > 0 ? Date(timeIntervalSince1970: task.createdAt) : nil)).lineLimit(1) }
         }.font(AppTypography.caption).foregroundStyle(.secondary)
     }
@@ -99,7 +99,7 @@ struct TaskBoardView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 7) {
                             TaskStatusMark(status: status)
-                            Text(status.title).font(AppTypography.controlStrong)
+                            Text(L(status.title)).font(AppTypography.controlStrong)
                             Spacer(minLength: 4)
                             Text("\(tasks.filter { $0.status == status }.count)").font(AppTypography.caption).foregroundStyle(.secondary)
                         }.padding(.horizontal, 4)
@@ -116,7 +116,7 @@ struct TaskBoardView: View {
                                             .overlay(RoundedRectangle(cornerRadius: AppLayout.cardRadius).stroke(selectedID == task.id ? Ink.accent.opacity(0.45) : Ink.line, lineWidth: 1))
                                     }.buttonStyle(.plain).accessibilityIdentifier("tasks.board." + task.id)
                                         .contextMenu {
-                                            ForEach(TaskWorkspaceStatus.allCases) { target in Button(target.title) { changeStatus(task, target) }.disabled(target == task.status) }
+                                            ForEach(TaskWorkspaceStatus.allCases) { target in Button(L(target.title)) { changeStatus(task, target) }.disabled(target == task.status) }
                                         }
                                 }
                             }
