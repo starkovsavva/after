@@ -6,30 +6,31 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.17.1</title>
-      <sparkle:version>24</sparkle:version>
-      <sparkle:shortVersionString>0.17.1</sparkle:shortVersionString>
+      <title>После 0.17.2</title>
+      <sparkle:version>25</sparkle:version>
+      <sparkle:shortVersionString>0.17.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Tue, 27 Oct 2026 19:00:22 GMT</pubDate>
-      <description sparkle:format="markdown">- **Папки.** Заметная кнопка создания, короткий диалог названия, переименование двойным кликом и выбор встреч из библиотеки.
-- **Перемещение.** Папка встречи видна в заголовке. При переносе открывается папка назначения; переключение папок сохраняет доступный раздел задач или карточек.
-- **Названия встреч.** Редактирование прямо в заголовке: двойной клик, Return для сохранения, Escape для отмены. Черновики и параллельные изменения защищены от потери.
-- **Быстрые заметки.** Черновик сохраняет исходную папку после переключения разделов. Недоступное назначение требует явного выбора.
-- **Контекст.** Исправлены подписи облачной обработки, ссылки на встречи другой папки и сохранение папки при копировании заметки.
-- **Редактор.** Подсказка пустой заметки выровнена с кареткой при изменении размера текста.
+      <pubDate>Wed, 28 Oct 2026 09:44:07 GMT</pubDate>
+      <description sparkle:format="markdown">- **Обновления.** Настройки сохраняются и закрываются перед установкой. Несохранённые ключи, заметки и активная работа остаются защищены; при ошибке доступен повтор.
+- **Календарь.** Исправлено подключение из новой папки, восстановление доступа и повторные нажатия. Загрузка расписания выполняется в фоне.
+- **Проекты и люди.** Встречу можно связать с проектом или человеком прямо из раздела. Появились понятные действия для пустой библиотеки и папки.
+- **Скорость.** Заметки, задачи и обзоры проектов загружаются в фоне при открытии разделов. Быстрые переключения объединяют загрузки, сохраняя видимый контент и черновики.
+- **Задачи.** Редактор загружает полное описание перед изменением и защищает его от обрезки и параллельных правок.
 
-![Папки в библиотеке](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.1/docs/screenshots/folders.png)
+При обновлении с 0.17.1 и раньше сохраните правки и закройте окно настроек, чтобы завершить установку. Исправленный механизм обновления заработает после установки 0.17.2.
+
+![Проекты и люди](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.2/docs/screenshots/contexts.png)
 </description>
-      <posle:sourceRevision>69f21d68be5c80d323c863c085dbe174a4db700b</posle:sourceRevision>
-      <posle:archiveSHA256>edaca8d0de943df1c56575b475a09c9dcca4a5fc1c77002a716b8ba2821a3ab7</posle:archiveSHA256>
-      <posle:sourceSHA256>0d7c29026e418c86ad217f7d01e21862f193c4fb965b9e2f439246967b1d92eb</posle:sourceSHA256>
-      <posle:packageSHA256>2824d0e3084de609f28e9ec3f56bf6ec4067c8a21969f3272a837b95955dd62f</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.1/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="rzCSIlyZpGqr20qR3TrQZiL+Dt279n0+6zH7nSNJnEDqYKN/dFC+EByidmN92ZdemgnRZtdiMY4Ie2tDa/DpBA==" length="24174692" type="application/octet-stream" />
+      <posle:sourceRevision>b60f5c2e33e386c2577ce249164ff1f526228b62</posle:sourceRevision>
+      <posle:archiveSHA256>87fa675128ab0b76c1d8df46e42ba03a5c1e3b67be058e0c0c70b2eba40b2b8b</posle:archiveSHA256>
+      <posle:sourceSHA256>58016cf6c1234dbbd6ef7ed98e8d4ce5ae9405f5d6884c70be542d818503fe4f</posle:sourceSHA256>
+      <posle:packageSHA256>fc2c39613dedec2d8d3de07de0a15c21fc755411b468d51e41c454f6e0fb5819</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.2/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="oLmbF3RS0SrsfznX3VBuEbpxI+KH4HmrOxFL4E3wOtmtUHbhrLekwAT5cCG44zyWduGJwAm93T/xpMJxhzmuCg==" length="24352438" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: wh/uUcz77oxoxymdgTuOSYSriJMC58qViV8cY4wFkxOgrkzbITDU6w8WpAU/hAWyL4jBJ4AR79xlD8XV1f4WCQ==
-length: 3138
+edSignature: USjCuCKiDISNje8g3v+h5MYaGNCjdddl2ma70HWaeoHKVJ1lvmaIQV8Tf5Ko6ai4rVmqNUUWN3BsPr+/4pWlBA==
+length: 3324
 -->
