@@ -540,11 +540,11 @@ struct NotesMessage: View {
                 HStack(alignment: .top, spacing: 9) {
                     Image(systemName: notes.error != nil ? "exclamationmark.circle" : "checkmark.circle")
                         .foregroundStyle(notes.error != nil ? Ink.warning : Ink.green).padding(.top, 4)
-                    Text(text).font(AppTypography.control).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    Text(L(text)).font(AppTypography.control).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                     if notes.error != nil {
                         Button { details = true } label: { Image(systemName: "info.circle").frame(width: 24, height: 24) }
                             .buttonStyle(.plain).help(L("Полный текст ошибки")).accessibilityLabel(L("Полный текст ошибки"))
-                            .popover(isPresented: $details) { Text(text).font(AppTypography.body).textSelection(.enabled).padding(20).frame(width: 420) }
+                            .popover(isPresented: $details) { Text(L(text)).font(AppTypography.body).textSelection(.enabled).padding(20).frame(width: 420) }
                     }
                     Button { notes.error = nil; notes.notice = nil } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
                         .buttonStyle(.plain).accessibilityLabel(L("Закрыть сообщение"))
@@ -567,7 +567,7 @@ private struct NotesEmpty: View {
         VStack(spacing: 10) {
             Image(systemName: icon).font(.system(size: 25)).foregroundStyle(.secondary).accessibilityHidden(true)
             Text(title).font(AppTypography.heading)
-            if !text.isEmpty { Text(text).font(AppTypography.control).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 440) }
+            if !text.isEmpty { Text(L(text)).font(AppTypography.control).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 440) }
         }.padding(.vertical, 28).frame(maxWidth: .infinity)
     }
 }
@@ -648,9 +648,9 @@ struct NotesContextsView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 AppWorkspaceHeader(title: L("Проекты и люди")) {
-                    Picker(L("Группировать"), selection: $mode) { Text(L("Проекты")).tag("project"); Text(L("Люди")).tag("person") }
-                        .pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().frame(width: 200).accessibilityLabel(L("Проекты или люди"))
-                        .accessibilityIdentifier("contexts.mode")
+                    AppTabBar(label: L("Проекты или люди"), selection: $mode,
+                              tabs: [AppTab(L("Проекты"), value: "project"), AppTab(L("Люди"), value: "person")],
+                              identifier: "contexts.mode")
                 }
                 HStack(alignment: .top, spacing: 18) {
                     VStack(alignment: .leading, spacing: 5) {

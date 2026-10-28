@@ -63,20 +63,14 @@ struct MeetingView: View {
 
                 }.font(AppTypography.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, AppLayout.contentInset).padding(.top, 22).padding(.bottom, 18)
-            Picker(L("Раздел встречи"), selection: $store.tab) {
-                Text(L("Заметки")).tag("notes")
-                if meeting.libraryKind != "cards" {
-                    Text(L("Конспект")).tag("summary")
-                    Text(L("Транскрипт")).tag("transcript")
-                }
-                if store.effectiveSettings(for: meeting.id).features.cards { Text(L("Карточки")).tag("cards") }
-            }.pickerStyle(.segmented).labelsHidden()
+            AppTabBar(label: L("Раздел встречи"), selection: $store.tab, tabs: meetingTabs,
+                      identifier: "meeting.tabs.control", fillsWidth: true)
                 .padding(.horizontal, AppLayout.contentInset).padding(.bottom, 16)
                 .appLayoutAnchor("meeting.tabs")
             if let job = store.jobs.jobs.first(where: { $0.active && $0.objectID == meeting.id }) {
                 HStack(spacing: 8) {
                     if job.state == "running" { ProgressView().controlSize(.small) }
-                    Text(job.title + " · " + L(job.stateLabel)).font(AppTypography.caption).lineLimit(1)
+                    Text(BackgroundJobPresentation.title(job) + " · " + L(job.stateLabel)).font(AppTypography.caption).lineLimit(1)
                     Spacer()
                     Button(L("Подробнее")) { store.jobs.showing = true }.buttonStyle(.borderless)
                 }.foregroundStyle(Ink.secondaryText).padding(.horizontal, AppLayout.contentInset).padding(.bottom, 10)
@@ -92,6 +86,18 @@ struct MeetingView: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .sheet(item: $folderEditor) { target in FolderSettingsView(folder: target.folder).environmentObject(store) }
     }
+    private var meetingTabs: [AppTab<String>] {
+        var result = [AppTab(L("Заметки"), value: "notes")]
+        if meeting.libraryKind != "cards" {
+            result.append(AppTab(L("Конспект"), value: "summary"))
+            result.append(AppTab(L("Транскрипт"), value: "transcript"))
+        }
+        if store.effectiveSettings(for: meeting.id).features.cards {
+            result.append(AppTab(L("Карточки"), value: "cards"))
+        }
+        return result
+    }
+
     private var unprocessed: some View {
         VStack(spacing: 16) {
             Image(systemName: store.stoppingRecording ? "square.and.arrow.down" : store.isRecording ? "waveform" : "waveform.badge.magnifyingglass").font(.system(size: 42)).foregroundStyle(Ink.accent)

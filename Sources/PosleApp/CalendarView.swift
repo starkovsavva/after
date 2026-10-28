@@ -97,10 +97,9 @@ struct CalendarWorkspace: View {
         }.fixedSize(horizontal: true, vertical: false)
     }
     private var viewPicker: some View {
-        Picker(L("Вид календаря"), selection: $calendar.displayMode) {
-            ForEach(CalendarDisplayMode.allCases) { Text(L($0.title)).tag($0) }
-        }.pickerStyle(.segmented).labelsHidden().frame(width: 300)
-            .accessibilityLabel(L("Вид календаря")).accessibilityIdentifier("calendar.mode")
+        AppTabBar(label: L("Вид календаря"), selection: $calendar.displayMode,
+                  tabs: CalendarDisplayMode.allCases.map { AppTab(L($0.title), value: $0) },
+                  identifier: "calendar.mode")
     }
     private var sources: some View {
         VStack(alignment: .leading, spacing: 16) {

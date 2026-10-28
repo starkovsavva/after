@@ -94,23 +94,10 @@ struct TaskDetailView: View {
         if let legacy = notes.legacyTask(for: task) { TaskCalendarButton(task: legacy) }
     }
     private var tabs: some View {
-        HStack(spacing: 22) {
-            tabButton(L("Материалы"), value: "materials", count: task.materialCount ?? task.materials.count)
-            tabButton(L("История"), value: "history", count: nil)
-            Spacer(minLength: 0)
-        }.overlay(alignment: .bottom) { Rectangle().fill(Ink.line).frame(height: 1) }
-    }
-    private func tabButton(_ title: String, value: String, count: Int?) -> some View {
-        Button { tab = value } label: {
-            HStack(spacing: 6) {
-                Text(title)
-                if let count { Text("\(count)").foregroundStyle(.secondary).monospacedDigit() }
-            }.font(tab == value ? AppTypography.controlStrong : AppTypography.control)
-                .foregroundStyle(tab == value ? Color.primary : .secondary).padding(.vertical, 12)
-                .overlay(alignment: .bottom) { if tab == value { Rectangle().fill(Ink.accent).frame(height: 2) } }
-        }.buttonStyle(.plain).accessibilityAddTraits(tab == value ? .isSelected : [])
-            .accessibilityValue(tab == value ? L("Выбрана") : "")
-            .accessibilityIdentifier("tasks.tab." + value)
+        AppTabBar(label: L("Задача"), selection: $tab, tabs: [
+            AppTab(L("Материалы") + " · " + String(task.materialCount ?? task.materials.count), value: "materials"),
+            AppTab(L("История"), value: "history")
+        ], identifier: "tasks.tab", fillsWidth: true)
     }
     private var description: String {
         TaskWorkspaceDescription.body(title: task.title, text: task.text)

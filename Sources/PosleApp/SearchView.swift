@@ -37,19 +37,14 @@ struct SearchView: View {
                     .padding(.horizontal, 22).padding(.bottom, 12)
             }
             if store.isFeatureEnabled(.semanticSearch) {
-                Picker(L("Способ поиска"), selection: $byMeaning) {
-                    Text(L("По словам")).tag(false); Text(L("По смыслу")).tag(true)
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 230).padding(.horizontal, 22).padding(.bottom, 12)
-                    .accessibilityIdentifier("search.mode")
+                AppTabBar(label: L("Способ поиска"), selection: $byMeaning,
+                          tabs: [AppTab(L("По словам"), value: false), AppTab(L("По смыслу"), value: true)],
+                          identifier: "search.mode")
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 22).padding(.bottom, 12)
             }
-            Picker(L("Область поиска"), selection: $store.searchScope) {
-                Text(L("Всё")).tag("all")
-                Text(L("Заметки")).tag("notes")
-                Text(L("Транскрипт")).tag("transcript")
-                if store.isFeatureEnabled(.cards) { Text(L("Карточки")).tag("cards") }
-                Text(L("Названия")).tag("meetings")
-                if byMeaning && store.isFeatureEnabled(.tasks) { Text(L("Задачи")).tag("tasks"); Text(L("Код")).tag("code") }
-            }.pickerStyle(.segmented).labelsHidden().accessibilityLabel(L("Область поиска")).tint(Ink.actionFill).padding(.horizontal, 22).padding(.bottom, 16)
+            AppTabBar(label: L("Область поиска"), selection: $store.searchScope,
+                      tabs: scopeTabs, identifier: "search.scope")
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 22).padding(.bottom, 16)
             Rectangle().fill(Ink.line).frame(height: 1)
             if let message = byMeaning ? knowledge.error : store.searchError {
                 HStack(alignment: .top, spacing: 10) {
@@ -89,6 +84,17 @@ struct SearchView: View {
             .onChange(of: knowledge.sources) { _, hits in selectedID = hits.first?.id }
             .onChange(of: store.searchHits) { _, _ in selectedID = visibleSearchHits.first?.id }
             .onDisappear { store.cancelSearch(); knowledge.cancel() }
+    }
+
+    private var scopeTabs: [AppTab<String>] {
+        var tabs = [AppTab(L("Всё"), value: "all"), AppTab(L("Заметки"), value: "notes"),
+                    AppTab(L("Транскрипт"), value: "transcript")]
+        if store.isFeatureEnabled(.cards) { tabs.append(AppTab(L("Карточки"), value: "cards")) }
+        tabs.append(AppTab(L("Названия"), value: "meetings"))
+        if byMeaning && store.isFeatureEnabled(.tasks) {
+            tabs += [AppTab(L("Задачи"), value: "tasks"), AppTab(L("Код"), value: "code")]
+        }
+        return tabs
     }
 
     #if DEBUG

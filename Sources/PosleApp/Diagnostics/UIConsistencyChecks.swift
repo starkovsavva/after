@@ -91,6 +91,10 @@ enum UIConsistencyChecks {
               isDisposableRoot(path) else {
             throw AppError.message("UI consistency checks require --preview and an explicit /private/tmp/posle-ui-check-* fixture")
         }
+        let accessibilityMode = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        let previousAccessibilityMode = NSApp.accessibilityAttributeValue(accessibilityMode)
+        NSApp.accessibilitySetValue(true, forAttribute: accessibilityMode)
+        defer { NSApp.accessibilitySetValue(previousAccessibilityMode, forAttribute: accessibilityMode) }
         if arguments.contains("--check-cloud-audio-setup") || arguments.contains("--check-card-selection") {
             scope = UUID().uuidString; frames = [:]; enabledStates = [:]; owners = [:]
             defer { scope = ""; frames = [:]; enabledStates = [:]; owners = [:] }
@@ -167,8 +171,11 @@ enum UIConsistencyChecks {
         print("PASS: recording/save presentation states keep the same status slot without accessing recording hardware")
 
         for tab in ["notes", "transcript", "cards", "summary"] {
-            store.tab = tab
+            try NativeTabNavigation.press("meeting.tabs.control." + tab, in: host)
             try await check("switching meeting tab to " + tab, extra: ["meeting.tabs"])
+            guard store.tab == tab, NativeTabNavigation.isSelected("meeting.tabs.control." + tab, in: host) else {
+                throw AppError.message("Actual native meeting tab did not activate: " + tab)
+            }
         }
         if let index = store.meetings.firstIndex(where: { $0.id == meeting.id }) {
             store.meetings[index].title = "Длинное демонстрационное название встречи: обсуждение бюджета, следующего этапа проекта и договорённостей с командой"
@@ -300,11 +307,11 @@ enum UIConsistencyChecks {
         func descendants<T: NSView>(_ view: NSView, as type: T.Type) -> [T] {
             (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants($0, as: type) }
         }
-        guard let mode = descendants(host, as: NSSegmentedControl.self).first(where: { $0.segmentCount == 2 }) else {
-            throw AppError.message("Native card mode control missing")
-        }
-        mode.selectedSegment = 1; mode.sendAction(mode.action, to: mode.target)
+        try NativeTabNavigation.press("cards.mode.all", in: host)
         _ = try await measure(host, window)
+        guard NativeTabNavigation.isSelected("cards.mode.all", in: host) else {
+            throw AppError.message("Actual native all-cards tab did not activate")
+        }
         func waitForRows(_ predicate: (NSTableView) -> Bool) async throws -> NSTableView {
             for _ in 0..<30 {
                 _ = try await measure(host, window)

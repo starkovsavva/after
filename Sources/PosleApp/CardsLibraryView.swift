@@ -100,8 +100,9 @@ struct CardsWorkspaceView: View {
             HStack(spacing: 12) {
                 if !embedded { Text(L("Карточки")).font(AppTypography.pageTitle).accessibilityAddTraits(.isHeader) }
                 if hasContent {
-                    Picker(L("Режим"), selection: $mode) { Text(L("Повторение")).tag("study"); Text(L("Все карточки")).tag("all") }
-                        .pickerStyle(.segmented).labelsHidden().frame(width: 225)
+                    AppTabBar(label: L("Режим"), selection: $mode,
+                              tabs: [AppTab(L("Повторение"), value: "study"), AppTab(L("Все карточки"), value: "all")],
+                              identifier: "cards.mode")
                 }
                 Spacer(minLength: 8)
                 if workspace.canUndo && (app.folderSelection == nil || workspace.lastReviewMeetingID.flatMap { app.folderID(for: $0) } == app.folderSelection) {

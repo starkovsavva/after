@@ -33,10 +33,68 @@ enum IntegrationNativeChecks {
         try expect(index != nil && !app.busy && app.jobs.activeCount == 0, "Reading new integration settings must not start work")
         print("PASS: semantic model configuration and credential binding decode without inference or network")
         try await optionalSearchChecks(app)
-        let hosted = NSHostingView(rootView: IntegrationSettingsView().environmentObject(app))
-        hosted.frame = NSRect(x:0,y:0,width:620,height:540); hosted.layoutSubtreeIfNeeded()
-        try expect(hosted.fittingSize.height > 0, "Integration view must lay out with real persisted metadata")
-        print("PASS: native integrations view lays out persisted provider configuration")
+        try await nativeTabChecks(app, root: root)
+    }
+    /// Use the actual tab buttons in native windows; reading either setup page
+    /// must not enable MCP, sync a tracker, or touch credentials.
+    private static func nativeTabChecks(_ app: AppStore, root: URL) async throws {
+        let accessibilityMode = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        let previousAccessibilityMode = NSApp.accessibilityAttributeValue(accessibilityMode)
+        NSApp.accessibilitySetValue(true, forAttribute: accessibilityMode)
+        defer { NSApp.accessibilitySetValue(previousAccessibilityMode, forAttribute: accessibilityMode) }
+        let bridge = try RustBridge.shared.get()
+        let before = try bridge.request(root: root, command: "tracker-state")
+        for dark in [false, true] {
+            let view = NSHostingView(rootView: ScrollView {
+                IntegrationSettingsView().environmentObject(app).padding(26)
+            }.frame(width: 780, height: 620).background(Ink.paper)
+                .environment(\.colorScheme, dark ? .dark : .light)
+                .preferredColorScheme(dark ? .dark : .light))
+            view.sizingOptions = []; view.frame = NSRect(x: 0, y: 0, width: 780, height: 620)
+            let window = NSWindow(contentRect: view.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = view
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+            defer { window.orderOut(nil) }
+            try await settle(view, window) {
+                NativeTabNavigation.isSelected("integrations.section.trackers", in: view)
+                    && NativeTabNavigation.contains("tracker.add", in: view)
+            }
+            try NativeTabNavigation.press("integrations.section.agents", in: view)
+            try await settle(view, window) {
+                NativeTabNavigation.isSelected("integrations.section.agents", in: view)
+                    && !NativeTabNavigation.isSelected("integrations.section.trackers", in: view)
+                    && NativeTabNavigation.contains("integrations.mcp.enabled", in: view)
+                    && !NativeTabNavigation.contains("tracker.add", in: view)
+            }
+            try snapshot(view, at: root.appendingPathComponent(dark ? "integration-tabs-dark.png" : "integration-tabs-light.png"))
+            try NativeTabNavigation.press("integrations.section.trackers", in: view)
+            try await settle(view, window) {
+                NativeTabNavigation.isSelected("integrations.section.trackers", in: view)
+                    && !NativeTabNavigation.isSelected("integrations.section.agents", in: view)
+                    && NativeTabNavigation.contains("tracker.add", in: view)
+                    && !NativeTabNavigation.contains("integrations.mcp.enabled", in: view)
+            }
+        }
+        try expect(try bridge.request(root: root, command: "tracker-state") == before,
+                   "Switching integration tabs must preserve persisted tracker configuration")
+        try expect(!app.busy && app.jobs.activeCount == 0 && !app.trackerSync.busy,
+                   "Integration navigation must stay idle without provider requests or jobs")
+        print("PASS: actual native Trackers/Agents tabs update selected AX state and their own content in light/dark windows, preserve configuration and stay offline")
+    }
+    private static func settle(_ view: NSView, _ window: NSWindow, _ condition: () -> Bool) async throws {
+        for _ in 0..<150 {
+            view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw AppError.message("Native integration tabs did not reach the selected page or expected controls")
+    }
+    private static func snapshot(_ view: NSView, at url: URL) throws {
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw AppError.message("Integration tab snapshot unavailable") }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { throw AppError.message("Integration tab PNG unavailable") }
+        try data.write(to: url)
     }
     private static func mcpConfigurationChecks() throws {
         // Real macOS paths can contain spaces, Unicode, quotes and backslashes.

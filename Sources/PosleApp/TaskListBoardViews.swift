@@ -88,42 +88,117 @@ struct TaskRowMetadata: View {
 }
 
 struct TaskBoardView: View {
+    @EnvironmentObject private var app: AppStore
+    @State private var localDragSession = TaskBoardDragSession()
+    @State private var dropTarget: TaskWorkspaceStatus?
     let tasks: [TaskWorkspace]
     let selectedID: String?
     let select: (TaskWorkspace) -> Void
     let changeStatus: (TaskWorkspace, TaskWorkspaceStatus) -> Void
+    var suppliedDragSession: TaskBoardDragSession? = nil
+    private var dragSession: TaskBoardDragSession { suppliedDragSession ?? localDragSession }
     var body: some View {
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 18) {
-                ForEach(TaskWorkspaceStatus.allCases) { status in
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack(spacing: 7) {
-                            TaskStatusMark(status: status)
-                            Text(L(status.title)).font(AppTypography.controlStrong)
-                            Spacer(minLength: 4)
-                            Text("\(tasks.filter { $0.status == status }.count)").font(AppTypography.caption).foregroundStyle(.secondary)
-                        }.padding(.horizontal, 4)
-                        ScrollView {
-                            LazyVStack(spacing: 10) {
-                                ForEach(tasks.filter { $0.status == status }) { task in
-                                    Button { select(task) } label: {
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            Text(task.title).font(AppTypography.controlStrong).lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
-                                            TaskRowMetadata(task: task)
-                                            if !task.project.isEmpty { Text(task.project).font(AppTypography.caption).foregroundStyle(.secondary) }
-                                        }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                                            .background(Ink.field, in: RoundedRectangle(cornerRadius: AppLayout.cardRadius))
-                                            .overlay(RoundedRectangle(cornerRadius: AppLayout.cardRadius).stroke(selectedID == task.id ? Ink.accent.opacity(0.45) : Ink.line, lineWidth: 1))
-                                    }.buttonStyle(.plain).accessibilityIdentifier("tasks.board." + task.id)
-                                        .contextMenu {
-                                            ForEach(TaskWorkspaceStatus.allCases) { target in Button(L(target.title)) { changeStatus(task, target) }.disabled(target == task.status) }
-                                        }
-                                }
-                            }
-                        }
-                    }.frame(width: 236).frame(maxHeight: .infinity, alignment: .top)
-                }
+                ForEach(TaskWorkspaceStatus.allCases) { status in column(status) }
             }.padding(AppLayout.contentInset)
         }.background(Ink.soft)
     }
+    private func column(_ status: TaskWorkspaceStatus) -> some View {
+        columnContents(status)
+            .padding(8).frame(width: 252)
+            .frame(minHeight: 220, maxHeight: .infinity, alignment: .top)
+            .background(dropTarget == status ? Ink.accent.opacity(0.07) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: AppLayout.cardRadius))
+            .overlay(RoundedRectangle(cornerRadius: AppLayout.cardRadius)
+                .stroke(dropTarget == status ? Ink.accent.opacity(0.65) : Color.clear, lineWidth: 2))
+            .contentShape(RoundedRectangle(cornerRadius: AppLayout.cardRadius))
+            .boardDropTargetGeometry("tasks.board.column." + status.rawValue)
+            .onDrop(of: [TaskBoardDragSession.type.identifier], delegate: TaskBoardColumnDropDelegate(
+                session: dragSession, status: status, app: app, isTargeted: targetBinding(status)))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(L(status.title))
+            .accessibilityIdentifier("tasks.board.column." + status.rawValue)
+    }
+    private func columnContents(_ status: TaskWorkspaceStatus) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            columnHeader(status)
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(tasks.filter { $0.status == status }) { task in cardButton(task) }
+                }.padding(2)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+    private func columnHeader(_ status: TaskWorkspaceStatus) -> some View {
+        HStack(spacing: 7) {
+            TaskStatusMark(status: status)
+            Text(L(status.title)).font(AppTypography.controlStrong)
+            Spacer(minLength: 4)
+            Text("\(tasks.filter { $0.status == status }.count)")
+                .font(AppTypography.caption).foregroundStyle(.secondary)
+        }.padding(.horizontal, 4)
+    }
+    private func cardButton(_ task: TaskWorkspace) -> some View {
+        Button { select(task) } label: { cardContents(task) }
+            .buttonStyle(.plain).accessibilityIdentifier("tasks.board." + task.id)
+            .onDrag { dragSession.provider(for: task, app: app) } preview: {
+                cardContents(task).frame(width: 236)
+            }
+            .contextMenu {
+                ForEach(TaskWorkspaceStatus.allCases) { target in
+                    Button(L(target.title)) { changeStatus(task, target) }.disabled(target == task.status)
+                }
+            }
+    }
+    private func targetBinding(_ status: TaskWorkspaceStatus) -> Binding<Bool> {
+        Binding(get: { dropTarget == status }, set: { targeted in
+            if targeted { dropTarget = status } else if dropTarget == status { dropTarget = nil }
+        })
+    }
+    private func cardContents(_ task: TaskWorkspace) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(task.title).font(AppTypography.controlStrong).lineLimit(4).frame(maxWidth: .infinity, alignment: .leading)
+            TaskRowMetadata(task: task)
+            if !task.project.isEmpty { Text(task.project).font(AppTypography.caption).foregroundStyle(.secondary) }
+        }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Ink.field, in: RoundedRectangle(cornerRadius: AppLayout.cardRadius))
+            .overlay(RoundedRectangle(cornerRadius: AppLayout.cardRadius).stroke(selectedID == task.id ? Ink.accent.opacity(0.45) : Ink.line, lineWidth: 1))
+    }
 }
+
+
+extension View {
+    /// Measures the exact drop surface only during the disposable native board check.
+    @ViewBuilder func boardDropTargetGeometry(_ identifier: String) -> some View {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--check-task-workspace") {
+            self.background(TaskBoardDropGeometryProbe(identifier: identifier)
+                .allowsHitTesting(false).accessibilityHidden(true))
+        } else { self }
+        #else
+        self
+        #endif
+    }
+}
+
+#if DEBUG
+import AppKit
+
+private struct TaskBoardDropGeometryProbe: NSViewRepresentable {
+    let identifier: String
+    func makeNSView(context: Context) -> TaskBoardDropGeometryView {
+        let view = TaskBoardDropGeometryView()
+        view.identifier = NSUserInterfaceItemIdentifier("geometry." + identifier)
+        view.setAccessibilityElement(false)
+        return view
+    }
+    func updateNSView(_ view: TaskBoardDropGeometryView, context: Context) {
+        view.identifier = NSUserInterfaceItemIdentifier("geometry." + identifier)
+    }
+}
+
+private final class TaskBoardDropGeometryView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+#endif

@@ -134,8 +134,13 @@ extension NotesStore {
     }
 
     @discardableResult
-    func updateTaskWorkspace(_ task: TaskWorkspace, patch: [String: Any]) -> TaskWorkspace? {
-        mutateTaskWorkspace(task, command: "task-details-update", arguments: ["patch": patch])
+    func updateTaskWorkspace(_ task: TaskWorkspace, patch: [String: Any], requireFeature: Bool = false, expectedFolderID: String? = nil) -> TaskWorkspace? {
+        var arguments: [String: Any] = ["patch": patch]
+        if requireFeature {
+            arguments["requireTaskFeature"] = true
+            arguments["expectedTaskFolderID"] = (expectedFolderID as Any?) ?? NSNull()
+        }
+        return mutateTaskWorkspace(task, command: "task-details-update", arguments: arguments)
     }
 
     @discardableResult

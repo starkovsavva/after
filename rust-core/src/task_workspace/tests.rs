@@ -733,3 +733,50 @@ fn adding_transport_feature_guard_preserves_existing_receipt_replay() {
     assert!(call(root.path(),"task-create",guarded).is_err());
     assert_eq!(notes::list(root.path()).unwrap().notes.len(),1);
 }
+
+#[test]
+fn board_drop_scope_guard_rejects_moved_virtual_tasks_and_keeps_legacy_requests() {
+    let root = tempfile::tempdir().unwrap();
+    storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"tasks":true}})).unwrap();
+    let folder = crate::folders::save(root.path(), crate::folders::Folder {
+        id: "board-work".into(), name: "Work".into(), revision: 0,
+        overrides: json!({"features":{"tasks":true}}),
+    }).unwrap();
+    let unassigned = create_task(root.path(), "Unassigned task");
+    let accepted_null = call(root.path(), "task-details-update", json!({
+        "taskID":unassigned["id"], "expectedRevision":unassigned["revision"],
+        "operationID":uuid(), "patch":{"status":"doing"}, "requireTaskFeature":true,
+        "expectedTaskFolderID":null
+    })).unwrap();
+    assert_eq!(accepted_null["status"], "doing");
+
+    let dir = storage::meeting_directory(root.path(), "board-source").unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    storage::atomic_json(&dir.join("meta.json"), &json!({"id":"board-source","title":"Source","createdAt":1.0,"source":"synthetic.mp3","completedTasks":[]})).unwrap();
+    let item = json!({"kind":"action","text":"Move source folder","owner":"Anna","due":"","segmentIDs":[1]});
+    storage::atomic_json(&dir.join("summary.json"), &json!({"items":[item]})).unwrap();
+    let id = format!("summary:board-source:{}", notes::task_signature(&item));
+    let captured = get(root.path(), &json!(id));
+    assert_eq!(captured["virtual"], true);
+    let request = json!({"taskID":id,"expectedRevision":captured["revision"],
+        "expectedSourceFingerprint":captured["sourceFingerprint"],"operationID":uuid(),
+        "patch":{"status":"doing"},"requireTaskFeature":true,"expectedTaskFolderID":null});
+    crate::folders::assign_meeting(root.path(), "board-source", Some(&folder.id), 0).unwrap();
+    let moved = get(root.path(), &json!(id));
+    assert_eq!(moved["revision"], captured["revision"]);
+    assert_eq!(moved["sourceFingerprint"], captured["sourceFingerprint"]);
+    let before = crate::workspace_repository::snapshot(root.path()).unwrap();
+    assert!(call(root.path(), "task-details-update", request.clone()).unwrap_err().to_string().contains("Папка задачи изменилась"));
+    assert_eq!(crate::workspace_repository::snapshot(root.path()).unwrap().fingerprint, before.fingerprint);
+    assert_eq!(get(root.path(), &json!(id))["virtual"], true);
+    // Older UI/MCP callers omit the optional captured-folder guard.
+    let mut legacy = request.clone();
+    legacy.as_object_mut().unwrap().remove("expectedTaskFolderID");
+    legacy["operationID"] = json!(uuid());
+    let accepted = call(root.path(), "task-details-update", legacy).unwrap();
+    assert_eq!(accepted["status"], "doing");
+    let matching = json!({"taskID":accepted["id"],"expectedRevision":accepted["revision"],
+        "operationID":uuid(),"patch":{"status":"blocked"},"requireTaskFeature":true,
+        "expectedTaskFolderID":folder.id});
+    assert_eq!(call(root.path(), "task-details-update", matching).unwrap()["status"], "blocked");
+}

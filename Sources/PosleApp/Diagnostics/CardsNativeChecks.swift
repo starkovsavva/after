@@ -14,6 +14,10 @@ enum CardsNativeChecks {
         }
         let root = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
         try expect(["/private/tmp", "/tmp"].contains(root.deletingLastPathComponent().path) && root.lastPathComponent.hasPrefix("posle-native-check-"), "Disposable cards root required")
+        let accessibilityMode = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        let previousAccessibilityMode = NSApp.accessibilityAttributeValue(accessibilityMode)
+        NSApp.accessibilitySetValue(true, forAttribute: accessibilityMode)
+        defer { NSApp.accessibilitySetValue(previousAccessibilityMode, forAttribute: accessibilityMode) }
         let registration = UUID()
         UnsavedEditorRegistry.set(id: registration, title: "Новая карточка", dirty: true)
         try expect(UnsavedEditorRegistry.hasUnsaved && UnsavedEditorRegistry.titles.contains("Новая карточка"), "Unsaved editor was not registered")
@@ -62,9 +66,10 @@ enum CardsNativeChecks {
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.contentView = host; window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil) }
-        try await wait(host, window) { descendants(host, as: NSSegmentedControl.self).contains { $0.segmentCount == 2 } }
-        let mode = descendants(host, as: NSSegmentedControl.self).first { $0.segmentCount == 2 }!
-        mode.selectedSegment = 1; mode.sendAction(mode.action, to: mode.target)
+        try await wait(host, window) { NativeTabNavigation.contains("cards.mode.all", in: host) }
+        try expect(NativeTabNavigation.isSelected("cards.mode.study", in: host), "Cards must start in the selected review tab")
+        try NativeTabNavigation.press("cards.mode.all", in: host)
+        try await wait(host, window) { NativeTabNavigation.isSelected("cards.mode.all", in: host) && !NativeTabNavigation.isSelected("cards.mode.study", in: host) }
         try await wait(host, window) { descendants(host, as: NSTableView.self).contains { $0.numberOfRows >= 2 } }
         let table = descendants(host, as: NSTableView.self).first { $0.numberOfRows >= 2 }!
         table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
@@ -90,7 +95,8 @@ enum CardsNativeChecks {
         let afterRetry = try bridge.read(root: root, url: app.meetingDirectory(id).appendingPathComponent("summary.json"))
         try expect(afterRetry == intact, "Load failure changed card data")
         print("PASS: visible per-deck errors and retry preserve the underlying cards")
-        print("4 native card workflow checks passed")
+        try await AppTabBarNativeChecks.run()
+        print("5 native card workflow checks passed")
     }
     private static func descendants<T: NSView>(_ view: NSView, as type: T.Type) -> [T] {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants($0, as: type) }

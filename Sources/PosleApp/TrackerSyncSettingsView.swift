@@ -16,6 +16,10 @@ struct TrackerSyncSettingsView: View {
                     Button("Google Tasks") { editor = newConfiguration(provider: "google") }
                     Button(L("Яндекс Трекер")) { editor = newConfiguration(provider: "yandex") }
                 } label: { Label(L("Подключить"), systemImage: "plus") }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Ink.paper, in: RoundedRectangle(cornerRadius: AppLayout.controlRadius))
+                    .overlay(RoundedRectangle(cornerRadius: AppLayout.controlRadius).stroke(Ink.line, lineWidth: 1))
                     .disabled(coordinator.busy).accessibilityIdentifier("tracker.add")
             }
             Text(coordinator.state.configurations.isEmpty
