@@ -24,6 +24,12 @@ final class BugReportController: NSObject, NSWindowDelegate {
         window.title = "Сообщить об ошибке"; window.minSize = NSSize(width: 570, height: 520)
         window.isReleasedWhenClosed = false; window.delegate = self
         window.contentView = NSHostingView(rootView: view.environment(\.locale, Locale(identifier: "ru_RU")))
+        session.setReveal { [weak window] in
+            guard let window else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+        }
         self.window = window; window.center(); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
     }
     func copyReport() {

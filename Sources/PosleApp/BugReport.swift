@@ -100,10 +100,12 @@ final class BugReportSession: ObservableObject {
     @Published var failure: String?
     @Published var previewExpanded = false
     private var checkpoint = BugReportDraft()
+    private var reveal: (() -> Void)?
     init(diagnostics: BugReportDiagnostics) { self.diagnostics = diagnostics }
     var document: BugReportDocument { BugReportDocument(description: draft, diagnostics: diagnostics) }
     var hasUnsaved: Bool { !draft.isEmpty && draft != checkpoint }
     func didShare(_ saved: BugReportDraft, status: String) { checkpoint = saved; self.status = status; failure = nil; updateRegistration() }
-    func dispose() { UnsavedEditorRegistry.remove(id: id) }
-    private func updateRegistration() { UnsavedEditorRegistry.set(id: id, title: "Отчёт об ошибке", dirty: hasUnsaved) }
+    func setReveal(_ action: @escaping () -> Void) { reveal = action; updateRegistration() }
+    func dispose() { UnsavedEditorRegistry.remove(id: id); reveal = nil }
+    private func updateRegistration() { UnsavedEditorRegistry.set(id: id, title: "Отчёт об ошибке", dirty: hasUnsaved, reveal: reveal) }
 }

@@ -49,6 +49,26 @@ enum BugReportNativeChecks {
         try edit(window, placeholder: "Какой результат вы хотели получить", value: "Ожидал увидеть список моих задач.")
         try await wait(window) { session.draft.isValid && session.hasUnsaved && UnsavedEditorRegistry.hasUnsaved }
         let draft = session.draft
+        let updateApp = AppStore(preview: true), updates = updateApp.updates
+        updates.configureForChecks(store: updateApp)
+        var installs = 0
+        updates.postponeForChecks { installs += 1 }
+        defer { updates.standardUserDriverWillFinishUpdateSession() }
+        window.orderOut(nil)
+        updates.resumeForChecks()
+        try expect(!window.isVisible && updates.hasDeferredDraft && updates.canRevealDraft && !updates.canSafelyRelaunch && installs == 0,
+                   "A hidden report must defer installation and offer recovery without dropping its draft")
+        updates.revealPendingDraft()
+        try await wait(window) { window.isVisible && window.isKeyWindow }
+        try expect(session.draft == draft && session.hasUnsaved && !updates.canSafelyRelaunch && installs == 0,
+                   "Open Draft must reveal the actual report window and preserve the restart guard")
+        window.miniaturize(nil)
+        try await wait(window) { window.isMiniaturized }
+        updates.refreshForChecks(); updates.revealPendingDraft()
+        try await wait(window) { !window.isMiniaturized && window.isVisible && window.isKeyWindow }
+        try expect(session.draft == draft && session.hasUnsaved && !updates.canSafelyRelaunch && installs == 0,
+                   "Open Draft must restore a minimized report, retaining its complete text and pending installation")
+        print("PASS: updater Open Draft reveals hidden and minimized report windows without losing typed text or bypassing unsaved protection")
         try expect(!ids(window).contains("bugReport.steps") && !session.document.text.contains("Как повторить") && !String(decoding: session.document.json, as: UTF8.self).contains("\"steps\""), "The report must contain only the two requested fields and no reproduction form")
         controller.present(settings: unknown)
         try expect(controller.window === window && controller.session === session && session.draft == draft && session.diagnostics.currentRoute.provider == "chatgpt", "Reopening Help must preserve the same typed form and original metadata")
@@ -89,10 +109,21 @@ enum BugReportNativeChecks {
         try press(window, "bugReport.copy")
         try await wait(window) { session.failure != nil && ids(window).contains("bugReport.failure") }
         try expect(session.draft == draft && session.hasUnsaved && pasteboard.string(forType: .string) == nil, "Clipboard failure must preserve the draft and avoid false success")
+        updates.resumeForChecks()
+        try expect(installs == 0 && !updates.canSafelyRelaunch, "Copy failure cannot release the updater restart guard")
+        let otherEditor = UUID()
+        UnsavedEditorRegistry.set(id: otherEditor, title: "Другой редактор", dirty: true)
+        defer { UnsavedEditorRegistry.remove(id: otherEditor) }
         copyWorks = true
         try press(window, "bugReport.copy")
         try await wait(window) { session.status != nil && !session.hasUnsaved && ids(window).contains("bugReport.status") }
-        try expect(pasteboard.string(forType: .string) == session.document.text && session.failure == nil && !UnsavedEditorRegistry.hasUnsaved, "The private pasteboard must receive exactly the reviewed report; successful copy releases only this draft")
+        try expect(pasteboard.string(forType: .string) == session.document.text && session.failure == nil && UnsavedEditorRegistry.titles == ["Другой редактор"], "The private pasteboard must receive exactly the reviewed report; successful copy releases only this draft")
+        updates.resumeForChecks()
+        try expect(installs == 0 && !updates.canSafelyRelaunch, "Sharing a report cannot bypass another editor's unsaved guard")
+        UnsavedEditorRegistry.remove(id: otherEditor)
+        updates.resumeForChecks(); updates.resumeForChecks()
+        try expect(installs == 1 && updates.relaunchRequested, "A successful copy must release the report's restart guard and resume installation exactly once")
+        updates.standardUserDriverWillFinishUpdateSession()
         try edit(window, placeholder: "Какой результат вы хотели получить", value: "Ожидал список задач без повторной настройки.")
         try await wait(window) { session.hasUnsaved }
         let report = session.document
@@ -122,7 +153,7 @@ enum BugReportNativeChecks {
         try press(window, "bugReport.close")
         try await wait(window) { controller.window == nil && controller.session == nil }
         try expect(!UnsavedEditorRegistry.hasUnsaved, "Closing a shared report must clean up its draft guard")
-        print("4 native bug report checks passed")
+        print("5 native bug report checks passed")
     }
     private static func expect(_ value: @autoclosure () throws -> Bool, _ message: String) throws { if try !value() { throw AppError.message(message) } }
     private static func roots(_ window: NSWindow) -> [NSView] { [window.contentView, window.attachedSheet?.contentView].compactMap { $0 } }

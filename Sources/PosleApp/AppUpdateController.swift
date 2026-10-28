@@ -260,7 +260,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
         if SettingsDraftRegistry.hasUnsaved { revealSettingsDrafts() }
         else if settingsSaveFailed { store?.openSettings("updates") }
         else if hasQuickDraft() { promptedQuickDraft = true; showQuickDraft() }
-        else if !revealCaptureDraftIfNeeded() {
+        else if !revealCaptureDraftIfNeeded() && !UnsavedEditorRegistry.revealFirst() {
             if failedOverviewFlush { revealOverviewDraftIfNeeded() }
             else { revealLibraryDraftIfNeeded() }
         }
