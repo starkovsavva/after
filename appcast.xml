@@ -6,30 +6,26 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.17.6</title>
-      <sparkle:version>29</sparkle:version>
-      <sparkle:shortVersionString>0.17.6</sparkle:shortVersionString>
+      <title>После 0.17.6.1</title>
+      <sparkle:version>30</sparkle:version>
+      <sparkle:shortVersionString>0.17.6.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Wed, 28 Oct 2026 17:03:32 GMT</pubDate>
-      <description sparkle:format="markdown">- **Запись через системный выбор экрана.** После «Начать запись» или «Проверить звук» macOS предлагает выбрать экран и разрешает доступ на эту сессию. Приложение использует выбранный источник напрямую, без повторного запроса общего доступа к записи экрана. Старый сохранённый дисплей больше не блокирует запуск. Для микрофона доступ macOS по-прежнему нужен.
-- **Отмена и остановка записи.** Выбор экрана можно отменить без пустой встречи. Выход из приложения отменяет ожидающий запуск. Остановка через меню записи macOS сохраняет исходный файл и предлагает обработать его из встречи.
-- **Восстановление фоновых заданий после изменения профиля.** Для конспекта, примера карточки и дополнения заметки появилась команда «Запустить заново…»: она показывает текущие модель и провайдер и создаёт новую операцию. Предыдущая попытка остаётся в истории. Изменение исходной заметки во время подтверждения не отправляет новый текст незаметно.
-- **Диагностика обновлений.** Отчёт об ошибке содержит версию, сборку, ревизию исходников и совпадение версий вспомогательных компонентов. Полные пути, ключи и содержимое библиотеки автоматически не включаются. Проверка обновления теперь сверяет также вложенные исполняемые компоненты и удаление старых файлов.
+      <pubDate>Wed, 28 Oct 2026 17:55:43 GMT</pubDate>
+      <description sparkle:format="markdown">- **Вкладки без прямоугольной рамки.** У текстовых вкладок убрана синяя системная рамка. Выбранный раздел отмечен линией снизу; фокус обозначается немного более толстой линией. Стрелки, Home/End и управление клавиатурой сохранены.
+- Изменение применяется к общим вкладкам встреч, задач, интеграций, карточек, календаря, проектов и поиска. Переключение не сбрасывает черновики.
 
-После обновления проверьте короткую запись: выберите экран в окне macOS, запишите речь и звук Mac, остановите и прослушайте результат. Приложение не изменяет разрешения OBS или других программ.
-
-![Запись с доступом через системный выбор экрана](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.6/docs/screenshots/recording.png)
+Исправления записи и восстановления сохранённых профилей из 0.17.6 входят в это обновление.
 </description>
-      <posle:sourceRevision>2bf9534fa22c13eb2d6119c85dc979eed23d5284</posle:sourceRevision>
-      <posle:archiveSHA256>2f55401140c8752da84023b9013125fea2ab155ef367fb7595ae94e357334070</posle:archiveSHA256>
-      <posle:sourceSHA256>0e6ceda908a5f603c0aa454673b87d00440b737efdaf54e0f9c0596a70bca64d</posle:sourceSHA256>
-      <posle:packageSHA256>75007b489f32e258248fed491c8b960ee373a629512d2febacd7364000eba61d</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.6/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="9LHzwybUX+lZGT4jbduXaecuO3mD4wGmeWFzhOJA6vNgO6dxybEX2rjKVI9qTpZCPOdCAHhuezNjMgya9PaiBw==" length="24737802" type="application/octet-stream" />
+      <posle:sourceRevision>c289aab292de3bab5c468fc38c5582dfea3087b1</posle:sourceRevision>
+      <posle:archiveSHA256>51b7f16b9563bf74bf3d7c23819554580cf3cd0bf65ec7f5392be1c72aebd222</posle:archiveSHA256>
+      <posle:sourceSHA256>589cbc932ad374411e963ce6efacdc57d4ab63bf12dc07806351ca6c41cf30de</posle:sourceSHA256>
+      <posle:packageSHA256>9f1c8c55116a67239bd5d5adf134cf4c4209163570a524d590be4c0ba8156de0</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.6.1/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="QAx5EekiFdsnWQASqjXydZ9H+5Hs9MmLN9P+75HtiZJhWZlChDV7APtYvbbM2uE2XzLwkyr8KXMz8ZtisMCFAA==" length="24740766" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: nLNZ5RpKRgxeSilmpPqzp2jwcUpbxRt3knDjpqYgjg8cljtoTmaNbAtSZyXBhiBfwGEzUjoDDCgh/4k2qD1QDw==
-length: 4355
+edSignature: eGsJRrZN5OpFc/dk3eh4kj1kOmIL+s24Sg86ETQguaoJTijjtxNh2uAbTF8jAxlVYadob7/zqQifuUrDm4WxAA==
+length: 2410
 -->
