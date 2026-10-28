@@ -269,7 +269,7 @@ enum FolderNativeChecks {
         try expect(selectedFeature(main, .cards) == "Включено" && selectedFeature(main, .calendar) == "Выключено",
                    "The visible folder shortcut must open the selected folder's actual override controls")
         try snapshot(main.window.attachedSheet?.contentView ?? main.view, root.appendingPathComponent("folder-features-clean.png"))
-        try chooseFeature(main, .calendar, title: "Включено")
+        try await chooseFeature(main, .calendar, title: "Включено")
         try await settle(main) { UnsavedEditorRegistry.hasUnsaved }
         try snapshot(main.window.attachedSheet?.contentView ?? main.view, root.appendingPathComponent("folder-features-customize.png"))
         try press(main, "folder.save")
@@ -277,7 +277,7 @@ enum FolderNativeChecks {
         try press(main, "folder.features.open")
         try await settle(main) { ids(main).contains("folder.feature.calendar") }
         try expect(selectedFeature(main, .calendar) == "Включено", "A saved native override must survive reopening the folder editor")
-        try chooseFeature(main, .calendar, title: "Выключено")
+        try await chooseFeature(main, .calendar, title: "Выключено")
         try press(main, "folder.save")
         try await settle(main) { sheetsClosed(main) && !ids(main).contains("library.calendar") }
         guard let darkFolder = app.notes.folder(english.id) else { throw AppError.message("Saved feature profile missing") }
@@ -399,7 +399,7 @@ enum FolderNativeChecks {
         try press(main, "folder.features.open")
         try await settle(main) { ids(main).contains("folder.feature.cards") }
         try expect(selectedFeature(main, .cards) == "Включено" && selectedFeature(main, .calendar) == "Выключено",
-                   "The persistent header must open the selected folder's feature controls while its list is hidden")
+                   "The persistent header must open the selected folder's feature controls while its list is hidden; cards=\(selectedFeature(main, .cards) ?? "missing"), calendar=\(selectedFeature(main, .calendar) ?? "missing")")
         try press(main, "folder.save")
         try await settle(main) { sheetsClosed(main) && !app.foldersExpanded }
         let selectedThroughMenu = choosePublishedScope(main, folder: work, folders: app.notes.folders)
@@ -511,8 +511,14 @@ enum FolderNativeChecks {
         guard let index = ordered.firstIndex(of: feature), controls.indices.contains(index) else { return nil }
         return controls[index]
     }
-    private static func selectedFeature(_ host: Host, _ feature: AppFeature) -> String? { featurePopup(host, feature)?.titleOfSelectedItem }
-    private static func chooseFeature(_ host: Host, _ feature: AppFeature, title: String) throws {
+    private static func selectedFeature(_ host: Host, _ feature: AppFeature) -> String? {
+        featurePopup(host, feature)?.titleOfSelectedItem ?? NativePickerChecks.value("folder.feature." + feature.rawValue, in: roots(host))
+    }
+    private static func chooseFeature(_ host: Host, _ feature: AppFeature, title: String) async throws {
+        if featurePopup(host, feature) == nil {
+            try await NativePickerChecks.select(title: title, identifier: "folder.feature." + feature.rawValue, in: roots(host))
+            return
+        }
         guard let popup = featurePopup(host, feature), let menu = popup.menu,
               let item = menu.items.first(where: { $0.title == title }) else { throw AppError.message("Native feature popup option missing: " + feature.rawValue + " / " + title) }
         popup.select(item); menu.performActionForItem(at: popup.indexOfSelectedItem)

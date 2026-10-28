@@ -16,6 +16,30 @@ struct CoreChecks {
         #endif
     }
     static func main() throws {
+        // Swift String equality treats canonically equivalent Unicode as equal;
+        // the Rust profile guard and fingerprints compare the actual bytes.
+        let unicodeJSON = ["text": "й ё café и\u{306} е\u{308} e\u{301} 🧑🏽‍💻 𐐷 \" \\ / \n\t\u{0}", "й": "ё"]
+        let environmentJSON = WorkerEnvironment.json(try JSONEncoder().encode(unicodeJSON))
+        expect(environmentJSON.utf8.allSatisfy { $0 < 0x80 }, "worker JSON transport must contain only ASCII")
+        let decodedEnvironment = try JSONDecoder().decode([String: String].self, from: Data(environmentJSON.utf8))
+        for (key, value) in unicodeJSON {
+            expect(decodedEnvironment[key].map { Array($0.utf8) } == Array(value.utf8), "worker JSON preserves exact Unicode bytes and JSON escapes")
+        }
+        let process = Process(), pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/printenv")
+        process.arguments = ["POSLE_UNICODE_JSON_CHECK"]
+        process.environment = ["POSLE_UNICODE_JSON_CHECK": environmentJSON]
+        process.standardOutput = pipe
+        try process.run()
+        let childOutput = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        expect(process.terminationStatus == 0, "worker environment probe must exit successfully")
+        let childJSON = try JSONDecoder().decode([String: String].self, from: childOutput)
+        for (key, value) in unicodeJSON {
+            expect(childJSON[key].map { Array($0.utf8) } == Array(value.utf8), "Foundation.Process must preserve exact worker JSON after child decoding")
+        }
+        print("PASS: exact Unicode JSON transport through the real macOS process environment")
+
         expect(Exporter.timestamp(-2) == "00:00", "negative timestamp")
         expect(Exporter.timestamp(65.8) == "01:05", "minute timestamp")
         expect(Exporter.timestamp(3725) == "1:02:05", "hour timestamp")
@@ -199,7 +223,7 @@ struct CoreChecks {
         let qualityCopy = try JSONDecoder().decode(RecordingVideoQuality.self, from: JSONEncoder().encode(RecordingVideoQuality.native))
         expect(qualityCopy == .native && RecordingVideoQuality.allCases.allSatisfy { $0.frameRate == 30 }, "quality persists and every preset keeps 30 fps")
         print("PASS: full-display recording profiles, Retina geometry, aspect ratio, audio bitrates and disconnected-display safety")
-        print("10 Swift checks passed")
+        print("11 Swift checks passed")
     }
 }
 

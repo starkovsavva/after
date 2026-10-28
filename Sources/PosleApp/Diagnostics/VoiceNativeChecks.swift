@@ -60,7 +60,11 @@ enum VoiceNativeChecks {
         store.settings.localModel = "voice-fixture"; store.settings.localEndpoint = "http://127.0.0.1:\(port)"
         store.settings.cloudProvider = "chatgpt"; store.settings.cloudModel = "gpt-6-luna"
         store.settings.chatGPTAccountID = "synthetic-profile-account"; store.settings.cloudReasoning = "auto"
-        store.settings.focus = "Synthetic unsaved model profile"
+        // Foundation Process can decompose Unicode in environment values.
+        // Keep both forms deliberately: Swift String equality would hide that
+        // mutation while Rust's exact captured-profile comparison rejects it.
+        store.settings.focus = "Краткий отчёт: й/и\u{0306}; ё/е\u{0308}; café/cafe\u{0301}; 👩🏽‍💻"
+        store.settings.summaryUserContext = "Партнёрский созвон: ёлка/е\u{0308}лка; résumé/re\u{0301}sume\u{0301}; 🚀"
         let voice = store.voice
         func fixture(_ action: String, text: String = "", title: String = "", query: String = "", due: String = "", setDue: Bool = false, cards: [[String: String]] = [], delay: Double = 0) throws {
             let proposal: [String: Any] = ["action": action, "text": text, "title": title, "query": query,
@@ -144,17 +148,22 @@ enum VoiceNativeChecks {
         try expect(persistedSettings.localModel == "voice-fixture" && persistedSettings.cloudModel == "gpt-6-luna"
             && persistedSettings.cloudReasoning == "auto" && persistedSettings.chatGPTAccountID == "synthetic-profile-account",
             "The real worker must use one committed model/account/reasoning snapshot instead of mixing memory with previous Settings")
-        print("PASS: unsaved model, account and reasoning changes cross the real Swift queue and Rust worker without a profile mismatch")
+        try expect(persistedSettings.focus.utf8.elementsEqual(store.settings.focus.utf8)
+            && persistedSettings.summaryUserContext.utf8.elementsEqual(store.settings.summaryUserContext.utf8),
+            "Queue admission must preserve the exact mixed composed/decomposed Unicode settings, not merely canonically equivalent Strings")
+        print("PASS: unsaved model/account/reasoning and exact Unicode settings cross the real Swift Process and Rust profile guard")
 
         // Change a profile through the actual bridge without refreshing the
         // native cache, as an MCP/import operation can do between view updates.
         var profileOverrides = FolderOverrides()
         profileOverrides.mode = "local"; profileOverrides.localProvider = "lmstudio"
         profileOverrides.localEndpoint = "http://127.0.0.1:\(port)"; profileOverrides.localModel = "stale-cache-model"
-        guard let staleFolder = store.notes.saveFolder(LibraryFolder(name: "Worker profile fixture", overrides: profileOverrides)) else {
+        guard let staleFolder = store.notes.saveFolder(LibraryFolder(name: "Профиль «Краткий отчёт» · café/cafe\u{0301} 👩🏽‍💻", overrides: profileOverrides)) else {
             throw AppError.message("Folder profile fixture could not be saved")
         }
         var currentFolder = staleFolder; currentFolder.overrides.localModel = "voice-fixture"
+        currentFolder.overrides.focus = "Папка: точный отчёт й/и\u{0306}; café/cafe\u{0301} 🧑🏾‍🚀"
+        currentFolder.overrides.summaryUserContext = "Папка: партнёр/партне\u{0308}р; résumé/re\u{0301}sume\u{0301} 🌍"
         let folderValue = try JSONSerialization.jsonObject(with: JSONEncoder().encode(currentFolder))
         _ = try RustBridge.shared.get().request(root: root, command: "folder-save", arguments: ["folder": folderValue])
         try expect(store.notes.workspace.folders.first { $0.id == staleFolder.id }?.overrides.localModel == "stale-cache-model", "Fixture must retain the stale UI cache")
@@ -166,7 +175,7 @@ enum VoiceNativeChecks {
         let modelRequest = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("fixture-request.json"))) as! [String: Any]
         try expect(modelRequest["model"] as? String == "voice-fixture", "Rust must call the committed folder model, never the stale UI-cache model")
         store.folderSelection = nil; store.librarySection = "inbox"; store.notes.selectedNoteID = noteID
-        print("PASS: real Rust inference uses committed folder overrides while the native view still has an older model")
+        print("PASS: real Swift Process → Rust inference uses committed Unicode folder overrides while the native view still has an older model")
 
         // Exercise summary recovery through the actual Swift queue, stdin CLI
         // and Rust profile guard, rather than a mocked summary executor.
@@ -196,6 +205,12 @@ enum VoiceNativeChecks {
         let summaryResult = try JSONSerialization.jsonObject(with: Data(contentsOf: summaryDirectory.appendingPathComponent("summary.json"))) as! [String: Any]
         try expect(summaryResult["model"] as? String == "voice-fixture" && recoveredSummary.configuration.restartOfJobID == failedSummary.id,
             "Explicit summary recovery must run the canonical current folder model in a new operation")
+        let summaryRequest = try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("fixture-request.json"))) as! [String: Any]
+        let summaryMessages = summaryRequest["messages"] as! [[String: Any]]
+        let summaryPrompt = try JSONSerialization.jsonObject(with: Data((summaryMessages.last!["content"] as! String).utf8)) as! [String: Any]
+        try expect((summaryPrompt["focus"] as? String)?.utf8.elementsEqual(currentFolder.overrides.focus!.utf8) == true
+            && (summaryPrompt["user_context"] as? String)?.utf8.elementsEqual(currentFolder.overrides.summaryUserContext!.utf8) == true,
+            "The real summary provider request must retain the exact Unicode scalars from the captured folder profile")
         try await waitUntil { store.jobs.jobs.contains { $0.config.restartOfJobID == failedSummary.id && $0.state == "succeeded" } }
         try expect(store.jobs.jobs.first { $0.id == failedSummary.id }?.state == "failed" && !store.jobs.latestAttemptIDs.contains(failedSummary.id),
             "Recovered summary must retain its original failed row as resolved history")

@@ -500,6 +500,7 @@
   "Запись встречи": "Record a meeting",
   "Запись началась без папки. Выберите папку после сохранения встречи.": "Recording started without a folder. Choose a folder after saving the meeting.",
   "Запись остановлена. Проверьте сохранённые дорожки: {0}": "Recording stopped. Check the saved tracks: {0}",
+  "Запись с микрофона неожиданно завершилась. Проверьте микрофон и свободное место на диске.": "Microphone recording stopped unexpectedly. Check your microphone and available disk space.",
   "Запись прервалась: {0}. Завершаю сохранение доступного аудио.": "Recording was interrupted: {0}. Saving the available audio.",
   "Запись сохранена": "Recording saved",
   "Запись сохранена без папки. Выберите папку перед обработкой.": "The recording was saved without a folder. Choose a folder before processing.",

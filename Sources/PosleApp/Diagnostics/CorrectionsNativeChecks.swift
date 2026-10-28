@@ -41,20 +41,15 @@ enum CorrectionsNativeChecks {
         app.reloadLibrary(); app.selection = meeting.id; app.loadSelection()
         let transcript = present(TranscriptSegmentEditor(meetingID: meeting.id, segmentID: 7).environmentObject(app))
         defer { transcript.close() }
-        try await wait(transcript) { !textViews(transcript.root).isEmpty && !descendants(transcript.root, as: NSPopUpButton.self).isEmpty }
+        try await wait(transcript, "transcript controls") { !textViews(transcript.root).isEmpty && NativePickerChecks.contains(identifier: "transcript.edit.speaker", in: [transcript.root]) }
         let text = textViews(transcript.root)[0]
         replace(text, with: "Отправим смету в пятницу.")
-        let speaker = descendants(transcript.root, as: NSPopUpButton.self)[0]
-        speaker.selectItem(withTitle: "Михаил")
-        // SwiftUI's popup routes through each menu item's PickerOptionTarget;
-        // the NSPopUpButton control itself intentionally has no target/action.
-        guard let menu = speaker.menu, speaker.indexOfSelectedItem >= 0 else { throw AppError.message("Native speaker menu missing") }
-        menu.performActionForItem(at: speaker.indexOfSelectedItem)
-        try await wait(transcript) { UnsavedEditorRegistry.hasUnsaved }
+        try await selectSpeaker("Михаил", in: transcript)
+        try await wait(transcript, "transcript dirty binding") { UnsavedEditorRegistry.hasUnsaved }
         try press("transcript.edit.save")
-        try await wait(transcript) { transcript.window.attachedSheet == nil }
+        try await wait(transcript, "transcript save dismissal") { transcript.window.attachedSheet == nil }
         let first: Transcript = try read(bridge, root: root, path: "meetings/\(meeting.id)/transcript.json")
-        try expect(first.segments[0].text == "Отправим смету в пятницу." && first.segments[0].speaker == "speaker_2", "Real transcript controls did not persist: text=\(first.segments[0].text); speaker=\(first.segments[0].speaker); nativeText=\(text.string); picker=\(speaker.titleOfSelectedItem ?? "nil"); items=\(speaker.itemTitles)")
+        try expect(first.segments[0].text == "Отправим смету в пятницу." && first.segments[0].speaker == "speaker_2", "Real transcript controls did not persist: text=\(first.segments[0].text); speaker=\(first.segments[0].speaker); nativeText=\(text.string)")
         try expect(first.segments[0].start == 0 && first.segments[0].end == 10 && !UnsavedEditorRegistry.hasUnsaved, "Transcript save changed timing or left a dirty editor")
         transcript.close()
         print("PASS: actual transcript TextEditor + speaker picker → Save → Rust, stable timestamps and cleared exit gate")
@@ -225,6 +220,9 @@ enum CorrectionsNativeChecks {
         session.window.attachedSheet?.makeFirstResponder(field)
         guard let editor = field.currentEditor() as? NSTextView else { throw AppError.message("Native field editor missing: \(placeholder)") }
         replace(editor, with: text)
+    }
+    private static func selectSpeaker(_ title: String, in session: Session) async throws {
+        try await NativePickerChecks.select(title: title, identifier: "transcript.edit.speaker", in: [session.root])
     }
     @MainActor private struct Session {
         let window: NSWindow

@@ -2,8 +2,8 @@ import AppKit
 import Foundation
 
 // «Закат»: an apricot sun above two lines of notes. Geometry, gradients and
-// colours mirror packaging/Logo.svg. The 50 pt inset gives the icon the same
-// optical footprint as macOS app icons, with transparency outside the tile.
+// colours mirror the milk-white packaging/Logo.svg. The 50 pt inset matches
+// the optical footprint of macOS app icons, with transparency outside the tile.
 guard CommandLine.arguments.count == 2 else {
     fputs("Usage: swift scripts/icon.swift <output.iconset>\n", stderr)
     exit(1)
@@ -76,18 +76,18 @@ for size in sizes {
         context.translateBy(x: 0, y: 512)
         context.scaleBy(x: 1, y: -1)
         gradient(context, path: tile, from: CGPoint(x: 50, y: 50),
-                 to: CGPoint(x: 462, y: 462), colours: [0x383A3C, 0x292B2D])
+                 to: CGPoint(x: 462, y: 462), colours: [0xFAF7F0, 0xECE6DB])
         context.addPath(tile)
-        context.setStrokeColor(colour(0xFFFFFF, alpha: 0.08))
+        context.setStrokeColor(colour(0x71685B, alpha: 0.12))
         context.setLineWidth(1)
         context.strokePath()
         gradient(context, path: sun, from: CGPoint(x: 256, y: 129),
-                 to: CGPoint(x: 256, y: 261), colours: [0xF3BE87, 0xE8A974])
+                 to: CGPoint(x: 256, y: 261), colours: [0xE8A266, 0xD8874B])
         for line in [CGRect(x: 124, y: 287, width: 264, height: 32),
                      CGRect(x: 124, y: 341, width: 168, height: 32)] {
             let path = CGPath(roundedRect: line, cornerWidth: 16, cornerHeight: 16, transform: nil)
             gradient(context, path: path, from: CGPoint(x: 256, y: 287),
-                     to: CGPoint(x: 256, y: 373), colours: [0xF4F2EB, 0xE8E5DD])
+                     to: CGPoint(x: 256, y: 373), colours: [0x3A3C3E, 0x292B2D])
         }
         let name = "icon_\(size)x\(size)\(scale == 2 ? "@2x" : "").png"
         // The context writes sRGB components directly. Retag the bitmap instead

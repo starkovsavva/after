@@ -49,18 +49,23 @@ enum QueueNativeChecks {
         var replacement = config; replacement.settings.cloudProvider = "custom"; replacement.settings.cloudModel = "new-model"
         _ = try await queue.submit(replacement, resource: "cloud", revision: "v2", title: "Конспект", paid: false)
         try expect(await queue.chatGPTAdmissionPaused("quota-account"), "Another route's success cannot silently resume the paused account")
+        // The Continue queue control uses the separately persisted pause even
+        // when other completed work pushes its failure beyond visible history.
+        for index in 0..<55 { _ = try await submit(queue, "quota-history-\(index)", resource: "light").value }
+        try expect(try await queue.snapshot().allSatisfy { $0.id != failure.id }, "Quota recovery fixture must exceed the terminal history window")
+        try expect(await queue.chatGPTAdmissionPaused("quota-account"), "Clipping visible history lost the durable account pause")
         for account in [nil, "unrelated-account"] as [String?] {
             do { try await queue.retry(failure.id, confirmPaid: true, requiringLatestGeneration: true, resumingPausedAccount: account); throw AppError.message("Historical retry guard bypassed") }
             catch { try expect(error.localizedDescription.contains("более новая попытка"), "Historical retry did not reject an unrelated old job") }
         }
         do { try await queue.retry(failure.id, confirmPaid: false, requiringLatestGeneration: true, resumingPausedAccount: "quota-account"); throw AppError.message("Unconfirmed quota recovery succeeded") }
-        catch { try expect(error.localizedDescription != "Unconfirmed quota recovery succeeded", "Quota recovery bypassed paid confirmation") }
+        catch { try expect(error.localizedDescription.contains("Подтвердите повтор платного запроса"), "Clipped quota recovery must reach and enforce paid confirmation") }
         try expect(await queue.chatGPTAdmissionPaused("quota-account"), "Unconfirmed quota recovery cleared the pause")
         try await queue.retry(failure.id, confirmPaid: true, requiringLatestGeneration: true, resumingPausedAccount: "quota-account")
         _ = try await queue.observe(failure.id)
         try expect(!(await queue.chatGPTAdmissionPaused("quota-account")), "Explicit confirmed quota recovery did not resume its exact account")
         await queue.shutdown()
-        print("PASS: historical Retry is atomically rejected; exact paused-account recovery remains explicit and requires paid confirmation")
+        print("PASS: historical Retry is rejected; confirmed exact-account Continue recovers quota failures beyond the visible history window")
     }
     private static func configuration(_ command: String = "example", object: String, autoSummary: Bool = false) -> JobConfiguration {
         var settings = AppSettings(); settings.autoSummary = autoSummary; settings.mode = "local"
@@ -311,6 +316,27 @@ enum QueueNativeChecks {
         await cleanup.shutdown(); try await expectCancelled(firstWaiter); try await expectCancelled(secondWaiter)
         try expect(cleanup.jobs.contains { $0.objectID == "cleanup-pending" && $0.state == "queued" }, "Shutdown discarded quota-paused durable work")
         try expect(power.transitions == [true, false], "Quota shutdown leaked or double-released the activity lease")
+        let resumedProbe = QueueCheckProbe(automatic: true)
+        let resumed = try await coordinator(root.appendingPathComponent("cleanup"), probe: resumedProbe)
+        try expect(await resumed.chatGPTAdmissionPaused("cleanup-account"), "Relaunch lost the account's explicit quota pause")
+        try expect(try await resumed.snapshot().contains { $0.objectID == "cleanup-pending" && $0.state == "queued" && $0.attempt == 0 },
+                   "Relaunch silently admitted a subscription request before Continue queue was confirmed")
+        _ = try await planSubmit(resumed, object: "reopened-other-account", account: "other-account").value
+        _ = try await submit(resumed, "reopened-other-provider").value
+        try expect(!(await resumedProbe.startedObjects()).contains("cleanup-pending"), "Other account/provider traffic bypassed the restored quota pause")
+        guard let pausedFailure = try await resumed.snapshot().first(where: { $0.objectID == "cleanup-limit" }) else {
+            throw AppError.message("Durable quota failure missing on relaunch")
+        }
+        do { try await resumed.retry(pausedFailure.id, confirmPaid: false); throw AppError.message("Relaunch bypassed paid confirmation") }
+        catch { try expect(error.localizedDescription != "Relaunch bypassed paid confirmation", "Restored quota recovery must require confirmation") }
+        try expect(await resumed.chatGPTAdmissionPaused("cleanup-account"), "Rejected confirmation cleared the durable quota pause")
+        try await resumed.retry(pausedFailure.id, confirmPaid: true)
+        _ = try await resumed.observe(pausedFailure.id)
+        try await wait { try await resumed.snapshot().first { $0.objectID == "cleanup-pending" }?.state == "succeeded" }
+        await resumed.shutdown()
+        let reopened = try await coordinator(root.appendingPathComponent("cleanup"), probe: QueueCheckProbe(automatic: true))
+        try expect(!(await reopened.chatGPTAdmissionPaused("cleanup-account")), "Relaunch resurrected an explicitly resumed quota pause")
+        await reopened.shutdown()
         // The same word in an unrelated error, or a speech command using its
         // own API key, cannot put ChatGPT plan inference into a quota pause.
         for (index, command, message) in [
@@ -327,7 +353,7 @@ enum QueueNativeChecks {
             try expect(!(await unrelated.chatGPTAdmissionPaused("unrelated-account")), "Unrelated error or speech paused ChatGPT plan requests")
             await unrelated.shutdown()
         }
-        print("PASS: exact ChatGPT quota pauses only its account; other routes proceed, confirmed retry resumes, and paused cancellation/shutdown releases waiters and power")
+        print("PASS: account-scoped quota pause survives relaunch until confirmed Continue; other routes proceed, and cancellation/shutdown releases waiters and power")
     }
     private static func chatGPTSignOut(_ root: URL) async throws {
         let probe = QueueCheckProbe(), queue = try await coordinator(root, probe: probe)

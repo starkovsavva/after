@@ -138,7 +138,7 @@ enum RecordingNativeChecks {
         let host = NativeHost(AnyView(RecordView().environmentObject(app)), height: 720)
         defer { host.close() }
         try await settle(host) { node("record.processing", in: host)?.text.contains("English test model") == true }
-        try chooseFolder("Рабочие синки", in: host)
+        try await chooseFolder("Рабочие синки", in: host)
         try await settle(host) { node("record.processing", in: host)?.text.contains("Work test model") == true }
         try expect(node("record.processing", in: host)?.text.contains("Русский") == true,
                    "Native folder selection did not update the inherited language")
@@ -147,7 +147,7 @@ enum RecordingNativeChecks {
         try expect(node("record.generateCards", in: host) == nil, "Disabled folder must explain unavailable cards instead of exposing an inert control")
         try expect(try required(node("record.processing.done", in: host), "Processing Done missing").press(), "Processing Done cannot be pressed")
         try await settle(host) { node("record.processing.done", in: host) == nil }
-        try chooseFolder("Английский", in: host)
+        try await chooseFolder("Английский", in: host)
         try await settle(host) { node("record.processing", in: host)?.text.contains("English test model") == true }
         try expect(try required(node("record.processing", in: host), "Processing button missing").press(), "Processing popover cannot open")
         try await settle(host) { node("record.generateCards.off", in: host) != nil }
@@ -171,15 +171,8 @@ enum RecordingNativeChecks {
                    "Native recording profile flow started unrelated work or failed to stop injected capture")
         print("PASS: actual recording controls select independent folder profiles, explain disabled cards and persist per-meeting override through native Start/reopen")
     }
-    private static func chooseFolder(_ title: String, in host: NativeHost) throws {
-        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
-        guard let popup = descendants(host.view).compactMap({ $0 as? NSPopUpButton }).first(where: { $0.itemTitles.contains(title) }) else {
-            throw AppError.message("Native recording folder popup missing")
-        }
-        popup.selectItem(withTitle: title)
-        guard let menu = popup.menu, popup.indexOfSelectedItem >= 0 else { throw AppError.message("Native recording folder menu missing") }
-        // SwiftUI PickerOptionTarget belongs to the selected menu item.
-        menu.performActionForItem(at: popup.indexOfSelectedItem)
+    private static func chooseFolder(_ title: String, in host: NativeHost) async throws {
+        try await NativePickerChecks.select(title: title, identifier: "record.folder", in: [host.view])
     }
     private static func snapshot(_ view: NSView, _ url: URL) throws {
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw AppError.message("Recording snapshot missing") }

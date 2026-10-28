@@ -143,8 +143,12 @@ actor JobCoordinator {
         try RustBridge.shared.get().request(root: root, command: command, arguments: arguments)
     }
     func snapshot() throws -> [BackgroundJob] {
-        struct Response: Decodable { var jobs: [BackgroundJob] }
-        return try JSONDecoder().decode(Response.self, from: request("job-list")).jobs
+        struct Response: Decodable { var jobs: [BackgroundJob]; var pausedChatGPTFailures: [BackgroundJob] }
+        let response = try JSONDecoder().decode(Response.self, from: request("job-list"))
+        pausedChatGPTFailures = Dictionary(uniqueKeysWithValues: response.pausedChatGPTFailures.compactMap { job in
+            job.config.chatGPTPlanAccountID.map { ($0, job) }
+        })
+        return response.jobs
     }
     private func failQueue(_ error: Error) {
         let message = LF("Не удалось обновить очередь. Операции сохранены; перезапустите приложение. {0}", arguments: [String(describing: error.localizedDescription)])
@@ -158,17 +162,14 @@ actor JobCoordinator {
         }
     }
     private func publish() {
-        admissionChanged(pausedChatGPTFailures)
-        do { changed(try snapshot()) } catch { failQueue(error) }
+        do {
+            let jobs = try snapshot()
+            admissionChanged(pausedChatGPTFailures)
+            changed(jobs)
+        } catch { failQueue(error) }
     }
     private func admissionPaused(_ job: BackgroundJob) -> Bool {
         job.config.chatGPTPlanAccountID.map { pausedChatGPTFailures[$0] != nil || signingOutChatGPTAccounts.contains($0) } == true
-    }
-    private static func reachedChatGPTLimit(_ error: Error) -> Bool {
-        // Match the transport's exact allowlisted code, not a provider message
-        // containing the same word or a longer unrelated code.
-        error.localizedDescription.range(of: #"^ChatGPT: HTTP [0-9]{3} · subscription_sharing_usage_limit_exceeded\."#,
-                                         options: .regularExpression) != nil
     }
     func start(executor: @escaping Executor) throws {
         // A second UI connection must never recover an attempt still executing.
@@ -274,11 +275,6 @@ actor JobCoordinator {
             // arriving immediately after publication cannot make that unsaved.
             arguments["state"] = "succeeded"; arguments["message"] = L("Готово")
         case .failure(let error):
-            if !cancelled, !(error is CancellationError), let account = job.config.chatGPTPlanAccountID,
-               Self.reachedChatGPTLimit(error) {
-                var failure = job; failure.state = "failed"; failure.message = String(error.localizedDescription.prefix(1000))
-                pausedChatGPTFailures[account] = failure
-            }
             let interrupted = stopping && (cancelled || error is CancellationError)
             arguments["state"] = interrupted ? "interrupted" : cancelled || error is CancellationError ? "cancelled" : "failed"
             arguments["message"] = interrupted ? L("Работа прервалась при закрытии приложения.") : cancelled || error is CancellationError ? L("Отменено") : String(error.localizedDescription.prefix(1000))
@@ -323,17 +319,18 @@ actor JobCoordinator {
         if requiringLatestGeneration {
             let current = try snapshot()
             let quotaRecovery = resumingPausedAccount.map { account in
-                pausedChatGPTFailures[account]?.id == id && current.first(where: { $0.id == id })?.config.chatGPTPlanAccountID == account
+                // Pauses include their complete failure even after the normal
+                // 50-row history window no longer includes that operation.
+                guard let failure = pausedChatGPTFailures[account] else { return false }
+                return failure.id == id && failure.config.chatGPTPlanAccountID == account
             } == true
             guard quotaRecovery || BackgroundJobPresentation.latestIDs(in: current).contains(id) else {
                 throw AppError.message(L("У операции есть более новая попытка. Используйте её в списке фоновых задач."))
             }
         }
-        struct Response: Decodable { var job: BackgroundJob }
-        let response = try JSONDecoder().decode(Response.self, from: request("job-retry", ["jobID": id, "confirmPaid": confirmPaid]))
-        // Only a successful explicit retry authorizes new requests for this
-        // account. A rejected paid confirmation leaves admission paused.
-        if let account = response.job.config.chatGPTPlanAccountID { pausedChatGPTFailures.removeValue(forKey: account) }
+        _ = try request("job-retry", ["jobID": id, "confirmPaid": confirmPaid])
+        // Rust commits the explicit retry and its account's admission decision
+        // together; publish reloads it before any queued request can start.
         publish(); pump()
     }
     func observe(_ id: String) async throws -> WorkerEvent? {

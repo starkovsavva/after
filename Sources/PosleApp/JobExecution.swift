@@ -238,11 +238,11 @@ extension AppStore {
         var arguments = [config.command, "--root", root.path, "--backend", backend.path]
         if let id = config.meetingID { arguments += ["--meeting", meetingDirectory(id).path] }
         arguments += config.extra
-        let settingsJSON = String(decoding: try JSONEncoder().encode(snapshot), as: UTF8.self)
+        let settingsJSON = WorkerEnvironment.json(try JSONEncoder().encode(snapshot))
         var environment = ["PYTHONUNBUFFERED": "1", "HF_HOME": root.appendingPathComponent("cache/huggingface").path,
                            "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL,
                            "POSLE_JOB_SETTINGS": settingsJSON]
-        if let profile = config.folderProfile { environment["POSLE_JOB_FOLDER_PROFILE"] = String(decoding: profile, as: UTF8.self) }
+        if let profile = config.folderProfile { environment["POSLE_JOB_FOLDER_PROFILE"] = WorkerEnvironment.json(profile) }
         if snapshot.mode == "cloud", ["summarize", "example", "expand-notes", "voice-plan"].contains(config.command) {
             environment["POSLE_API_KEY"] = try await cloudCredential(for: snapshot)
         }

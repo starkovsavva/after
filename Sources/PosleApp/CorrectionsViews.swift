@@ -31,7 +31,7 @@ struct TranscriptSegmentEditor: View {
             if snapshot != nil {
                 Picker(L("Собеседник"), selection: $speaker) {
                     ForEach(speakers, id: \.self) { value in Text(app.meetings.first(where: { $0.id == meetingID })?.speakerName(value) ?? value).tag(value) }
-                }
+                }.accessibilityIdentifier("transcript.edit.speaker")
                 TextEditor(text: $text).font(AppTypography.body).frame(minHeight: 180).padding(8)
                     .background(Ink.field, in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel(L("Текст реплики")).accessibilityIdentifier("transcript.edit.text")
                 Text(L("Таймкод и исходная запись сохранятся. Конспект можно обновить после исправлений."))

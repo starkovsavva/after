@@ -126,6 +126,7 @@ final class AppStore: ObservableObject {
     private var playerObserver: Any?
     var recordingID: String?
     var startingRecordingID: String?
+    var recordingStartTask: Task<Void, Error>?
     var pendingRecordingFailure: RecordingFailure?
     var assertions: IOPMAssertionID = 0
     var recordingAssertion: IOPMAssertionID = 0
@@ -516,7 +517,7 @@ final class AppStore: ObservableObject {
         // Secrets live only in Keychain and the short-lived child environment, never argv/files.
         var environment = ["PYTHONUNBUFFERED": "1", "HF_HOME": root.appendingPathComponent("cache/huggingface").path,
                            "HF_HUB_DISABLE_TELEMETRY": "1", "POSLE_OLLAMA_URL": localService.baseURL,
-                           "POSLE_JOB_SETTINGS": String(decoding: try JSONEncoder().encode(configuration), as: UTF8.self)]
+                           "POSLE_JOB_SETTINGS": WorkerEnvironment.json(try JSONEncoder().encode(configuration))]
         if configuration.mode == "cloud" && ["summarize", "example", "expand-notes", "check-cloud", "voice-plan"].contains(command) {
             environment["POSLE_API_KEY"] = try await cloudCredential(for: configuration)
         }

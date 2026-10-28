@@ -21,20 +21,31 @@ struct RecordingDisplay: Identifiable, Equatable, Sendable {
 }
 
 /// Uses the macOS capture APIs. No virtual audio driver or meeting bot.
-final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate, @unchecked Sendable {
+final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate, AVAudioRecorderDelegate, @unchecked Sendable {
     var failed: (@Sendable (RecordingFailure) -> Void)?
     private var stream: SCStream?
     private var contentPicker: SystemCapturePicker?
     private let startLock = NSLock()
     private var starting = false
     private var startCancelled = false
+    private var permissionRequest: RecordingPermissionRequest?
+    private let requestMicrophonePermission: RecordingPermissionRequest.Request
     private let failureLock = NSLock()
     private var streamFailure: (stream: ObjectIdentifier, sessionID: String)?
+    private var microphoneFailure: (recorder: ObjectIdentifier, sessionID: String)?
+    private var microphoneFailureReported = false
     private var startupFailure: RecordingFailure?
     private var sink: CaptureSink?
     private var microphone: AVAudioRecorder?
     var levels: (@Sendable (Double?, Double?) -> Void)?
     private var meterTask: Task<Void, Never>?
+
+    init(requestMicrophonePermission: @escaping RecordingPermissionRequest.Request = {
+        AVCaptureDevice.requestAccess(for: .audio, completionHandler: $0)
+    }) {
+        self.requestMicrophonePermission = requestMicrophonePermission
+        super.init()
+    }
 
     /// NSScreen/Core Graphics enumerate devices without asking for Screen Recording access.
     @MainActor static func availableDisplays() -> [RecordingDisplay] {
@@ -86,12 +97,12 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
                videoQuality: RecordingVideoQuality = .compact,
                audioQuality: RecordingAudioQuality = .standard,
                displayID: UInt32? = nil, expectedDisplayUUID: String? = nil) async throws {
-        try reserveStart()
+        let permissionRequest = try reserveStart()
         defer { releaseStart() }
         try checkStartCancellation()
         // The macOS picker is the source of truth for this recording. Previously
         // selected display IDs remain accepted for backend compatibility only.
-        let permission = await AVCaptureDevice.requestAccess(for: .audio)
+        let permission = try await permissionRequest.wait(request: requestMicrophonePermission)
         try checkStartCancellation()
         guard permission else {
             throw AppError.message(L("Разрешите микрофон: Системные настройки → Конфиденциальность и безопасность → Микрофон → После."))
@@ -101,12 +112,15 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
                 AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48000,
                 AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: audioQuality.bitRate
             ])
+            recorder.delegate = self
+            microphone = recorder
+            bindMicrophoneFailure(recorder, sessionID: url.deletingLastPathComponent().lastPathComponent)
             guard recorder.prepareToRecord(), recorder.record() else {
                 throw AppError.message(L("Не удалось включить микрофон. Проверьте выбранный микрофон в системных настройках."))
             }
             recorder.isMeteringEnabled = true
-            microphone = recorder
             try checkStartCancellation()
+            if let failure = failureDuringMicrophoneStart(recorder) { throw AppError.message(failure.message) }
             meterTask = Task { @MainActor [weak self] in
                 while !Task.isCancelled, recorder.isRecording {
                     recorder.updateMeters()
@@ -215,11 +229,17 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
     }
 
     private func markStartCancelled() {
-        startLock.lock(); defer { startLock.unlock() }
+        startLock.lock()
+        let pending = starting ? permissionRequest : nil
         if starting { startCancelled = true }
+        startLock.unlock()
+        pending?.cancel()
     }
 
     func stop() async throws {
+        // AVAudioRecorder sends its completion delegate for an ordinary Stop
+        // too. Clear this session before stopping so only unexpected exits fail.
+        bindMicrophoneFailure(nil, sessionID: nil)
         meterTask?.cancel(); meterTask = nil
         microphone?.stop(); microphone = nil
         guard let stream else {
@@ -239,13 +259,16 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         } else if let captureError { throw captureError }
     }
 
-    private func reserveStart() throws {
+    private func reserveStart() throws -> RecordingPermissionRequest {
         startLock.lock(); defer { startLock.unlock() }
         guard !starting, stream == nil, microphone == nil else {
             throw AppError.message(L("Запись уже идёт. Сначала остановите её."))
         }
         starting = true
         startCancelled = false
+        let request = RecordingPermissionRequest()
+        permissionRequest = request
+        return request
     }
 
     private func checkStartCancellation() throws {
@@ -257,6 +280,7 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
     private func releaseStart() {
         startLock.lock(); defer { startLock.unlock() }
         starting = false
+        permissionRequest = nil
     }
 
     private func bindFailure(stream: SCStream?, sessionID: String?) {
@@ -267,7 +291,7 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
 
     private func rememberFailure(_ failure: RecordingFailure) {
         failureLock.lock(); defer { failureLock.unlock() }
-        guard streamFailure?.sessionID == failure.sessionID else { return }
+        guard streamFailure?.sessionID == failure.sessionID || microphoneFailure?.sessionID == failure.sessionID else { return }
         startupFailure = failure
     }
 
@@ -285,6 +309,51 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         rememberFailure(failure)
         failed?(failure)
     }
+
+    private func bindMicrophoneFailure(_ recorder: AnyObject?, sessionID: String?) {
+        failureLock.lock(); defer { failureLock.unlock() }
+        microphoneFailure = recorder.flatMap { value in sessionID.map { (ObjectIdentifier(value), $0) } }
+        microphoneFailureReported = false
+        startupFailure = nil
+    }
+
+    private func failureDuringMicrophoneStart(_ recorder: AnyObject) -> RecordingFailure? {
+        failureLock.lock(); defer { failureLock.unlock() }
+        return microphoneFailure?.recorder == ObjectIdentifier(recorder) ? startupFailure : nil
+    }
+
+    private func reportMicrophoneFailure(_ recorder: AnyObject, error: Error?) {
+        failureLock.lock()
+        guard let identity = microphoneFailure, identity.recorder == ObjectIdentifier(recorder), !microphoneFailureReported else {
+            failureLock.unlock()
+            return
+        }
+        microphoneFailureReported = true
+        let failure = RecordingFailure(sessionID: identity.sessionID,
+            message: error?.localizedDescription ?? L("Запись с микрофона неожиданно завершилась. Проверьте микрофон и свободное место на диске."))
+        startupFailure = failure
+        failureLock.unlock()
+        failed?(failure)
+    }
+
+    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        reportMicrophoneFailure(recorder, error: error)
+    }
+
+    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        reportMicrophoneFailure(recorder, error: nil)
+    }
+
+    #if DEBUG
+    /// Feed the exact identity/error path without creating an AVAudioRecorder,
+    /// asking for access, or opening an input device.
+    func bindSyntheticMicrophoneForChecks(_ recorder: AnyObject, sessionID: String) {
+        bindMicrophoneFailure(recorder, sessionID: sessionID)
+    }
+    func reportSyntheticMicrophoneFailureForChecks(_ recorder: AnyObject, error: Error? = nil) {
+        reportMicrophoneFailure(recorder, error: error)
+    }
+    #endif
 }
 
 final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {

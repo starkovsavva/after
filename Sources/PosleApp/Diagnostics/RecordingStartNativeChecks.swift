@@ -14,6 +14,10 @@ enum RecordingStartNativeChecks {
         let root = URL(fileURLWithPath: path).resolvingSymlinksInPath()
         try expect(["/private/tmp", "/tmp"].contains(root.deletingLastPathComponent().path)
                    && root.lastPathComponent.hasPrefix("posle-native-check-"), "Refusing real capture data")
+        try await microphonePermission()
+        try await queuedStartCancellation()
+        try await completedStartCancellation()
+        try await microphoneFailures()
         let recorder = PendingRecorder()
         let app = AppStore(preview: true, recorder: recorder)
         try expect(app.meetings.isEmpty, "An empty capture fixture is required")
@@ -61,7 +65,184 @@ enum RecordingStartNativeChecks {
                    && app.recordingAssertion == 0 && app.startingRecordingID == nil,
                    "Quit while selecting failed to cancel startup or created another meeting")
         print("PASS: quitting during screen selection cancels pending capture and completes teardown")
-        print("4 native recording-start checks passed")
+        print("8 native recording-start checks passed")
+    }
+
+    private static func microphonePermission() async throws {
+        // Exercise the actual recorder before it reaches hardware. A system TCC
+        // reply may never arrive until the user answers; Cancel and Quit must
+        // release the app's waiter independently of that system-owned prompt.
+        let replies = PermissionReplies()
+        let app = AppStore(preview: true, recorder: MeetingRecorder(requestMicrophonePermission: { replies.request($0) }))
+        let cancelled = Task { await app.startRecording(systemAudio: false, title: "Cancel microphone authorization") }
+        try await wait { replies.count == 1 }
+        await app.cancelRecordingStart()
+        try await wait { !app.startingRecording }
+        await cancelled.value
+        try expect(!app.isRecording && app.meetings.isEmpty && app.error == nil && app.recordingAssertion == 0,
+                   "Cancel waited for a microphone permission reply or retained an uncommitted recording")
+        replies.reply(at: 0, allowed: true)
+        for _ in 0..<8 { await Task.yield() }
+        try expect(!app.isRecording && app.meetings.isEmpty,
+                   "A late permission approval revived a canceled recording")
+
+        let denied = Task { await app.startRecording(systemAudio: false, title: "Denied microphone authorization") }
+        try await wait { replies.count == 2 }
+        replies.reply(at: 0, allowed: true) // The previous prompt cannot authorize this start.
+        for _ in 0..<8 { await Task.yield() }
+        try expect(app.startingRecording && !app.isRecording,
+                   "An old microphone reply was reused by the next recording")
+        replies.reply(at: 1, allowed: false)
+        try await wait { !app.startingRecording }
+        await denied.value
+        try expect(!app.isRecording && app.meetings.isEmpty && app.error?.contains("Микрофон") == true,
+                   "Denied microphone access did not preserve its actionable permission error")
+
+        // AudioCheckController stops its recorder by canceling the same task,
+        // then awaits it. That path must also finish without a system reply.
+        let cancelledTask = Task { await app.startRecording(systemAudio: false, title: "Task cancellation during microphone prompt") }
+        try await wait { replies.count == 3 }
+        cancelledTask.cancel()
+        try await wait { !app.startingRecording }
+        await cancelledTask.value
+        try expect(app.error == nil && !app.isRecording && app.recordingAssertion == 0,
+                   "Task cancellation waited for microphone authorization")
+
+        let quitting = Task { await app.startRecording(systemAudio: false, title: "Quit during microphone prompt") }
+        try await wait { replies.count == 4 }
+        let shutdown = Task { await app.prepareForTermination() }
+        try await wait { app.isTerminating && !app.startingRecording }
+        await quitting.value; await shutdown.value
+        replies.reply(at: 2, allowed: true); replies.reply(at: 3, allowed: true)
+        for _ in 0..<8 { await Task.yield() }
+        try expect(!app.isRecording && app.meetings.isEmpty && app.recordingAssertion == 0 && app.error == nil,
+                   "Quit during microphone authorization waited for a reply or a late callback restarted capture")
+        print("PASS: actual recorder cancels microphone permission waits on Cancel, task cancellation and Quit; late replies cannot authorize another start")
+    }
+
+    private final class PermissionReplies: @unchecked Sendable {
+        private let lock = NSLock()
+        private var replies: [RecordingPermissionRequest.Reply] = []
+        var count: Int { lock.lock(); defer { lock.unlock() }; return replies.count }
+        func request(_ reply: @escaping RecordingPermissionRequest.Reply) {
+            lock.lock(); replies.append(reply); lock.unlock()
+        }
+        func reply(at index: Int, allowed: Bool) {
+            lock.lock(); let reply = replies[index]; lock.unlock()
+            reply(allowed)
+        }
+    }
+
+    private static func queuedStartCancellation() async throws {
+        let recorder = QueuedStartRecorder()
+        let app = AppStore(preview: true, recorder: recorder)
+        let start = Task { await app.startRecording(systemAudio: false, title: "Cancel before backend reserves startup") }
+        try await wait { await recorder.gate.entered }
+        await app.cancelRecordingStart()
+        await recorder.gate.release()
+        try await wait { !app.startingRecording }
+        await start.value
+        let cancelledRequests = await recorder.gate.permissionRequests
+        try expect(cancelledRequests == 0 && !app.isRecording && app.meetings.isEmpty && app.error == nil,
+                   "Cancellation before backend reservation was lost at the executor hop")
+        await app.startRecording(systemAudio: false, title: "Retry after queued cancellation")
+        let retriedRequests = await recorder.gate.permissionRequests
+        try expect(retriedRequests == 1 && !app.startingRecording && app.error == "Synthetic permission result",
+                   "A canceled previous start poisoned the next recording's task")
+        await app.jobs.shutdown()
+        print("PASS: cancellation before backend reservation remains attached to that start and does not block a later retry")
+    }
+
+    private final class QueuedStartRecorder: MeetingRecordingBackend, @unchecked Sendable {
+        var failed: (@Sendable (RecordingFailure) -> Void)?
+        var levels: (@Sendable (Double?, Double?) -> Void)?
+        let gate = QueuedStartGate()
+        func start(url: URL, systemAudio: Bool, video: Bool, videoQuality: RecordingVideoQuality,
+                   audioQuality: RecordingAudioQuality, displayID: UInt32?, expectedDisplayUUID: String?) async throws {
+            // Model the backend's executor hop before reserveStart(): its own
+            // cancelPendingStart has no request to cancel yet.
+            await gate.wait()
+            try Task.checkCancellation()
+            await gate.requestPermission()
+            throw AppError.message("Synthetic permission result")
+        }
+        func stop() async throws {}
+    }
+
+    private actor QueuedStartGate {
+        private(set) var entered = false
+        private(set) var permissionRequests = 0
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var released = false
+        func wait() async {
+            entered = true
+            if !released { await withCheckedContinuation { continuation = $0 } }
+        }
+        func release() { released = true; continuation?.resume(); continuation = nil }
+        func requestPermission() { permissionRequests += 1 }
+    }
+
+    private static func completedStartCancellation() async throws {
+        let recorder = CompletedStartRecorder()
+        let app = AppStore(preview: true, recorder: recorder)
+        recorder.beforeReturningSuccess = { [weak app] in await app?.cancelRecordingStart() }
+        await app.startRecording(systemAudio: false, title: "Cancel after successful backend startup")
+        try expect(!app.isRecording && !app.startingRecording && app.meetings.isEmpty && app.error == nil
+                   && app.recordingStartTask == nil && app.recordingAssertion == 0,
+                   "A successful backend value overrode an explicit canceled start and committed a phantom recording")
+        await app.jobs.shutdown()
+        print("PASS: Cancel after backend success still prevents the coordinator from committing a recording")
+    }
+
+    private final class CompletedStartRecorder: MeetingRecordingBackend, @unchecked Sendable {
+        var failed: (@Sendable (RecordingFailure) -> Void)?
+        var levels: (@Sendable (Double?, Double?) -> Void)?
+        var beforeReturningSuccess: (@Sendable () async -> Void)?
+        func start(url: URL, systemAudio: Bool, video: Bool, videoQuality: RecordingVideoQuality,
+                   audioQuality: RecordingAudioQuality, displayID: UInt32?, expectedDisplayUUID: String?) async throws {
+            try Data("synthetic completed capture".utf8).write(to: url)
+            // Model a backend that has already finished its internal startup
+            // and returns success even after cancelPendingStart becomes a no-op.
+            await beforeReturningSuccess?()
+        }
+        func stop() async throws {}
+    }
+
+    private static func microphoneFailures() async throws {
+        let recorder = MeetingRecorder(requestMicrophonePermission: { _ in
+            preconditionFailure("Microphone delegate diagnostics must not request access")
+        })
+        let failures = MicrophoneFailures()
+        recorder.failed = { failures.receive($0) }
+        let first = NSObject(), second = NSObject()
+        recorder.bindSyntheticMicrophoneForChecks(first, sessionID: "microphone-one")
+        recorder.reportSyntheticMicrophoneFailureForChecks(first, error: AppError.message("Synthetic microphone encoding failed"))
+        recorder.reportSyntheticMicrophoneFailureForChecks(first)
+        try expect(failures.values.count == 1 && failures.values.first?.sessionID == "microphone-one"
+                   && failures.values.first?.message == "Synthetic microphone encoding failed",
+                   "Microphone encoding failure was lost, misattributed or reported twice")
+
+        recorder.bindSyntheticMicrophoneForChecks(second, sessionID: "microphone-two")
+        recorder.reportSyntheticMicrophoneFailureForChecks(first)
+        try expect(failures.values.count == 1, "Late microphone completion was applied to the next recording")
+        recorder.reportSyntheticMicrophoneFailureForChecks(second)
+        try expect(failures.values.count == 2 && failures.values.last?.sessionID == "microphone-two",
+                   "An unexpected microphone completion did not report the current session")
+        try await recorder.stop()
+        recorder.reportSyntheticMicrophoneFailureForChecks(second)
+        try expect(failures.values.count == 2, "Expected Stop became a false microphone failure")
+        recorder.bindSyntheticMicrophoneForChecks(first, sessionID: "expected-stop")
+        try await recorder.stop()
+        recorder.reportSyntheticMicrophoneFailureForChecks(first)
+        try expect(failures.values.count == 2, "Stop did not disarm microphone completion before releasing the recorder")
+        print("PASS: microphone encoder failures and unexpected stops report their exact session once; ordinary Stop and stale callbacks remain silent")
+    }
+
+    private final class MicrophoneFailures: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: [RecordingFailure] = []
+        var values: [RecordingFailure] { lock.lock(); defer { lock.unlock() }; return stored }
+        func receive(_ value: RecordingFailure) { lock.lock(); stored.append(value); lock.unlock() }
     }
 
     private final class PendingRecorder: MeetingRecordingBackend, @unchecked Sendable {

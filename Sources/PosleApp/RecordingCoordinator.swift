@@ -26,7 +26,7 @@ extension AppStore {
             return
         }
         startingRecording = true
-        defer { startingRecording = false; startingRecordingID = nil; pendingRecordingFailure = nil }
+        defer { startingRecording = false; startingRecordingID = nil; recordingStartTask = nil; pendingRecordingFailure = nil }
         // Snapshot before any permission prompt. Finalization must use this meeting's
         // quality even if the default settings change before an interrupted job resumes.
         let audioQuality = settings.recordAudioQuality
@@ -49,9 +49,20 @@ extension AppStore {
                                                    attributes: [.posixPermissions: 0o700])
             startingRecordingID = meeting.id
             pendingRecordingFailure = nil
-            try await recorder.start(url: directory.appendingPathComponent(meeting.source), systemAudio: systemAudio, video: video,
-                                     videoQuality: videoQuality, audioQuality: audioQuality,
-                                     displayID: nil, expectedDisplayUUID: nil)
+            // Own cancellation before the backend's first executor hop. The
+            // backend may not have reserved its permission/picker state yet.
+            let sourceURL = directory.appendingPathComponent(meeting.source)
+            let start = Task { [recorder] in
+                try await recorder.start(url: sourceURL, systemAudio: systemAudio, video: video,
+                                         videoQuality: videoQuality, audioQuality: audioQuality,
+                                         displayID: nil, expectedDisplayUUID: nil)
+            }
+            recordingStartTask = start
+            try await withTaskCancellationHandler { try await start.value }
+                onCancel: { start.cancel() }
+            // A backend can finish just before Cancel reaches this actor. Its
+            // completed value is still a success, but this start was canceled.
+            guard !start.isCancelled else { throw CancellationError() }
             try Task.checkCancellation()
             guard !isTerminating else { throw CancellationError() }
             if let failure = pendingRecordingFailure {
@@ -77,11 +88,17 @@ extension AppStore {
             self.error = nil
         } catch {
             try? await recorder.stop()
+            // A denied permission or unavailable device can fail before any
+            // source exists. Keep actual tracks, but do not leave empty starts.
+            if let contents = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil), contents.isEmpty {
+                try? FileManager.default.removeItem(at: directory)
+            }
             self.error = error.localizedDescription
         }
     }
     func cancelRecordingStart() async {
         guard startingRecording else { return }
+        recordingStartTask?.cancel()
         await recorder.cancelPendingStart()
     }
     func stopRecording(finalize: Bool = true) async {
@@ -128,6 +145,7 @@ extension AppStore {
         runner.cancel()
         voice.cancelWork()
         let queueShutdown = Task { await jobs.shutdown() }
+        recordingStartTask?.cancel()
         await recorder.cancelPendingStart()
         // A permission prompt may still be resolving. Once capture has started,
         // flush only its original tracks; encoding and inference can resume later.

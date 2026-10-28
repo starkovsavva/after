@@ -42,11 +42,15 @@ enum LocalizationNativeChecks {
         defer { main.close() }
         let settings = Host(AnyView(LocalizedInterfaceRoot(content: SettingsView().environmentObject(app))), width: 900, height: 690)
         defer { settings.close() }
-        try await settle(settings) { ids(settings).contains("settings.language") && languagePopup(settings) != nil }
-        try chooseLanguage(settings, title: "English")
+        try await settle(settings) { ids(settings).contains("settings.language") && NativePickerChecks.contains(identifier: "settings.language", in: roots(settings)) }
+        try await chooseLanguage(settings, title: "English")
         try await settle(settings) { localization.language == .en && renderedStrings(settings).contains("Interface language") }
         try await settle(main) { renderedStrings(main).contains("Meetings") && renderedStrings(main).contains("Notes") }
-        try await settle(main) { menuTitles(NSApp.mainMenu).contains("Import recording…") && menuTitles(NSApp.mainMenu).contains("Meeting") }
+        do {
+            try await settle(main) { menuTitles(NSApp.mainMenu).contains("Import recording…") && menuTitles(NSApp.mainMenu).contains("Meeting") }
+        } catch {
+            throw AppError.message("Application menu did not localize: " + menuTitles(NSApp.mainMenu).sorted().joined(separator: ", "))
+        }
         try expect(L("После") == "After" && UILocale().language.languageCode?.identifier == "en", "English name and date formatting must resolve independently of AI language")
         try expect(LF("Подключить {0} из {1}", arguments: ["{1} Савва", "%@"]) == "Connect {1} Савва from %@",
                    "Interpolation arguments must remain verbatim, including Cyrillic, format markers and placeholder-looking text")
@@ -97,11 +101,11 @@ enum LocalizationNativeChecks {
         try expect(localization.setLanguage(.en) && localization.error == nil, "Restored language file must be writable again")
         print("PASS: language preference persists outside model settings; invalid values and failed writes retain the last good preference")
 
-        try chooseLanguage(settings, title: "Русский")
+        try await chooseLanguage(settings, title: "Русский")
         try await settle(main) { renderedStrings(main).contains("Встречи") && renderedStrings(main).contains("Заметки") }
         try expect(localization.language == .ru && app.notes.captureDrafts["inbox"] == draft && app.voice.text == draft,
                    "Switching back to Russian must not recreate or clear editor state")
-        try chooseLanguage(settings, title: "Как в системе")
+        try await chooseLanguage(settings, title: "Как в системе")
         try await settle(settings) { localization.language == .system }
         try expect(localization.resolvedLanguage == UILocalization.systemLanguage(preferredLanguages: Locale.preferredLanguages),
                    "System default must return to the supported macOS language preference")
@@ -111,18 +115,14 @@ enum LocalizationNativeChecks {
     }
     private static func menuTitles(_ menu: NSMenu?) -> Set<String> {
         guard let menu else { return [] }
+        menu.delegate?.menuNeedsUpdate?(menu)
+        menu.update()
         return menu.items.reduce(into: Set<String>()) { result, item in
             result.insert(item.title); result.formUnion(menuTitles(item.submenu))
         }
     }
-    private static func languagePopup(_ host: Host) -> NSPopUpButton? {
-        func popups(_ view: NSView) -> [NSPopUpButton] { (view as? NSPopUpButton).map { [$0] } ?? view.subviews.flatMap(popups) }
-        return roots(host).reversed().flatMap(popups).first { $0.itemTitles.contains("Русский") && $0.itemTitles.contains("English") && $0.itemTitles.count == 3 }
-    }
-    private static func chooseLanguage(_ host: Host, title: String) throws {
-        guard let popup = languagePopup(host), let menu = popup.menu,
-              let item = menu.items.first(where: { $0.title == title }) else { throw AppError.message("Native language picker option missing: " + title) }
-        popup.select(item); menu.performActionForItem(at: popup.indexOfSelectedItem)
+    private static func chooseLanguage(_ host: Host, title: String) async throws {
+        try await NativePickerChecks.select(title: title, identifier: "settings.language", in: roots(host))
     }
     private static func renderedStrings(_ host: Host) -> Set<String> {
         var result = Set<String>()

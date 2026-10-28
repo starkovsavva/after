@@ -189,6 +189,12 @@ fn open(root: &Path) -> Result<Connection> {
         transaction.pragma_update(None, "user_version", 1)?;
         transaction.commit()?;
     }
+    if version < 2 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch("CREATE TABLE IF NOT EXISTS job_chatgpt_pauses(account_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id));")?;
+        transaction.pragma_update(None, "user_version", 2)?;
+        transaction.commit()?;
+    }
     Ok(connection)
 }
 fn query_jobs(connection: &Connection, sql: &str) -> Result<Vec<Job>> {
@@ -204,6 +210,23 @@ fn listed(connection: &Connection) -> Result<Vec<Job>> {
     jobs.extend(query_jobs(connection,"SELECT payload FROM jobs WHERE state NOT IN ('queued','running') ORDER BY updated_at DESC,rowid DESC LIMIT 50")?);
     jobs.sort_by(|a, b| a.created_at.total_cmp(&b.created_at));
     Ok(jobs)
+}
+fn paused_chatgpt_jobs(connection: &Connection) -> Result<Vec<Job>> {
+    query_jobs(connection, "SELECT jobs.payload FROM job_chatgpt_pauses JOIN jobs ON jobs.id=job_chatgpt_pauses.job_id ORDER BY jobs.created_at,jobs.rowid")
+}
+fn chatgpt_account(job: &Job) -> Option<&str> {
+    let settings = &job.config["settings"];
+    if settings["mode"] != "cloud" || settings["cloudProvider"] != "chatgpt"
+        || job.config["command"] != job.kind
+        || !["summarize", "example", "expand-notes", "voice-plan"].contains(&job.kind.as_str()) {
+        return None;
+    }
+    settings["chatGPTAccountID"].as_str().filter(|account| !account.is_empty())
+}
+fn reached_chatgpt_limit(message: &str) -> bool {
+    let Some((status, detail)) = message.strip_prefix("ChatGPT: HTTP ").and_then(|value| value.split_once(" · ")) else { return false; };
+    status.len() == 3 && status.bytes().all(|byte| byte.is_ascii_digit())
+        && detail.starts_with("subscription_sharing_usage_limit_exceeded.")
 }
 
 fn get(connection: &Connection, id: &str) -> Result<Job> {
@@ -413,6 +436,8 @@ fn claim(connection: &mut Connection, value: &Value) -> Result<Value> {
         "SELECT payload FROM jobs WHERE state IN ('queued','running') ORDER BY created_at,rowid",
     )?;
     let running: Vec<_> = jobs.iter().filter(|job| job.state == "running").collect();
+    let paused_accounts: HashSet<_> = paused_chatgpt_jobs(&transaction)?.iter()
+        .filter_map(chatgpt_account).map(str::to_owned).collect();
     let wanted = value["jobID"].as_str();
     let allowed: Option<Vec<String>> = value
         .get("allowedResources")
@@ -429,6 +454,7 @@ fn claim(connection: &mut Connection, value: &Value) -> Result<Value> {
     let mut candidate = None;
     for job in jobs.iter().filter(|job| job.state == "queued") {
         if wanted.is_some_and(|id| id != job.id)
+            || chatgpt_account(job).is_some_and(|account| paused_accounts.contains(account))
             || allowed
                 .as_ref()
                 .is_some_and(|allowed| !allowed.contains(&job.resource))
@@ -557,6 +583,15 @@ fn mutate(connection: &mut Connection, value: &Value, operation: &str) -> Result
     }
     job.updated_at = now();
     persist(&transaction, &job)?;
+    if let Some(account) = chatgpt_account(&job) {
+        if operation == "job-update" && job.state == "failed" && reached_chatgpt_limit(&job.message) {
+            transaction.execute("INSERT INTO job_chatgpt_pauses(account_id,job_id) VALUES(?1,?2) ON CONFLICT(account_id) DO UPDATE SET job_id=excluded.job_id", params![account, job.id])?;
+        } else if operation == "job-retry" {
+            // A rejected retry never reaches this point. Preserve the explicit
+            // confirmation decision even across shutdown or a process crash.
+            transaction.execute("DELETE FROM job_chatgpt_pauses WHERE account_id=?1", [account])?;
+        }
+    }
     if job.state != previous_state {
         block_descendants(&transaction)?;
     }
@@ -571,7 +606,7 @@ pub fn dispatch(root: &Path, value: &Value) -> Result<Value> {
             let jobs = listed(&connection)?;
             let total: i64 =
                 connection.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))?;
-            Ok(json!({"hasMore":total as usize>jobs.len(),"total":total,"jobs":jobs}))
+            Ok(json!({"hasMore":total as usize>jobs.len(),"total":total,"jobs":jobs,"pausedChatGPTFailures":paused_chatgpt_jobs(&connection)?}))
         }
         "job-get" => Ok(json!({"job":get(&connection,field(value,"jobID")?)?})),
         "job-claim" => claim(&mut connection, value),
@@ -771,6 +806,81 @@ mod tests {
             call(root.path(), "job-claim", json!({}))["job"]["resource"],
             "local-heavy"
         );
+    }
+
+    #[test]
+    fn chatgpt_quota_pause_survives_reopen_and_history_until_explicit_account_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let plan = |object: &str, account: &str, command: &str| {
+            call(root.path(), "job-enqueue", json!({"kind":command,"objectID":object,"resource":"cloud","paid":true,
+                "config":{"command":command,"settings":{"mode":"cloud","cloudProvider":"chatgpt","chatGPTAccountID":account}}}))["job"].clone()
+        };
+        let finish = |job: &Value, message: &str| {
+            assert_eq!(call(root.path(), "job-claim", json!({"jobID":job["id"]}))["job"]["id"], job["id"]);
+            call(root.path(), "job-update", json!({"jobID":job["id"],"state":"failed","message":message,"expectedAttempt":1}));
+        };
+        // This separate failed job can later be explicitly retried. The quota
+        // failure itself then remains in history and must not recreate a pause.
+        let resume_a = plan("resume-a", "account-a", "example");
+        finish(&resume_a, "Temporary provider failure");
+        let quota_a = plan("quota-a", "account-a", "summarize");
+        let quota_b = plan("quota-b", "account-b", "voice-plan");
+        for job in [&quota_a, &quota_b] {
+            finish(job, "ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded. Fixture limit.");
+        }
+        let pending_a = plan("pending-a", "account-a", "example");
+        let pending_b = plan("pending-b", "account-b", "example");
+        for job in [&pending_a, &pending_b] {
+            assert!(call(root.path(), "job-claim", json!({"jobID":job["id"]}))["job"].is_null());
+        }
+        // Neither other accounts nor API-key-backed speech inherits the pause.
+        for job in [plan("other-account", "account-c", "example"), plan("speech", "account-a", "transcribe")] {
+            assert_eq!(call(root.path(), "job-claim", json!({"jobID":job["id"]}))["job"]["id"], job["id"]);
+            call(root.path(), "job-update", json!({"jobID":job["id"],"state":"succeeded"}));
+        }
+        for index in 0..55 {
+            let job = enqueue(root.path(), &format!("history-{index}"), "light");
+            call(root.path(), "job-claim", json!({"jobID":job["id"]}));
+            call(root.path(), "job-update", json!({"jobID":job["id"],"state":"succeeded"}));
+        }
+        let list = call(root.path(), "job-list", json!({}));
+        assert!(!list["jobs"].as_array().unwrap().iter().any(|job| job["id"] == quota_a["id"]));
+        assert_eq!(list["pausedChatGPTFailures"].as_array().unwrap().len(), 2);
+        assert!(dispatch(root.path(), &json!({"command":"job-retry","jobID":resume_a["id"],"confirmPaid":false})).is_err());
+        assert_eq!(call(root.path(), "job-list", json!({}))["pausedChatGPTFailures"].as_array().unwrap().len(), 2);
+        call(root.path(), "job-retry", json!({"jobID":resume_a["id"],"confirmPaid":true}));
+        let reopened = call(root.path(), "job-list", json!({}));
+        assert_eq!(reopened["pausedChatGPTFailures"].as_array().unwrap().len(), 1);
+        assert_eq!(reopened["pausedChatGPTFailures"][0]["id"], quota_b["id"]);
+        assert_eq!(call(root.path(), "job-get", json!({"jobID":quota_a["id"]}))["job"]["state"], "failed");
+        assert_eq!(call(root.path(), "job-claim", json!({"jobID":pending_a["id"]}))["job"]["id"], pending_a["id"]);
+        assert!(call(root.path(), "job-claim", json!({"jobID":pending_b["id"]}))["job"].is_null());
+    }
+
+    #[test]
+    fn quota_pause_classification_requires_the_exact_transport_code() {
+        assert!(reached_chatgpt_limit("ChatGPT: HTTP 429 · subscription_sharing_usage_limit_exceeded. Retry later."));
+        for message in ["ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded_extra. Other code.",
+            "ChatGPT: HTTP nope · subscription_sharing_usage_limit_exceeded. Not a status.",
+            "Provider mentioned subscription_sharing_usage_limit_exceeded."] {
+            assert!(!reached_chatgpt_limit(message));
+        }
+    }
+
+    #[test]
+    fn quota_pause_schema_migration_preserves_history_without_guessing_past_consent() {
+        let root = tempfile::tempdir().unwrap();
+        let job = enqueue(root.path(), "legacy", "cloud");
+        call(root.path(), "job-claim", json!({"jobID":job["id"]}));
+        call(root.path(), "job-update", json!({"jobID":job["id"],"state":"failed",
+            "message":"ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded. Historical failure."}));
+        let connection = open(root.path()).unwrap();
+        connection.execute_batch("DROP TABLE job_chatgpt_pauses; PRAGMA user_version=1;").unwrap();
+        drop(connection);
+        let migrated = call(root.path(), "job-list", json!({}));
+        assert_eq!(migrated["jobs"][0]["id"], job["id"]);
+        assert!(migrated["pausedChatGPTFailures"].as_array().unwrap().is_empty());
+        assert_eq!(open(root.path()).unwrap().pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 2);
     }
 
     #[test]
