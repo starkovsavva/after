@@ -38,7 +38,7 @@ enum FolderNativeChecks {
         try await settle(main) { UnsavedEditorRegistry.hasUnsaved }
         if let sheet = main.window.attachedSheet?.contentView { try snapshot(sheet, root.appendingPathComponent("folder-create.png")) }
         try press(main, "folder.quick.save")
-        try await settle(main) { app.notes.folders.contains { $0.name == "Личный проект" } && !ids(main).contains("folder.quick.save") }
+        try await settle(main) { app.notes.folders.contains { $0.name == "Личный проект" } && sheetsClosed(main) && !ids(main).contains("folder.quick.save") }
         guard let quickFolder = app.notes.folders.first(where: { $0.name == "Личный проект" }) else { throw AppError.message("Quick folder missing") }
         try expect(app.folderSelection == quickFolder.id && quickFolder.overrides == FolderOverrides() && app.notes.workspace.notes.count == originalNotes,
                    "Quick creation must select a real empty folder inheriting app defaults")
@@ -48,13 +48,13 @@ enum FolderNativeChecks {
         try editName(main, text: "Личный проект · план")
         try await settle(main) { UnsavedEditorRegistry.hasUnsaved }
         try press(main, "folder.quick.save")
-        try await settle(main) { app.notes.folder(quickFolder.id)?.name == "Личный проект · план" && !ids(main).contains("folder.quick.save") }
+        try await settle(main) { app.notes.folder(quickFolder.id)?.name == "Личный проект · план" && sheetsClosed(main) && !ids(main).contains("folder.quick.save") }
         try expect(app.notes.folder(quickFolder.id)?.id == quickFolder.id, "Double-click folder rename must preserve stable identity")
         let renamedRevision = app.notes.folder(quickFolder.id)?.revision
         try doubleClick(main, "folder.select." + quickFolder.id)
         try await settle(main) { ids(main).contains("folder.quick.save") }
         try press(main, "folder.quick.save")
-        try await settle(main) { !ids(main).contains("folder.quick.save") }
+        try await settle(main) { sheetsClosed(main) && !ids(main).contains("folder.quick.save") }
         try expect(app.notes.folder(quickFolder.id)?.revision == renamedRevision, "Saving an unchanged folder name must not invalidate active model jobs")
         print("PASS: visible sidebar creation and double-click rename use short native name sheets; no-op save preserves profile revision")
 
@@ -65,21 +65,21 @@ enum FolderNativeChecks {
         try press(main, "folder.addMeetings")
         try await settle(main) { ids(main).contains("folder.add.meeting." + movedMeeting.id) }
         try press(main, "folder.add.meeting." + movedMeeting.id)
-        try await settle(main) { app.folderID(for: movedMeeting.id) == quickFolder.id && app.selection == movedMeeting.id && !ids(main).contains("folder.add.cancel") }
+        try await settle(main) { app.folderID(for: movedMeeting.id) == quickFolder.id && app.selection == movedMeeting.id && sheetsClosed(main) && !ids(main).contains("folder.add.cancel") }
         try expect(app.folderSelection == quickFolder.id && app.filteredMeetings.contains { $0.id == movedMeeting.id },
                    "Selecting an existing meeting must populate its destination folder and keep the detail selected")
         app.busy = true
         NotificationCenter.default.post(name: Notification.Name("PosleMoveMeeting"), object: movedMeeting.id)
         try await settle(main) { ids(main).contains("folder.move.to.none") }
         try press(main, "folder.move.to.none")
-        try await settle(main) { app.folderID(for: movedMeeting.id) == nil && app.selection == movedMeeting.id && !ids(main).contains("folder.move.cancel") }
+        try await settle(main) { app.folderID(for: movedMeeting.id) == nil && app.selection == movedMeeting.id && sheetsClosed(main) && !ids(main).contains("folder.move.cancel") }
         try expect(app.folderSelection == nil && app.filteredMeetings.contains { $0.id == movedMeeting.id }, "Move must follow the destination instead of displaying a meeting under its previous folder")
         app.busy = false
         let movedRevision = app.notes.context(for: movedMeeting.id).revision
         NotificationCenter.default.post(name: Notification.Name("PosleMoveMeeting"), object: movedMeeting.id)
         try await settle(main) { ids(main).contains("folder.move.to.none") }
         try press(main, "folder.move.to.none")
-        try await settle(main) { !ids(main).contains("folder.move.cancel") }
+        try await settle(main) { sheetsClosed(main) && !ids(main).contains("folder.move.cancel") }
         try expect(app.notes.context(for: movedMeeting.id).revision == movedRevision, "Selecting the current destination must not create a new context revision")
         try press(main, "folder.select." + quickFolder.id)
         try await settle(main) { ids(main).contains("folder.current.settings") }
@@ -87,14 +87,14 @@ enum FolderNativeChecks {
         try await settle(main) { ids(main).contains("folder.delete") }
         let settingsRevision = app.notes.folder(quickFolder.id)?.revision
         try press(main, "folder.save")
-        try await settle(main) { !ids(main).contains("folder.save") }
+        try await settle(main) { sheetsClosed(main) && !ids(main).contains("folder.save") }
         try expect(app.notes.folder(quickFolder.id)?.revision == settingsRevision, "Saving unchanged folder settings must preserve profile revision")
         try press(main, "folder.current.settings")
         try await settle(main) { ids(main).contains("folder.delete") }
         try press(main, "folder.delete")
         try await settle(main) { ids(main).contains("folder.delete.confirm") }
         try press(main, "folder.delete.confirm")
-        try await settle(main) { app.notes.folder(quickFolder.id) == nil && !ids(main).contains("folder.delete") }
+        try await settle(main) { app.notes.folder(quickFolder.id) == nil && sheetsClosed(main) && !ids(main).contains("folder.delete") }
         try expect(app.meetings.contains { $0.id == movedMeeting.id }, "Deleting a folder through native controls must retain the existing meeting")
         print("PASS: native empty-folder picker, destination move and confirmed deletion preserve meetings")
 
@@ -224,14 +224,17 @@ enum FolderNativeChecks {
         print("PASS: stale profile rejected; deleting folder preserves content and restores app inheritance")
     }
     private static func expect(_ value: Bool, _ message: String) throws { if !value { throw AppError.message(message) } }
-    private static func settle(_ host: Host, _ condition: () -> Bool) async throws {
+    private static func sheetsClosed(_ host: Host) -> Bool {
+        host.window.attachedSheet == nil && host.window.sheets.isEmpty
+    }
+    private static func settle(_ host: Host, line: UInt = #line, _ condition: () -> Bool) async throws {
         for _ in 0..<150 {
             host.view.layoutSubtreeIfNeeded(); host.window.displayIfNeeded()
             if condition() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
         try? snapshot(host.view, URL(fileURLWithPath: ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] ?? "/private/tmp").appendingPathComponent("folders-failure.png"))
-        throw AppError.message("Folder UI did not reach expected state. IDs: " + ids(host).sorted().joined(separator: ", "))
+        throw AppError.message("Folder UI did not reach expected state at line \(line); attached sheets: \(host.window.sheets.count). IDs: " + ids(host).sorted().joined(separator: ", "))
     }
     private static func roots(_ host: Host) -> [NSView] {
         var result: [NSView] = [host.view]
