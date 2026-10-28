@@ -17,6 +17,7 @@ extension AppLayout {
     static let tabSpacing: CGFloat = 20
     static let tabHeight: CGFloat = 36
     static let tabIndicatorHeight: CGFloat = 2
+    static let tabFocusIndicatorHeight: CGFloat = 3
 }
 
 /// A single selection control shared by workspaces and settings. Native buttons
@@ -56,6 +57,7 @@ struct AppTabBar<Value: Hashable>: View {
 
     private func tabButton(_ tab: AppTab<Value>) -> some View {
         let selected = selection == tab.value
+        let focused = focusedTab == tab.value && tab.isEnabled && isEnabled
         return Button {
             activate(tab.value)
         } label: {
@@ -71,14 +73,17 @@ struct AppTabBar<Value: Hashable>: View {
             .foregroundStyle(selected ? Color.primary : Ink.secondaryText)
             .contentShape(Rectangle())
             .overlay(alignment: .bottom) {
-                Rectangle().fill(selected ? Color.primary : .clear)
-                    .frame(height: AppLayout.tabIndicatorHeight)
+                Rectangle().fill(selected ? Color.primary : focused ? Ink.secondaryText : .clear)
+                    .frame(height: focused ? AppLayout.tabFocusIndicatorHeight : AppLayout.tabIndicatorHeight)
             }
             .opacity(tab.isEnabled && isEnabled ? 1 : 0.45)
         }
         .buttonStyle(.plain)
         .focusable(tab.isEnabled && isEnabled)
         .focused($focusedTab, equals: tab.value)
+        // The underline indicates focus without adding a rectangular halo to
+        // text navigation. Focus itself stays enabled for keyboard and AX use.
+        .focusEffectDisabled()
         .disabled(!tab.isEnabled)
         .accessibilityLabel(tab.title)
         .accessibilityAddTraits(selected ? .isSelected : [])

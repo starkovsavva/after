@@ -81,7 +81,7 @@ struct SettingsView: View {
                             }
                         }
                     }.scrollIndicators(.hidden)
-                    Text((Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String).map { LF("После {0}", arguments: [$0]) } ?? L("После"))
+                    Text(AppVersion.current.map { LF("После {0}", arguments: [$0]) } ?? L("После"))
                         .font(AppTypography.caption).foregroundStyle(.secondary).padding(10)
                 }.padding(12).frame(width: 215).background(Ink.soft)
                 Divider()

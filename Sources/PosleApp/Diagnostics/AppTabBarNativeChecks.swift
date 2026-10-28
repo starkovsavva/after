@@ -109,7 +109,7 @@ enum AppTabBarNativeChecks {
         NSApp.accessibilitySetValue(true, forAttribute: accessibilityMode)
         defer { NSApp.accessibilitySetValue(previousAccessibilityMode, forAttribute: accessibilityMode) }
         let state = TabBarCheckState()
-        let host = NSHostingView(rootView: TabBarCheckView(state: state).frame(width: 620, height: 220))
+        let host = NSHostingView(rootView: TabBarCheckView(state: state).frame(width: 620, height: 220).background(Ink.paper))
         host.sizingOptions = []; host.frame = NSRect(x: 0, y: 0, width: 620, height: 220)
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = host
@@ -137,6 +137,22 @@ enum AppTabBarNativeChecks {
         try NativeTabNavigation.click("tab-regression.gamma", in: host, window: window)
         try await settle(host, window) { state.selection == "gamma" && NativeTabNavigation.isFocused("tab-regression.gamma", in: host) }
         print("TAB CHECK: native click selected and focused Gamma")
+        if let path = ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] {
+            let root = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+            guard ["/private/tmp", "/tmp"].contains(root.deletingLastPathComponent().path),
+                  root.lastPathComponent.hasPrefix("posle-native-check-") else {
+                throw AppError.message("Tab snapshots require a disposable fixture")
+            }
+            for (appearance, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+                window.appearance = NSAppearance(named: appearance)
+                try await settle(host, window) { NativeTabNavigation.isFocused("tab-regression.gamma", in: host) }
+                guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw AppError.message("Tab snapshot unavailable") }
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                guard let png = bitmap.representation(using: .png, properties: [:]) else { throw AppError.message("Tab PNG unavailable") }
+                try png.write(to: root.appendingPathComponent("tab-focus-" + name + ".png"))
+            }
+            window.appearance = NSAppearance(named: .aqua)
+        }
         var count = 1
         for (characters, keyCode, destination) in [("\u{f729}", UInt16(115), "alpha"), ("\u{f703}", UInt16(124), "gamma"),
                                                     ("\u{f702}", UInt16(123), "alpha"), ("\u{f72b}", UInt16(119), "gamma")] {

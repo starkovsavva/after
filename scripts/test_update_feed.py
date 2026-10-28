@@ -14,6 +14,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -48,15 +49,16 @@ class Verifier:
 
 
 class Fixture:
-    def __init__(self, root, public=PUBLIC):
+    def __init__(self, root, public=PUBLIC, metadata=None):
         self.root = Path(root)
-        self.identity = u.identity(info(public=public), REPO)
+        self.metadata = info(public=public) if metadata is None else metadata
+        self.identity = u.identity(self.metadata, REPO)
         self.files = {name: self.root / name for name in u.ASSETS}
         self.files[u.PKG].write_bytes(b"synthetic pkg fixture")
         with zipfile.ZipFile(self.files[u.ZIP], "w") as z:
-            z.writestr(u.APP + "/Contents/Info.plist", plistlib.dumps(info(public=public)))
+            z.writestr(u.APP + "/Contents/Info.plist", plistlib.dumps(self.metadata))
         with zipfile.ZipFile(self.files[u.SOURCE], "w") as z:
-            z.writestr("posle/packaging/Info.plist", plistlib.dumps(info(public=public)))
+            z.writestr("posle/packaging/Info.plist", plistlib.dumps(self.metadata))
         self.files[u.FEED].write_bytes(signed(u.make_appcast(self.identity, REPO, SIGNATURE, self.files, "Synthetic release notes")))
         self.files["SHA256SUMS"].write_text("".join(u.digest(self.files[name]) + "  " + name + "\n" for name in u.CHECKSUMMED))
         self.release = {"draft": False, "published_at": "2026-10-26T00:00:00Z", "tag_name": self.identity.tag, "assets": [
@@ -71,7 +73,8 @@ class Fixture:
 
 class GitHubFixture:
     repo = REPO
-    def __init__(self, previous=None, race=False):
+    def __init__(self, previous=None, race=False, metadata=None):
+        self.metadata = info() if metadata is None else metadata
         self.previous = previous
         self.head = "old" if previous else None
         self.race = race
@@ -84,7 +87,7 @@ class GitHubFixture:
         if route == "git/ref/heads/updates": return {"object": {"sha": self.head}} if self.head else None
         if route == "git/commits/" + REVISION: return {"tree": {"sha": "1" * 40}}
         if route == "git/trees/" + "1" * 40 + "?recursive=1":
-            content = plistlib.dumps(info())
+            content = plistlib.dumps(self.metadata)
             sha = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
             return {"tree": [{"path": "packaging/Info.plist", "mode": "100644", "type": "blob", "sha": sha}]}
         if route == "git/commits/old": return {"tree": {"sha": "oldtree"}}
@@ -419,6 +422,160 @@ class FeedTests(unittest.TestCase):
         verify.assert_called_once()
         promote.assert_called_once()
         github.api.assert_not_called()
+
+
+class HotfixVersionTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="posle-hotfix-test-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.metadata = dict(info(build=30), CFBundleShortVersionString="0.17.6", PosleProductVersion="0.17.6.1")
+        self.fixture = Fixture(self.root, metadata=self.metadata)
+        self.verifier = Verifier()
+
+    @staticmethod
+    def tree(metadata):
+        content = plistlib.dumps(metadata)
+        sha = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+        return {"packaging/Info.plist": ("100644", sha)}
+
+    def test_hotfix_identity_and_signed_feed_keep_product_separate_from_bundle(self):
+        release = self.fixture.identity
+        self.assertEqual((release.version, release.bundle_version, release.tag, release.build),
+                         ("0.17.6.1", "0.17.6", "v0.17.6.1", 30))
+        parsed = u.parse_feed(self.fixture.files[u.FEED].read_bytes(), REPO)
+        self.assertEqual((parsed["version"], parsed["tag"], parsed["build"]), (release.version, release.tag, 30))
+        with mock.patch.object(u.subprocess, "run") as command:
+            u.verify_zip(self.fixture.files[u.ZIP], release, REPO)
+        self.assertEqual(command.call_count, 2)
+        u.verify_source(self.fixture.files[u.SOURCE], release, REPO, tree=self.tree(self.metadata))
+
+    def test_hotfix_public_verification_still_requires_the_exact_source_commit(self):
+        github = GitHubFixture(metadata=self.metadata)
+        with mock.patch.object(u, "anonymous_download", side_effect=self.fixture.download), mock.patch.object(u, "verify_zip"):
+            verified = u.verify_public_release(github, self.fixture.release, PUBLIC, self.verifier)
+        self.assertEqual(verified.identity, self.fixture.identity)
+        with zipfile.ZipFile(self.fixture.files[u.SOURCE], "a") as archive:
+            archive.writestr("posle/untracked.txt", "must not ship")
+        with self.assertRaisesRegex(RuntimeError, "exact source commit"):
+            u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree=self.tree(self.metadata))
+        self.assertTrue(all(method == "GET" for _, method, _ in github.calls))
+
+    def test_product_metadata_must_match_the_exact_bundle_base(self):
+        for changes in ({"CFBundleShortVersionString": "0.17.7"}, {"CFBundleShortVersionString": "0.17.6.1"},
+                        {"PosleProductVersion": "0.17.5.1"}, {"PosleProductVersion": "0.17.6.1.1"},
+                        {"PosleProductVersion": None}):
+            with self.subTest(changes=changes), self.assertRaises(RuntimeError):
+                u.identity(dict(self.metadata, **changes), REPO)
+
+    def test_malformed_and_unbounded_hotfixes_fail_in_metadata_and_feed(self):
+        for version in ("0.17.6.0", "0.17.6.01", "0.17.6.10000", "0.17.6.-1", "0.17.6.1.1",
+                        "0.17.6.1-beta", "0.17.6.1+build", "0.17.6.1\n", "0.17..1", "0.17.1"):
+            with self.subTest(version=version):
+                with self.assertRaises(RuntimeError):
+                    u.identity(dict(self.metadata, PosleProductVersion=version), REPO)
+                # A different valid three-part version is a metadata mismatch,
+                # but remains a valid independent legacy display version.
+                if version == "0.17.1":
+                    continue
+                release = u.Identity(version, 30, REVISION, PUBLIC)
+                feed = signed(u.make_appcast(release, REPO, SIGNATURE, self.fixture.files, "Fixture"))
+                with self.assertRaises(RuntimeError):
+                    u.parse_feed(feed, REPO)
+        self.assertEqual(u.product_version(dict(self.metadata, PosleProductVersion="0.17.6.9999")), "0.17.6.9999")
+
+    def test_hotfix_source_rejects_missing_or_mismatched_product_bundle_and_build(self):
+        for changes in ({"PosleProductVersion": "0.17.6.2"}, {"CFBundleShortVersionString": "0.17.7"},
+                        {"CFBundleVersion": "29"}, {"PosleProductVersion": None}):
+            metadata = dict(self.metadata, **changes)
+            if changes.get("PosleProductVersion", "") is None:
+                del metadata["PosleProductVersion"]
+            with zipfile.ZipFile(self.fixture.files[u.SOURCE], "w") as archive:
+                archive.writestr("posle/packaging/Info.plist", plistlib.dumps(metadata))
+            with self.subTest(changes=changes), self.assertRaises(RuntimeError):
+                u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree=self.tree(metadata))
+
+    def test_existing_two_and_three_part_feeds_and_sources_remain_verifiable(self):
+        for version in ("0.8", "0.17.6"):
+            directory = self.root / version
+            directory.mkdir()
+            metadata = dict(info(build=29), CFBundleShortVersionString=version)
+            fixture = Fixture(directory, metadata=metadata)
+            self.assertEqual((fixture.identity.version, fixture.identity.bundle_version), (version, version))
+            self.assertEqual(u.parse_feed(fixture.files[u.FEED].read_bytes(), REPO)["version"], version)
+            u.verify_source(fixture.files[u.SOURCE], fixture.identity, REPO, tree=self.tree(metadata))
+
+    def test_hotfix_build_advance_accepts_legacy_feed_and_rejects_rollback_before_writes(self):
+        legacy = u.identity(dict(info(build=29), CFBundleShortVersionString="0.17.6"), REPO)
+        old_feed = signed(u.make_appcast(legacy, REPO, SIGNATURE, self.fixture.files, "Legacy release"))
+        verified = u.VerifiedRelease(self.fixture.identity, self.fixture.files[u.FEED].read_bytes())
+        github = GitHubFixture(old_feed)
+        self.assertTrue(u.promote_feed(github, verified, self.verifier))
+        for build in (29, 30):
+            release = u.identity(dict(self.metadata, CFBundleVersion=str(build), PosleProductVersion="0.17.6.2"), REPO)
+            feed = signed(u.make_appcast(release, REPO, SIGNATURE, self.fixture.files, "Rejected replay"))
+            github = GitHubFixture(verified.appcast)
+            with self.subTest(build=build), self.assertRaisesRegex(RuntimeError, "already announced"):
+                u.promote_feed(github, u.VerifiedRelease(release, feed), self.verifier)
+            self.assertTrue(all(method == "GET" for _, method, _ in github.calls))
+
+    def test_resume_default_tag_uses_the_same_product_version_mapping(self):
+        (self.root / "packaging").mkdir()
+        args = argparse.Namespace(tag=None, expected_visibility="public", repo=REPO)
+        for metadata, tag in ((self.metadata, "v0.17.6.1"), (info(), "v0.8.0")):
+            (self.root / "packaging/Info.plist").write_bytes(plistlib.dumps(metadata))
+            github = mock.Mock(repo=REPO)
+            github.release.return_value = self.fixture.release
+            with mock.patch.object(publisher, "PROJECT", self.root), \
+                 mock.patch.object(u, "verify_public_release", return_value=u.VerifiedRelease(self.fixture.identity, b"")), \
+                 mock.patch.object(u, "promote_feed", return_value=False), mock.patch("builtins.print"):
+                publisher.resume(args, github, self.verifier)
+            github.release.assert_called_once_with(tag)
+            github.api.assert_not_called()
+
+    def package_metadata(self, actual, expected):
+        app = self.root / u.APP
+        (app / "Contents").mkdir(parents=True, exist_ok=True)
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps(actual))
+        source = self.root / "Info.plist"
+        source.write_bytes(plistlib.dumps(expected))
+        # Exercise the actual packaging guard without signing, packaging or
+        # installing an app. The remainder of package.sh verifies payload bytes.
+        script = (u.PROJECT / "scripts/package.sh").read_text().split("<<'PYINFO'\n", 1)[1].split("\nPYINFO", 1)[0]
+        return subprocess.run([sys.executable, "-", str(app), str(source), str(self.root / "components.plist"),
+                               str(self.root / "version")], input=script, text=True, capture_output=True, cwd=u.PROJECT,
+                              env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+
+    def test_package_receipt_uses_build_while_preserving_bundle_and_product(self):
+        result = self.package_metadata(self.metadata, self.metadata)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "version").read_text(), "30")
+        component = plistlib.loads((self.root / "components.plist").read_bytes())[0]
+        self.assertTrue(component["BundleIsVersionChecked"])
+        self.assertEqual(component["BundleOverwriteAction"], "upgrade")
+        legacy = dict(info(build=29), CFBundleShortVersionString="0.17.6")
+        result = self.package_metadata(legacy, legacy)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "version").read_text(), "29")
+
+    def test_package_rejects_mixed_product_bundle_and_build_metadata(self):
+        for key, value in (("PosleProductVersion", "0.17.6.2"), ("CFBundleShortVersionString", "0.17.7"),
+                           ("CFBundleVersion", "29")):
+            with self.subTest(key=key):
+                result = self.package_metadata(dict(self.metadata, **{key: value}), self.metadata)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("another version", result.stderr)
+        absent = dict(self.metadata)
+        del absent["PosleProductVersion"]
+        result = self.package_metadata(absent, self.metadata)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("another version", result.stderr)
+        for value in ("0", "-1", "30.1", "030", "30\n"):
+            metadata = dict(self.metadata, CFBundleVersion=value)
+            with self.subTest(build=value):
+                result = self.package_metadata(metadata, metadata)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("positive integer", result.stderr)
 
 
 class RealSparkleTests(unittest.TestCase):

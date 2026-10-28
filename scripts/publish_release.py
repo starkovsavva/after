@@ -59,7 +59,7 @@ def signing_files(release, repo, notes, tool, verifier):
     run([tool, "--account", updates.ACCOUNT, "--disable-signing-warning", str(feed)], capture=True)
     verifier.verify_feed(feed, release.public_key)
     parsed = updates.parse_feed(feed.read_bytes(), repo)
-    if parsed["revision"] != release.revision or parsed["build"] != release.build:
+    if parsed["version"] != release.version or parsed["revision"] != release.revision or parsed["build"] != release.build:
         raise RuntimeError("Signed feed does not match this build")
     files[updates.FEED] = feed
     sums = PROJECT / "dist/SHA256SUMS"
@@ -74,7 +74,7 @@ def resume(args, github, verifier):
         source = plistlib.load(stream)
     public_key = source.get("SUPublicEDKey", "")
     updates.decode64(public_key, 32, "update public key")
-    tag = args.tag or "v" + source["CFBundleShortVersionString"]
+    tag = args.tag or "v" + updates.product_version(source)
     github.guard_visibility(args.expected_visibility)
     release = github.release(tag)
     if release is None:

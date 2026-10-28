@@ -159,7 +159,14 @@ enum BugReportNativeChecks {
     private static func installationMetadata(root: URL) throws {
         let bundle = root.appendingPathComponent("private-account-canary.app")
         let revision = String(repeating: "a", count: 40)
-        let info: [String: Any] = ["CFBundleShortVersionString": "0.17.6", "CFBundleVersion": "29", "PosleSourceRevision": revision]
+        let info: [String: Any] = ["CFBundleShortVersionString": "0.17.6", "CFBundleVersion": "30", "PosleSourceRevision": revision]
+        var hotfix = info; hotfix["PosleProductVersion"] = "0.17.6.1"
+        try expect(AppVersion.display(info: hotfix) == "0.17.6.1" && AppVersion.display(info: info) == "0.17.6",
+                   "Hotfix UI must show the product version while preserving legacy bundle metadata")
+        for invalid in ["0.17.5.1", "0.17.6.0", "0.17.6.01", "0.17.6.1.1", "private-account-canary"] {
+            hotfix["PosleProductVersion"] = invalid
+            try expect(AppVersion.display(info: hotfix) == "0.17.6", "Invalid product metadata escaped the numeric version boundary")
+        }
         func save(_ object: [String: Any], _ url: URL) throws {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try PropertyListSerialization.data(fromPropertyList: object, format: .xml, options: 0).write(to: url)
@@ -176,7 +183,7 @@ enum BugReportNativeChecks {
         try expect(matching.sourceRevision == revision && matching.helperVersions == "match"
                    && matching.location == "other" && matching.captureAuthorization == "system_picker",
                    "Installation diagnostics failed to identify an internally consistent capture build")
-        var stale = helperInfo; stale["CFBundleVersion"] = "28"
+        var stale = helperInfo; stale["CFBundleVersion"] = "29"
         try save(stale, helpers[0])
         try expect(BugReportDiagnostics.Installation(bundleURL: bundle).helperVersions == "mismatch",
                    "A mixed helper update was hidden by installation diagnostics")

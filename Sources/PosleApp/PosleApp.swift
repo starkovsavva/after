@@ -26,7 +26,7 @@ struct PosleApp: App {
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button(LF("О программе {0}", arguments: [L("После")])) {
-                    NSApp.orderFrontStandardAboutPanel(options: [.applicationName: L("После")])
+                    NSApp.orderFrontStandardAboutPanel(options: [.applicationName: L("После"), .applicationVersion: AppVersion.current ?? ""])
                 }
             }
             CommandGroup(after: .appInfo) {

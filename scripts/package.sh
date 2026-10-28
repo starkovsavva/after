@@ -14,6 +14,8 @@ import plistlib
 import re
 import sys
 from pathlib import Path
+sys.path.insert(0, str(Path.cwd() / "scripts"))
+from update_feed import product_version
 app, source, component, version_file = map(Path, sys.argv[1:])
 with (app / "Contents/Info.plist").open("rb") as stream:
     actual = plistlib.load(stream)
@@ -22,12 +24,16 @@ with source.open("rb") as stream:
 identifier = "app.posle.meetings"
 if actual.get("CFBundleIdentifier") != identifier or expected.get("CFBundleIdentifier") != identifier:
     raise SystemExit("The app identifier must remain app.posle.meetings across updates")
-for key in ("CFBundleShortVersionString", "CFBundleVersion"):
+for key in ("CFBundleShortVersionString", "CFBundleVersion", "PosleProductVersion"):
     if actual.get(key) != expected.get(key):
         raise SystemExit("The app bundle is from another version; rebuild it")
-version = actual["CFBundleShortVersionString"]
-if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", version):
-    raise SystemExit("The installer version must have two or three numeric components")
+product_version(actual)
+product_version(expected)
+# Receipts use the monotonic build number, including hotfixes sharing a bundle
+# short version. Sparkle and the installer therefore agree on upgrade ordering.
+version = actual["CFBundleVersion"]
+if not isinstance(version, str) or not re.fullmatch(r"[1-9][0-9]*", version):
+    raise SystemExit("The installer version must be a strictly positive integer build number")
 if app.is_symlink() or not app.is_dir():
     raise SystemExit("Expected a regular app bundle")
 # Use pkgbuild's documented 'upgrade' action: replace the complete old bundle

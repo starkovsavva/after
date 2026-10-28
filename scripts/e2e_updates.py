@@ -31,7 +31,7 @@ from xml.sax.saxutils import escape
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEFERRED_SCENARIOS = ("deferred", "nfc-deferred")
-SUCCESS_SCENARIOS = ("valid", *DEFERRED_SCENARIOS, "late-busy")
+SUCCESS_SCENARIOS = ("valid", "hotfix", *DEFERRED_SCENARIOS, "late-busy")
 REPLAY_SCENARIOS = ("same-build", "downgrade")
 SCENARIOS = (*SUCCESS_SCENARIOS, "bad-archive-signature", "tampered-archive", "bad-feed-signature",
              "truncated-archive", *REPLAY_SCENARIOS)
@@ -135,10 +135,13 @@ def make_app(destination, binary, framework, components, *, identifier, build, s
     (contents / "Resources").mkdir()
     shutil.copy2(binary, contents / "MacOS/UpdateFixture")
     run(["ditto", "--noextattr", "--norsrc", "--noqtn", str(framework), str(contents / "Frameworks/Sparkle.framework")])
+    hotfix = scenario.name == "hotfix"
+    bundle_build = build + 28 if hotfix else build
+    bundle_version = "0.17.6" if hotfix else f"0.0.{build}"
     info = {
         "CFBundleIdentifier": identifier, "CFBundleExecutable": "UpdateFixture",
         "CFBundleName": "UpdateFixture", "CFBundlePackageType": "APPL",
-        "CFBundleVersion": str(build), "CFBundleShortVersionString": f"0.0.{build}",
+        "CFBundleVersion": str(bundle_build), "CFBundleShortVersionString": bundle_version,
         "LSMinimumSystemVersion": "15.0", "LSUIElement": True,
         "NSAppTransportSecurity": {"NSAllowsArbitraryLoads": True},
         "FixtureRoot": str(scenario.parent), "FixtureLog": str(scenario / "events.jsonl"), "FixtureScenario": scenario.name,
@@ -147,6 +150,8 @@ def make_app(destination, binary, framework, components, *, identifier, build, s
         "SUAllowsAutomaticUpdates": False, "SUVerifyUpdateBeforeExtraction": True,
         "SURequireSignedFeed": True, "SUSignedFeedFailureExpirationInterval": 0, "SUShowReleaseNotes": False,
     }
+    if hotfix and build == 2:
+        info["PosleProductVersion"] = "0.17.6.1"
     with (contents / "Info.plist").open("wb") as stream:
         plistlib.dump(info, stream, sort_keys=False)
     (contents / "Resources" / ("obsolete.txt" if build == 1 else "new.txt")).write_text(f"build {build}")
@@ -162,7 +167,7 @@ def make_app(destination, binary, framework, components, *, identifier, build, s
     with (helper / "Contents/Info.plist").open("wb") as stream:
         plistlib.dump({"CFBundleIdentifier": identifier + ".worker", "CFBundleExecutable": "FixtureWorker",
                       "CFBundleName": "FixtureWorker", "CFBundlePackageType": "APPL",
-                      "CFBundleVersion": str(build), "CFBundleShortVersionString": f"0.0.{build}",
+                      "CFBundleVersion": str(bundle_build), "CFBundleShortVersionString": bundle_version,
                       "LSBackgroundOnly": True, "LSMinimumSystemVersion": "15.0"}, stream)
     (helper / "Contents/Resources" / ("obsolete-helper.txt" if build == 1 else "new-helper.txt")).write_text(f"build {build}")
     for owned in (cli, library, helper):
@@ -190,6 +195,8 @@ def exercise(root, web, framework, binary, components, sign_update, private, pub
     feed_url = f"http://127.0.0.1:{port}/{name}/feed.xml"
     installed_build = 3 if name == "downgrade" else 1
     candidate_build = 1 if name == "same-build" else 2
+    candidate_bundle_build = candidate_build + 28 if name == "hotfix" else candidate_build
+    candidate_display_version = "0.17.6.1" if name == "hotfix" else f"0.0.{candidate_build}"
     for build, destination in ((installed_build, old), (candidate_build, new)):
         make_app(destination, binary, framework, components, identifier=identifier, build=build,
                  scenario=scenario, feed=feed_url, public=public)
@@ -216,8 +223,8 @@ def exercise(root, web, framework, binary, components, sign_update, private, pub
     feed.write_text(f'''<?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
 <channel><title>Fixture updates</title><item><title>Fixture update</title>
-<pubDate>{date}</pubDate><sparkle:version>{candidate_build}</sparkle:version>
-<sparkle:shortVersionString>0.0.{candidate_build}</sparkle:shortVersionString>
+<pubDate>{date}</pubDate><sparkle:version>{candidate_bundle_build}</sparkle:version>
+<sparkle:shortVersionString>{candidate_display_version}</sparkle:shortVersionString>
 <sparkle:minimumSystemVersion>15.0.0</sparkle:minimumSystemVersion>
 <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
 <enclosure url="http://127.0.0.1:{port}/{escape(name)}/update.zip"
@@ -263,9 +270,16 @@ def exercise(root, web, framework, binary, components, sign_update, private, pub
         with (old / "Contents/Info.plist").open("rb") as stream:
             actual_version = plistlib.load(stream)["CFBundleVersion"]
         if name in SUCCESS_SCENARIOS:
-            assert actual_version == "2", "Sparkle did not replace build 1"
+            assert actual_version == str(candidate_bundle_build), "Sparkle did not replace the installed build"
             assert any(e["event"] == "ready" for e in observed), "Installer was never ready"
-            assert any(e["event"] == "relaunched" and e["build"] == "2" for e in observed), "Build 2 was not actually relaunched"
+            assert any(e["event"] == "relaunched" and e["build"] == str(candidate_bundle_build) for e in observed), "The candidate build was not actually relaunched"
+            if name == "hotfix":
+                with (old / "Contents/Info.plist").open("rb") as stream:
+                    installed_info = plistlib.load(stream)
+                assert installed_info["CFBundleShortVersionString"] == "0.17.6"
+                assert installed_info["PosleProductVersion"] == "0.17.6.1"
+                assert any(e["event"] == "started" and e["build"] == "29" for e in observed)
+                assert any(e["event"] == "found" and e["version"] == "30" and e["displayVersion"] == "0.17.6.1" for e in observed), "Sparkle must present the public hotfix label"
             assert not (old / "Contents/Resources/obsolete.txt").exists(), "Obsolete bundled files survived replacement"
             assert (old / "Contents/Resources/new.txt").read_text() == "build 2"
             # Verify the complete candidate, not just the outer app's Info.plist.
@@ -274,7 +288,7 @@ def exercise(root, web, framework, binary, components, sign_update, private, pub
             assert files(old) == candidate_files, "Installed bundle differs from the complete signed candidate"
             helper = old / "Contents/Helpers/FixtureWorker.app"
             with (helper / "Contents/Info.plist").open("rb") as stream:
-                assert plistlib.load(stream)["CFBundleVersion"] == "2", "A stale helper survived the update"
+                assert plistlib.load(stream)["CFBundleVersion"] == str(candidate_bundle_build), "A stale helper survived the update"
             for worker in (old / "Contents/MacOS/FixtureWorker", helper / "Contents/MacOS/FixtureWorker"):
                 assert run([str(worker), "--version"]) == "FixtureWorker 2", "A stale worker executable survived the update"
             assert not (helper / "Contents/Resources/obsolete-helper.txt").exists(), "Obsolete nested helper files survived replacement"

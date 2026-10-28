@@ -3,6 +3,45 @@ import Combine
 import Sparkle
 import SwiftUI
 
+/// Sparkle reads the bundle's Apple-compatible short version independently of
+/// our settings UI. Only its displayed host version changes here; candidate
+/// versions and the integer builds used for update ordering remain untouched.
+final class AppUpdateVersionDisplay: NSObject, SUVersionDisplay {
+    private let productVersion: String?
+    private let bundleBuild: String?
+
+    init(info: [String: Any] = Bundle.main.infoDictionary ?? [:]) {
+        productVersion = AppVersion.display(info: info)
+        bundleBuild = info["CFBundleVersion"] as? String
+        super.init()
+    }
+
+    private func hostVersion(_ fallback: String, build: String) -> String {
+        guard build == bundleBuild else { return fallback }
+        return productVersion ?? fallback
+    }
+
+    func formatUpdateVersion(fromUpdate update: SUAppcastItem,
+                                    andBundleDisplayVersion host: AutoreleasingUnsafeMutablePointer<NSString>,
+                                    withBundleVersion build: String) -> String {
+        let installed = hostVersion(host.pointee as String, build: build)
+        let candidate = update.displayVersionString
+        // Retain Sparkle's standard disambiguation when two builds share a
+        // public label. This is presentation only, never a version comparator.
+        if installed == candidate {
+            host.pointee = "\(installed) (\(build))" as NSString
+            return "\(candidate) (\(update.versionString))"
+        }
+        host.pointee = installed as NSString
+        return candidate
+    }
+
+    func formatBundleDisplayVersion(_ version: String, withBundleVersion build: String,
+                                    matchingUpdate: SUAppcastItem?) -> String {
+        hostVersion(version, build: build)
+    }
+}
+
 /// Sparkle owns preferences, signatures and the installation transaction. This
 /// coordinator only decides when a meeting or an unsaved editor may be interrupted.
 @MainActor
@@ -42,7 +81,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     private var flushLibraryDrafts: () -> Bool = { NoteDraftPersistence.flushAll() }
 
     var currentVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.12.3"
+        AppVersion.current ?? "0.12.3"
     }
     private var workInProgress: Bool {
         guard let store else { return false }
@@ -386,6 +425,10 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate,
     // This callback can be omitted by Sparkle when resuming an earlier install.
     // AppDelegate repeats canSafelyRelaunch at the final termination boundary.
     func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) { relaunchRequested = true; refreshAvailability() }
+
+    func standardUserDriverRequestsVersionDisplayer() -> SUVersionDisplay? {
+        AppUpdateVersionDisplay()
+    }
 
     var supportsGentleScheduledUpdateReminders: Bool { true }
     func standardUserDriverShouldHandleShowingScheduledUpdate(_ update: SUAppcastItem, andInImmediateFocus immediateFocus: Bool) -> Bool {

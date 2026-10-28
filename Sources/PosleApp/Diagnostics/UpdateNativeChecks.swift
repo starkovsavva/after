@@ -2,6 +2,7 @@
 import AppKit
 import Foundation
 import PosleCore
+import Sparkle
 import SwiftUI
 
 /// Real AppStore state and native sheets, isolated from production updater/feed.
@@ -14,6 +15,7 @@ enum UpdateNativeChecks {
               URL(fileURLWithPath: path).lastPathComponent.hasPrefix("posle-native-check-") else {
             throw AppError.message("Updater checks require an explicit disposable preview fixture")
         }
+        try verifyVersionDisplay()
         let app = AppStore(preview: true), updates = app.updates
         var draft = false
         updates.configureForChecks(store: app, hasQuickDraft: { draft })
@@ -167,8 +169,49 @@ enum UpdateNativeChecks {
                    "Cancelling the isolated queued job must release the update gate and clear its waiting reason")
         print("PASS: real queued job blocks restart independently of the legacy busy flag")
         try QuickCaptureController.verifyDraftPreservation(store: app)
-        print("13 native updater checks passed (no production feed, preferences or installation)")
+        print("14 native updater checks passed (no production feed, preferences or installation)")
     }
+    private static func verifyVersionDisplay() throws {
+        let metadata: [String: Any] = ["CFBundleShortVersionString": "0.17.6", "CFBundleVersion": "30",
+                                       "PosleProductVersion": "0.17.6.1"]
+        let display: SUVersionDisplay = AppUpdateVersionDisplay(info: metadata)
+        // The public dictionary initializer is used only for inert display
+        // fixtures. No updater, network request or installation is started.
+        func item(version: String, build: String) throws -> SUAppcastItem {
+            guard let item = SUAppcastItem(dictionary: ["sparkle:version": build,
+                "sparkle:shortVersionString": version, "link": "https://example.invalid/update"]) else {
+                throw AppError.message("Could not create the updater display fixture")
+            }
+            return item
+        }
+        let matching = try item(version: "0.17.6.1", build: "30")
+        try expect(display.formatBundleDisplayVersion?("0.17.6", withBundleVersion: "30", matchingUpdate: matching) == "0.17.6.1",
+                   "Sparkle's no-update message must show the installed public hotfix version")
+        try expect(display.formatBundleDisplayVersion?("0.17.6", withBundleVersion: "30", matchingUpdate: nil) == "0.17.6.1",
+                   "Sparkle must retain the public version even when no matching feed item exists")
+        let next = try item(version: "0.17.6.2", build: "31")
+        var installed: NSString = "0.17.6"
+        let candidate = display.formatUpdateVersion(fromUpdate: next, andBundleDisplayVersion: &installed, withBundleVersion: "30")
+        try expect(installed == "0.17.6.1" && candidate == "0.17.6.2" && next.versionString == "31",
+                   "The next-update dialog must show both public versions without changing candidate build ordering")
+        let sameLabel = try item(version: "0.17.6.1", build: "31")
+        installed = "0.17.6"
+        let distinguished = display.formatUpdateVersion(fromUpdate: sameLabel, andBundleDisplayVersion: &installed, withBundleVersion: "30")
+        try expect(installed == "0.17.6.1 (30)" && distinguished == "0.17.6.1 (31)",
+                   "Two builds sharing a public label must retain Sparkle's build disambiguation")
+        try expect(display.formatBundleDisplayVersion?("another-host", withBundleVersion: "29", matchingUpdate: nil) == "another-host",
+                   "The formatter must not apply product metadata to an unrelated host build")
+        let legacy = AppUpdateVersionDisplay(info: ["CFBundleShortVersionString": "0.17.6", "CFBundleVersion": "29"])
+        try expect(legacy.formatBundleDisplayVersion("0.17.6", withBundleVersion: "29", matchingUpdate: nil) == "0.17.6",
+                   "Legacy metadata must preserve its existing display version")
+        var invalid = metadata; invalid["PosleProductVersion"] = "untrusted-canary"
+        try expect(AppUpdateVersionDisplay(info: invalid).formatBundleDisplayVersion("0.17.6", withBundleVersion: "30", matchingUpdate: nil) == "0.17.6",
+                   "Invalid product metadata must fall back to the validated bundle short version")
+        try expect(AppUpdateController().standardUserDriverRequestsVersionDisplayer() is AppUpdateVersionDisplay,
+                   "The real standard updater delegate must install the product version formatter")
+        print("PASS: Sparkle displays public hotfix versions for latest/next updates; candidate builds and legacy labels remain intact")
+    }
+
     private struct SettingsHarness: View {
         @ObservedObject var app: AppStore
         var body: some View {

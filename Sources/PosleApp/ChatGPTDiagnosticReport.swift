@@ -89,7 +89,7 @@ struct ChatGPTDiagnosticReport: Equatable, Sendable {
     let text: String
 
     init(diagnostics: ChatGPTDiagnostics, settings: AppSettings,
-         appVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+         appVersion: String? = AppVersion.current,
          appBuild: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) {
         let version = Self.numeric(appVersion, pattern: #"^[0-9]{1,4}(\.[0-9]{1,4}){1,3}$"#)
         let build = Self.numeric(appBuild, pattern: #"^[0-9]{1,12}$"#)

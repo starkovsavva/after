@@ -85,7 +85,7 @@ struct BugReportDiagnostics: Encodable, Equatable {
     let lastFailure: Failure?
 
     init(settings: AppSettings, lastFailure: BackgroundJob? = nil,
-         appVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+         appVersion: String? = AppVersion.current,
          appBuild: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) {
         installation = Installation()
         self.appVersion = Self.numeric(appVersion, pattern: #"^[0-9]{1,4}(\.[0-9]{1,4}){1,3}$"#)

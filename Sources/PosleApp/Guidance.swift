@@ -43,7 +43,7 @@ final class GuidanceController: ObservableObject {
     private var consideredStartup = false
     // Bump only when a release introduces something worth teaching.
     private let featureRelease = "0.16"
-    var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development" }
+    var currentVersion: String { AppVersion.current ?? "development" }
 
     func configure(root: URL, preview: Bool) {
         guard self.root != root else { return }
