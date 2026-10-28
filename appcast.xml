@@ -6,31 +6,31 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.17.2</title>
-      <sparkle:version>25</sparkle:version>
-      <sparkle:shortVersionString>0.17.2</sparkle:shortVersionString>
+      <title>После 0.17.3</title>
+      <sparkle:version>26</sparkle:version>
+      <sparkle:shortVersionString>0.17.3</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Wed, 28 Oct 2026 09:44:07 GMT</pubDate>
-      <description sparkle:format="markdown">- **Обновления.** Настройки сохраняются и закрываются перед установкой. Несохранённые ключи, заметки и активная работа остаются защищены; при ошибке доступен повтор.
-- **Календарь.** Исправлено подключение из новой папки, восстановление доступа и повторные нажатия. Загрузка расписания выполняется в фоне.
-- **Проекты и люди.** Встречу можно связать с проектом или человеком прямо из раздела. Появились понятные действия для пустой библиотеки и папки.
-- **Скорость.** Заметки, задачи и обзоры проектов загружаются в фоне при открытии разделов. Быстрые переключения объединяют загрузки, сохраняя видимый контент и черновики.
-- **Задачи.** Редактор загружает полное описание перед изменением и защищает его от обрезки и параллельных правок.
+      <pubDate>Wed, 28 Oct 2026 10:18:03 GMT</pubDate>
+      <description sparkle:format="markdown">- **Параметры встречи.** После ошибки создания заметки по шаблону можно повторить сохранение. Уже сохранённые параметры остаются на месте; повтор не создаёт лишних изменений и заметок.
+- **Клавиатура.** В параметрах встречи работают Enter для сохранения и Escape для отмены.
+- **Календарь.** Ошибка загрузки больше не выглядит как отсутствие подключённых аккаунтов. Сначала предлагается повторить чтение; настройка аккаунта показывается после успешного пустого ответа.
 
-При обновлении с 0.17.1 и раньше сохраните правки и закройте окно настроек, чтобы завершить установку. Исправленный механизм обновления заработает после установки 0.17.2.
+Включены исправления 0.17.2: установка обновления с открытыми настройками, подключение календаря из новой папки, быстрые переключения разделов и понятная связь встреч с проектами и людьми.
 
-![Проекты и люди](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.2/docs/screenshots/contexts.png)
+При обновлении с 0.17.1 и раньше сохраните правки и закройте окно настроек, чтобы завершить установку.
+
+![Проекты и люди](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.3/docs/screenshots/contexts.png)
 </description>
-      <posle:sourceRevision>b60f5c2e33e386c2577ce249164ff1f526228b62</posle:sourceRevision>
-      <posle:archiveSHA256>87fa675128ab0b76c1d8df46e42ba03a5c1e3b67be058e0c0c70b2eba40b2b8b</posle:archiveSHA256>
-      <posle:sourceSHA256>58016cf6c1234dbbd6ef7ed98e8d4ce5ae9405f5d6884c70be542d818503fe4f</posle:sourceSHA256>
-      <posle:packageSHA256>fc2c39613dedec2d8d3de07de0a15c21fc755411b468d51e41c454f6e0fb5819</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.2/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="oLmbF3RS0SrsfznX3VBuEbpxI+KH4HmrOxFL4E3wOtmtUHbhrLekwAT5cCG44zyWduGJwAm93T/xpMJxhzmuCg==" length="24352438" type="application/octet-stream" />
+      <posle:sourceRevision>39d2deb59aa3dd06c0b222e68b47f22311734047</posle:sourceRevision>
+      <posle:archiveSHA256>64652d738e9fe88aa1688ebe53e7083ff326e81f7cf8de9466cabde47f739a2a</posle:archiveSHA256>
+      <posle:sourceSHA256>fb41728e1527d1e14bf1edab63311b5f50aff6e85f852b7e1f0fd00a00a18e77</posle:sourceSHA256>
+      <posle:packageSHA256>3e1783d981b4e3d390723dfa776101ddcf40dc49ecb6fbcf886d88074e59201c</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.3/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="Ej/3ndLVdBu2WEfl4xmsXdP9kTV9OmLj5p7jPg4NxouqMDzIvhDiM3UIfAQwTgvw+SeD7CuLq9E4S7/brxZZDg==" length="24365486" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: USjCuCKiDISNje8g3v+h5MYaGNCjdddl2ma70HWaeoHKVJ1lvmaIQV8Tf5Ko6ai4rVmqNUUWN3BsPr+/4pWlBA==
-length: 3324
+edSignature: 18KZFSCKYuUwZClHCFnPowR1/eN9MbwdTbOP7goNKpQf5zP1Arr9+yvC+tPU+sZ2AAAL5t4YGbcYE1xFC8fyDw==
+length: 3052
 -->
