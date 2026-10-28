@@ -6,34 +6,41 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.17.4</title>
-      <sparkle:version>27</sparkle:version>
-      <sparkle:shortVersionString>0.17.4</sparkle:shortVersionString>
+      <title>После 0.17.5</title>
+      <sparkle:version>28</sparkle:version>
+      <sparkle:shortVersionString>0.17.5</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Wed, 28 Oct 2026 12:40:58 GMT</pubDate>
-      <description sparkle:format="markdown">- **Поручения помощнику.** Исправлено несовпадение сохранённого профиля с выбранной моделью и аккаунтом. Профиль заметки или задачи берётся из актуальной папки, даже если список ещё не обновился. Старое неудачное поручение можно открыть, проверить и запустить с текущими настройками; исходная попытка остаётся в истории.
-- **Папка перед записью.** Выбор папки сразу показывает её язык и модель конспекта. Настройки фиксируются при старте. Импорт и новая запись открываются в своей папке, старый поисковый фильтр больше не прячет результат.
-- **Карточки для отдельной встречи.** В меню **… → Автосоздание карточек** можно наследовать настройку папки, включить или выключить генерацию. Перед записью это также доступно через **Настроить…**. Готовые карточки сохраняются.
-- **Разные MCP-клиенты.** В настройках внешних агентов доступны форматы Codex, Claude и универсального stdio. Разрешения задачи и материалов действуют одинаково для всех клиентов.
-- **Сообщить об ошибке.** В меню **Справка** появилась простая форма с описанием проблемы и необязательным ожидаемым результатом. Отчёт можно просмотреть, скопировать или сохранить в `.txt` / `.json`; автоматически он никуда не отправляется. Записи, заметки, аккаунты и ключи в диагностику не включаются.
-- **Обновления.** Sparkle обновлён до 2.10.1 с исправлением преждевременной установки для Unicode-путей. Дополнены реальные E2E: ожидание завершения приложения в такой папке, обрыв загрузки, та же версия и попытка понижения. Скачивание и установка используют HTTPS и проверку подписей ленты и архива до распаковки.
+      <pubDate>Wed, 28 Oct 2026 15:21:11 GMT</pubDate>
+      <description sparkle:format="markdown">- **Перетаскивание задач на доске.** Переносите карточку в нужную колонку, в том числе пустую: статус и история сохраняются. Доска по умолчанию показывает все статусы; у списка и доски независимые фильтры.
+- **Текстовые вкладки с подчёркиванием.** Единый спокойный стиль для встречи, интеграций, задач, карточек, календаря, проектов и поиска. Выбранный раздел отмечен линией; клавиатурная навигация и видимый фокус сохраняются.
+- **Русский и английский интерфейс.** В **Настройки → Общие → Язык интерфейса** доступны **Как в системе**, **Русский** и **English**. По умолчанию используется язык macOS. Английское имя приложения — **After**. Меню и окна переключаются без перезапуска; черновики, материалы и настройки моделей сохраняются.
+- **Свои разделы для каждой папки.** В «Английском» можно оставить карточки без календаря, в «Работе» — календарь без карточек. Значок ползунков рядом с меню папки сразу открывает её возможности.
+- **Общие настройки по умолчанию.** Выберите **Все папки** и нажмите ползунки или откройте **Настройки → Возможности**, чтобы выбрать общий набор. В каждой папке можно наследовать его или явно включить и выключить отдельные возможности. Возврат к общим возможностям сохраняет модель и остальные настройки папки.
+- **Сворачиваемые папки.** Треугольник рядом с заголовком **Папки** скрывает список и запоминает выбор. Меню активной папки остаётся сверху: переключение и настройки доступны и при свёрнутом списке.
+- **Переходы без скрытых вкладок.** При смене папки больше не остаётся открытой отключённая вкладка карточек или встреча из предыдущей папки. Настройка отключённой возможности ведёт к нужной папке.
 
-Обновление сохраняет библиотеку и модели. Текущая сборка пока без Developer ID и нотариализации Apple. При обновлении с 0.17.1 и раньше сохраните правки и закройте окно настроек для завершения установки.
+Встречи, заметки, конспекты и транскрипты доступны всегда. Отключение возможностей сохраняет данные. «Все папки» объединяет разделы, доступные хотя бы в одной папке или в общих настройках.
 
-![Папка и модель перед записью](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.4/docs/screenshots/recording-folder.png)
+![Возможности папки и наследование общих настроек](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.5/docs/screenshots/folder-features.png)
 
-![Простой отчёт об ошибке](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.4/docs/screenshots/bug-report.png)
+![Свёрнутый список папок с доступным переключением контекста](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.5/docs/screenshots/folder-sidebar-collapsed.png)
+
+![Выбор языка интерфейса After](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.5/docs/screenshots/interface-language.png)
+
+![Текстовые вкладки и кнопка подключения трекера](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.5/docs/screenshots/tracker-sync.png)
+
+![Доска задач после переноса карточки в Готово](https://raw.githubusercontent.com/starkovsavva/posle/v0.17.5/docs/screenshots/task-board.png)
 </description>
-      <posle:sourceRevision>bddb87895f247fbb0af9ba62359ad2114fb24ee2</posle:sourceRevision>
-      <posle:archiveSHA256>8ff98ad367d7363932c42b61ece14ec935342e29aaba1e6323e86283f228661b</posle:archiveSHA256>
-      <posle:sourceSHA256>78f73af988dfb06fe0e96901a01ccdda56f986660c45a8e5d2ff24e46057dff7</posle:sourceSHA256>
-      <posle:packageSHA256>72145b898347f3e7ce1a8912482f812dcdeb7ee0255644a68b4a8d0b18ae1e34</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.4/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="RjME+yvqVktGuSlKsILI6s9l/+oCSazxiuQT4Pv8JoAn9W7FVos2cBCoXVnuUF1UuJsB0RerAXMWJHk5eJYUDg==" length="24498707" type="application/octet-stream" />
+      <posle:sourceRevision>24e014bbb20ce8d176ec5f0f8ecf49b23a59ef57</posle:sourceRevision>
+      <posle:archiveSHA256>e6216038b6d1372ca1c28a845311f07f8c420a4d65a3fdccb74012acb6dc4345</posle:archiveSHA256>
+      <posle:sourceSHA256>1ae382efa5a5eb9e6a94cc8922cc5ba752ec8d8bdcca94257486a1eece1280d4</posle:sourceSHA256>
+      <posle:packageSHA256>6cfe88db61e38d7e72fbf403132249e9528e2072ac7cc58db7842cf8b515fcf4</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.5/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="oItxw0USY8dqf6N7lAJa/DcIcElvWQlp+heyhXV2MH5okR+/G8fcy4Shmy/xmqwrZNCs4E6lp56hwmXzUJapBw==" length="24714312" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 9/FHQCBN1C//GbKXMFthn4lQ8CXr3qSyihj8JFVo5KqzS+C4WzUgOoHyjOPu6CfRieEEmx2a/EbUu/vgXEZVCA==
-length: 5003
+edSignature: VoBVayVCXM81rjfU9mlPgnA46eslv7OM+HRzghOeKvNtqlaL+nfPcYc2Q/OHThcZ1LaCtkQN1oaBU8zhSTheCQ==
+length: 5789
 -->
