@@ -6,28 +6,26 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.17.6.2</title>
-      <sparkle:version>31</sparkle:version>
-      <sparkle:shortVersionString>0.17.6.2</sparkle:shortVersionString>
+      <title>После 0.17.6.3</title>
+      <sparkle:version>32</sparkle:version>
+      <sparkle:shortVersionString>0.17.6.3</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Wed, 28 Oct 2026 20:03:58 GMT</pubDate>
-      <description sparkle:format="markdown">- **Исправлен повторяющийся сбой создания конспекта и голосовых поручений.** Русский текст с «й» и «ё», буквы с диакритикой и другие Unicode-символы в фокусе, контексте и профиле папки могли вызывать ошибку «Настройки модели не совпадают с сохранённым профилем операции», даже если настройки не менялись. Настройки теперь передаются обработчику без изменения символов со стороны macOS.
-- Повторный запуск с текущими настройками работает и для ранее завершившихся с этой ошибкой операций. Проверки изменения модели, аккаунта, папки и исходных данных сохранены.
-- **Молочно-белая иконка.** Иконка приложения, SVG-логотип и страница возврата из браузера со значком вкладки используют светлый вариант «Закат». Цвета самого интерфейса не менялись.
-- **Надёжная отмена начала записи.** Отмена и выход из приложения больше не ждут ответа на запрос доступа к микрофону. Поздний ответ macOS не запускает отменённую запись и не влияет на следующую попытку; отмена учитывается и между запуском захвата и сохранением встречи.
-- **Ошибки записи с микрофона.** Неожиданная остановка или ошибка кодирования теперь завершает нужную сессию с сообщением об ошибке. Интерфейс больше не продолжает показывать активную запись после остановки микрофона; обычная остановка не вызывает ложную ошибку.
-- **Пауза очереди после лимита ChatGPT.** Пауза сохраняется после закрытия и повторного открытия приложения. Продолжение требует явного подтверждения и работает, даже если исходная ошибка уже не входит в последние 50 завершённых заданий. Другие аккаунты, провайдеры и распознавание продолжают работать независимо.
+      <pubDate>Thu, 29 Oct 2026 09:28:34 GMT</pubDate>
+      <description sparkle:format="markdown">- **Новая иконка After.** Светлая плитка, графитовая буква `a` с засечками и синяя точка — выбранный вариант нового знака. Иконка обновлена во всех размерах для Dock, Finder и окна обновления.
+- Знак в строке меню, страница возврата после входа в ChatGPT и её значок вкладки приведены к новой айдентике. В строке меню используется монохромный вариант, который адаптируется к светлой и тёмной теме macOS.
+
+Исправления записи, сохранённых профилей и очереди из 0.17.6.2 входят в это обновление. Настройки, библиотека и подключения сохраняются.
 </description>
-      <posle:sourceRevision>20eee1f0dbfc9a98c39fd58abb31043d5e109568</posle:sourceRevision>
-      <posle:archiveSHA256>fe068dfc094079607b7c623bf396df6810eec39fcefe85a185d7725bcf4adf0d</posle:archiveSHA256>
-      <posle:sourceSHA256>9f5c61ecaa5cb0401c318e9e506db8162b83297594c9f4ca58ea2b804446c8bc</posle:sourceSHA256>
-      <posle:packageSHA256>447bf7d42b4ae0eaad93d32d277b2485ed25f4dfd6d905ce35dc023465ac3c3e</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.6.2/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="+azvIcBQd3fOcx8uE+3QbkbtOeWX0XBPabR8j0D2Ue6fq2qZM6utICzVAHQjJkwY7o81zPXiHayP6/C0iRSlCA==" length="25135081" type="application/octet-stream" />
+      <posle:sourceRevision>1be4202f884a735f54ae36a2a8e00ffcc4421c4d</posle:sourceRevision>
+      <posle:archiveSHA256>8a2f691959dfd69cbbff57461845b4517c8cb7c05b690b3b10d9ffee0d4090de</posle:archiveSHA256>
+      <posle:sourceSHA256>a4c9657b0292eb0f351466a0f3a7fcb461fd9465457b942acbe542cf6ef81616</posle:sourceSHA256>
+      <posle:packageSHA256>8603b4fb267f527cf4a8bd270e25863d6e55c047a6b8de2080b32922435e07ce</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.6.3/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="ENikk8AVFNyo7MCDNX4iSrYM+APuzDPr1ogQZc39RSrxMDR01FUhTCic3y8Je4izZhFoKDbZD7QZ0W2sdmm+Ag==" length="25159678" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: iQ1YZkS/sVVdWLtwrwvtjuX+jAwOnrAARiI8wBWJDKZJ9jmbI6MXOMP66v/7ba3qCBrAYYdpT3YeAAGOvcI+AQ==
-length: 4445
+edSignature: 9lVgx/odRLlkPsDpiskRRoqqT5qjxTPOpsqZl/8crmVcGQqlbqDeEEhOa46T/vGATFqJ6Y04XpsgkTGtyHsMDA==
+length: 2511
 -->
