@@ -302,8 +302,8 @@ enum CaptureWriterNativeChecks {
             try await sink.finish()
         } catch { await sink.cancel(); throw error }
         let asset = AVURLAsset(url: source)
-        let video = try await requiredTrack(asset, .video), audio = try await requiredTrack(asset, .audio)
-        let videoRange = try await video.load(.timeRange), audioRange = try await audio.load(.timeRange)
+        let video = try await requiredTrack(asset, .video), audioTrack = try await requiredTrack(asset, .audio)
+        let videoRange = try await video.load(.timeRange), audioRange = try await audioTrack.load(.timeRange)
         let lumas = try decodedLumas(asset: asset, track: video)
         try expect(lumas.count >= 20,
             "A bounded three-surface source pool stalled animated capture or lost most delivered frames")
