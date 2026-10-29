@@ -46,32 +46,7 @@ enum ChatGPTCallbackPage {
         """.utf8)
     }
 
-    // Keep the milk-white «Закат» artwork identical to packaging/Logo.svg and
-    // scripts/icon.swift. The auth native checks compare the embedded asset.
-    private static let logo = #"""
-    <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="После — Закат">
-      <defs>
-        <linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="50" y1="50" x2="462" y2="462">
-          <stop stop-color="#FAF7F0"/>
-          <stop offset="1" stop-color="#ECE6DB"/>
-        </linearGradient>
-        <linearGradient id="sun" gradientUnits="userSpaceOnUse" x1="256" y1="129" x2="256" y2="261">
-          <stop stop-color="#E8A266"/>
-          <stop offset="1" stop-color="#D8874B"/>
-        </linearGradient>
-        <linearGradient id="notes" gradientUnits="userSpaceOnUse" x1="256" y1="287" x2="256" y2="373">
-          <stop stop-color="#3A3C3E"/>
-          <stop offset="1" stop-color="#292B2D"/>
-        </linearGradient>
-      </defs>
-      <!-- Geometry and colours are mirrored in scripts/icon.swift. -->
-      <path d="M154 50 H358 C430 50 462 82 462 154 V358 C462 430 430 462 358 462 H154 C82 462 50 430 50 358 V154 C50 82 82 50 154 50 Z" fill="url(#tile)"/>
-      <path d="M154 50 H358 C430 50 462 82 462 154 V358 C462 430 430 462 358 462 H154 C82 462 50 430 50 358 V154 C50 82 82 50 154 50 Z" fill="none" stroke="#71685B" stroke-opacity="0.12" stroke-width="1"/>
-      <path d="M128 261 C125.8 261 124 259.2 124 257 C126.1 185.9 184.3 129 256 129 C327.7 129 385.9 185.9 388 257 C388 259.2 386.2 261 384 261 Z" fill="url(#sun)"/>
-      <rect x="124" y="287" width="264" height="32" rx="16" fill="url(#notes)"/>
-      <rect x="124" y="341" width="168" height="32" rx="16" fill="url(#notes)"/>
-    </svg>
-    """#
+    private static let logo = BrandArtwork.svg
 
     private static let styles = #"""
     :root {

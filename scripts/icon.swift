@@ -1,9 +1,9 @@
 import AppKit
 import Foundation
 
-// «Закат»: an apricot sun above two lines of notes. Geometry, gradients and
-// colours mirror the milk-white packaging/Logo.svg. The 50 pt inset matches
-// the optical footprint of macOS app icons, with transparency outside the tile.
+// The approved After a. mark, in fixed outlines. Match packaging/Logo.svg and
+// BrandArtwork.swift; no installed font or network resource is needed.
+// The 50 pt inset keeps the normal macOS Dock footprint and transparent corners.
 guard CommandLine.arguments.count == 2 else {
     fputs("Usage: swift scripts/icon.swift <output.iconset>\n", stderr)
     exit(1)
@@ -49,17 +49,32 @@ tile.addCurve(to: CGPoint(x: 154, y: 50),
               control1: CGPoint(x: 50, y: 82), control2: CGPoint(x: 82, y: 50))
 tile.closeSubpath()
 
-let sun = CGMutablePath()
-sun.move(to: CGPoint(x: 128, y: 261))
-sun.addCurve(to: CGPoint(x: 124, y: 257),
-             control1: CGPoint(x: 125.8, y: 261), control2: CGPoint(x: 124, y: 259.2))
-sun.addCurve(to: CGPoint(x: 256, y: 129),
-             control1: CGPoint(x: 126.1, y: 185.9), control2: CGPoint(x: 184.3, y: 129))
-sun.addCurve(to: CGPoint(x: 388, y: 257),
-             control1: CGPoint(x: 327.7, y: 129), control2: CGPoint(x: 385.9, y: 185.9))
-sun.addCurve(to: CGPoint(x: 384, y: 261),
-             control1: CGPoint(x: 388, y: 259.2), control2: CGPoint(x: 386.2, y: 261))
-sun.closeSubpath()
+func letterPath() -> CGPath {
+    let path = CGMutablePath()
+    path.move(to: CGPoint(x: 211.282, y: 162))
+    path.addCurve(to: CGPoint(x: 299.077, y: 214.038), control1: CGPoint(x: 246.949, y: 162), control2: CGPoint(x: 297.705, y: 172.955))
+    path.addLine(to: CGPoint(x: 299.077, y: 323.592))
+    path.addCurve(to: CGPoint(x: 330.628, y: 340.025), control1: CGPoint(x: 299.077, y: 346.873), control2: CGPoint(x: 312.795, y: 353.72))
+    path.addLine(to: CGPoint(x: 327.885, y: 360.567))
+    path.addCurve(to: CGPoint(x: 241.462, y: 349.611), control1: CGPoint(x: 297.705, y: 383.847), control2: CGPoint(x: 252.436, y: 375.631))
+    path.addCurve(to: CGPoint(x: 144.064, y: 361.936), control1: CGPoint(x: 208.538, y: 375.631), control2: CGPoint(x: 170.128, y: 381.108))
+    path.addCurve(to: CGPoint(x: 126.231, y: 285.248), control1: CGPoint(x: 113.885, y: 345.503), control2: CGPoint(x: 111.141, y: 309.898))
+    path.addCurve(to: CGPoint(x: 240.09, y: 238.688), control1: CGPoint(x: 149.551, y: 257.86), control2: CGPoint(x: 201.679, y: 253.752))
+    path.addLine(to: CGPoint(x: 240.09, y: 214.038))
+    path.addCurve(to: CGPoint(x: 203.051, y: 179.803), control1: CGPoint(x: 240.09, y: 188.019), control2: CGPoint(x: 222.256, y: 178.433))
+    path.addCurve(to: CGPoint(x: 183.846, y: 197.605), control1: CGPoint(x: 189.333, y: 178.433), control2: CGPoint(x: 182.474, y: 186.65))
+    path.addCurve(to: CGPoint(x: 187.962, y: 226.363), control1: CGPoint(x: 185.218, y: 208.561), control2: CGPoint(x: 192.077, y: 215.408))
+    path.addCurve(to: CGPoint(x: 138.577, y: 231.841), control1: CGPoint(x: 182.474, y: 245.535), control2: CGPoint(x: 155.038, y: 244.166))
+    path.addCurve(to: CGPoint(x: 141.321, y: 185.28), control1: CGPoint(x: 118, y: 218.146), control2: CGPoint(x: 126.231, y: 197.605))
+    path.addCurve(to: CGPoint(x: 211.282, y: 162), control1: CGPoint(x: 160.526, y: 168.847), control2: CGPoint(x: 185.218, y: 162))
+    path.closeSubpath()
+    path.move(to: CGPoint(x: 241.462, y: 257.86))
+    path.addCurve(to: CGPoint(x: 176.987, y: 316.745), control1: CGPoint(x: 201.679, y: 268.815), control2: CGPoint(x: 175.615, y: 286.618))
+    path.addCurve(to: CGPoint(x: 204.423, y: 342.764), control1: CGPoint(x: 176.987, y: 335.917), control2: CGPoint(x: 187.962, y: 342.764))
+    path.addCurve(to: CGPoint(x: 241.462, y: 327.701), control1: CGPoint(x: 219.513, y: 344.134), control2: CGPoint(x: 231.859, y: 337.287))
+    path.closeSubpath()
+    return path
+}
 
 try FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
 for size in sizes {
@@ -76,19 +91,16 @@ for size in sizes {
         context.translateBy(x: 0, y: 512)
         context.scaleBy(x: 1, y: -1)
         gradient(context, path: tile, from: CGPoint(x: 50, y: 50),
-                 to: CGPoint(x: 462, y: 462), colours: [0xFAF7F0, 0xECE6DB])
+                 to: CGPoint(x: 462, y: 462), colours: [0xFFFFFF, 0xF7F8FA])
         context.addPath(tile)
-        context.setStrokeColor(colour(0x71685B, alpha: 0.12))
+        context.setStrokeColor(colour(0x313538, alpha: 0.07))
         context.setLineWidth(1)
         context.strokePath()
-        gradient(context, path: sun, from: CGPoint(x: 256, y: 129),
-                 to: CGPoint(x: 256, y: 261), colours: [0xE8A266, 0xD8874B])
-        for line in [CGRect(x: 124, y: 287, width: 264, height: 32),
-                     CGRect(x: 124, y: 341, width: 168, height: 32)] {
-            let path = CGPath(roundedRect: line, cornerWidth: 16, cornerHeight: 16, transform: nil)
-            gradient(context, path: path, from: CGPoint(x: 256, y: 287),
-                     to: CGPoint(x: 256, y: 373), colours: [0x3A3C3E, 0x292B2D])
-        }
+        context.addPath(letterPath())
+        context.setFillColor(colour(0x313538))
+        context.drawPath(using: .eoFill)
+        context.setFillColor(colour(0x476D90))
+        context.fillEllipse(in: CGRect(x: 341.5, y: 304, width: 69, height: 69))
         let name = "icon_\(size)x\(size)\(scale == 2 ? "@2x" : "").png"
         // The context writes sRGB components directly. Retag the bitmap instead
         // of converting those components from the initializer's device RGB space.

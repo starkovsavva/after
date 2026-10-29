@@ -1,22 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="После — Закат">
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="После / After — a.">
   <defs>
     <linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="50" y1="50" x2="462" y2="462">
-      <stop stop-color="#FAF7F0"/>
-      <stop offset="1" stop-color="#ECE6DB"/>
-    </linearGradient>
-    <linearGradient id="sun" gradientUnits="userSpaceOnUse" x1="256" y1="129" x2="256" y2="261">
-      <stop stop-color="#E8A266"/>
-      <stop offset="1" stop-color="#D8874B"/>
-    </linearGradient>
-    <linearGradient id="notes" gradientUnits="userSpaceOnUse" x1="256" y1="287" x2="256" y2="373">
-      <stop stop-color="#3A3C3E"/>
-      <stop offset="1" stop-color="#292B2D"/>
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F7F8FA"/>
     </linearGradient>
   </defs>
-  <!-- Geometry and colours are mirrored in scripts/icon.swift. -->
-  <path d="M154 50 H358 C430 50 462 82 462 154 V358 C462 430 430 462 358 462 H154 C82 462 50 430 50 358 V154 C50 82 82 50 154 50 Z" fill="url(#tile)"/>
-  <path d="M154 50 H358 C430 50 462 82 462 154 V358 C462 430 430 462 358 462 H154 C82 462 50 430 50 358 V154 C50 82 82 50 154 50 Z" fill="none" stroke="#71685B" stroke-opacity="0.12" stroke-width="1"/>
-  <path d="M128 261 C125.8 261 124 259.2 124 257 C126.1 185.9 184.3 129 256 129 C327.7 129 385.9 185.9 388 257 C388 259.2 386.2 261 384 261 Z" fill="url(#sun)"/>
-  <rect x="124" y="287" width="264" height="32" rx="16" fill="url(#notes)"/>
-  <rect x="124" y="341" width="168" height="32" rx="16" fill="url(#notes)"/>
+  <path d="M154 50 H358 C430 50 462 82 462 154 V358 C462 430 430 462 358 462 H154 C82 462 50 430 50 358 V154 C50 82 82 50 154 50 Z" fill="url(#tile)" stroke="#313538" stroke-opacity="0.07" stroke-width="1"/>
+  <path d="M211.282 162 C246.949 162 297.705 172.955 299.077 214.038 L299.077 323.592 C299.077 346.873 312.795 353.72 330.628 340.025 L327.885 360.567 C297.705 383.847 252.436 375.631 241.462 349.611 C208.538 375.631 170.128 381.108 144.064 361.936 C113.885 345.503 111.141 309.898 126.231 285.248 C149.551 257.86 201.679 253.752 240.09 238.688 L240.09 214.038 C240.09 188.019 222.256 178.433 203.051 179.803 C189.333 178.433 182.474 186.65 183.846 197.605 C185.218 208.561 192.077 215.408 187.962 226.363 C182.474 245.535 155.038 244.166 138.577 231.841 C118 218.146 126.231 197.605 141.321 185.28 C160.526 168.847 185.218 162 211.282 162 Z M241.462 257.86 C201.679 268.815 175.615 286.618 176.987 316.745 C176.987 335.917 187.962 342.764 204.423 342.764 C219.513 344.134 231.859 337.287 241.462 327.701 Z" fill="#313538" fill-rule="evenodd"/>
+  <circle cx="376" cy="338.5" r="34.5" fill="#476D90"/>
 </svg>

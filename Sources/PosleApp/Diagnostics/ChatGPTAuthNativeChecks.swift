@@ -76,7 +76,7 @@ enum ChatGPTAuthNativeChecks {
             try expect(page.contains(currentLogo) && page.contains("href=\"data:image/svg+xml;base64,\(favicon)\""),
                        "Both callback states and their favicon must use the current application logo from packaging/Logo.svg")
         }
-        print("PASS: browser callback mark and favicon match the current Закат application icon")
+        print("PASS: browser callback mark and favicon match the current After application icon")
         let startup = try ChatGPTAccount.restoringFixture()
         try expect(startup.account.profile == nil, "The fixture must begin before asynchronous restoration")
         let restoredToken = try await startup.account.accessToken(expectedAccountID: startup.id)
