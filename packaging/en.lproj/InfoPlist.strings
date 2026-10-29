@@ -2,4 +2,5 @@
 "CFBundleDisplayName" = "After";
 "NSCalendarsFullAccessUsageDescription" = "After shows selected calendars and syncs events you link to tasks.";
 "NSMicrophoneUsageDescription" = "After uses the microphone to record meetings and voice commands.";
+"NSScreenCaptureUsageDescription" = "After records the screen you select to save meeting video.";
 "NSAudioCaptureUsageDescription" = "After records call audio to separate speakers and create a transcript.";

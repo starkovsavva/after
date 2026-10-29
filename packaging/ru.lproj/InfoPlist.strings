@@ -2,4 +2,5 @@
 "CFBundleDisplayName" = "После";
 "NSCalendarsFullAccessUsageDescription" = "После показывает выбранные календари и синхронизирует события, которые вы связываете с задачами.";
 "NSMicrophoneUsageDescription" = "После использует микрофон для записи встреч и голосовых поручений.";
+"NSScreenCaptureUsageDescription" = "После записывает выбранный вами экран для сохранения видео встречи.";
 "NSAudioCaptureUsageDescription" = "После записывает звук звонка, чтобы разделить реплики собеседников и создать транскрипцию.";

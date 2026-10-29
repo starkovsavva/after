@@ -68,7 +68,7 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         let diagnostic = value.domain == SCStreamErrorDomain ? LF("ScreenCaptureKit, код {0}", arguments: [String(describing: code)]) : LF("код {0}", arguments: [String(describing: code)])
         let message: String
         if value.domain == SCStreamErrorDomain, code == SCStreamError.Code.userDeclined.rawValue {
-            message = L("macOS не разрешила запись выбранного экрана или звука. Повторите запись и подтвердите выбор в окне macOS; если отказ повторяется, завершите и снова откройте «После».")
+            message = L("macOS не разрешила запись выбранного экрана или звука. Повторите запись и подтвердите выбор в окне macOS. Если доступ уже включён, завершите «После», удалите старую запись «После» кнопкой «−» в настройках записи экрана и снова откройте установленное приложение, чтобы дать доступ этой копии.")
         } else if value.domain == SCStreamErrorDomain,
                   [SCStreamError.Code.noDisplayList.rawValue, SCStreamError.Code.noCaptureSource.rawValue].contains(code) {
             message = L("macOS не нашла доступный экран. Проверьте подключение дисплея и повторите запись.")
@@ -143,9 +143,8 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
             contentPicker = nil
             throw error
         }
-        // Use the authorized filter directly. Re-querying SCShareableContent here
-        // would require broad Screen Recording access and recreate the TCC loop.
-        filter.includeMenuBar = true
+        // Use the exact filter selected by macOS, including its menu-bar policy.
+        // Do not expand it or re-query SCShareableContent for broader access.
         let size = videoQuality.dimensions(width: filter.contentRect.width,
             height: filter.contentRect.height, scale: Double(filter.pointPixelScale))
         guard !video || size != nil else {
@@ -369,7 +368,9 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
     private let nativeVideo: Bool
     private let frameDuration: CMTime
     // ScreenCaptureKit emits complete frames only when the display changes.
-    // Retain one surface so a static screen can last until the capture ends.
+    // Keep an owned copy so the static tail and H.264 encoder cannot exhaust
+    // ScreenCaptureKit's small pool and freeze video while audio continues.
+    private let videoFrameCopier = CaptureVideoFrameCopier()
     private var latestVideoFrame: CMSampleBuffer?
     private var pendingVideoFrame = false
     private var lastWrittenVideoTime = CMTime.invalid
@@ -400,6 +401,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                 AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
                 AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: videoQuality.bitRate(for: size),
                     AVVideoExpectedSourceFrameRateKey: videoQuality.frameRate, AVVideoMaxKeyFrameIntervalDurationKey: 2,
+                    AVVideoAllowFrameReorderingKey: false,
                     AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel]
             ]
             guard writer.canApply(outputSettings: outputSettings, forMediaType: .video) else {
@@ -433,8 +435,15 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                 guard CMSampleBufferDataIsReady(buffer), CMSampleBufferGetImageBuffer(buffer) != nil,
                       CMSampleBufferGetPresentationTimeStamp(buffer).isValid,
                       CMSampleBufferGetPresentationTimeStamp(buffer).isNumeric else { return }
-                latestVideoFrame = buffer
-                pendingVideoFrame = true
+                do {
+                    guard let owned = try videoFrameCopier.copy(buffer) else {
+                        observeEnd(buffer, videoFrame: true)
+                        flushVideoFrame()
+                        return
+                    }
+                    latestVideoFrame = owned
+                    pendingVideoFrame = true
+                } catch { report(error); return }
             case .idle:
                 observeEnd(buffer, videoFrame: true)
                 flushVideoFrame()
@@ -525,10 +534,10 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
         return AppError.message(message + (nativeVideo ? L(" Попробуйте качество 1080p.") : ""))
     }
 
-    private func report() {
+    private func report(_ error: Error? = nil) {
         guard !reportedFailure else { return }
         reportedFailure = true
-        failed?(writingError.localizedDescription)
+        failed?((error ?? writingError).localizedDescription)
     }
 
     func cancel() async {
