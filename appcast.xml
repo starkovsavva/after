@@ -6,26 +6,27 @@
     <description>Обновления После для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.17.6.3</title>
-      <sparkle:version>32</sparkle:version>
-      <sparkle:shortVersionString>0.17.6.3</sparkle:shortVersionString>
+      <title>После 0.17.6.4</title>
+      <sparkle:version>33</sparkle:version>
+      <sparkle:shortVersionString>0.17.6.4</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Thu, 29 Oct 2026 09:28:34 GMT</pubDate>
-      <description sparkle:format="markdown">- **Новая иконка After.** Светлая плитка, графитовая буква `a` с засечками и синяя точка — выбранный вариант нового знака. Иконка обновлена во всех размерах для Dock, Finder и окна обновления.
-- Знак в строке меню, страница возврата после входа в ChatGPT и её значок вкладки приведены к новой айдентике. В строке меню используется монохромный вариант, который адаптируется к светлой и тёмной теме macOS.
+      <pubDate>Thu, 29 Oct 2026 15:40:09 GMT</pubDate>
+      <description sparkle:format="markdown">- **Исправлено зависание видео при продолжающейся записи звука.** Кодировщик H.264 больше не удерживает исходные поверхности ScreenCaptureKit: кадры копируются в собственный ограниченный пул. Это устраняет исчерпание буфера захвата, при котором видео могло оставаться на одном изображении. Сохраняются цвета, точные временные отметки и полная длительность видео со звуком, в том числе при неподвижном экране.
+- Системный выбор экрана передаётся в захват без изменения его политики строки меню. Добавлены локализованные описания использования записи экрана.
+- Для отказа macOS `-3801` уточнено восстановление доступа, когда разрешение уже включено: завершите «После», удалите его старую запись кнопкой «−» в разделе «Запись экрана и системного звука», затем снова откройте установленную копию и подтвердите доступ. Текущая ad-hoc подпись не гарантирует сохранение разрешений после обновлений; этот релиз не заменяет её сертификатом Apple.
 
-Исправления записи, сохранённых профилей и очереди из 0.17.6.2 входят в это обновление. Настройки, библиотека и подключения сохраняются.
+Новый знак After и остальные исправления 0.17.6.3 сохранены. Синтетические проверки воспроизводят зависание старого кодировщика и проверяют исправление, смену кадров, экспорт MP4, звук и отмену запуска. Реальный захват на macOS 26.5.2 отдельно не проверялся.
 </description>
-      <posle:sourceRevision>1be4202f884a735f54ae36a2a8e00ffcc4421c4d</posle:sourceRevision>
-      <posle:archiveSHA256>8a2f691959dfd69cbbff57461845b4517c8cb7c05b690b3b10d9ffee0d4090de</posle:archiveSHA256>
-      <posle:sourceSHA256>a4c9657b0292eb0f351466a0f3a7fcb461fd9465457b942acbe542cf6ef81616</posle:sourceSHA256>
-      <posle:packageSHA256>8603b4fb267f527cf4a8bd270e25863d6e55c047a6b8de2080b32922435e07ce</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.6.3/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="ENikk8AVFNyo7MCDNX4iSrYM+APuzDPr1ogQZc39RSrxMDR01FUhTCic3y8Je4izZhFoKDbZD7QZ0W2sdmm+Ag==" length="25159678" type="application/octet-stream" />
+      <posle:sourceRevision>61b7dee44367e80e1e101ccd2524b7f3e5fabaf6</posle:sourceRevision>
+      <posle:archiveSHA256>c16616fb490e8a4d7ba97eec6e3d6ac751218256fcc3df423b0051009ffdd23c</posle:archiveSHA256>
+      <posle:sourceSHA256>cbe592bb630e39154f4cda067e0b165c50bf08f5a99a8373369686c744cc63f3</posle:sourceSHA256>
+      <posle:packageSHA256>39c7b6587814ae8cc4f86ee3ba16562bd24f1ce3df999146b9dec4ab1c33bac7</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.6.4/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="MSipDLtQ9QRCUNhVUjG5Ye4kFfu0EPfrLskvjFTScUV2Qc4LBQUZqbGdltRPXxpKFSfuSydueQNw1tEAdmApDw==" length="25111638" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 9lVgx/odRLlkPsDpiskRRoqqT5qjxTPOpsqZl/8crmVcGQqlbqDeEEhOa46T/vGATFqJ6Y04XpsgkTGtyHsMDA==
-length: 2511
+edSignature: gniMxQCwtF4Zf1KZaILS4KM+PRa/vQdKOZANRBAK8WhUaZzYfMjmysaEEzoFJA5SI6DTzTgayuUa8Fy+5vNNBw==
+length: 3704
 -->
