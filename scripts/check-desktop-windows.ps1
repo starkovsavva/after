@@ -137,6 +137,7 @@ $appProcess = $null
 $junction = $null
 $installRoot = $null
 $cleanupProfile = $false
+$smokeFailure = $null
 $receipt = [ordered]@{
     platform = 'windows-x64'; engineSha256 = (Get-FileHash -LiteralPath $engine -Algorithm SHA256).Hash.ToLowerInvariant()
     syntheticDataOnly = $true; checks = $passes; nativeApp = $false; installer = $false
@@ -154,6 +155,40 @@ function Invoke-Engine([string]$Command, [hashtable]$Arguments = @{}, [string]$D
 function Expect-Result([hashtable]$Envelope) {
     if ($Envelope.ok -ne $true) { throw ('Unexpected domain failure: ' + $Envelope.error.code) }
     return $Envelope.result
+}
+function Remove-OwnedSmokeProfile([string]$Profile, [string]$Owner) {
+    # Retry only the freshly-created CI profile and keep its marker until all
+    # WebView files have gone. Windows can retain WebView2's lock briefly after
+    # the application process exits. Never traverse a reparse-point root/marker.
+    $expected = Join-Path ([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::LocalApplicationData)) 'app.posle.desktop'
+    Assert-Smoke ($env:GITHUB_ACTIONS -ceq 'true' -and [string]::Equals([System.IO.Path]::GetFullPath($Profile), [System.IO.Path]::GetFullPath($expected), [System.StringComparison]::OrdinalIgnoreCase)) 'Refusing to clean a non-CI or unexpected profile.'
+    $marker = Join-Path $Profile '.after-ci-smoke-owner'
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        try { $root = Get-Item -LiteralPath $Profile -Force -ErrorAction Stop }
+        catch [System.Management.Automation.ItemNotFoundException] { return }
+        Assert-Smoke ($root -is [System.IO.DirectoryInfo] -and -not ($root.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) 'Refusing to clean an unsafe profile root.'
+        $ownerFile = Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+        Assert-Smoke ($null -ne $ownerFile -and $ownerFile -is [System.IO.FileInfo] -and -not ($ownerFile.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) 'Refusing to clean a profile without its regular owner marker.'
+        Assert-Smoke ([System.IO.File]::ReadAllText($marker) -ceq $Owner) 'Refusing to clean a profile with a different owner marker.'
+        $entries = @(Get-ChildItem -LiteralPath $Profile -Force | Where-Object { $_.Name -cne '.after-ci-smoke-owner' })
+        foreach ($entry in $entries) {
+            try { Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop }
+            catch { # A child WebView process may still hold this entry.
+                # Recheck both ownership and directory state before retrying.
+            }
+        }
+        $remaining = @(Get-ChildItem -LiteralPath $Profile -Force | Where-Object { $_.Name -cne '.after-ci-smoke-owner' })
+        if ($remaining.Count -eq 0) {
+            # The marker is removed only after the profile contains nothing else.
+            # If the final removal races with a new entry, fail without touching it.
+            Remove-Item -LiteralPath $marker -Force -ErrorAction Stop
+            [System.IO.Directory]::Delete($Profile, $false)
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw 'The owned CI profile remained locked after 30 seconds; it was not forcibly removed.'
 }
 try {
     $initial = Expect-Result (Invoke-Engine 'get_workspace')
@@ -343,29 +378,45 @@ try {
         [System.IO.File]::WriteAllText($resolvedReceipt, (($receipt | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
     }
     foreach ($check in $passes) { Write-Host "PASS: $check" }
+} catch {
+    $smokeFailure = $_
+    throw
 } finally {
-    if ($null -ne $appProcess) {
-        if (-not $appProcess.HasExited) { $appProcess.Kill($true); [void]$appProcess.WaitForExit(5000) }
-        $appProcess.Dispose()
-    }
-    if ($junction) {
-        try { [System.IO.Directory]::Delete($junction) }
-        catch [System.IO.DirectoryNotFoundException] { }
-    }
-    if ($cleanupProfile -and $applicationData) {
-        $marker = Join-Path $applicationData '.after-ci-smoke-owner'
-        if ((Test-Path -LiteralPath $marker) -and ([System.IO.File]::ReadAllText($marker) -ceq $applicationOwner)) {
-            Remove-Item -LiteralPath $applicationData -Recurse -Force
+    # Cleanup is best effort, but a cleanup exception must never replace the
+    # actual smoke failure. On a successful smoke, cleanup failures still fail CI.
+    $cleanupFailures = [System.Collections.Generic.List[string]]::new()
+    try {
+        if ($null -ne $appProcess) {
+            if (-not $appProcess.HasExited) { $appProcess.Kill($true); [void]$appProcess.WaitForExit(5000) }
+            $appProcess.Dispose()
         }
-    }
-    if ($installRoot -and (Test-Path -LiteralPath $installRoot)) {
-        # NSIS may register uninstall metadata; use only the uninstaller inside
-        # this run's exact private destination before deleting the fixture.
-        $uninstallers = @(Get-ChildItem -LiteralPath $installRoot -File -Filter '*uninstall*.exe')
-        foreach ($uninstaller in $uninstallers) {
-            $cleanup = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -PassThru -Wait
-            if ($cleanup.ExitCode -ne 0) { Write-Warning 'The disposable installer uninstaller did not finish cleanly.' }
+    } catch { $cleanupFailures.Add('Application shutdown: ' + $_.Exception.Message) }
+    try {
+        if ($junction) {
+            try { [System.IO.Directory]::Delete($junction) }
+            catch [System.IO.DirectoryNotFoundException] { }
         }
+    } catch { $cleanupFailures.Add('Junction removal: ' + $_.Exception.Message) }
+    try {
+        if ($cleanupProfile -and $applicationData) { Remove-OwnedSmokeProfile $applicationData $applicationOwner }
+    } catch { $cleanupFailures.Add('Owned CI profile removal: ' + $_.Exception.Message) }
+    try {
+        if ($installRoot -and (Test-Path -LiteralPath $installRoot)) {
+            # NSIS may register uninstall metadata; use only the uninstaller inside
+            # this run's exact private destination before deleting the fixture.
+            $uninstallers = @(Get-ChildItem -LiteralPath $installRoot -File -Filter '*uninstall*.exe')
+            foreach ($uninstaller in $uninstallers) {
+                $cleanup = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -PassThru -Wait
+                if ($cleanup.ExitCode -ne 0) { throw 'The disposable installer uninstaller did not finish cleanly.' }
+            }
+        }
+    } catch { $cleanupFailures.Add('Installer cleanup: ' + $_.Exception.Message) }
+    try {
+        if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
+    } catch { $cleanupFailures.Add('Fixture removal: ' + $_.Exception.Message) }
+    if ($cleanupFailures.Count -gt 0) {
+        $message = $cleanupFailures -join '; '
+        if ($null -ne $smokeFailure) { Write-Warning ('Cleanup also failed: ' + $message) }
+        else { throw ('Smoke cleanup failed: ' + $message) }
     }
-    if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force }
 }
