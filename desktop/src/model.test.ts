@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { draftFromNote, formatDate, formatDuration, isDirty, noteInput, errorMessage } from './model.ts';
 import { copy, resolveLanguage } from './i18n.ts';
+import { isPrimaryShortcut } from './shortcuts.ts';
 
 test('system language follows supported preference order and explicit choice wins', () => {
   assert.equal(resolveLanguage('system', ['de-DE', 'ru-RU', 'en']), 'ru');
@@ -44,4 +45,20 @@ test('editing note text preserves inherited folder and meeting metadata by omiss
   assert.equal(Object.hasOwn(input, 'meetingId'), false);
   assert.equal(input.expectedRevision, 9);
   assert.equal(input.text, 'Changed text');
+});
+
+
+test('primary shortcuts use the host modifier without consuming Windows AltGr or alternate commands', () => {
+  const event = {key:'k',ctrlKey:true,metaKey:false,altKey:false,shiftKey:false};
+  assert.equal(isPrimaryShortcut(event, 'k', 'Win32'), true);
+  assert.equal(isPrimaryShortcut(event, 'k', 'Linux x86_64'), true);
+  assert.equal(isPrimaryShortcut({...event,altKey:true}, 'k', 'Win32'), false);
+  assert.equal(isPrimaryShortcut({...event,shiftKey:true}, 'k', 'Win32'), false);
+  assert.equal(isPrimaryShortcut({...event,ctrlKey:false,metaKey:true}, 'k', 'Win32'), false);
+  assert.equal(isPrimaryShortcut(event, 'k', 'MacIntel'), false);
+  assert.equal(isPrimaryShortcut({...event,ctrlKey:false,metaKey:true}, 'k', 'MacIntel'), true);
+  assert.equal(isPrimaryShortcut({...event,key:'л',code:'KeyK'}, 'k', 'Win32'), true);
+  assert.equal(isPrimaryShortcut({...event,key:'ы',code:'KeyS'}, 's', 'Win32'), true);
+  assert.equal(isPrimaryShortcut({...event,key:'л',code:'KeyK',altKey:true}, 'k', 'Win32'), false);
+  assert.equal(isPrimaryShortcut({...event,key:'л',code:'KeyK',isComposing:true}, 'k', 'Win32'), false);
 });

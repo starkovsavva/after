@@ -1,0 +1,122 @@
+name: Windows x64 test installer
+on:
+  push:
+    branches: [codex/after-windows-preview, codex/cross-platform]
+    paths:
+      - 'desktop/**'
+      - 'rust-core/**'
+      - 'scripts/*desktop*'
+      - 'scripts/*windows*'
+      - '.github/workflows/windows-preview.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-preview-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-preview:
+    runs-on: windows-latest
+    timeout-minutes: 55
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.build/tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust-core -> ../.build/rust
+            desktop/src-tauri -> ../../.build/tauri
+      - name: Validate Windows smoke script grammar
+        shell: pwsh
+        run: |
+          $parseErrors = $null
+          $parseTokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/check-desktop-windows.ps1'), [ref]$parseTokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) { $parseErrors | Format-List; throw 'Invalid Windows smoke script' }
+      - name: Frontend contracts
+        working-directory: desktop
+        run: |
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx playwright install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:e2e
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Canonical Windows library contracts
+        run: cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust --target x86_64-pc-windows-msvc --lib
+      - name: Build canonical Windows engine with static CRT
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: '-C target-feature=+crt-static'
+        run: cargo build --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust --target x86_64-pc-windows-msvc --release --bin posle-engine
+      - name: Stage and check the actual engine
+        run: |
+          python scripts/check-windows-pe.py .build/rust/x86_64-pc-windows-msvc/release/posle-engine.exe --output .build/windows-engine-dependencies.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/stage-desktop-engine.py --engine .build/rust/x86_64-pc-windows-msvc/release/posle-engine.exe --target x86_64-pc-windows-msvc
+      - name: Typed host, ACL and real Windows engine through IPC
+        shell: pwsh
+        run: |
+          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:AFTER_TEST_ENGINE_PATH = (Resolve-Path '.build/rust/x86_64-pc-windows-msvc/release/posle-engine.exe').Path
+          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --target x86_64-pc-windows-msvc --test real_engine -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --target x86_64-pc-windows-msvc --lib -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build NSIS test installer without publishing
+        working-directory: desktop
+        run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles nsis
+      - name: Verify installed release application and its real WebView IPC
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem '.build/tauri/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe'
+          if ($installer.Count -ne 1) { throw 'Expected one x64 installer' }
+          python scripts/check-windows-pe.py .build/tauri/x86_64-pc-windows-msvc/release/After.exe .build/rust/x86_64-pc-windows-msvc/release/posle-engine.exe --output .build/windows-preview-dependencies.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh -File scripts/check-desktop-windows.ps1 -EnginePath .build/rust/x86_64-pc-windows-msvc/release/posle-engine.exe -InstallerPath $installer.FullName -ReceiptPath .build/windows-preview-smoke.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Collect transferable installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/windows-preview | Out-Null
+          $installer = Get-ChildItem '.build/tauri/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe'
+          Copy-Item $installer.FullName 'dist/windows-preview/After-Preview-0.1.1-Windows-x64-setup.exe'
+          Copy-Item scripts/windows-preview-README.txt dist/windows-preview/README.txt
+          $file = Get-Item 'dist/windows-preview/After-Preview-0.1.1-Windows-x64-setup.exe'
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($file.Name)" | Set-Content dist/windows-preview/SHA256SUMS.txt -Encoding utf8NoBOM
+          Copy-Item .build/windows-preview-smoke.json,.build/windows-preview-dependencies.json dist/windows-preview/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: After-Preview-Windows-x64
+          path: dist/windows-preview/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve diagnostic receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-preview-diagnostics
+          path: |
+            .build/windows-*.json
+            desktop/playwright-report/
+            desktop/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

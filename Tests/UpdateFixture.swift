@@ -169,7 +169,7 @@ struct UpdateFixture {
             return path.hasPrefix("/private/tmp/") ? String(path.dropFirst(8)) : path
         }
         let scenario = info["FixtureScenario"] as? String ?? "valid"
-        let allowedBundleNames = scenario == "renamed-app" ? ["После.app", "After.app"] : ["UpdateFixture.app"]
+        let allowedBundleNames = ["renamed-app", "brand-rename"].contains(scenario) ? ["После.app", "After.app"] : ["UpdateFixture.app"]
         guard comparable(log).hasPrefix(comparable(root) + "/"),
               comparable(bundle).hasPrefix(comparable(root) + "/"),
               allowedBundleNames.contains(bundle.lastPathComponent) else {

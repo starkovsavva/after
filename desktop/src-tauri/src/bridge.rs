@@ -136,6 +136,40 @@ fn development_override(name: &str) -> Option<PathBuf> {
         None
     }
 }
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return metadata.file_attributes() & 0x400 != 0; // FILE_ATTRIBUTE_REPARSE_POINT
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+fn ordinary_ancestors(path: &Path) -> Result<(), HostError> {
+    #[cfg(windows)]
+    {
+        for ancestor in path.ancestors() {
+            match fs::symlink_metadata(ancestor) {
+                Ok(metadata) if metadata.is_dir() && !is_link_or_reparse(&metadata) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                _ => {
+                    return Err(HostError::new(
+                        "invalid_configuration",
+                        "The desktop location cannot contain links or reparse points.",
+                    ))
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+    Ok(())
+}
 fn prepare_root(root: &Path) -> Result<(), HostError> {
     if !root.is_absolute() {
         return Err(HostError::new(
@@ -143,8 +177,9 @@ fn prepare_root(root: &Path) -> Result<(), HostError> {
             "The desktop data location must be absolute.",
         ));
     }
+    ordinary_ancestors(root)?;
     if let Ok(meta) = fs::symlink_metadata(root) {
-        if !meta.is_dir() || meta.file_type().is_symlink() {
+        if !meta.is_dir() || is_link_or_reparse(&meta) {
             return Err(HostError::new(
                 "invalid_configuration",
                 "The desktop data location must be a regular directory.",
@@ -157,6 +192,7 @@ fn prepare_root(root: &Path) -> Result<(), HostError> {
             "The desktop data directory could not be created.",
         )
     })?;
+    ordinary_ancestors(root)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -180,12 +216,28 @@ impl Engine {
         if !self.path.is_absolute() || self.digest.as_ref().is_some_and(|hash| hash.is_empty()) {
             return Err(unavailable());
         }
+        ordinary_ancestors(self.path.parent().ok_or_else(unavailable)?)
+            .map_err(|_| unavailable())?;
         let metadata = fs::symlink_metadata(&self.path).map_err(|_| unavailable())?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
+        if !metadata.is_file() || is_link_or_reparse(&metadata) {
             return Err(unavailable());
         }
         if let Some(expected) = &self.digest {
+            #[cfg(windows)]
+            let mut file = {
+                use std::os::windows::fs::OpenOptionsExt;
+                fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(0x00200000)
+                    .open(&self.path)
+                    .map_err(|_| unavailable())?
+            };
+            #[cfg(not(windows))]
             let mut file = File::open(&self.path).map_err(|_| unavailable())?;
+            let opened = file.metadata().map_err(|_| unavailable())?;
+            if !opened.is_file() || is_link_or_reparse(&opened) {
+                return Err(unavailable());
+            }
             let mut hash = Sha256::new();
             let mut buf = [0u8; 64 * 1024];
             loop {

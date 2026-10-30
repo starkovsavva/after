@@ -109,6 +109,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         #if DEBUG
+        let diagnosticArguments = ProcessInfo.processInfo.arguments
+        if diagnosticArguments.contains("--preview"), diagnosticArguments.contains("--native-light-appearance"),
+           diagnosticArguments.contains(where: { $0.hasPrefix("--check-") }) {
+            NSApp.appearance = NSAppearance(named: .aqua)
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-localization") {
             Task { @MainActor in
                 do { try await LocalizationNativeChecks.run(); NSApp.terminate(nil) }

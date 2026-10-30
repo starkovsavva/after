@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::Duration;
@@ -21,11 +22,12 @@ const MAX_TRANSCRIPT: u64 = 64 * 1_048_576;
 const MAX_DOCUMENT: usize = 200_000;
 const MAX_ROWS_PER_MEETING: usize = 100_000;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 thread_local! {
     static SYNC_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(unix)]
 fn private_directory(path: &Path) -> Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(path)?;
     let info = fs::symlink_metadata(path)?;
@@ -33,26 +35,13 @@ fn private_directory(path: &Path) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
-fn regular_private(path: &Path) -> Result<File> {
-    if let Ok(info) = fs::symlink_metadata(path) {
-        ensure!(info.is_file() && !info.file_type().is_symlink(), "Некорректный файл индекса поиска");
-    }
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false)
-        .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    Ok(file)
-}
+#[cfg(windows)]
+fn private_directory(path: &Path) -> Result<()> { crate::platform_fs::private_directory(path) }
+fn regular_private(path: &Path) -> Result<File> { crate::platform_fs::open_private(path,false) }
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
 }
-fn stamp(path: &Path) -> String {
-    match fs::symlink_metadata(path) {
-        Ok(m) if m.is_file() && !m.file_type().is_symlink() =>
-            format!("{}:{}:{}:{}:{}:{}", m.ino(), m.len(), m.mtime(), m.mtime_nsec(), m.ctime(), m.ctime_nsec()),
-        Ok(_) => "not-regular".into(),
-        Err(_) => "missing".into(),
-    }
-}
+fn stamp(path: &Path) -> String { crate::platform_fs::stamp(path) }
 fn source_stamp(directory: &Path) -> String {
     ["meta.json", "transcript.json", "summary.json"].iter().map(|name| format!("{name}:{}", stamp(&directory.join(name))))
         .collect::<Vec<_>>().join("|")
@@ -65,7 +54,7 @@ fn snapshot(path: &Path, max_bytes: u64) -> Result<Option<Value>> {
     };
     ensure!(info.is_file() && !info.file_type().is_symlink(), "Ожидался обычный JSON-файл");
     ensure!(info.len() <= max_bytes, "JSON-файл слишком большой для поиска");
-    let mut file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    let mut file = crate::platform_fs::open_read(path)?;
     let opened = file.metadata()?;
     ensure!(opened.is_file() && opened.len() <= max_bytes, "JSON-файл слишком большой для поиска");
     let mut bytes = Vec::with_capacity(opened.len() as usize);
@@ -224,9 +213,10 @@ fn initialize(connection: &Connection) -> Result<()> {
     Ok(())
 }
 /// This database is disposable; source JSON is never part of recovery.
-fn open_index(database:&Path) -> Result<(Connection,bool)> {
-    let open=|| -> Result<Connection> {
-        let connection=Connection::open(database).context("Не удалось открыть локальный индекс поиска")?;
+fn open_index(database:&Path) -> Result<(crate::platform_fs::GuardedConnection,bool)> {
+    let _parent_guard=crate::platform_fs::pin_directory(database.parent().context("Invalid index path")?)?;
+    let open=|| -> Result<crate::platform_fs::GuardedConnection> {
+        let connection=crate::platform_fs::sqlite_connection(database,rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE|rusqlite::OpenFlags::SQLITE_OPEN_CREATE).context("Не удалось открыть локальный индекс поиска")?;
         initialize(&connection)?;
         Ok(connection)
     };
@@ -259,7 +249,7 @@ fn remove_meeting(connection: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 fn sync(connection: &mut Connection, root: &Path, lexicon: &Lexicon) -> Result<Vec<String>> {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     SYNC_CALLS.with(|calls| calls.set(calls.get() + 1));
     let library = root.join("meetings");
     private_directory(&library)?;
@@ -503,7 +493,7 @@ pub fn validate(root: &Path, id: &str, fingerprint: &str) -> Result<Value> {
     Ok(json!({"valid":current == fingerprint}))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::storage::atomic_json;

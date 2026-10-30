@@ -362,7 +362,8 @@ final class AppStore: ObservableObject {
         guard !isTerminating, !showingSupport else { return }
         if GuidanceController.shared.presentation != nil {
             GuidanceController.shared.complete(with: .support)
-        } else if !showingSettings && !showingRecord && !showingSearch && !showingCaptureDrafts {
+        } else if !showingSettings && !showingRecord && !showingSearch && !showingCaptureDrafts
+            && NSApp.modalWindow == nil && !NSApp.windows.contains(where: { $0.attachedSheet != nil }) {
             showingSupport = true
         }
     }

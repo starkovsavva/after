@@ -11,10 +11,12 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+pub(crate) const TRASH_RETENTION_SECONDS: f64 = 30.0 * 86_400.0;
 const RETENTION: f32 = 0.9;
 const SCHEDULER: &str = "fsrs-rs/6.6.2";
 const ALLOWED_EXTENSIONS: &[&str] = &[
@@ -25,6 +27,7 @@ const MUTABLE_META_FIELDS: &[&str] = &[
     "recordingTracks", "hasVideo", "error",
 ];
 
+#[cfg(unix)]
 fn private_directory(path: &Path) -> Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(path)
         .with_context(|| format!("Не удалось создать папку {}", path.display()))?;
@@ -38,7 +41,7 @@ pub(crate) fn regular_json(path: &Path) -> Result<Value> {
     let info = fs::symlink_metadata(path)
         .with_context(|| format!("Файл не найден: {}", path.display()))?;
     ensure!(info.is_file() && !info.file_type().is_symlink(), "Ожидался обычный JSON-файл: {}", path.display());
-    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    let file = crate::platform_fs::open_read(path)?;
     serde_json::from_reader(BufReader::new(file))
         .with_context(|| format!("Не удалось прочитать JSON: {}", path.display()))
 }
@@ -48,7 +51,7 @@ pub(crate) fn regular_json(path: &Path) -> Result<Value> {
 pub(crate) fn regular_json_limited(path: &Path, limit: u64) -> Result<Value> {
     let info = fs::symlink_metadata(path)?;
     ensure!(info.is_file() && !info.file_type().is_symlink() && info.len() <= limit, "Некорректный или слишком большой файл библиотеки");
-    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    let file = crate::platform_fs::open_read(path)?;
     let metadata = file.metadata()?;
     ensure!(metadata.is_file() && metadata.len() <= limit, "Файл библиотеки слишком большой");
     let mut bytes = Vec::new();
@@ -59,6 +62,7 @@ pub(crate) fn regular_json_limited(path: &Path, limit: u64) -> Result<Value> {
 
 /// Write a complete private file, fsync it, then replace the destination atomically.
 /// A failed write preserves the previously committed JSON.
+#[cfg(unix)]
 pub fn atomic_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> {
     let parent = path.parent().context("У JSON-файла нет родительской папки")?;
     private_directory(parent)?;
@@ -78,10 +82,16 @@ pub fn atomic_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> 
     result.with_context(|| format!("Не удалось сохранить {}", path.display()))
 }
 
+#[cfg(windows)]
+pub fn atomic_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> { crate::platform_fs::atomic_json(path,value) }
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128
         && id.bytes().all(|character| character.is_ascii_alphanumeric() || character == b'-' || character == b'_')
 }
+
+#[cfg(windows)]
+fn private_directory(path: &Path) -> Result<()> { crate::platform_fs::private_directory(path) }
 
 /// Resolve only an immediate meeting directory; paths and symlink escapes fail.
 pub fn meeting_directory(root: &Path, id: &str) -> Result<PathBuf> {
@@ -150,10 +160,10 @@ pub fn import_meeting(root: &Path, source: &Path, focus: &str) -> Result<Value> 
     let directory = meeting_directory(root, &id)?;
     // Refuse an existing destination, even in the unlikely event of an ID
     // collision; cleanup below must only remove a directory this import owns.
-    DirBuilder::new().mode(0o700).create(&directory)?;
+    crate::platform_fs::create_private_directory(&directory)?;
     let result = (|| -> Result<Value> {
         let filename = format!("source.{extension}");
-        let mut output = OpenOptions::new().write(true).create_new(true).mode(0o600).open(directory.join(&filename))?;
+        let mut output = crate::platform_fs::open_private(&directory.join(&filename),true)?;
         std::io::copy(&mut input, &mut output)?;
         output.sync_all()?;
         let title = source.file_stem().and_then(|value| value.to_str()).unwrap_or("Встреча");
@@ -177,8 +187,7 @@ pub(crate) fn meeting_lock(directory: &Path) -> Result<File> {
     if let Ok(info) = fs::symlink_metadata(&path) {
         ensure!(info.is_file() && !info.file_type().is_symlink(), "Некорректный файл блокировки");
     }
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false)
-        .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    let file = crate::platform_fs::open_private(&path,false)?;
     file.lock().context("Не удалось заблокировать данные встречи")?;
     Ok(file)
 }
@@ -246,7 +255,7 @@ pub fn save_summary_overview(root: &Path, id: &str, text: &str, expected_overvie
     let path = directory.join("summary.json");
     let info = fs::symlink_metadata(&path).context("Конспект недоступен. Откройте его заново.")?;
     ensure!(info.is_file() && !info.file_type().is_symlink() && info.len() <= MAX_SUMMARY, "Некорректный файл конспекта.");
-    let mut file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path)?;
+    let mut file = crate::platform_fs::open_read(&path)?;
     let mut bytes = Vec::new(); Read::by_ref(&mut file).take(MAX_SUMMARY + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64 <= MAX_SUMMARY, "Файл конспекта слишком большой.");
     let mut summary: Value = serde_json::from_slice(&bytes).context("Не удалось прочитать конспект. Исходный файл сохранён.")?;
@@ -332,7 +341,7 @@ pub(crate) fn recover_review(directory: &Path) -> Result<()> {
     if log_path.exists() {
         let info = fs::symlink_metadata(&log_path)?;
         ensure!(info.is_file() && !info.file_type().is_symlink(), "Некорректный журнал повторений");
-        let log = OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOFOLLOW).open(&log_path)?;
+        let log = crate::platform_fs::open_private(&log_path,false)?;
         let mut reader = BufReader::new(log);
         let mut offset = 0;
         let mut line = Vec::new();
@@ -352,8 +361,7 @@ pub(crate) fn recover_review(directory: &Path) -> Result<()> {
         }
     }
     if !present {
-        let mut file = OpenOptions::new().read(true).create(true).append(true)
-            .mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&log_path)?;
+        let mut file = crate::platform_fs::open_private(&log_path,false)?;
         // Keep ordinary JSONL free from blank lines, while isolating a partial
         // final line if the previous process died during an append.
         if file.metadata()?.len() > 0 {
@@ -401,7 +409,7 @@ fn review_at(root: &Path, id: &str, card_id: &str, rating: u8, now: DateTime<Utc
     Ok(state)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;

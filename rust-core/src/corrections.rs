@@ -8,7 +8,6 @@ use std::{
     collections::HashSet,
     fs::{self, OpenOptions},
     io::Read,
-    os::unix::fs::OpenOptionsExt,
     path::Path,
 };
 use uuid::Uuid;
@@ -30,10 +29,7 @@ fn read_limited(path: &Path, limit: u64) -> Result<Option<Value>> {
         info.is_file() && !info.file_type().is_symlink() && info.len() <= limit,
         "Некорректный файл встречи"
     );
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    let file = crate::platform_fs::open_read(path)?;
     let mut bytes = Vec::new();
     file.take(limit + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64 <= limit, "Файл встречи слишком большой");
@@ -371,7 +367,7 @@ pub fn dispatch(root: &Path, value: &Value) -> Result<Value> {
     snapshot(&directory)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     fn fixture() -> tempfile::TempDir {

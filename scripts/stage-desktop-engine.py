@@ -28,6 +28,15 @@ def main():
     source = source.absolute()
     if not source.exists() or source.is_symlink() or not stat.S_ISREG(source.lstat().st_mode):
         parser.error("Engine must exist and be a regular non-symlink file; build rust-core first")
+    if "windows" in target:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("windows_pe", repo / "scripts/check-windows-pe.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        try:
+            module.inspect(source)
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
     destination = repo / "desktop" / "src-tauri" / "binaries" / f"posle-engine-{target}{suffix}"
     if destination.parent.is_symlink() or destination.is_symlink():
         parser.error("Refusing a symlink in the staging destination")

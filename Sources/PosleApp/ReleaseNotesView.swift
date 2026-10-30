@@ -96,7 +96,8 @@ struct ReleaseNotesView: View {
         }
         .buttonStyle(.plain).foregroundStyle(Color.primary)
         .focusable().focused($focusedFeature, equals: update.id)
-        .accessibilityLabel(L(update.titleKey)).accessibilityValue(selected ? L("Выбрана") : "")
+        .accessibilityLabel(L(update.titleKey))
+        .accessibilityValue([selected ? L("Выбрана") : "", controller.isUnread(update.id) ? L("Есть непрочитанные изменения") : ""].filter { !$0.isEmpty }.joined(separator: ", "))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("releases.feature." + update.id)
         .onKeyPress(keys: [.upArrow, .downArrow, .home, .end]) { key in navigate(key, from: update.id) }

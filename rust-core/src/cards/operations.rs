@@ -154,11 +154,7 @@ fn purge(root: &Path) -> Result<Value> {
 }
 fn operation_dir(root: &Path) -> Result<PathBuf> {
     let dir = root.join("card-operations");
-    use std::os::unix::fs::DirBuilderExt;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&dir)?;
+    crate::platform_fs::private_directory(&dir)?;
     let info = fs::symlink_metadata(&dir)?;
     ensure!(
         info.is_dir() && !info.file_type().is_symlink(),
@@ -168,17 +164,13 @@ fn operation_dir(root: &Path) -> Result<PathBuf> {
 }
 fn read_journal(path: &Path) -> Result<Value> {
     use std::io::Read;
-    use std::os::unix::fs::OpenOptionsExt;
     const LIMIT: u64 = 64 * 1_048_576;
     let meta = fs::symlink_metadata(path)?;
     ensure!(
         meta.is_file() && !meta.file_type().is_symlink() && meta.len() <= LIMIT,
         "Некорректный журнал карточек"
     );
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    let file = crate::platform_fs::open_read(path)?;
     let mut bytes = Vec::new();
     file.take(LIMIT + 1).read_to_end(&mut bytes)?;
     ensure!(
@@ -479,5 +471,5 @@ pub(super) fn dispatch(root: &Path, input: &Value) -> Result<Value> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

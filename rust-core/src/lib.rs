@@ -1,27 +1,45 @@
+pub mod platform_fs;
+mod ai_config;
+#[cfg(windows)]
+pub mod ai { pub use crate::ai_config::*; }
 pub mod desktop;
 pub mod desktop_platform;
+#[cfg(unix)]
 pub mod python_runtime;
+#[cfg(unix)]
 pub mod media;
+#[cfg(unix)]
 pub mod ai;
 pub mod chatgpt;
+#[cfg(unix)]
 pub mod models;
 pub mod storage;
 pub mod notes;
 pub mod folders;
 pub mod workspace_repository;
 pub mod cards;
+#[cfg(unix)]
 pub mod trash;
+#[cfg(unix)]
 pub mod voice;
 pub mod task_workspace;
+#[cfg(unix)]
 pub mod mcp;
 pub mod search;
+#[cfg(unix)]
 pub mod semantic;
+#[cfg(unix)]
 pub mod code_index;
+#[cfg(unix)]
 pub mod tracker_sync;
+#[cfg(unix)]
 pub mod knowledge;
+#[cfg(unix)]
 pub mod worker;
+#[cfg(unix)]
 pub mod jobs;
 pub mod corrections;
+#[cfg(unix)]
 pub mod source_snapshot;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -50,6 +68,7 @@ fn data_path(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(root.join(relative))
 }
 
+#[cfg(unix)]
 pub fn request(value: &Value) -> Result<Value> {
     let root = PathBuf::from(value["root"].as_str().context("Нужна папка данных приложения")?);
     if !root.is_absolute() { bail!("Папка данных должна иметь абсолютный путь"); }
@@ -105,6 +124,13 @@ pub fn request(value: &Value) -> Result<Value> {
     }
 }
 
+/// The Windows preview exposes only the bounded desktop protocol. Native
+/// processing and credentials are intentionally unavailable on this platform.
+#[cfg(windows)]
+pub fn request(_value: &Value) -> Result<Value> {
+    bail!("Unsupported Windows preview command. Use the typed desktop bridge.")
+}
+
 /// C ABI contains JSON only: Swift never shares Rust layout, pointers to models,
 /// async runtimes or Rust-owned memory beyond this allocated response string.
 #[no_mangle]
@@ -127,7 +153,7 @@ pub unsafe extern "C" fn posle_free_string(value: *mut c_char) {
     if !value.is_null() { drop(CString::from_raw(value)); }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
@@ -201,4 +227,5 @@ mod tests {
     }
 }
 
+#[cfg(unix)]
 pub mod embedded_speech;

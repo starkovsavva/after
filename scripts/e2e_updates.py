@@ -31,7 +31,7 @@ from xml.sax.saxutils import escape
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEFERRED_SCENARIOS = ("deferred", "nfc-deferred")
-SUCCESS_SCENARIOS = ("valid", "hotfix", "renamed-app", *DEFERRED_SCENARIOS, "late-busy")
+SUCCESS_SCENARIOS = ("valid", "hotfix", *DEFERRED_SCENARIOS, "late-busy", "brand-rename", "renamed-app")
 REPLAY_SCENARIOS = ("same-build", "downgrade")
 SCENARIOS = (*SUCCESS_SCENARIOS, "bad-archive-signature", "tampered-archive", "bad-feed-signature",
              "truncated-archive", *REPLAY_SCENARIOS)
@@ -128,6 +128,12 @@ def make_components(root):
     return result
 
 
+def application_names(scenario):
+    # This changes only the archive's app name. Sparkle's normal in-place update
+    # must still replace the original installed path, without a second app.
+    return ("После.app", "After.app") if scenario in ("brand-rename", "renamed-app") else ("UpdateFixture.app", "UpdateFixture.app")
+
+
 def make_app(destination, binary, framework, components, *, identifier, build, scenario, feed, public):
     contents = destination / "Contents"
     (contents / "MacOS").mkdir(parents=True)
@@ -150,6 +156,9 @@ def make_app(destination, binary, framework, components, *, identifier, build, s
         "SUAllowsAutomaticUpdates": False, "SUVerifyUpdateBeforeExtraction": True,
         "SURequireSignedFeed": True, "SUSignedFeedFailureExpirationInterval": 0, "SUShowReleaseNotes": False,
     }
+    if scenario.name == "brand-rename":
+        display_name = "После" if build == 1 else "After"
+        info.update(CFBundleName=display_name, CFBundleDisplayName=display_name)
     if hotfix and build == 2:
         info["PosleProductVersion"] = "0.17.6.1"
     if scenario.name == "renamed-app":
@@ -200,10 +209,9 @@ def exercise(root, web, framework, binary, components, sign_update, private, pub
     if name == "nfc-deferred":
         installed_parent = installed_parent / "Caf\u00e9"
         assert os.fsencode(installed_parent.name) == b"Caf\xc3\xa9"
-    # Sparkle identifies the candidate by bundle ID. Without normalization it
-    # replaces the original host path even when the archive has a new app name.
-    old = installed_parent / ("После.app" if name == "renamed-app" else "UpdateFixture.app")
-    new = scenario / "source" / ("After.app" if name == "renamed-app" else "UpdateFixture.app")
+    installed_name, archive_name = application_names(name)
+    old = installed_parent / installed_name
+    new = scenario / "source" / archive_name
     identifier = "app.posle.updaterfixture." + uuid.uuid4().hex
     (scenario / "identifier.txt").write_text(identifier)
     target = web / name
@@ -302,6 +310,17 @@ def exercise(root, web, framework, binary, components, sign_update, private, pub
             # A stale nested helper, CLI, core, signature or removed resource must
             # fail even when the outer version and successful relaunch look right.
             assert files(old) == candidate_files, "Installed bundle differs from the complete signed candidate"
+            if name == "brand-rename":
+                with (old / "Contents/Info.plist").open("rb") as stream:
+                    installed_info = plistlib.load(stream)
+                assert installed_info["CFBundleIdentifier"] == identifier, "Brand rename changed the disposable app identity"
+                assert installed_info["CFBundleName"] == installed_info["CFBundleDisplayName"] == "After", "The updated app kept its legacy display name"
+                assert {item.name for item in installed_parent.iterdir() if item.suffix == ".app"} == {installed_name}, "Brand rename left a second installed application"
+                started_events = [event for event in observed if event["event"] == "started"]
+                assert {event["build"] for event in started_events} == {"1", "2"}, "Both old and new builds must actually run"
+                assert all(Path(event["bundle"]).resolve() == old.resolve() for event in started_events), "The renamed candidate must relaunch from the original installed path"
+                core_path = "Contents/Frameworks/libFixtureCore.dylib"
+                assert before[core_path] != candidate_files[core_path], "The rename scenario must exercise a real core-library replacement"
             helper = old / "Contents/Helpers/FixtureWorker.app"
             with (helper / "Contents/Info.plist").open("rb") as stream:
                 assert plistlib.load(stream)["CFBundleVersion"] == str(candidate_bundle_build), "A stale helper survived the update"
@@ -365,6 +384,7 @@ def main():
     parser.add_argument("--sparkle-root", type=Path, required=True,
                         help="Official SwiftPM artifact directory containing Sparkle.xcframework and bin/")
     parser.add_argument("--keep", action="store_true", help="Keep fixture apps/logs/receipt; ephemeral private key is always deleted")
+    parser.add_argument("--scenario", choices=SCENARIOS, action="append", help="Run only the selected disposable scenario (repeat for several)")
     options = parser.parse_args()
     if sys.platform != "darwin" or os.uname().machine != "arm64":
         parser.error("This fixture currently requires an Apple Silicon Mac")
@@ -423,7 +443,8 @@ def main():
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         results = []
-        for name in SCENARIOS:
+        selected = options.scenario or SCENARIOS
+        for name in selected:
             result = exercise(root, web, framework, binary, components, sign_update, private, public,
                               server.server_address[1], name, requests)
             results.append(result)
@@ -431,7 +452,7 @@ def main():
         receipt = {"framework": "2.10.1", "fixtureRoot": str(root), "results": results,
                    "requests": requests, "productionResourcesUsed": False}
         (root / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
-        print(f"{len(SCENARIOS)} real Sparkle E2E scenarios passed")
+        print(f"{len(selected)} real Sparkle E2E scenarios passed")
         if options.keep:
             print("Fixture receipt:", root / "receipt.json")
         succeeded = True

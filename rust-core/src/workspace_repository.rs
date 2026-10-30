@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -48,6 +49,7 @@ fn hash(value: &Value) -> Result<String> {
 fn now() -> f64 {
     chrono::Utc::now().timestamp_millis() as f64 / 1000.0
 }
+#[cfg(unix)]
 fn ordinary(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(info) => {
@@ -62,6 +64,8 @@ fn ordinary(path: &Path) -> Result<bool> {
         Err(error) => Err(error.into()),
     }
 }
+#[cfg(windows)]
+fn ordinary(path: &Path) -> Result<bool> { crate::platform_fs::ordinary_single_file(path) }
 fn root(directory: &Path) -> Result<&Path> {
     ensure!(
         directory.file_name().is_some_and(|name| name == "notes"),
@@ -69,7 +73,7 @@ fn root(directory: &Path) -> Result<&Path> {
     );
     directory.parent().context("Нет папки библиотеки")
 }
-fn open(directory: &Path) -> Result<Connection> {
+fn open(directory: &Path) -> Result<crate::platform_fs::GuardedConnection> {
     let root = root(directory)?;
     // macOS exposes /var and /tmp through system symlinks. SQLite NOFOLLOW
     // rejects symlinks in any path component, so resolve the already validated
@@ -82,16 +86,9 @@ fn open(directory: &Path) -> Result<Connection> {
     for suffix in ["-journal", "-wal", "-shm"] {
         ordinary(&root.join(format!("{DATABASE}{suffix}")))?;
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    let mut connection = Connection::open_with_flags(
+    let file = crate::platform_fs::open_private(&path,false)?;
+    crate::platform_fs::secure_file(&file)?;
+    let mut connection = crate::platform_fs::sqlite_connection(
         &path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
@@ -139,7 +136,7 @@ fn open(directory: &Path) -> Result<Connection> {
     for suffix in ["", "-journal", "-wal", "-shm"] {
         let path = root.join(format!("{DATABASE}{suffix}"));
         if ordinary(&path)? {
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            crate::platform_fs::secure_existing(&path)?;
         }
     }
     Ok(connection)
@@ -153,10 +150,7 @@ fn read_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
         info.len() <= MAX_WORKSPACE,
         "Библиотека заметок слишком большая"
     );
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    let file = crate::platform_fs::open_read(path)?;
     let mut bytes = Vec::new();
     file.take(MAX_WORKSPACE + 1).read_to_end(&mut bytes)?;
     ensure!(
@@ -217,12 +211,7 @@ fn backup(directory: &Path, bytes: &[u8]) -> Result<PathBuf> {
             "Исходные заметки изменились после подготовки миграции. Резервная копия сохранена; автоматический импорт остановлен.");
         return Ok(path);
     }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)?;
+    let mut file = crate::platform_fs::open_private(&path,true)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     sync_parent(&path);
@@ -233,12 +222,7 @@ fn marker(directory: &Path) -> Result<()> {
     if ordinary(&path)? {
         return Ok(());
     }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)?;
+    let mut file = crate::platform_fs::open_private(&path,true)?;
     file.write_all(b"core.sqlite is canonical; workspace.json is an export\n")?;
     file.sync_all()?;
     sync_parent(&path);
@@ -587,7 +571,7 @@ fn compatibility_export(directory: &Path, snapshot: &WorkspaceSnapshot, changed:
     let path = directory.join("workspace.json");
     let exists = match ordinary(&path) {
         Ok(true) => {
-            if fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).is_err() {
+            if crate::platform_fs::secure_existing(&path).is_err() {
                 return;
             }
             true
@@ -793,5 +777,5 @@ pub(crate) fn operation_receipt_locked(
         .transpose()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;
