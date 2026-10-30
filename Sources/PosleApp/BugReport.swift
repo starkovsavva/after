@@ -113,7 +113,7 @@ struct BugReportDocument: Encodable, Equatable {
     let description: BugReportDraft
     let diagnostics: BugReportDiagnostics
     var text: String {
-        LF("После · отчёт об ошибке\n\nЧто произошло\n{0}\n\nЧто ожидалось\n{1}\n\nТехническая информация\n{2}\n", arguments: [description.actual, description.expected, String(decoding: (try? Self.encoder.encode(diagnostics)) ?? Data(), as: UTF8.self)])
+        LF("After · отчёт об ошибке\n\nЧто произошло\n{0}\n\nЧто ожидалось\n{1}\n\nТехническая информация\n{2}\n", arguments: [description.actual, description.expected, String(decoding: (try? Self.encoder.encode(diagnostics)) ?? Data(), as: UTF8.self)])
     }
     var json: Data { (try? Self.encoder.encode(self)) ?? Data() }
     private static var encoder: JSONEncoder { let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return encoder }

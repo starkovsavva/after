@@ -2,12 +2,21 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import stat
 import tempfile
+
+
+def _sha256(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            value.update(block)
+    return value.hexdigest()
 
 
 def install(source: Path, root: Path) -> Path:
@@ -32,13 +41,20 @@ def install(source: Path, root: Path) -> Path:
         if target.is_symlink() or marker.is_symlink():
             raise RuntimeError("Файлы обработки аудио не должны быть ссылками.")
         source_stat = source.stat()
-        identity = {"source": str(source), "size": source_stat.st_size, "mtime": source_stat.st_mtime_ns}
+        identity = {"source": str(source), "size": source_stat.st_size, "mtime": source_stat.st_mtime_ns,
+                    "sha256": _sha256(source)}
         try:
             current = json.loads(marker.read_text())
         except (OSError, ValueError):
             current = None
         if current == identity and target.is_file() and target.stat().st_size == source_stat.st_size and os.access(target, os.X_OK):
-            return target
+            # Size and timestamps cannot detect a damaged private copy. Compare
+            # its bytes with the installed dependency so Prepare can repair it.
+            try:
+                if _sha256(target) == identity["sha256"]:
+                    return target
+            except OSError:
+                pass
         temporary = None
         try:
             fd, temporary = tempfile.mkstemp(prefix=".media-", dir=target_dir)
@@ -67,7 +83,7 @@ def install(source: Path, root: Path) -> Path:
 def configure(root: Path) -> Path:
     for directory in (root / "runtime", root / "runtime/venv", root / "runtime/venv/bin"):
         if directory.is_symlink():
-            raise RuntimeError("Среда распознавания должна находиться в собственной папке После. Подготовьте её в настройках.")
+            raise RuntimeError("Среда распознавания должна находиться в собственной папке After. Подготовьте её в настройках.")
     import imageio_ffmpeg
     # Only the dependency installed in this private runtime is copied. Ambient
     # overrides must not redirect app-owned executable setup to another app.

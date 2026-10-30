@@ -107,7 +107,7 @@ private enum RuntimeChecks {
                 try await service.ensure(root: missing, settings: settings)
                 throw AppError.message("Missing managed runtime was accepted")
             } catch {
-                try expect(error.localizedDescription.contains("Локальный ИИ «После» не подготовлен") && error.localizedDescription.contains("Подготовить ИИ"), "Missing runtime leaked a Cocoa file error")
+                try expect(error.localizedDescription.contains("Локальный ИИ «After» не подготовлен") && error.localizedDescription.contains("Подготовить ИИ"), "Missing runtime leaked a Cocoa file error")
             }
             try expect(service.baseURL == "http://127.0.0.1:11436" && SyntheticHealth.urls.isEmpty, "Managed route fell back to external provider or probed before preflight")
         }
@@ -119,7 +119,7 @@ private enum RuntimeChecks {
             try await service.ensure(root: root, settings: settings)
             throw AppError.message("Nonexecutable runtime was accepted")
         } catch {
-            try expect(error.localizedDescription.contains("Не удалось подготовить процессы локального ИИ «После»"), "Nonexecutable runtime leaked a binary error")
+            try expect(error.localizedDescription.contains("Не удалось подготовить процессы локального ИИ «After»"), "Nonexecutable runtime leaked a binary error")
         }
         try expect(SyntheticHealth.urls.isEmpty, "Nonexecutable runtime reached health scan")
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: binary.path)
@@ -127,7 +127,7 @@ private enum RuntimeChecks {
             try await service.ensure(root: root, settings: settings)
             throw AppError.message("Invalid executable started")
         } catch {
-            try expect(error.localizedDescription.contains("Не удалось запустить локальный ИИ «После»") && !error.localizedDescription.contains("ollama"), "Process launch failure leaked a file error")
+            try expect(error.localizedDescription.contains("Не удалось запустить локальный ИИ «After»") && !error.localizedDescription.contains("ollama"), "Process launch failure leaked a file error")
         }
         try expect(SyntheticHealth.urls.map(\.absoluteString) == ["http://127.0.0.1:11436/api/tags"], "Managed service contacted an external route")
         try expect(service.baseURL == "http://127.0.0.1:11436", "Managed process failure changed provider")

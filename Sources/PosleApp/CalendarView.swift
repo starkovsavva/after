@@ -77,7 +77,7 @@ struct CalendarWorkspace: View {
                 CalendarEventEditor(calendar: calendar, initialStart: draft.start).environmentObject(app)
             }
             .sheet(item: $editing) { item in CalendarEventEditor(calendar: calendar, event: item).environmentObject(app) }
-            .confirmationDialog(L("Отключить календарь от «После»?"), isPresented: $disconnecting, titleVisibility: .visible) {
+            .confirmationDialog(L("Отключить календарь от «After»?"), isPresented: $disconnecting, titleVisibility: .visible) {
                 Button(L("Отключить")) { calendar.disconnect() }
                 Button(L("Отмена"), role: .cancel) { }
             } message: { Text(L("События сохранятся. Синхронизация продолжится после подключения.")) }
@@ -273,9 +273,14 @@ struct CalendarEventEditor: View {
     @State private var calendarID = ""
     @State private var initialized = false
     @State private var baselineLink: CalendarTaskLink?
+    @State private var baselineDraft: CalendarEditorDraft?
+    @State private var editorID = UUID()
+    @State private var finished = false
     @State private var unlinking = false
     private var currentTask: LibraryTask? { task.flatMap { calendar.task(for: $0.id) ?? $0 } ?? event?.taskID.flatMap { calendar.task(for: $0) } }
     private var link: CalendarTaskLink? { currentTask.flatMap { calendar.link(for: $0) } }
+    private var draft: CalendarEditorDraft { CalendarEditorDraft(title: title, start: start, end: end, calendarID: calendarID) }
+    private var dirty: Bool { event?.writable != false && baselineDraft.map { $0 != draft } == true }
     private var canSave: Bool {
         calendar.connected && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && end > start &&
         calendar.calendars.contains(where: { $0.id == calendarID && $0.writable }) &&
@@ -289,11 +294,15 @@ struct CalendarEventEditor: View {
                 disabledFeature(.tasks)
             } else { editorContent }
         }
+        .interactiveDismissDisabled(dirty)
+        .onAppear { finished = false; registerDraft() }
+        .onChange(of: dirty) { _, _ in registerDraft() }
+        .onDisappear { finished = true; UnsavedEditorRegistry.remove(id: editorID) }
     }
     private func disabledFeature(_ feature: AppFeature) -> some View {
         OptionalFeatureGate(feature: feature).frame(width: 520, height: 320)
             .overlay(alignment: .topTrailing) {
-                Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
+                Button { finish() } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
                     .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel(L("Закрыть")).padding(18)
             }
     }
@@ -302,7 +311,7 @@ struct CalendarEventEditor: View {
             HStack {
                 Text(currentTask != nil ? L("Задача в календаре") : event == nil ? L("Новое событие") : L("Событие")).font(AppTypography.modalTitle)
                 Spacer()
-                Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
+                Button { finish() } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
                     .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel(L("Закрыть"))
             }
             if !calendar.connected {
@@ -342,7 +351,7 @@ struct CalendarEventEditor: View {
                         }
                     }
                     DisclosureGroup(L("Как связаны задача и событие")) {
-                        Text(L("Время и название события видны в «После» и вашем календаре. Изменение текста задачи обновляет название блока. Отметки ○ и ✓ в начале названия синхронизируют завершение задачи. Переименование блока в календаре сохраняется отдельно от текста заметки."))
+                        Text(L("Время и название события видны в «After» и вашем календаре. Изменение текста задачи обновляет название блока. Отметки ○ и ✓ в начале названия синхронизируют завершение задачи. Переименование блока в календаре сохраняется отдельно от текста заметки."))
                             .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
                     }.font(AppTypography.control)
                 } else if currentTask != nil {
@@ -361,19 +370,26 @@ struct CalendarEventEditor: View {
                         Button(L("Открыть Календарь")) { CalendarStore.openSystemCalendar() }.buttonStyle(.borderless)
                     }
                     Spacer()
-                    Button(L("Отмена")) { dismiss() }.buttonStyle(.bordered)
+                    Button(L("Отмена")) { finish() }.buttonStyle(.bordered).accessibilityIdentifier("calendar.editor.cancel")
                     Button(event == nil && link == nil ? L("Добавить") : L("Сохранить"), action: save)
                         .buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.defaultAction).disabled(!canSave)
+                        .accessibilityIdentifier("calendar.editor.save")
                 }
             }
             if let error = calendar.error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).textSelection(.enabled) }
         }.padding(24).frame(width: 520).fixedSize(horizontal: false, vertical: true).appControlDefaults()
             .onAppear { calendar.refreshIfNeeded(); if !initialized { initialized = true; load() } }
-            .onChange(of: calendar.connected) { _, connected in if connected { load() } }
-            .onChange(of: calendar.selectedCalendarID) { _, id in if calendarID.isEmpty { calendarID = id } }
+            .onChange(of: calendar.connected) { _, connected in if connected && !dirty { load() } }
+            .onChange(of: calendar.selectedCalendarID) { _, id in
+                if calendarID.isEmpty {
+                    calendarID = id
+                    // Discovering the provider's default is not a user edit.
+                    baselineDraft?.calendarID = id
+                }
+            }
             .onChange(of: start) { old, new in if end <= new { end = new.addingTimeInterval(max(900, end.timeIntervalSince(old))) } }
             .confirmationDialog(L("Отвязать событие от задачи?"), isPresented: $unlinking, titleVisibility: .visible) {
-                Button(L("Отвязать")) { if let currentTask { calendar.unlink(taskID: currentTask.id); dismiss() } }
+                Button(L("Отвязать")) { if let currentTask { calendar.unlink(taskID: currentTask.id); finish() } }
                 Button(L("Отмена"), role: .cancel) { }
             } message: { Text(L("Событие останется в календаре. Изменения задачи больше не будут в него передаваться.")) }
     }
@@ -389,6 +405,7 @@ struct CalendarEventEditor: View {
             if let initialStart {
                 start = initialStart; end = initialStart.addingTimeInterval(1800)
                 calendarID = calendar.selectedCalendarID
+                baselineDraft = draft
                 return
             }
             let now = Date()
@@ -398,11 +415,29 @@ struct CalendarEventEditor: View {
             if Calendar.current.isDateInToday(day) && start < now { start = start.addingTimeInterval(900) }
             end = start.addingTimeInterval(1800); calendarID = calendar.selectedCalendarID
         }
+        baselineDraft = draft
+    }
+    private func registerDraft() {
+        guard !finished else { return }
+        let label = title.isEmpty ? L("Новое событие") : L("Событие") + " «" + String(title.prefix(60)) + "»"
+        UnsavedEditorRegistry.set(id: editorID, title: label, dirty: dirty)
+    }
+    private func finish() {
+        finished = true
+        UnsavedEditorRegistry.remove(id: editorID)
+        dismiss()
     }
     private func save() {
         let result: Bool
         if let event, currentTask == nil { result = calendar.edit(event: event, title: title, start: start, end: end, calendarID: calendarID) }
         else { result = calendar.schedule(task: currentTask, title: title, start: start, end: end, calendarID: calendarID, expected: baselineLink) }
-        if result { dismiss() }
+        if result { finish() }
     }
+}
+
+private struct CalendarEditorDraft: Equatable {
+    var title: String
+    var start: Date
+    var end: Date
+    var calendarID: String
 }

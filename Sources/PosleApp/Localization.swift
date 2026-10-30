@@ -166,14 +166,14 @@ func refreshLocalizedApplicationMenu() {
         if let key = topLevelKeys[item.title] { item.title = L(key); item.submenu?.title = L(key) }
     }
     guard let application = menu.items.first, let submenu = application.submenu else { return }
-    application.title = L("После"); submenu.title = L("После")
+    application.title = L("After"); submenu.title = L("After")
     for item in submenu.items {
         switch item.action.map(NSStringFromSelector) {
-        case "orderFrontStandardAboutPanel:": item.title = LF("О программе {0}", arguments: [L("После")])
-        case "hide:": item.title = LF("Скрыть {0}", arguments: [L("После")])
+        case "orderFrontStandardAboutPanel:": item.title = LF("О программе {0}", arguments: [L("After")])
+        case "hide:": item.title = LF("Скрыть {0}", arguments: [L("After")])
         case "hideOtherApplications:": item.title = L("Скрыть остальные")
         case "unhideAllApplications:": item.title = L("Показать все")
-        case "terminate:": item.title = LF("Завершить {0}", arguments: [L("После")])
+        case "terminate:": item.title = LF("Завершить {0}", arguments: [L("After")])
         default:
             if ["Службы", "Services"].contains(item.title) { item.title = L("Службы"); item.submenu?.title = L("Службы") }
         }

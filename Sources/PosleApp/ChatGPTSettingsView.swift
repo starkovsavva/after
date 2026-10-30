@@ -173,7 +173,7 @@ struct ChatGPTSettingsView: View {
                     usageLink
                 }.accessibilityIdentifier("chatgpt.account.plan").chatGPTUIAnchor("chatgpt.account.plan")
             } else {
-                Text(L("В браузере выберите личный аккаунт и разрешите «После» использовать подписку."))
+                Text(L("В браузере выберите личный аккаунт и разрешите «After» использовать подписку."))
                     .font(AppTypography.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 12) {
@@ -246,7 +246,7 @@ struct ChatGPTSettingsView: View {
                     Text(L("JSON по инструкции")).tag("prompt")
                 }
                 .padding(.top, 8)
-                .help(L("Если модель не поддерживает JSON Schema, выберите JSON или JSON по инструкции. «После» проверит структуру и ссылки на источники."))
+                .help(L("Если модель не поддерживает JSON Schema, выберите JSON или JSON по инструкции. «After» проверит структуру и ссылки на источники."))
             }
         }
     }

@@ -531,7 +531,7 @@ private actor ChatGPTSessionStore {
             if let token = registration.tokens?.idToken, !token.isEmpty { items.append(URLQueryItem(name: "id_token_hint", value: token)) }
             if let email = registration.email { items.append(URLQueryItem(name: "login_hint", value: email)) }
             if let tokens = registration.tokens, !tokens.scopes.contains("chatgpt.tokens.use.direct") { items.append(URLQueryItem(name: "prompt", value: "consent")) }
-        } else { items.append(URLQueryItem(name: "agent_name_hint", value: "После")) }
+        } else { items.append(URLQueryItem(name: "agent_name_hint", value: "After")) }
         authorization.queryItems = items
         guard let url = authorization.url else { throw ChatGPTSignInError.registration }
         try Task.checkCancellation()
@@ -879,14 +879,14 @@ extension ChatGPTSecurity {
         defer { session.invalidateAndCancel() }
         let (rejectedBody, rejected) = try await session.data(from: URL(string: redirect + "?state=wrong&code=offline-code")!)
         guard (rejected as? HTTPURLResponse)?.statusCode == 400,
-              String(decoding: rejectedBody, as: UTF8.self).contains("Вернитесь в «После»") else { throw ChatGPTSignInError.callback }
+              String(decoding: rejectedBody, as: UTF8.self).contains("Вернитесь в «After»") else { throw ChatGPTSignInError.callback }
         let (acceptedBody, accepted) = try await session.data(from: URL(string: redirect + "?state=offline-state&code=offline-code")!)
         let acceptedPage = String(decoding: acceptedBody, as: UTF8.self)
         guard let accepted = accepted as? HTTPURLResponse, accepted.statusCode == 200,
               accepted.value(forHTTPHeaderField: "Content-Type") == "text/html; charset=utf-8",
               accepted.value(forHTTPHeaderField: "Cache-Control") == "no-store",
               accepted.value(forHTTPHeaderField: "Content-Security-Policy") == ChatGPTCallbackPage.contentSecurityPolicy,
-              acceptedPage.contains("Возвращаемся в «После»"), !acceptedPage.contains("Вход выполнен"),
+              acceptedPage.contains("Возвращаемся в «After»"), !acceptedPage.contains("Вход выполнен"),
               !acceptedPage.contains("offline-code"), !acceptedPage.contains("offline-state"),
               !acceptedPage.contains("<script") else { throw ChatGPTSignInError.callback }
         let callback = try await listener.wait()

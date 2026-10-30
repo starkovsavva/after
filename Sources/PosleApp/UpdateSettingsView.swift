@@ -45,7 +45,7 @@ struct UpdateSettingsView: View {
                 Button(L("Повторить установку")) { updates.retryInstallation() }
                     .buttonStyle(.bordered).disabled(updates.waitingForWork).accessibilityIdentifier("updates.retryInstall")
             }
-            Link(L("История версий"), destination: URL(string: "https://github.com/starkovsavva/posle/releases")!)
+            Link(L("История версий"), destination: URL(string: "https://github.com/starkovsavva/after/releases")!)
                 .font(AppTypography.caption)
         }.frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 20).overlay(alignment: .bottom) { Rectangle().fill(Ink.line).frame(height: 1) }
@@ -62,7 +62,7 @@ struct UpdateAvailabilityButton: View {
                 Label(LF("Версия {0}", arguments: [String(describing: (version))]), systemImage: "arrow.down.circle")
                     .font(AppTypography.caption).lineLimit(1).padding(.horizontal, 9).frame(height: 28)
                     .background(Ink.soft, in: RoundedRectangle(cornerRadius: 6))
-            }.buttonStyle(.plain).help(L("Доступно обновление «После»"))
+            }.buttonStyle(.plain).help(L("Доступно обновление «After»"))
                 .accessibilityLabel(LF("Доступна версия {0}", arguments: [String(describing: (version))])).accessibilityIdentifier("updates.announcement")
                 .popover(isPresented: $presented, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 16) {

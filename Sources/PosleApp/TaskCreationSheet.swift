@@ -80,7 +80,7 @@ struct TaskCreationSheet: View {
                     }
                     if source != .local {
                         field(L("Ссылка на оригинал")) { TextField("https://…", text: $externalURL).accessibilityIdentifier("tasks.form.external-url") }
-                        Text(L("Статус и материалы хранятся в «После». Оригинал по ссылке обновляется отдельно.")).font(AppTypography.caption).foregroundStyle(.secondary)
+                        Text(L("Статус и материалы хранятся в «After». Оригинал по ссылке обновляется отдельно.")).font(AppTypography.caption).foregroundStyle(.secondary)
                     }
                 }.textFieldStyle(.roundedBorder).disabled(!ready || loading || notes.taskWorkspaceBusy)
             }

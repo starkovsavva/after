@@ -30,9 +30,9 @@ PUBLIC = base64.b64encode(bytes(range(32))).decode()
 SIGNATURE = base64.b64encode(bytes(range(64))).decode()
 
 
-def info(build=9, public=PUBLIC):
+def info(build=9, public=PUBLIC, repo=REPO):
     return {"CFBundleIdentifier": "app.posle.meetings", "CFBundleShortVersionString": "0.8.0", "CFBundleVersion": str(build),
-            "PosleSourceRevision": REVISION, "SUPublicEDKey": public, "SUFeedURL": u.feed_url(REPO),
+            "PosleSourceRevision": REVISION, "SUPublicEDKey": public, "SUFeedURL": u.feed_url(repo),
             "SURequireSignedFeed": True, "SUVerifyUpdateBeforeExtraction": True, "SUSignedFeedFailureExpirationInterval": 0, "LSMinimumSystemVersion": "15.0"}
 
 
@@ -49,32 +49,44 @@ class Verifier:
 
 
 class Fixture:
-    def __init__(self, root, public=PUBLIC, metadata=None):
+    def __init__(self, root, public=PUBLIC, metadata=None, repo=REPO):
         self.root = Path(root)
-        self.metadata = info(public=public) if metadata is None else metadata
-        self.identity = u.identity(self.metadata, REPO)
+        self.repo = repo
+        self.metadata = info(public=public, repo=repo) if metadata is None else metadata
+        self.identity = u.identity(self.metadata, repo)
         self.files = {name: self.root / name for name in u.ASSETS}
         self.files[u.PKG].write_bytes(b"synthetic pkg fixture")
         with zipfile.ZipFile(self.files[u.ZIP], "w") as z:
             z.writestr(u.APP + "/Contents/Info.plist", plistlib.dumps(self.metadata))
         with zipfile.ZipFile(self.files[u.SOURCE], "w") as z:
-            z.writestr("posle/packaging/Info.plist", plistlib.dumps(self.metadata))
-        self.files[u.FEED].write_bytes(signed(u.make_appcast(self.identity, REPO, SIGNATURE, self.files, "Synthetic release notes")))
+            z.writestr(u.SOURCE_ROOT + "/packaging/Info.plist", plistlib.dumps(self.metadata))
+        self.files[u.FEED].write_bytes(signed(u.make_appcast(self.identity, repo, SIGNATURE, self.files, "Synthetic release notes")))
         self.files["SHA256SUMS"].write_text("".join(u.digest(self.files[name]) + "  " + name + "\n" for name in u.CHECKSUMMED))
         self.release = {"draft": False, "published_at": "2026-10-26T00:00:00Z", "tag_name": self.identity.tag, "assets": [
             {"name": name, "state": "uploaded", "size": path.stat().st_size, "digest": "sha256:" + u.digest(path),
-             "browser_download_url": u.asset_url(REPO, self.identity.tag, name)} for name, path in self.files.items()]}
+             "browser_download_url": u.asset_url(repo, self.identity.tag, name)} for name, path in self.files.items()]}
 
     def download(self, url, path, expected_size):
-        name = next(name for name in self.files if url == u.asset_url(REPO, self.identity.tag, name))
+        name = next(name for name in self.files
+                    if url in {u.asset_url(origin, self.identity.tag, name)
+                               for origin in u.repository_aliases(u.canonical_repository(self.repo))})
         shutil.copy2(self.files[name], path)
         if Path(path).stat().st_size != expected_size: raise RuntimeError("wrong synthetic size")
+
+    def replace_feed(self, data):
+        self.files[u.FEED].write_bytes(data)
+        checksummed = tuple(name for name in self.files if name != "SHA256SUMS")
+        self.files["SHA256SUMS"].write_text("".join(u.digest(self.files[name]) + "  " + name + "\n" for name in checksummed))
+        for asset in self.release["assets"]:
+            path = self.files[asset["name"]]
+            asset.update(size=path.stat().st_size, digest="sha256:" + u.digest(path))
 
 
 class GitHubFixture:
     repo = REPO
-    def __init__(self, previous=None, race=False, metadata=None):
-        self.metadata = info() if metadata is None else metadata
+    def __init__(self, previous=None, race=False, metadata=None, repo=REPO):
+        self.repo = repo
+        self.metadata = info(repo=repo) if metadata is None else metadata
         self.previous = previous
         self.head = "old" if previous else None
         self.race = race
@@ -119,6 +131,161 @@ class FeedTests(unittest.TestCase):
     def older(self):
         identity = u.identity(info(build=8), REPO)
         return signed(u.make_appcast(identity, REPO, SIGNATURE, self.fixture.files, "Old notes"))
+
+    def legacy_fixture(self, build=8, repo=REPO):
+        directory = Path(self.temporary.name) / ("legacy-" + str(build))
+        directory.mkdir()
+        checksummed = (u.LEGACY_PKG, u.LEGACY_ZIP, u.LEGACY_SOURCE, u.FEED)
+        with mock.patch.multiple(u, APP=u.LEGACY_APP, ZIP=u.LEGACY_ZIP, PKG=u.LEGACY_PKG,
+                                 SOURCE=u.LEGACY_SOURCE, SOURCE_ROOT=u.LEGACY_SOURCE_ROOT,
+                                 CHECKSUMMED=checksummed, ASSETS=(*checksummed, "SHA256SUMS")):
+            fixture = Fixture(directory, metadata=info(build=build, repo=repo), repo=repo)
+        if repo == u.LEGACY_REPO:
+            payload, _ = u.feed_signature(fixture.files[u.FEED].read_bytes())
+            fixture.replace_feed(signed(payload.replace(u.DEFAULT_REPO.encode(), u.LEGACY_REPO.encode())))
+        return fixture
+
+    def test_repository_alias_is_exact_asymmetric_and_api_calls_use_canonical_name(self):
+        self.assertEqual(u.repository_aliases(u.DEFAULT_REPO), {u.DEFAULT_REPO, u.LEGACY_REPO})
+        for repo in (u.LEGACY_REPO, "someone/posle", "starkovsavva/after-other", REPO):
+            self.assertEqual(u.repository_aliases(repo), {repo})
+        response = subprocess.CompletedProcess([], 0, '{}', '')
+        with mock.patch.object(u.subprocess, "run", return_value=response) as command:
+            github = u.GitHub(u.LEGACY_REPO, "gh")
+            github.api("git/refs/heads/updates", "PATCH", {"sha": REVISION, "force": False})
+        self.assertEqual(github.repo, u.DEFAULT_REPO)
+        self.assertEqual(command.call_args.args[0], ["gh", "api", "--method", "PATCH",
+                                                   "repos/" + u.DEFAULT_REPO + "/git/refs/heads/updates", "--input", "-"])
+        self.assertEqual(json.loads(command.call_args.kwargs["input"]), {"sha": REVISION, "force": False})
+        generated = u.make_appcast(self.fixture.identity, u.LEGACY_REPO, SIGNATURE, self.fixture.files, "New canonical feed")
+        self.assertIn(u.asset_url(u.DEFAULT_REPO, self.fixture.identity.tag, u.ZIP).encode(), generated)
+        self.assertNotIn(u.LEGACY_REPO.encode(), generated)
+
+    def test_old_signed_feed_and_exact_source_commit_verify_under_renamed_repository(self):
+        legacy = self.legacy_fixture(repo=u.LEGACY_REPO)
+        previous = legacy.files[u.FEED].read_bytes()
+        self.assertIn(u.asset_url(u.LEGACY_REPO, legacy.identity.tag, u.LEGACY_ZIP).encode(), previous)
+        self.assertEqual(u.parse_feed(previous, u.DEFAULT_REPO)["archive"], u.LEGACY_ZIP)
+        github = GitHubFixture(previous, metadata=legacy.metadata, repo=u.DEFAULT_REPO)
+        with mock.patch.object(u, "anonymous_download", side_effect=legacy.download) as downloads, mock.patch.object(u.subprocess, "run"):
+            verified = u.verify_public_release(github, legacy.release, PUBLIC, self.verifier)
+        self.assertEqual(verified.appcast, previous)
+        self.assertEqual(verified.identity, legacy.identity)
+        self.assertTrue(all(call.args[0].startswith("https://github.com/" + u.DEFAULT_REPO + "/releases/download/" + legacy.identity.tag + "/")
+                            for call in downloads.call_args_list))
+        directory = Path(self.temporary.name) / "canonical-current"
+        directory.mkdir()
+        current = Fixture(directory, repo=u.DEFAULT_REPO)
+        announced = u.VerifiedRelease(current.identity, current.files[u.FEED].read_bytes())
+        self.assertTrue(u.promote_feed(github, announced, self.verifier))
+        self.assertEqual(github.new_content, announced.appcast)
+        self.assertEqual(legacy.files[u.FEED].read_bytes(), previous)
+        self.assertEqual(legacy.metadata["SUFeedURL"], u.feed_url(u.LEGACY_REPO))
+
+    def test_repository_alias_does_not_relax_owner_tag_filename_or_feed_path(self):
+        legacy = self.legacy_fixture(repo=u.LEGACY_REPO)
+        payload, _ = u.feed_signature(legacy.files[u.FEED].read_bytes())
+        original = u.asset_url(u.LEGACY_REPO, legacy.identity.tag, u.LEGACY_ZIP)
+        for changed in (u.asset_url("someone/posle", legacy.identity.tag, u.LEGACY_ZIP),
+                        u.asset_url("starkovsavva/after-other", legacy.identity.tag, u.LEGACY_ZIP),
+                        u.asset_url(u.LEGACY_REPO, "v0.0.1", u.LEGACY_ZIP),
+                        u.asset_url(u.LEGACY_REPO, legacy.identity.tag, "foreign.zip"), original + "?download=1"):
+            with self.subTest(url=changed), self.assertRaisesRegex(RuntimeError, "immutable release URL"):
+                u.parse_feed(signed(payload.replace(original.encode(), changed.encode())), u.DEFAULT_REPO)
+        for changed in (u.feed_url("someone/posle"), u.feed_url("starkovsavva/after-other"),
+                        u.feed_url(u.LEGACY_REPO).replace("/updates/", "/main/")):
+            with self.subTest(feed=changed), self.assertRaisesRegex(RuntimeError, "repository's updates branch"):
+                u.identity(dict(legacy.metadata, SUFeedURL=changed), u.DEFAULT_REPO)
+            source = Path(self.temporary.name) / "foreign-source.zip"
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr(u.LEGACY_SOURCE_ROOT + "/packaging/Info.plist", plistlib.dumps(dict(legacy.metadata, SUFeedURL=changed)))
+            with self.subTest(source_feed=changed), self.assertRaisesRegex(RuntimeError, "SUFeedURL"):
+                u.verify_source(source, legacy.identity, u.DEFAULT_REPO, tree={}, source_root=u.LEGACY_SOURCE_ROOT)
+        for repo in ("someone/posle", "starkovsavva/after-other"):
+            assets = [dict(asset, browser_download_url=u.asset_url(repo, legacy.identity.tag, asset["name"]))
+                      for asset in legacy.release["assets"]]
+            with self.subTest(asset_repo=repo), mock.patch.object(u, "anonymous_download") as download:
+                with self.assertRaisesRegex(RuntimeError, "Invalid public release asset"):
+                    u.verify_public_release(GitHubFixture(repo=u.DEFAULT_REPO), dict(legacy.release, assets=assets), PUBLIC, self.verifier)
+                download.assert_not_called()
+
+    def test_after_artifact_family_can_verify_old_origin_but_cannot_publish_new_legacy_feed_build(self):
+        root = Path(self.temporary.name)
+        fixture_root = root / "after-artifacts-old-origin"
+        fixture_root.mkdir()
+        fixture = Fixture(fixture_root, repo=u.LEGACY_REPO)
+        payload, _ = u.feed_signature(fixture.files[u.FEED].read_bytes())
+        fixture.replace_feed(signed(payload.replace(u.DEFAULT_REPO.encode(), u.LEGACY_REPO.encode())))
+        previous = fixture.files[u.FEED].read_bytes()
+        with mock.patch.object(u, "anonymous_download", side_effect=fixture.download), mock.patch.object(u.subprocess, "run"):
+            verified = u.verify_public_release(GitHubFixture(metadata=fixture.metadata, repo=u.DEFAULT_REPO),
+                                               fixture.release, PUBLIC, self.verifier)
+        self.assertEqual(verified.appcast, previous)
+        app = root / u.APP
+        (app / "Contents").mkdir(parents=True)
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps(dict(fixture.metadata, PosleSourceClean=True)))
+        with mock.patch.object(u, "verify_zip") as unzip, self.assertRaisesRegex(RuntimeError, "canonical repository"):
+            u.verify_local_artifacts(app, fixture.files[u.SOURCE], fixture.identity, u.DEFAULT_REPO)
+        unzip.assert_not_called()
+        (root / "packaging").mkdir()
+        (root / "packaging/Info.plist").write_bytes(plistlib.dumps(fixture.metadata))
+        notes = root / "notes.txt"
+        notes.write_text("Synthetic preflight")
+        def run(arguments, capture=False):
+            return REVISION if arguments == ["git", "rev-parse", "HEAD"] else ""
+        with mock.patch.object(publisher, "PROJECT", root), mock.patch.object(publisher, "run", side_effect=run), \
+             mock.patch.object(u, "PublicVerifier") as signing, \
+             mock.patch("sys.argv", ["publish_release.py", "--check-only", "--repo", u.LEGACY_REPO, "--notes-file", str(notes)]):
+            with self.assertRaisesRegex(RuntimeError, "canonical repository"):
+                publisher.main()
+        signing.assert_not_called()
+
+    def test_brand_names_and_complete_legacy_release_remain_verifiable(self):
+        self.assertEqual((u.APP, u.ZIP, u.PKG, u.SOURCE, u.SOURCE_ROOT),
+                         ("After.app", "After-Mac-AppleSilicon.zip", "After-Mac-AppleSilicon.pkg", "After-Source.zip", "after"))
+        legacy = self.legacy_fixture()
+        previous = legacy.files[u.FEED].read_bytes()
+        parsed = u.parse_feed(previous, REPO)
+        self.assertEqual(parsed["app"], u.LEGACY_APP)
+        self.assertEqual(set(parsed["hashes"]), {u.LEGACY_ZIP, u.LEGACY_PKG, u.LEGACY_SOURCE})
+        github = GitHubFixture(previous, metadata=legacy.metadata)
+        with mock.patch.object(u, "anonymous_download", side_effect=legacy.download), mock.patch.object(u.subprocess, "run") as native:
+            verified = u.verify_public_release(github, legacy.release, PUBLIC, self.verifier)
+        self.assertEqual(verified.identity, legacy.identity)
+        self.assertEqual(verified.appcast, previous)
+        self.assertTrue(native.call_args.args[0][-1].endswith("/" + u.LEGACY_APP))
+        self.assertTrue(u.promote_feed(github, self.verified, self.verifier))
+        self.assertEqual(github.new_content, self.verified.appcast)
+        self.assertEqual(legacy.files[u.FEED].read_bytes(), previous)
+
+    def test_mixed_brand_assets_and_mismatched_archive_root_fail_closed(self):
+        legacy = self.legacy_fixture()
+        mixed = dict(self.fixture.release, assets=[*self.fixture.release["assets"][:-1], legacy.release["assets"][0]])
+        with mock.patch.object(u, "anonymous_download") as download, self.assertRaisesRegex(RuntimeError, "exactly"):
+            u.verify_public_release(GitHubFixture(), mixed, PUBLIC, self.verifier)
+        download.assert_not_called()
+        for path, app_name in ((legacy.files[u.LEGACY_ZIP], u.APP), (self.fixture.files[u.ZIP], u.LEGACY_APP)):
+            with self.subTest(app_name=app_name), mock.patch.object(u.subprocess, "run") as native:
+                with self.assertRaisesRegex(RuntimeError, "outside its root"):
+                    u.verify_zip(path, self.fixture.identity, REPO, app_name=app_name)
+                native.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError, "outside its root"):
+            u.verify_source(legacy.files[u.LEGACY_SOURCE], legacy.identity, REPO, tree={})
+
+    def test_complete_asset_family_cannot_substitute_for_signed_feed_family(self):
+        fixture = self.fixture
+        feed = u.make_appcast(fixture.identity, REPO, SIGNATURE, fixture.files, "Synthetic naming mismatch")
+        feed = feed.replace(u.asset_url(REPO, fixture.identity.tag, u.ZIP).encode(),
+                            u.asset_url(REPO, fixture.identity.tag, u.LEGACY_ZIP).encode())
+        fixture.files[u.FEED].write_bytes(signed(feed))
+        fixture.files["SHA256SUMS"].write_text("".join(u.digest(fixture.files[name]) + "  " + name + "\n" for name in u.CHECKSUMMED))
+        for asset in fixture.release["assets"]:
+            path = fixture.files[asset["name"]]
+            asset.update(size=path.stat().st_size, digest="sha256:" + u.digest(path))
+        with mock.patch.object(u, "anonymous_download", side_effect=fixture.download), mock.patch.object(u, "verify_zip") as unzip:
+            with self.assertRaisesRegex(RuntimeError, "feed and release asset names differ"):
+                u.verify_public_release(GitHubFixture(), fixture.release, PUBLIC, self.verifier)
+        unzip.assert_not_called()
 
     def test_repository_metadata_endpoint_has_no_trailing_slash(self):
         response = subprocess.CompletedProcess([], 0, '{"private": false}', "")
@@ -282,6 +449,9 @@ class FeedTests(unittest.TestCase):
 
     def test_ditto_utf8_names_without_utf8_flag_pass_identity_and_path_checks(self):
         path = self.fixture.files[u.ZIP]
+        resource = u.APP + "/Contents/Ресурсы/café.txt"
+        with zipfile.ZipFile(path, "a") as archive:
+            archive.writestr(resource, "Unicode resources remain supported after the ASCII app rename")
         data = bytearray(path.read_bytes())
         end = data.rfind(b"PK\x05\x06")
         self.assertGreaterEqual(end, 0)
@@ -299,7 +469,7 @@ class FeedTests(unittest.TestCase):
             central += 46 + name_length + extra_length + comment_length
         path.write_bytes(data)
         with zipfile.ZipFile(path) as default_decoder:
-            self.assertNotEqual(default_decoder.namelist()[0], u.APP + "/Contents/Info.plist")
+            self.assertNotIn(resource, default_decoder.namelist())
         with mock.patch.object(u.subprocess, "run") as command:
             u.verify_zip(path, self.fixture.identity, REPO)
         self.assertEqual(command.call_count, 2)
@@ -309,7 +479,7 @@ class FeedTests(unittest.TestCase):
 
     def test_source_mismatch_and_zip_path_escape_are_rejected(self):
         with zipfile.ZipFile(self.fixture.files[u.SOURCE], "w") as z:
-            z.writestr("posle/packaging/Info.plist", plistlib.dumps(dict(info(), CFBundleVersion="8")))
+            z.writestr(u.SOURCE_ROOT + "/packaging/Info.plist", plistlib.dumps(dict(info(), CFBundleVersion="8")))
         with self.assertRaisesRegex(RuntimeError, "source archive differs"):
             u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree={})
         for filename, target in (("../outside", None), (u.APP + "/Contents/evil", "../../../../outside")):
@@ -345,7 +515,7 @@ class FeedTests(unittest.TestCase):
 
     def test_authenticated_source_metadata_cannot_substitute_for_the_exact_commit(self):
         with zipfile.ZipFile(self.fixture.files[u.SOURCE], "a") as archive:
-            archive.writestr("posle/untracked.txt", "Extra unpublished code")
+            archive.writestr(u.SOURCE_ROOT + "/untracked.txt", "Extra unpublished code")
         feed = signed(u.make_appcast(self.fixture.identity, REPO, SIGNATURE, self.fixture.files, "Fixture"))
         self.fixture.files[u.FEED].write_bytes(feed)
         self.fixture.files["SHA256SUMS"].write_text("".join(u.digest(self.fixture.files[name]) + "  " + name + "\n" for name in u.CHECKSUMMED))
@@ -368,7 +538,7 @@ class FeedTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "exact source commit"):
                 u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree=changed)
         with zipfile.ZipFile(self.fixture.files[u.SOURCE], "a") as archive:
-            archive.writestr("posle/untracked.txt", "must never ship")
+            archive.writestr(u.SOURCE_ROOT + "/untracked.txt", "must never ship")
         with self.assertRaisesRegex(RuntimeError, "exact source commit"):
             u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree=tree)
 
@@ -456,7 +626,7 @@ class HotfixVersionTests(unittest.TestCase):
             verified = u.verify_public_release(github, self.fixture.release, PUBLIC, self.verifier)
         self.assertEqual(verified.identity, self.fixture.identity)
         with zipfile.ZipFile(self.fixture.files[u.SOURCE], "a") as archive:
-            archive.writestr("posle/untracked.txt", "must not ship")
+            archive.writestr(u.SOURCE_ROOT + "/untracked.txt", "must not ship")
         with self.assertRaisesRegex(RuntimeError, "exact source commit"):
             u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree=self.tree(self.metadata))
         self.assertTrue(all(method == "GET" for _, method, _ in github.calls))
@@ -491,7 +661,7 @@ class HotfixVersionTests(unittest.TestCase):
             if changes.get("PosleProductVersion", "") is None:
                 del metadata["PosleProductVersion"]
             with zipfile.ZipFile(self.fixture.files[u.SOURCE], "w") as archive:
-                archive.writestr("posle/packaging/Info.plist", plistlib.dumps(metadata))
+                archive.writestr(u.SOURCE_ROOT + "/packaging/Info.plist", plistlib.dumps(metadata))
             with self.subTest(changes=changes), self.assertRaises(RuntimeError):
                 u.verify_source(self.fixture.files[u.SOURCE], self.fixture.identity, REPO, tree=self.tree(metadata))
 
@@ -551,6 +721,8 @@ class HotfixVersionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / "version").read_text(), "30")
         component = plistlib.loads((self.root / "components.plist").read_bytes())[0]
+        self.assertEqual(component["RootRelativeBundlePath"], "After.app")
+        self.assertIs(component["BundleIsRelocatable"], False)
         self.assertTrue(component["BundleIsVersionChecked"])
         self.assertEqual(component["BundleOverwriteAction"], "upgrade")
         legacy = dict(info(build=29), CFBundleShortVersionString="0.17.6")

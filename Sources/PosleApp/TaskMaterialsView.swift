@@ -58,7 +58,7 @@ struct TaskMaterialsView: View {
             HStack(spacing: 10) {
                 if material.available == false { Text(L("Материал недоступен")).foregroundStyle(Ink.warning) }
                 else if let date = material.createdAt { Text(Date(timeIntervalSince1970: date).formatted(.dateTime.day().month(.abbreviated).hour().minute().locale(UILocale()))) }
-                Text(material.shared && task.agentAccess.enabled ? L("Доступна агентам") : L("Только в «После»"))
+                Text(material.shared && task.agentAccess.enabled ? L("Доступна агентам") : L("Только в «After»"))
                 Spacer(minLength: 0)
                 Button(L("Открыть")) { open(material) }.buttonStyle(.borderless).disabled(material.available == false)
                 detach(material)

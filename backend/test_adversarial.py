@@ -120,7 +120,8 @@ class TruncatedPCMTests(unittest.TestCase):
         adapter = object.__new__(engine.ASRAdapter); adapter.selected = selected
         adapter.model = types.SimpleNamespace(transcribe=lambda *_args, **_kwargs: {"segments": []})
         closed = []; adapter.close = lambda: closed.append(True)
-        with patch.object(engine, "PROTOCOL", io.StringIO()), patch.object(engine, "ffmpeg"), \
+        with patch.object(engine, "PROTOCOL", io.StringIO()), \
+                patch.object(engine, "ffmpeg", side_effect=lambda *a: Path(a[-1]).write_bytes(b"synthetic playback")), \
                 patch.object(engine, "audio_wave", side_effect=lambda source, target, *a: shutil.copyfile(source, target)), \
                 patch.object(engine, "resolve_asr", return_value=selected), patch.object(engine, "ASRAdapter", return_value=adapter), \
                 self.assertRaisesRegex(RuntimeError, "повреждена|обрезана"):
@@ -159,7 +160,7 @@ root, scenario = Path(sys.argv[1]), sys.argv[2]
 meeting = root / "meetings/synthetic"
 media_runtime.configure = lambda *_: None
 engine.audio_wave = lambda *_: None
-engine.ffmpeg = lambda *_: None
+engine.ffmpeg = lambda *args: Path(args[-1]).write_bytes(b"synthetic playback")
 original_atomic = engine.atomic
 def atomic(path, data):
     original_atomic(path, data)

@@ -4,6 +4,13 @@ import AVFoundation
 import PosleCore
 import ScreenCaptureKit
 
+private final class CaptureIngressFailures: @unchecked Sendable {
+    private let lock = NSLock()
+    private var messages: [String] = []
+    func append(_ message: String) { lock.lock(); messages.append(message); lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return messages.count }
+}
+
 /// Feeds generated PCM and NV12 buffers through the actual writer. These checks
 /// never create an SCStream, enumerate displays, or request recording access.
 @MainActor
@@ -11,6 +18,7 @@ enum CaptureWriterNativeChecks {
     static func run(root: URL) async throws {
         let directory = root.appendingPathComponent("capture-writer")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try await incomingControlEvents(directory: directory)
         let cases: [(String, Int, [Int: UInt8])] = [
             ("static", 100, [0: 80, 20: 180]),
             ("single", 100, [0: 180]),
@@ -107,6 +115,117 @@ enum CaptureWriterNativeChecks {
                    userStopped.sessionID == "synthetic-session" && !userStopped.message.contains("private-window-title"),
                    "macOS user Stop must preserve session identity and be distinct from permission failure")
         print("PASS: recording permission, display, application-context and internal errors keep distinct safe diagnostics; macOS Stop is user-initiated")
+    }
+
+    private static func incomingControlEvents(directory: URL) async throws {
+        for status in [SCFrameStatus.idle, .blank, .suspended] {
+            let source = directory.appendingPathComponent("incoming-\(status.rawValue).mov")
+            let sink = try CaptureSink(url: source, systemAudio: false, videoSize: .init(width: 320, height: 200))
+            let failures = CaptureIngressFailures()
+            sink.failed = { failures.append($0) }
+            do {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    sink.queue.async {
+                        do {
+                            let clock = CMClockGetHostTimeClock()
+                            sink.consume(try audio(1000), type: .microphone)
+                            sink.consumeIncoming(try screen(1000, luma: 180, status: .complete), type: .screen, clock: clock)
+                            sink.consumeIncoming(try screen(1000.2, luma: 0, status: status), type: .screen, clock: nil)
+                            if status == .idle {
+                                let event = try emptyControl(1000.5)
+                                guard CMSampleBufferGetNumSamples(event) == 0 else { throw AppError.message("Idle fixture must contain zero media samples") }
+                                // A zero-sample event has no sample-attachment
+                                // dictionary, so exercise the actual idle handler directly.
+                                sink.consumeIdle(event, clock: clock)
+                            } else {
+                                sink.consume(try audio(1000.8), type: .microphone)
+                            }
+                            for ignored in [SCFrameStatus.started, .stopped] {
+                                sink.consumeIncoming(try screen(1000.9, luma: 0, status: ignored), type: .screen, clock: nil)
+                            }
+                            continuation.resume()
+                        } catch { continuation.resume(throwing: error) }
+                    }
+                }
+                try await sink.finish()
+            } catch { await sink.cancel(); throw error }
+            try expect(failures.count == 0, "Clockless screen control events incorrectly reported a recording failure")
+            let asset = AVURLAsset(url: source)
+            let video = try await requiredTrack(asset, .video)
+            let range = try await video.load(.timeRange)
+            if status == .idle {
+                let luma = try decodedLastLuma(asset: asset, track: video)
+                try expect(range.end.seconds > 0.5 && range.end.seconds < 0.54 &&
+                           luma > 150,
+                           "Zero-sample idle lost its host-timed static-video tail")
+            } else {
+                try expect(range.end.seconds < 0.1,
+                           "A clockless blank/suspended event retained the last visible frame as a long tail")
+            }
+        }
+        print("PASS: real SCK ingress ignores clockless control events; zero-sample idle preserves static duration while blank/suspended clear the held frame")
+
+        let audioOnly = try CaptureSink(url: directory.appendingPathComponent("incoming-audio-only.mov"), systemAudio: true)
+        let failures = CaptureIngressFailures()
+        audioOnly.failed = { failures.append($0) }
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                audioOnly.queue.async {
+                    do {
+                        audioOnly.consumeIncoming(try emptyControl(1000), type: .audio, clock: nil)
+                        audioOnly.consumeIncoming(try unreadyAudio(1000), type: .audio, clock: nil)
+                        audioOnly.consumeIncoming(try screen(1000, luma: 180, status: .complete), type: .screen, clock: nil)
+                        audioOnly.consumeIncoming(try screen(1000.5, luma: 0, status: .blank), type: .screen, clock: nil)
+                        audioOnly.consumeIncoming(try audio(1000), type: .audio, clock: CMClockGetHostTimeClock())
+                        audioOnly.consume(try audio(1000), type: .microphone)
+                        continuation.resume()
+                    } catch { continuation.resume(throwing: error) }
+                }
+            }
+            try await audioOnly.finish()
+        } catch { await audioOnly.cancel(); throw error }
+        try expect(failures.count == 0, "Audio-only capture tried to retime empty/unready audio or unwanted screen events")
+        let missingClock = try CaptureSink(url: directory.appendingPathComponent("incoming-missing-clock.mov"), systemAudio: false,
+                                          videoSize: .init(width: 320, height: 200))
+        let clockFailures = CaptureIngressFailures()
+        missingClock.failed = { clockFailures.append($0) }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            missingClock.queue.async {
+                do {
+                    missingClock.consumeIncoming(try screen(1000, luma: 80, status: .complete), type: .screen, clock: nil)
+                    continuation.resume()
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+        await missingClock.cancel()
+        try expect(clockFailures.count == 1, "A complete media frame without a synchronization clock must still fail explicitly")
+        print("PASS: audio-only ingress ignores empty/unready PCM and unwanted screen events; a real complete frame still requires its source clock")
+    }
+
+    nonisolated private static func emptyControl(_ time: Double) throws -> CMSampleBuffer {
+        var timing = CMSampleTimingInfo(duration: .invalid,
+            presentationTimeStamp: CMTime(seconds: time, preferredTimescale: 48000), decodeTimeStamp: .invalid)
+        var sample: CMSampleBuffer?
+        guard CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: nil, formatDescription: nil,
+            sampleCount: 0, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sample) == noErr, let sample else {
+            throw AppError.message("Cannot create zero-sample generated capture event")
+        }
+        return sample
+    }
+
+    nonisolated private static func unreadyAudio(_ time: Double) throws -> CMSampleBuffer {
+        let reference = try audio(time)
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 48000),
+            presentationTimeStamp: CMTime(seconds: time, preferredTimescale: 48000), decodeTimeStamp: .invalid)
+        var sample: CMSampleBuffer?
+        guard CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false,
+            makeDataReadyCallback: nil, refcon: nil, formatDescription: CMSampleBufferGetFormatDescription(reference),
+            sampleCount: 480, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &sample) == noErr, let sample else {
+            throw AppError.message("Cannot create unready generated PCM")
+        }
+        return sample
     }
 
     private static func copierPixelContract(format: OSType, width: Int, height: Int) throws {

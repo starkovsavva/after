@@ -8,10 +8,10 @@ ROOT="${1:?Specify the application support directory}"
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
 HOST="${2:-}"
 fail() { echo "$*" >&2; exit 1; }
-case "$ROOT" in /*) ;; *) fail 'Нужен абсолютный путь папки данных После.' ;; esac
-case "$HOST" in /*) ;; *) fail 'Не найден встроенный проверяющий движок. Переустановите После.' ;; esac
-[[ -x "$HOST" && ! -L "$HOST" && -f "$HOST" ]] || fail 'Не найден встроенный проверяющий движок. Переустановите После.'
-[[ "$(/usr/bin/uname -m)" == arm64 ]] || fail 'После требует Mac с Apple Silicon.'
+case "$ROOT" in /*) ;; *) fail 'Нужен абсолютный путь папки данных After.' ;; esac
+case "$HOST" in /*) ;; *) fail 'Не найден встроенный проверяющий движок. Переустановите After.' ;; esac
+[[ -x "$HOST" && ! -L "$HOST" && -f "$HOST" ]] || fail 'Не найден встроенный проверяющий движок. Переустановите After.'
+[[ "$(/usr/bin/uname -m)" == arm64 ]] || fail 'After требует Mac с Apple Silicon.'
 
 owned_directory() {
   local path="$1" mode
@@ -35,10 +35,10 @@ LOCK="$RUNTIME/.python-setup.lock"
 if [[ ! -e "$LOCK" && ! -L "$LOCK" ]]; then (set -C; : > "$LOCK") 2>/dev/null || true; fi
 [[ -f "$LOCK" && ! -L "$LOCK" && "$(/usr/bin/stat -f %u "$LOCK")" == "$(/usr/bin/id -u)" ]] || fail 'Не удалось заблокировать подготовку компонентов.'
 exec 9<>"$LOCK"
-/usr/bin/lockf -s -t 0 9 || fail 'Компоненты уже подготавливаются в другом окне После.'
+/usr/bin/lockf -s -t 0 9 || fail 'Компоненты уже подготавливаются в другом окне After.'
 
 POLICY="$HERE/python-runtime.json"
-[[ -f "$POLICY" && ! -L "$POLICY" ]] || fail 'В приложении отсутствует описание среды Python. Переустановите После.'
+[[ -f "$POLICY" && ! -L "$POLICY" ]] || fail 'В приложении отсутствует описание среды Python. Переустановите After.'
 PYTHON_DIRECTORY="$(/usr/bin/plutil -extract directory raw -o - "$POLICY")"
 ARCHIVE_URL="$(/usr/bin/plutil -extract archive_url raw -o - "$POLICY")"
 ARCHIVE_SHA="$(/usr/bin/plutil -extract archive_sha256 raw -o - "$POLICY")"

@@ -98,7 +98,7 @@ struct ChatGPTDiagnosticReport: Equatable, Sendable {
         let fields = [("report_version", "1"), ("app_version", version), ("app_build", build),
                       ("provider", "chatgpt"), ("probe", "check-cloud"),
                       ("output_mode", output), ("reasoning", reasoning)] + diagnostics.fields
-        text = "Posle ChatGPT diagnostics\n" + fields.map { "\($0.0)=\($0.1)" }.joined(separator: "\n") + "\n"
+        text = "After ChatGPT diagnostics\n" + fields.map { "\($0.0)=\($0.1)" }.joined(separator: "\n") + "\n"
     }
 
     private static func numeric(_ value: String?, pattern: String) -> String {

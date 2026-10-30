@@ -32,8 +32,32 @@ final class AppStore: ObservableObject {
     var bookmarkAction: (() -> Void)?
     var captureMeetingID: String? { isRecording ? recordingID : nil }
     @Published var selection: String?
-    @Published var transcript: Transcript?
-    @Published var summary: Summary?
+    @Published var transcript: Transcript? {
+        didSet {
+            if oldValue?.segments != transcript?.segments {
+                transcriptRevision &+= 1
+                // Match the previous first(where:) behavior for legacy duplicate IDs.
+                transcriptSegments = Dictionary((transcript?.segments ?? []).map { ($0.id, $0) },
+                                                uniquingKeysWith: { first, _ in first })
+            }
+        }
+    }
+    @Published var summary: Summary? {
+        didSet {
+            if oldValue?.generatedAt != summary?.generatedAt || oldValue?.overview != summary?.overview
+                || oldValue?.items != summary?.items || oldValue?.overviewClaims != summary?.overviewClaims
+                || oldValue?.sourceStale != summary?.sourceStale || oldValue?.overviewStale != summary?.overviewStale {
+                summaryRevision &+= 1
+            }
+        }
+    }
+    private(set) var transcriptRevision: UInt64 = 0
+    private(set) var summaryRevision: UInt64 = 0
+    private var transcriptSegments: [Int: Segment] = [:]
+    func transcriptSegment(_ id: Int, meetingID: String? = nil) -> Segment? {
+        guard meetingID == nil || (loadedSelectionID == meetingID && selection == meetingID) else { return nil }
+        return transcriptSegments[id]
+    }
     @Published var examples: [String: CardExample] = [:]
     @Published var reviews: [String: ReviewState] = [:]
     @Published var settings = AppSettings() {
@@ -58,6 +82,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var overviewDrafts: [String: OverviewDraft] = [:]
     private var overviewDraftsDirty = false
     @Published var showingSettings = false
+    @Published var showingSupport = false
+    var supportFeedbackPending = false
     @Published var settingsSection = "general"
     @Published var showingRecord = false
     @Published var showingCaptureDrafts = false
@@ -124,6 +150,7 @@ final class AppStore: ObservableObject {
     let localRuntimeLease = LocalRuntimeLease()
     private var player: AVPlayer?
     private var playerObserver: Any?
+    private var playbackGeneration = UUID()
     var recordingID: String?
     var startingRecordingID: String?
     var recordingStartTask: Task<Void, Error>?
@@ -236,6 +263,14 @@ final class AppStore: ObservableObject {
         recorder.levels = { [weak self] microphone, system in
             Task { @MainActor in self?.audioLevels.receive(microphone: microphone, system: system) }
         }
+        recorder.microphoneStatus = { [weak self] update in
+            Task { @MainActor in
+                guard let self, !self.stoppingRecording, !self.isTerminating,
+                      (self.startingRecording && self.startingRecordingID == update.sessionID)
+                        || (self.isRecording && self.recordingID == update.sessionID) else { return }
+                self.audioLevels.receive(state: update.state)
+            }
+        }
         recorder.failed = { [weak self] failure in
             Task { @MainActor in
                 guard let self else { return }
@@ -323,6 +358,38 @@ final class AppStore: ObservableObject {
         settingsSection = section
         showingSettings = true
     }
+    func openSupport() {
+        guard !isTerminating, !showingSupport else { return }
+        if GuidanceController.shared.presentation != nil {
+            GuidanceController.shared.complete(with: .support)
+        } else if !showingSettings && !showingRecord && !showingSearch && !showingCaptureDrafts {
+            showingSupport = true
+        }
+    }
+    func openBugReport() {
+        guard !isTerminating else { return }
+        let profile = librarySection == "meetings" ? effectiveSettings(for: selection, folderID: folderSelection) : activeSettings
+        let failure = jobs.jobs.filter { ["failed", "interrupted"].contains($0.state) }.max { $0.updatedAt < $1.updatedAt }
+        BugReportController.shared.present(settings: profile, lastFailure: failure)
+    }
+    var canPresentGuidance: Bool {
+        !isRecording && !startingRecording && !stoppingRecording && !isTerminating && !busy
+            && jobs.activeCount == 0 && !voice.isWorking && !voice.isPresented && !trackerSync.busy
+            && !notes.attachmentBusy && !notes.taskWorkspaceBusy && !editingOverview && !notes.editingNewTask
+            && !showingSettings && !showingSupport && !showingRecord && !showingSearch && !showingCaptureDrafts
+            && !notes.hasUnsavedCaptureDrafts && !UnsavedEditorRegistry.hasUnsaved && !SettingsDraftRegistry.hasUnsaved
+            && NSApp.modalWindow == nil && !NSApp.windows.contains { $0.attachedSheet != nil }
+    }
+    func updateGuidanceContext(_ guide: GuidanceController) {
+        guide.updateFeatures(availableFeatures)
+        var stored: Set<String> = []
+        if meetings.contains(where: { $0.source.hasPrefix("recording.") }) { stored.insert("recording") }
+        if meetings.contains(where: { !$0.source.isEmpty && !$0.source.hasPrefix("recording.") && $0.libraryKind != "cards" }) { stored.insert("import") }
+        if summary != nil || meetings.contains(where: { $0.status == "ready" }) { stored.insert("summary") }
+        if !calendar.links.isEmpty { stored.insert("calendar") }
+        if !notes.tasks.isEmpty { stored.insert("tasks") }
+        guide.seedUsage(stored)
+    }
     @discardableResult func saveSettings() -> Bool {
         do {
             try write(settings, root.appendingPathComponent("settings.json"))
@@ -348,6 +415,9 @@ final class AppStore: ObservableObject {
         if loadedSelectionID != selection { loadSelection() }
     }
     func loadSelection() {
+        // Removing an AVPlayer observer does not cancel a MainActor task that
+        // its callback already queued for the previously loaded recording.
+        playbackGeneration = UUID()
         loadedSelectionID = selection
         if selected?.libraryKind == "cards", effectiveSettings(for: selection).features.cards { tab = "cards" }
         if tab == "cards", !effectiveSettings(for: selection).features.cards { tab = "summary" }
@@ -367,14 +437,28 @@ final class AppStore: ObservableObject {
         if FileManager.default.fileExists(atPath: playback.path) {
             player = AVPlayer(url: playback)
             playbackDuration = max(transcript?.duration ?? selected?.duration ?? 1, 1)
-            playerObserver = player?.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.2, preferredTimescale: 600), queue: .main) { [weak self] time in
-                Task { @MainActor in
-                    self?.playbackTime = time.seconds.isFinite ? time.seconds : 0
-                    if let self, self.playbackTime >= self.playbackDuration - 0.2 { self.isPlaying = false }
-                }
+            let updateTime = playbackTimeCallback()
+            playerObserver = player?.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.2, preferredTimescale: 600), queue: .main) { time in
+                _ = updateTime(time)
             }
         }
     }
+    private func playbackTimeCallback() -> @Sendable (CMTime) -> Task<Void, Never> {
+        let generation = playbackGeneration, meetingID = loadedSelectionID
+        return { [weak self] time in
+            Task { @MainActor in
+                guard let self, self.playbackGeneration == generation,
+                      self.loadedSelectionID == meetingID, self.selection == meetingID else { return }
+                self.playbackTime = time.seconds.isFinite ? time.seconds : 0
+                if self.playbackTime >= self.playbackDuration - 0.2 { self.isPlaying = false }
+            }
+        }
+    }
+    #if DEBUG
+    /// Drives the real callback queue with invented timestamps, without an
+    /// audio asset or output device. Awaiting its task makes late delivery deterministic.
+    func playbackTimeCallbackForChecks() -> @Sendable (CMTime) -> Task<Void, Never> { playbackTimeCallback() }
+    #endif
     func refreshResults(_ id: String) {
         if selection == id {
             navigationTarget = nil
@@ -463,6 +547,7 @@ final class AppStore: ObservableObject {
                     return try RustBridge.shared.get().request(root: root, command: "import", arguments: ["source": source.path, "focus": focus])
                 }.value
                 let meeting = try JSONDecoder().decode(Meeting.self, from: data)
+                GuidanceController.shared.recordUsage("import", root: root)
                 busy = false
                 let assigned = destinationFolderID.map { notes.assignMeetingFolder(meeting.id, folderID: $0) } ?? true
                 // The destination was chosen before the asynchronous copy. Open
@@ -607,7 +692,7 @@ final class AppStore: ObservableObject {
         busy = true; processingID = id; progress = -1; progressText = L("Начинаю обработку…"); error = nil; notice = nil
         if assertions == 0 {
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
-                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), L("После обрабатывает встречу") as CFString, &assertions)
+                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), L("After обрабатывает встречу") as CFString, &assertions)
         }
     }
     func endJob() {
@@ -961,7 +1046,7 @@ final class AppStore: ObservableObject {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
         panel.prompt = L("Проверить модель")
-        panel.message = L("Выберите папку с уже скачанной моделью распознавания. После проверит её формат.")
+        panel.message = L("Выберите папку с уже скачанной моделью распознавания. After проверит её формат.")
         if panel.runModal() == .OK, let url = panel.url { discoverASRModels(path: url) }
     }
     func selectASRModel(_ model: InstalledASRModel) {
@@ -1040,7 +1125,7 @@ final class AppStore: ObservableObject {
         if !template.focus.isEmpty { updateMeeting(id) { $0.focus = template.focus } }
     }
     func exportManualNotes() {
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.plainText]; panel.nameFieldStringValue = L("Мои заметки — После.md")
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.plainText]; panel.nameFieldStringValue = L("Мои заметки — After.md")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         var text = L("# Мои заметки\n\n")
         for note in notes.notes.reversed() {

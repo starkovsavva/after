@@ -105,7 +105,7 @@ fn open(directory: &Path) -> Result<Connection> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
         version <= VERSION,
-        "База создана более новой версией «После». Обновите приложение."
+        "База создана более новой версией «After». Обновите приложение."
     );
     // A malformed/corrupt database is never replaced with a legacy JSON file.
     let mode: String = connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
@@ -761,16 +761,26 @@ pub fn operation_receipt(
     namespace: &str,
     operation_id: &str,
 ) -> Result<Option<Value>> {
+    let directory = crate::notes::directory(root)?;
+    let _lock = crate::notes::lock(&directory)?;
+    operation_receipt_locked(&directory, namespace, operation_id)
+}
+
+/// Read a durable receipt while the caller already owns notes::lock. The
+/// bounded workspace journal may have evicted its presentation copy.
+pub(crate) fn operation_receipt_locked(
+    directory: &Path,
+    namespace: &str,
+    operation_id: &str,
+) -> Result<Option<Value>> {
     ensure!(
         ["voice", "task"].contains(&namespace)
             && !operation_id.is_empty()
             && operation_id.len() <= 256,
         "Некорректная операция"
     );
-    let directory = crate::notes::directory(root)?;
-    let _lock = crate::notes::lock(&directory)?;
-    let mut connection = open(&directory)?;
-    initialize(&mut connection, &directory)?;
+    let mut connection = open(directory)?;
+    initialize(&mut connection, directory)?;
     let payload: Option<String> = connection
         .query_row(
             "SELECT payload FROM operation_receipts WHERE namespace=?1 AND operation_id=?2",

@@ -31,7 +31,7 @@ from xml.sax.saxutils import escape
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEFERRED_SCENARIOS = ("deferred", "nfc-deferred")
-SUCCESS_SCENARIOS = ("valid", "hotfix", *DEFERRED_SCENARIOS, "late-busy")
+SUCCESS_SCENARIOS = ("valid", "hotfix", "renamed-app", *DEFERRED_SCENARIOS, "late-busy")
 REPLAY_SCENARIOS = ("same-build", "downgrade")
 SCENARIOS = (*SUCCESS_SCENARIOS, "bad-archive-signature", "tampered-archive", "bad-feed-signature",
              "truncated-archive", *REPLAY_SCENARIOS)
@@ -152,6 +152,9 @@ def make_app(destination, binary, framework, components, *, identifier, build, s
     }
     if hotfix and build == 2:
         info["PosleProductVersion"] = "0.17.6.1"
+    if scenario.name == "renamed-app":
+        info["CFBundleName"] = destination.stem
+        info["CFBundleDisplayName"] = destination.stem
     with (contents / "Info.plist").open("wb") as stream:
         plistlib.dump(info, stream, sort_keys=False)
     (contents / "Resources" / ("obsolete.txt" if build == 1 else "new.txt")).write_text(f"build {build}")
@@ -176,6 +179,17 @@ def make_app(destination, binary, framework, components, *, identifier, build, s
     run(["codesign", "--verify", "--deep", "--strict", str(destination)])
 
 
+def verify_renamed_install(installed, identifier, observed):
+    """The new name must replace the old host, not create another installation."""
+    with (installed / "Contents/Info.plist").open("rb") as stream:
+        info = plistlib.load(stream)
+    assert info["CFBundleIdentifier"] == identifier, "Renaming changed the fixture identity"
+    assert info["CFBundleName"] == info["CFBundleDisplayName"] == "After", "The installed host kept its old display name"
+    assert {path.name for path in installed.parent.iterdir() if path.suffix == ".app"} == {installed.name}, "Renaming left a second installed app"
+    starts = [event for event in observed if event["event"] == "started" and event["build"] == "2"]
+    assert len(starts) == 1 and Path(starts[0]["bundle"]).resolve() == installed.resolve(), "The renamed candidate did not relaunch from the original host path"
+
+
 def exercise(root, web, framework, binary, components, sign_update, private, public, port, name, requests):
     started = time.monotonic()
     scenario = root / name
@@ -186,8 +200,10 @@ def exercise(root, web, framework, binary, components, sign_update, private, pub
     if name == "nfc-deferred":
         installed_parent = installed_parent / "Caf\u00e9"
         assert os.fsencode(installed_parent.name) == b"Caf\xc3\xa9"
-    old = installed_parent / "UpdateFixture.app"
-    new = scenario / "source/UpdateFixture.app"
+    # Sparkle identifies the candidate by bundle ID. Without normalization it
+    # replaces the original host path even when the archive has a new app name.
+    old = installed_parent / ("После.app" if name == "renamed-app" else "UpdateFixture.app")
+    new = scenario / "source" / ("After.app" if name == "renamed-app" else "UpdateFixture.app")
     identifier = "app.posle.updaterfixture." + uuid.uuid4().hex
     (scenario / "identifier.txt").write_text(identifier)
     target = web / name
@@ -293,6 +309,8 @@ def exercise(root, web, framework, binary, components, sign_update, private, pub
                 assert run([str(worker), "--version"]) == "FixtureWorker 2", "A stale worker executable survived the update"
             assert not (helper / "Contents/Resources/obsolete-helper.txt").exists(), "Obsolete nested helper files survived replacement"
             run(["codesign", "--verify", "--deep", "--strict", str(old)])
+            if name == "renamed-app":
+                verify_renamed_install(old, identifier, observed)
             if name in DEFERRED_SCENARIOS:
                 assert len([e for e in observed if e["event"] == "deferred"]) == 1
                 held = [e for e in observed if e["event"] == "deferred-held"]
@@ -334,7 +352,7 @@ def exercise(root, web, framework, binary, components, sign_update, private, pub
                 assert any("sign" in e["description"].lower() for e in errors), "Failure was not signature validation"
                 assert requested_zip == (name != "bad-feed-signature"), "Signed-feed rejection happened at the wrong phase"
         assert hashlib.sha256(library.read_bytes()).digest() == library_digest, "External library was modified"
-        return {"scenario": name, "passed": True, "installedBuild": actual_version,
+        return {"scenario": name, "passed": True, "installedBuild": actual_version, "installedBundleName": old.name,
                 "relaunched": any(e["event"] == "relaunched" for e in observed),
                 "seconds": round(time.monotonic() - started, 2)}
     finally:

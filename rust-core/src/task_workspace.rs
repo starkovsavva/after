@@ -1180,7 +1180,7 @@ fn list(root: &Path, workspace: &NotesWorkspace, input: &Value) -> Result<Value>
     if agent {
         ensure!(
             workspace.task_integration.enabled,
-            "MCP выключен в настройках «После»"
+            "MCP выключен в настройках «After»"
         );
     }
     let query = input["query"].as_str().unwrap_or("");
@@ -1644,7 +1644,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
     if agent {
         ensure!(
             workspace.task_integration.enabled,
-            "MCP выключен в настройках «После»"
+            "MCP выключен в настройках «After»"
         );
         ensure!(
             [

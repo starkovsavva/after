@@ -402,17 +402,11 @@ enum FolderNativeChecks {
                    "The persistent header must open the selected folder's feature controls while its list is hidden; cards=\(selectedFeature(main, .cards) ?? "missing"), calendar=\(selectedFeature(main, .calendar) ?? "missing")")
         try press(main, "folder.save")
         try await settle(main) { sheetsClosed(main) && !app.foldersExpanded }
-        let selectedThroughMenu = choosePublishedScope(main, folder: work, folders: app.notes.folders)
-        if !selectedThroughMenu {
-            // Some SwiftUI versions create the NSMenu only inside blocking menu
-            // tracking. Keep this fallback explicit; it verifies UI response, not a menu click.
-            app.folderSelection = work.id
-            print("NOTE: closed scope menu does not publish native items; collapsed scope rendering checked through the actual store selection")
-        }
+        try await choosePublishedScope(main, folder: work, app: app)
         try await settle(main) { app.folderSelection == work.id && ids(main).contains("library.calendar") && !ids(main).contains("library.cards") }
         try expect(!app.foldersExpanded && !ids(main).contains("folder.select." + work.id) && ids(main).contains("folder.scope.menu"),
                    "Changing the active scope must preserve the collapsed list and expose the new folder's capabilities")
-        if selectedThroughMenu { print("PASS: actual native scope menu changes the active folder while the folder list stays collapsed") }
+        print("PASS: actual native scope menu changes the active folder while the folder list stays collapsed")
         try press(main, "folder.features.open")
         try await settle(main) { ids(main).contains("folder.feature.cards") }
         try expect(selectedFeature(main, .cards) == "Выключено" && selectedFeature(main, .calendar) == "Включено",
@@ -472,29 +466,17 @@ enum FolderNativeChecks {
         }
         try await settle(host) { app.foldersExpanded == expanded }
     }
-    private static func choosePublishedScope(_ host: Host, folder: LibraryFolder, folders: [LibraryFolder]) -> Bool {
-        let values = roots(host).flatMap(nodes)
-        for node in values where node.identifier == "folder.scope.select." + folder.id { if node.press() { return true } }
-        let menus = values.compactMap { ($0.object as? NSMenu) ?? ($0.object as? NSView)?.menu }
-        for menu in menus {
-            menu.update()
-            if let index = menu.items.firstIndex(where: { $0.title == folder.name && $0.isEnabled }) {
-                menu.performActionForItem(at: index); return true
-            }
+    private static func choosePublishedScope(_ host: Host, folder: LibraryFolder, app: AppStore) async throws {
+        do {
+            // The shared driver materializes lazy NSMenus and waits for modern
+            // SwiftUI menu windows before sending a complete keyboard sequence.
+            try await NativePickerChecks.select(title: folder.name, identifier: "folder.scope.menu", in: roots(host))
+        } catch {
+            // A pull-down Menu may keep its label/placeholder as its AX value.
+            // Its exact published destination is the authoritative action result.
+            guard app.folderSelection == folder.id else { throw error }
         }
-        if let node = values.first(where: { $0.identifier == "folder.scope.menu" }),
-           let index = folders.firstIndex(where: { $0.id == folder.id }) {
-            // Drive AppKit's real menu tracking with events queued only to this
-            // disposable test application, never the global event stream.
-            let keys: [(String, UInt16)] = [("\u{f729}", 115)] + Array(repeating: ("\u{f701}", 125), count: index + 1) + [("\r", 36), ("\u{1b}", 53)]
-            for (characters, keyCode) in keys {
-                if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                               windowNumber: host.window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters,
-                                               isARepeat: false, keyCode: keyCode) { NSApp.postEvent(event, atStart: false) }
-            }
-            return node.press()
-        }
-        return false
+        try await settle(host) { app.folderSelection == folder.id }
     }
     private static func featurePopup(_ host: Host, _ feature: AppFeature) -> NSPopUpButton? {
         func popups(_ view: NSView) -> [NSPopUpButton] { (view as? NSPopUpButton).map { [$0] } ?? view.subviews.flatMap(popups) }

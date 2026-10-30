@@ -5,7 +5,8 @@ import PosleCore
 import SwiftUI
 
 /// Exercises the actual calendar workspace with invented events and own-process AX.
-/// Preview never creates an EKEventStore or opens system accounts. No Save is pressed.
+/// Preview never creates an EKEventStore or opens system accounts. The only
+/// Save attempt is rejected by the preview guard without writing an event.
 @MainActor
 enum CalendarWorkspaceNativeChecks {
     static func run() async throws {
@@ -135,6 +136,7 @@ enum CalendarWorkspaceNativeChecks {
         readOnlyHost.close()
         print("PASS: unavailable calendar creation disables actual empty-slot controls without invoking them")
 
+        calendar.selectedCalendarID = ""
         let editor = NativeHost(AnyView(CalendarEventEditor(calendar: calendar, initialStart: expectedStart)
             .environmentObject(app).environment(\.locale, Locale(identifier: "ru_RU"))), width: 560, height: 420)
         defer { editor.close() }
@@ -145,10 +147,65 @@ enum CalendarWorkspaceNativeChecks {
                    "Editor must retain the selected slot and its 30-minute default end, not replace it onAppear")
         try expect(signature(calendar.events) == original && app.meetings.isEmpty && app.notes.notes.isEmpty,
                    "Opening a draft editor must not create calendar events, meetings or notes")
-        print("PASS: native editor initialStart survives load with a 30-minute end; Save is never invoked")
+        try expect(!UnsavedEditorRegistry.hasUnsaved, "Opening an unchanged event draft must not block quit or updates")
+        calendar.selectedCalendarID = calendar.calendars[0].id
+        try await settle(editor) { node("calendar.editor.title", in: editor) != nil }
+        try expect(!UnsavedEditorRegistry.hasUnsaved, "Discovering the provider's default calendar must not mark a draft dirty")
+        print("PASS: native editor keeps the selected slot and 30-minute end; initialization/default calendar do not fabricate unsaved changes")
+
+        try replaceTitle("Черновик события перед выходом", in: editor)
+        try await settle(editor) { UnsavedEditorRegistry.hasUnsaved }
+        try expect(UnsavedEditorRegistry.titles.contains { $0.contains("Черновик события перед выходом") },
+                   "A typed calendar event must participate in the quit/update draft guard")
+        try replaceTitle("", in: editor)
+        try await settle(editor) { !UnsavedEditorRegistry.hasUnsaved }
+        let startPicker = try required(datePickers(in: editor.view).first { abs($0.dateValue.timeIntervalSince(expectedStart)) < 1 }, "Draft start picker missing")
+        try setDate(expectedStart.addingTimeInterval(900), in: startPicker)
+        try await settle(editor) { UnsavedEditorRegistry.hasUnsaved }
+        try setDate(expectedStart, in: startPicker)
+        try await settle(editor) { !UnsavedEditorRegistry.hasUnsaved }
+        let endPicker = try required(datePickers(in: editor.view).first { abs($0.dateValue.timeIntervalSince(expectedStart.addingTimeInterval(1800))) < 1 }, "Draft end picker missing")
+        try setDate(expectedStart.addingTimeInterval(2700), in: endPicker)
+        try await settle(editor) { UnsavedEditorRegistry.hasUnsaved }
+        try setDate(expectedStart.addingTimeInterval(1800), in: endPicker)
+        try await settle(editor) { !UnsavedEditorRegistry.hasUnsaved }
+        print("PASS: actual event title, start and end controls protect dirty drafts; restoring original fields releases the exit/update guard")
+
+        try replaceTitle("Сохранить мой черновик при переподключении", in: editor)
+        try await settle(editor) { UnsavedEditorRegistry.hasUnsaved }
+        calendar.stop()
+        try await settle(editor) { node("calendar.connect", in: editor) != nil }
+        try expect(UnsavedEditorRegistry.hasUnsaved, "Losing calendar access must retain the hidden draft in the quit/update guard")
+        calendar.seedPreview()
+        try await settle(editor) { titleField(in: editor)?.stringValue == "Сохранить мой черновик при переподключении" }
+        try expect(UnsavedEditorRegistry.hasUnsaved && datePickers(in: editor.view).contains { abs($0.dateValue.timeIntervalSince(expectedStart)) < 1 },
+                   "Reconnecting must retain typed event fields instead of loading over them")
+        let save = try required(node("calendar.editor.save", in: editor), "Calendar event Save missing")
+        try expect(save.isEnabled && save.press(), "Actual Save must be available for the invented complete draft")
+        try await settle(editor) { calendar.error != nil }
+        try expect(UnsavedEditorRegistry.hasUnsaved && titleField(in: editor)?.stringValue == "Сохранить мой черновик при переподключении" &&
+                   signature(calendar.events) == original && app.meetings.isEmpty && app.notes.notes.isEmpty,
+                   "A rejected preview save must preserve its complete draft and leave all sources unchanged")
+        try expect(try required(node("calendar.editor.cancel", in: editor), "Calendar event Cancel missing").press(), "Actual Cancel must allow explicit discard")
+        try await settle(editor) { !UnsavedEditorRegistry.hasUnsaved }
+        print("PASS: connection recovery and rejected Save retain the actual event draft; explicit Cancel clears the exit/update guard without writing")
         editor.close()
+
+        let readOnlyEvent = CalendarAgendaEvent(id: "readonly-fixture", eventID: "readonly-fixture", title: "Только чтение",
+            start: expectedStart, end: expectedStart.addingTimeInterval(1800), allDay: false,
+            calendarID: firstEvent.calendarID, calendarTitle: firstEvent.calendarTitle, account: firstEvent.account,
+            color: firstEvent.color, writable: false, taskID: nil)
+        let readOnlyEditor = NativeHost(AnyView(CalendarEventEditor(calendar: calendar, event: readOnlyEvent)
+            .environmentObject(app).environment(\.locale, Locale(identifier: "ru_RU"))), width: 560, height: 440)
+        defer { readOnlyEditor.close() }
+        try await settle(readOnlyEditor) { node("calendar.editor.title", in: readOnlyEditor) != nil }
+        try expect(node("calendar.editor.title", in: readOnlyEditor)?.isEnabled == false &&
+                   node("calendar.editor.save", in: readOnlyEditor)?.isEnabled == false && !UnsavedEditorRegistry.hasUnsaved,
+                   "Read-only provider events must remain disabled without creating a dirty draft")
+        readOnlyEditor.close()
+        print("PASS: read-only provider events cannot be edited or saved and do not block quit or updates")
         try await verifyConnectionFlow(app: app, root: root)
-        print("11 native calendar workspace checks passed")
+        print("14 native calendar workspace checks passed")
     }
 
     private static func verifyConnectionFlow(app: AppStore, root: URL) async throws {
@@ -222,6 +279,9 @@ enum CalendarWorkspaceNativeChecks {
             view = NSHostingView(rootView: root); view.sizingOptions = []
             view.frame = NSRect(x: 0, y: 0, width: width, height: height)
             window = NSWindow(contentRect: view.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            // The editor's real dismiss action can close this root test window.
+            // ARC owns it through the following assertions and explicit cleanup.
+            window.isReleasedWhenClosed = false
             window.contentView = view; NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
         }
         var screenBounds: NSRect { window.convertToScreen(view.convert(view.bounds, to: nil)) }
@@ -297,6 +357,24 @@ enum CalendarWorkspaceNativeChecks {
     }
     private static func datePickers(in view: NSView) -> [NSDatePicker] {
         (view as? NSDatePicker).map { [$0] } ?? view.subviews.flatMap { datePickers(in: $0) }
+    }
+    private static func titleField(in host: NativeHost) -> NSTextField? {
+        func fields(_ view: NSView) -> [NSTextField] {
+            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields)
+        }
+        return fields(host.view).first { $0.placeholderString == L("Название") }
+    }
+    private static func replaceTitle(_ text: String, in host: NativeHost) throws {
+        let field = try required(titleField(in: host), "Native calendar title field missing")
+        host.window.makeFirstResponder(field)
+        let editor = try required(field.currentEditor() as? NSTextView, "Native calendar title field editor missing")
+        let range = NSRange(location: 0, length: (editor.string as NSString).length)
+        try expect(editor.shouldChangeText(in: range, replacementString: text), "Calendar title replacement rejected")
+        editor.replaceCharacters(in: range, with: text); editor.didChangeText()
+    }
+    private static func setDate(_ date: Date, in picker: NSDatePicker) throws {
+        picker.dateValue = date
+        try expect(picker.sendAction(picker.action, to: picker.target), "Native calendar date change did not dispatch its action")
     }
     private static func signature(_ events: [CalendarAgendaEvent]) -> [String] {
         events.map { "\($0.id)|\($0.title)|\($0.start.timeIntervalSince1970)|\($0.end.timeIntervalSince1970)|\($0.allDay)|\($0.calendarID)|\($0.taskID ?? "")" }.sorted()

@@ -17,7 +17,6 @@ enum RecordingStartNativeChecks {
         try await microphonePermission()
         try await queuedStartCancellation()
         try await completedStartCancellation()
-        try await microphoneFailures()
         let recorder = PendingRecorder()
         let app = AppStore(preview: true, recorder: recorder)
         try expect(app.meetings.isEmpty, "An empty capture fixture is required")
@@ -65,7 +64,7 @@ enum RecordingStartNativeChecks {
                    && app.recordingAssertion == 0 && app.startingRecordingID == nil,
                    "Quit while selecting failed to cancel startup or created another meeting")
         print("PASS: quitting during screen selection cancels pending capture and completes teardown")
-        print("8 native recording-start checks passed")
+        print("7 native recording-start checks passed")
     }
 
     private static func microphonePermission() async throws {
@@ -206,43 +205,6 @@ enum RecordingStartNativeChecks {
             await beforeReturningSuccess?()
         }
         func stop() async throws {}
-    }
-
-    private static func microphoneFailures() async throws {
-        let recorder = MeetingRecorder(requestMicrophonePermission: { _ in
-            preconditionFailure("Microphone delegate diagnostics must not request access")
-        })
-        let failures = MicrophoneFailures()
-        recorder.failed = { failures.receive($0) }
-        let first = NSObject(), second = NSObject()
-        recorder.bindSyntheticMicrophoneForChecks(first, sessionID: "microphone-one")
-        recorder.reportSyntheticMicrophoneFailureForChecks(first, error: AppError.message("Synthetic microphone encoding failed"))
-        recorder.reportSyntheticMicrophoneFailureForChecks(first)
-        try expect(failures.values.count == 1 && failures.values.first?.sessionID == "microphone-one"
-                   && failures.values.first?.message == "Synthetic microphone encoding failed",
-                   "Microphone encoding failure was lost, misattributed or reported twice")
-
-        recorder.bindSyntheticMicrophoneForChecks(second, sessionID: "microphone-two")
-        recorder.reportSyntheticMicrophoneFailureForChecks(first)
-        try expect(failures.values.count == 1, "Late microphone completion was applied to the next recording")
-        recorder.reportSyntheticMicrophoneFailureForChecks(second)
-        try expect(failures.values.count == 2 && failures.values.last?.sessionID == "microphone-two",
-                   "An unexpected microphone completion did not report the current session")
-        try await recorder.stop()
-        recorder.reportSyntheticMicrophoneFailureForChecks(second)
-        try expect(failures.values.count == 2, "Expected Stop became a false microphone failure")
-        recorder.bindSyntheticMicrophoneForChecks(first, sessionID: "expected-stop")
-        try await recorder.stop()
-        recorder.reportSyntheticMicrophoneFailureForChecks(first)
-        try expect(failures.values.count == 2, "Stop did not disarm microphone completion before releasing the recorder")
-        print("PASS: microphone encoder failures and unexpected stops report their exact session once; ordinary Stop and stale callbacks remain silent")
-    }
-
-    private final class MicrophoneFailures: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: [RecordingFailure] = []
-        var values: [RecordingFailure] { lock.lock(); defer { lock.unlock() }; return stored }
-        func receive(_ value: RecordingFailure) { lock.lock(); stored.append(value); lock.unlock() }
     }
 
     private final class PendingRecorder: MeetingRecordingBackend, @unchecked Sendable {

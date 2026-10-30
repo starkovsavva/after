@@ -210,11 +210,11 @@ fn example_schema() -> Value {
 enum LocalProvider { Managed, Ollama, LmStudio }
 impl LocalProvider {
     fn id(self) -> &'static str { match self { Self::Managed=>"managed", Self::Ollama=>"ollama", Self::LmStudio=>"lmstudio" } }
-    fn title(self) -> &'static str { match self { Self::Managed=>"локальный ИИ «После»", Self::Ollama=>"Ollama", Self::LmStudio=>"LM Studio" } }
+    fn title(self) -> &'static str { match self { Self::Managed=>"локальный ИИ «After»", Self::Ollama=>"Ollama", Self::LmStudio=>"LM Studio" } }
     fn start_hint(self) -> &'static str { match self {
-        Self::Managed=>"Подготовьте локальный ИИ в настройках «После».",
-        Self::Ollama=>"Запустите Ollama и проверьте его локальный адрес в настройках «После».",
-        Self::LmStudio=>"В LM Studio откройте Developer и включите локальный сервер (Start Server). Затем обновите список моделей в «После».",
+        Self::Managed=>"Подготовьте локальный ИИ в настройках «After».",
+        Self::Ollama=>"Запустите Ollama и проверьте его локальный адрес в настройках «After».",
+        Self::LmStudio=>"В LM Studio откройте Developer и включите локальный сервер (Start Server). Затем обновите список моделей в «After».",
     } }
 }
 #[derive(Debug)]
@@ -238,7 +238,7 @@ fn loopback_url(raw:&str) -> Result<Url> {
 fn local_config(settings:&Settings) -> Result<LocalConfig> {
     let provider=match settings.local_provider.as_str() {
         "managed"=>LocalProvider::Managed, "ollama"=>LocalProvider::Ollama, "lmstudio"=>LocalProvider::LmStudio,
-        _=>bail!("Выберите источник локальной модели: «После», Ollama или LM Studio."),
+        _=>bail!("Выберите источник локальной модели: «After», Ollama или LM Studio."),
     };
     let raw=if provider==LocalProvider::Managed {
         std::env::var("POSLE_OLLAMA_URL").unwrap_or_else(|_|"http://127.0.0.1:11436".into())
@@ -282,7 +282,7 @@ fn selected_model(config:&LocalConfig,settings:&Settings,models:&[String]) -> Re
     let exists=models.iter().any(|model|model==&settings.local_model
         || (config.provider!=LocalProvider::LmStudio && model==&format!("{}:latest",settings.local_model)));
     if !exists {
-        bail!("Модель «{}» не найдена в {}. Выберите её из списка или скачайте в этом приложении; «После» не скачивает модели внешнего источника.",settings.local_model,config.provider.title());
+        bail!("Модель «{}» не найдена в {}. Выберите её из списка или скачайте в этом приложении; «After» не скачивает модели внешнего источника.",settings.local_model,config.provider.title());
     }
     if config.provider!=LocalProvider::LmStudio {
         let info=local_post(config,"api/show",&json!({"model":settings.local_model}),4)?;
@@ -1287,20 +1287,20 @@ fn model_directories(root:&Path) -> Result<std::path::PathBuf> {
         if let Some(component)=component {directory.push(component);}
         match fs::symlink_metadata(&directory) {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink()=>{},
-            Ok(_)=>bail!("Папка моделей «После» не должна быть файлом или символической ссылкой: {}",directory.display()),
+            Ok(_)=>bail!("Папка моделей «After» не должна быть файлом или символической ссылкой: {}",directory.display()),
             Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{
-                fs::DirBuilder::new().mode(0o700).create(&directory).context("Не удалось создать папку моделей «После»")?;
+                fs::DirBuilder::new().mode(0o700).create(&directory).context("Не удалось создать папку моделей «After»")?;
             },
-            Err(error)=>return Err(error).context("Не удалось открыть папку моделей «После»"),
+            Err(error)=>return Err(error).context("Не удалось открыть папку моделей «After»"),
         }
     }
     Ok(directory)
 }
 fn verify_blob(path:&Path,hash:&str,size:u64) -> Result<()> {
     let mut file=plain_model_file(path)?;
-    if file.metadata()?.len()!=size {bail!("Существующий файл модели «После» повреждён: размер не совпадает. Исходный GGUF сохранён.");}
+    if file.metadata()?.len()!=size {bail!("Существующий файл модели «After» повреждён: размер не совпадает. Исходный GGUF сохранён.");}
     let (actual,_)=hash_model(&mut file,"Проверяю подключённый файл модели",0.45,0.75)?;
-    if actual!=hash {bail!("Существующий файл модели «После» повреждён: SHA-256 не совпадает. Исходный GGUF сохранён.");} Ok(())
+    if actual!=hash {bail!("Существующий файл модели «After» повреждён: SHA-256 не совпадает. Исходный GGUF сохранён.");} Ok(())
 }
 #[cfg(target_os="macos")]
 fn clone_model(source:&Path,destination:&Path) -> bool {
@@ -1362,7 +1362,7 @@ fn install_gguf_blob(root:&Path,source:&Path,input:&mut fs::File,hash:&str,size:
                 if bytes>size {bail!("GGUF изменился во время копирования. Дождитесь окончания загрузки и повторите.");}
                 output.write_all(&buffer[..count]).context("Не удалось сохранить GGUF. Проверьте свободное место.")?;
                 let percent=(bytes.saturating_mul(100)/size).min(100);
-                if percent>=previous+5 {progress(format!("Копирую GGUF в хранилище «После» · {percent}%"),0.4+0.3*percent as f64/100.0); previous=percent;}
+                if percent>=previous+5 {progress(format!("Копирую GGUF в хранилище «After» · {percent}%"),0.4+0.3*percent as f64/100.0); previous=percent;}
             }
             output.sync_all()?;
         }
@@ -1372,7 +1372,7 @@ fn install_gguf_blob(root:&Path,source:&Path,input:&mut fs::File,hash:&str,size:
         match fs::hard_link(&temporary,&destination) {
             Ok(())=>{},
             Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>verify_blob(&destination,hash,size)?,
-            Err(error)=>return Err(error).context("Не удалось подключить GGUF в хранилище «После»"),
+            Err(error)=>return Err(error).context("Не удалось подключить GGUF в хранилище «After»"),
         }
         if let Ok(file)=fs::File::open(&directory) {let _=file.sync_all();}
         Ok(())
@@ -1389,7 +1389,7 @@ pub fn import_gguf(root:&Path,source:&Path) -> Result<Value> {
 }
 fn import_gguf_with_config(root:&Path,source:&Path,config:&LocalConfig) -> Result<Value> {
     if config.provider!=LocalProvider::Managed {
-        bail!("Импорт GGUF в «После» доступен для источника «После». Для Ollama или LM Studio импортируйте файл в самом приложении и обновите список моделей.");
+        bail!("Импорт GGUF в «After» доступен для источника «After». Для Ollama или LM Studio импортируйте файл в самом приложении и обновите список моделей.");
     }
     if !source.is_absolute() {bail!("Выберите GGUF-файл по полному пути.");}
     let source=source.canonicalize().context("Не удалось найти выбранный GGUF-файл")?;
@@ -1408,10 +1408,10 @@ fn import_gguf_with_config(root:&Path,source:&Path,config:&LocalConfig) -> Resul
     let model=format!("posle-gguf-{}:latest",&hash[..12]);
     let chosen=Settings{local_model:model.clone(),..Settings::default()};
     if !models.contains(&model) {
-        progress("Регистрирую GGUF в локальном ИИ «После»…",0.8);
+        progress("Регистрирую GGUF в локальном ИИ «After»…",0.8);
         let response=client(true,600)?.post(config.url.join("api/create")?).json(&json!({
             "model":model,"files":{"model.gguf":format!("sha256:{hash}")},"stream":false
-        })).send().map_err(|_|anyhow::anyhow!("Нет ответа от локального ИИ «После». Запустите его и повторите подключение GGUF."))?;
+        })).send().map_err(|_|anyhow::anyhow!("Нет ответа от локального ИИ «After». Запустите его и повторите подключение GGUF."))?;
         let status=response.status();
         let mut bytes=Vec::new(); response.take(1024*1024).read_to_end(&mut bytes)?;
         let payload:Value=serde_json::from_slice(&bytes).context("Ollama вернул некорректный ответ при подключении GGUF")?;

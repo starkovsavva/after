@@ -78,7 +78,7 @@ struct TaskDetailView: View {
         }
     }
     private var status: some View {
-        Picker(L("В «После»"), selection: Binding(get: { task.status }, set: { value in
+        Picker(L("В «After»"), selection: Binding(get: { task.status }, set: { value in
             if notes.updateTaskWorkspace(task, patch: ["status": value.rawValue]) != nil { app.reloadLibrary() }
         })) {
             ForEach(TaskWorkspaceStatus.allCases) { Label(L($0.title), systemImage: $0.symbol).tag($0) }

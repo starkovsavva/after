@@ -420,8 +420,8 @@ def run(engine, library, temporary):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--engine", type=Path, default=PROJECT / "dist/После.app/Contents/MacOS/posle-engine")
-    parser.add_argument("--library", type=Path, default=PROJECT / "dist/После.app/Contents/Frameworks/libposle_core.dylib")
+    parser.add_argument("--engine", type=Path, default=PROJECT / "dist/After.app/Contents/MacOS/posle-engine")
+    parser.add_argument("--library", type=Path, default=PROJECT / "dist/After.app/Contents/Frameworks/libposle_core.dylib")
     parser.add_argument("--keep", action="store_true", help="Retain this newly generated synthetic fixture")
     args = parser.parse_args()
     engine, library = args.engine.resolve(), args.library.resolve()

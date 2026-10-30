@@ -168,9 +168,11 @@ struct UpdateFixture {
             let path = url.path
             return path.hasPrefix("/private/tmp/") ? String(path.dropFirst(8)) : path
         }
+        let scenario = info["FixtureScenario"] as? String ?? "valid"
+        let allowedBundleNames = scenario == "renamed-app" ? ["После.app", "After.app"] : ["UpdateFixture.app"]
         guard comparable(log).hasPrefix(comparable(root) + "/"),
               comparable(bundle).hasPrefix(comparable(root) + "/"),
-              bundle.lastPathComponent == "UpdateFixture.app" else {
+              allowedBundleNames.contains(bundle.lastPathComponent) else {
             fputs("Rejected fixture paths: root=\(root.path), log=\(log.path), bundle=\(bundle.path)\n", stderr)
             exit(92)
         }

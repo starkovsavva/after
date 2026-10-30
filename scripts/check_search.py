@@ -123,7 +123,7 @@ def validate_navigation(root, hit):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     project = Path(__file__).resolve().parents[1]
-    parser.add_argument("--library", type=Path, default=project / "dist" / "После.app" / "Contents" / "Frameworks" / "libposle_core.dylib")
+    parser.add_argument("--library", type=Path, default=project / "dist" / "After.app" / "Contents" / "Frameworks" / "libposle_core.dylib")
     parser.add_argument("--meetings", type=int, default=150)
     parser.add_argument("--segments", type=int, default=80)
     arguments = parser.parse_args()

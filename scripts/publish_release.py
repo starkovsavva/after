@@ -49,6 +49,7 @@ def sparkle_tool(directory):
 
 
 def signing_files(release, repo, notes, tool, verifier):
+    repo = updates.canonical_repository(repo)
     files = {name: PROJECT / "dist" / name for name in PACKAGED_ASSETS}
     signature = run([tool, "--account", updates.ACCOUNT, "-p", str(files[updates.ZIP])], capture=True)
     updates.decode64(signature, 64, "archive signature")
@@ -70,6 +71,7 @@ def signing_files(release, repo, notes, tool, verifier):
 
 
 def resume(args, github, verifier):
+    repo = updates.canonical_repository(args.repo)
     with (PROJECT / "packaging/Info.plist").open("rb") as stream:
         source = plistlib.load(stream)
     public_key = source.get("SUPublicEDKey", "")
@@ -81,12 +83,12 @@ def resume(args, github, verifier):
         raise RuntimeError("Published release not found")
     verified = updates.verify_public_release(github, release, public_key, verifier)
     changed = updates.promote_feed(github, verified, verifier)
-    print(json.dumps({"tag": tag, "feed": updates.feed_url(args.repo), "advanced": changed}))
+    print(json.dumps({"tag": tag, "feed": updates.feed_url(repo), "advanced": changed}))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", default="starkovsavva/posle")
+    parser.add_argument("--repo", default=updates.DEFAULT_REPO)
     parser.add_argument("--notes-file", type=Path)
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--check-only", action="store_true", help="Verify and sign local release files; do not contact GitHub or publish")
@@ -96,7 +98,7 @@ def main():
     parser.add_argument("--resume-feed", action="store_true", help="Verify published immutable assets and only advance the feed; never edit the release")
     parser.add_argument("--tag", help="Published tag for --resume-feed (defaults to the current source version)")
     args = parser.parse_args()
-    updates.validate_repo(args.repo)
+    args.repo = updates.canonical_repository(args.repo)
     if args.resume_feed and (args.check_only or args.skip_build or args.stable or args.notes_file):
         parser.error("--resume-feed cannot be combined with build, notes or publication options")
     if args.tag and not args.resume_feed:
@@ -116,6 +118,8 @@ def main():
     revision = run(["git", "rev-parse", "HEAD"], capture=True)
     with (PROJECT / "packaging/Info.plist").open("rb") as stream:
         source_info = plistlib.load(stream)
+    if source_info.get("SUFeedURL") != updates.feed_url(args.repo):
+        raise RuntimeError("New releases must use the canonical repository update feed")
     expected = updates.identity(dict(source_info, PosleSourceRevision=revision), args.repo, revision)
     tag = expected.tag
     if github is not None:
@@ -137,7 +141,7 @@ def main():
     run(["codesign", "--verify", "--deep", "--strict", str(app)])
     # Regenerate packages before signing: ZIP bytes must never change afterwards.
     run(["bash", "scripts/package.sh"])
-    run(["git", "archive", "--format=zip", "--prefix=posle/", "--output=dist/" + updates.SOURCE, revision])
+    run(["git", "archive", "--format=zip", "--prefix=" + updates.SOURCE_ROOT + "/", "--output=dist/" + updates.SOURCE, revision])
     for name in (updates.ZIP, updates.SOURCE):
         with zipfile.ZipFile(PROJECT / "dist" / name) as archive:
             if archive.testzip() is not None:
@@ -162,10 +166,10 @@ def main():
         base_assets = [str(files[name]) for name in PACKAGED_ASSETS]
         if release is None:
             run([gh, "release", "create", tag, *base_assets, "--repo", args.repo, "--draft", "--target", revision,
-                 "--title", "После " + actual.version, "--notes-file", str(args.notes_file.resolve())])
+                 "--title", "After " + actual.version, "--notes-file", str(args.notes_file.resolve())])
         else:
             run([gh, "release", "edit", tag, "--repo", args.repo, "--target", revision,
-                 "--title", "После " + actual.version, "--notes-file", str(args.notes_file.resolve())])
+                 "--title", "After " + actual.version, "--notes-file", str(args.notes_file.resolve())])
             run([gh, "release", "upload", tag, *base_assets, "--repo", args.repo, "--clobber"])
         release = github.release(tag)
         if release is None or not release["draft"]:

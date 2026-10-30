@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 enum Command { Prepare, Transcribe, Diarize, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, CheckCloud, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview, VoicePlan }
 
 #[derive(Parser)]
-#[command(version, about="После: ядро библиотеки и обработки встреч")]
+#[command(version, about="After: ядро библиотеки и обработки встреч")]
 struct Args {
     #[arg(value_enum)] command: Command,
     #[arg(long)] root: PathBuf,

@@ -10,10 +10,10 @@ enum NativeLibraryIntegrity {
         case invalidDigest, unsafeLocation, modifiedLibrary, unavailable
         var errorDescription: String? {
             switch self {
-            case .invalidDigest: return L("В приложении отсутствует проверка Rust-ядра. Переустановите «После».")
-            case .unsafeLocation: return L("Rust-ядро находится в небезопасном месте. Переустановите «После».")
-            case .modifiedLibrary: return L("Rust-ядро изменено или повреждено. Переустановите «После».")
-            case .unavailable: return L("Не удалось загрузить проверенное Rust-ядро. Переустановите «После».")
+            case .invalidDigest: return L("В приложении отсутствует проверка Rust-ядра. Переустановите «After».")
+            case .unsafeLocation: return L("Rust-ядро находится в небезопасном месте. Переустановите «After».")
+            case .modifiedLibrary: return L("Rust-ядро изменено или повреждено. Переустановите «After».")
+            case .unavailable: return L("Не удалось загрузить проверенное Rust-ядро. Переустановите «After».")
             }
         }
     }

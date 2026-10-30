@@ -375,11 +375,11 @@ enum ManagedModelRuntime {
     }
 
     private static func notPrepared() -> AppError {
-        .message(L("Локальный ИИ «После» не подготовлен. В настройках «Конспект и карточки → На Mac → После» нажмите «Подготовить ИИ»."))
+        .message(L("Локальный ИИ «After» не подготовлен. В настройках «Конспект и карточки → На Mac → After» нажмите «Подготовить ИИ»."))
     }
 
     private static func failure() -> AppError {
-        .message(L("Не удалось подготовить процессы локального ИИ «После». В настройках «Конспект и карточки» повторите подготовку ИИ."))
+        .message(L("Не удалось подготовить процессы локального ИИ «After». В настройках «Конспект и карточки» повторите подготовку ИИ."))
     }
 }
 
@@ -420,7 +420,7 @@ final class LocalModelService {
         guard !cancelled() else { throw AppError.message(L("Обработка остановлена. Запись сохранена.")) }
         if settings.localProvider != "managed" {
             guard ["ollama", "lmstudio"].contains(settings.localProvider) else {
-                throw AppError.message(L("Выберите После, Ollama или LM Studio в настройках."))
+                throw AppError.message(L("Выберите After, Ollama или LM Studio в настройках."))
             }
             stop()
             externalURL = try Self.validatedEndpoint(settings.resolvedLocalEndpoint)
@@ -442,7 +442,7 @@ final class LocalModelService {
             port = candidate
             if !(await healthy()) { available = true; break }
         }
-        guard available else { throw AppError.message(L("Порты локального ИИ заняты. Перезапустите После.")) }
+        guard available else { throw AppError.message(L("Порты локального ИИ заняты. Перезапустите After.")) }
         let p = Process(); p.executableURL = binary; p.arguments = ["serve"]
         p.standardInput = FileHandle.nullDevice; p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         p.environment = ProcessEnvironment.withoutSecrets(ProcessInfo.processInfo.environment).merging([
@@ -452,7 +452,7 @@ final class LocalModelService {
         ]) { _, new in new }
         do { try p.run() }
         catch {
-            throw AppError.message(L("Не удалось запустить локальный ИИ «После». В настройках «Конспект и карточки» повторите подготовку ИИ."))
+            throw AppError.message(L("Не удалось запустить локальный ИИ «After». В настройках «Конспект и карточки» повторите подготовку ИИ."))
         }
         process = p
         for _ in 0..<40 {

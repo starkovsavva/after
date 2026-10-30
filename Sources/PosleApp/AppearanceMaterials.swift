@@ -67,7 +67,7 @@ struct ThemeApplicationPreview: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(L("После")).font(AppTypography.controlStrong)
+                Text(L("After")).font(AppTypography.controlStrong)
                 Spacer()
                 Image(systemName: "mic")
                 Label(L("Записать"), systemImage: "record.circle")

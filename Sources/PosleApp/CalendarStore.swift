@@ -295,7 +295,7 @@ final class CalendarStore: ObservableObject {
             guard status == .fullAccess else {
                 error = status == .notDetermined
                     ? L("macOS пока не подтвердила доступ к календарям. Повторите подключение.")
-                    : L("Разрешите «После» полный доступ к календарям в настройках macOS, затем вернитесь в приложение.")
+                    : L("Разрешите «After» полный доступ к календарям в настройках macOS, затем вернитесь в приложение.")
                 return
             }
             activate()
@@ -363,7 +363,7 @@ final class CalendarStore: ObservableObject {
         guard authorizationStatus == .fullAccess else {
             suspendConnection()
             permissionDenied = [.denied, .restricted, .writeOnly].contains(authorizationStatus)
-            if permissionDenied { error = L("Разрешите «После» полный доступ к календарям в настройках macOS.") }
+            if permissionDenied { error = L("Разрешите «After» полный доступ к календарям в настройках macOS.") }
             return
         }
         if !connected { activate(); return }
@@ -749,7 +749,7 @@ final class CalendarStore: ObservableObject {
             if decision.writeBlocked {
                 link.start = event.startDate; link.end = event.endDate; link.title = CalendarTaskLink.plainTitle(eventTitle)
                 link.missing = false; links[index] = link
-                error = L("Связанный календарь недоступен для изменений. Статус задачи сохранён в «После».")
+                error = L("Связанный календарь недоступен для изменений. Статус задачи сохранён в «After».")
                 continue
             }
             do {

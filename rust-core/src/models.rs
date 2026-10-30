@@ -157,7 +157,7 @@ fn classify(path: &Path, source: &str) -> Model {
 }
 
 fn default_roots(root: &Path, home: &Path) -> Vec<(PathBuf, &'static str)> {
-    let mut result = vec![(root.join("cache/huggingface/hub"), "После")];
+    let mut result = vec![(root.join("cache/huggingface/hub"), "After")];
     for name in ["HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"] {
         if let Some(value) = std::env::var_os(name) { result.push((PathBuf::from(value), "Hugging Face")); }
     }

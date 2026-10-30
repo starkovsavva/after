@@ -20,7 +20,7 @@ PROFILES = {
 }
 NATIVE = (
     "folders", "localization", "folder-jobs", "meeting-rename", "responsiveness", "contexts", "feature-ui", "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-start", "recording-sessions", "corrections", "tasks", "task-workspace", "integrations", "trash", "themes", "typography", "guidance", "voice", "bug-report", "copy-transcript", "updates",
-    "calendar", "calendar-workspace", "notes", "overview", "jobs", "navigation", "cards", "queue", "source-playback",
+    "release-notes", "calendar", "calendar-workspace", "notes", "overview", "jobs", "navigation", "cards", "queue", "source-playback", "source-popover",
 )
 
 
@@ -120,6 +120,7 @@ class Verification:
                  env=self.env | {"POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"})
         self.run("Long, delayed and idle recording tracks", [self.python, "scripts/check_media.py"],
                  env=self.env | {"PYTHONPATH": str(PROJECT / "backend")})
+        self.run("Imported listening quality and source timeline", [self.python, "scripts/check_import_playback.py"])
         self.run("Search corpus and index rebuild", [self.python, "scripts/check_search.py", "--library", self.library])
         self.run("Owned model runtime migration", [self.python, "scripts/check_managed_identity.py"])
         self.run("Native library integrity before constructors", [self.python, "scripts/check_native_integrity.py"])

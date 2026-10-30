@@ -75,8 +75,9 @@ extension AppStore {
                 self.error = L("Запись началась без папки. Выберите папку после сохранения встречи.")
             }
             isRecording = true; recordingID = meeting.id; recordingDate = Date()
+            GuidanceController.shared.recordUsage("recording", root: root)
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
-                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), L("После записывает встречу") as CFString, &recordingAssertion)
+                                       IOPMAssertionLevel(kIOPMAssertionLevelOn), L("After записывает встречу") as CFString, &recordingAssertion)
             jobs.setRecording(true)
             // Start already opens this meeting; its sidebar must describe the same destination.
             folderSelection = notes.context(for: meeting.id).folderID; libraryFilter = ""

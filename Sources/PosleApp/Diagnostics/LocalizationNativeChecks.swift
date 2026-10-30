@@ -51,7 +51,7 @@ enum LocalizationNativeChecks {
         } catch {
             throw AppError.message("Application menu did not localize: " + menuTitles(NSApp.mainMenu).sorted().joined(separator: ", "))
         }
-        try expect(L("После") == "After" && UILocale().language.languageCode?.identifier == "en", "English name and date formatting must resolve independently of AI language")
+        try expect(L("After") == "After" && UILocale().language.languageCode?.identifier == "en", "English name and date formatting must resolve independently of AI language")
         try expect(LF("Подключить {0} из {1}", arguments: ["{1} Савва", "%@"]) == "Connect {1} Савва from %@",
                    "Interpolation arguments must remain verbatim, including Cyrillic, format markers and placeholder-looking text")
         try expect(app.selected?.title == "Заметки" && renderedStrings(main).contains("Заметки")

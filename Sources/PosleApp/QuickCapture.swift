@@ -32,7 +32,7 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
         let voice = NSMenuItem(title: L("Голосовое поручение…"), action: #selector(voiceFromMenu), keyEquivalent: "")
         voice.target = self; voice.isHidden = store?.isFeatureEnabled(.assistant) != true; menu.addItem(voice)
         menu.addItem(.separator())
-        let library = NSMenuItem(title: L("Открыть После"), action: #selector(openMain), keyEquivalent: "")
+        let library = NSMenuItem(title: L("Открыть After"), action: #selector(openMain), keyEquivalent: "")
         library.target = self; menu.addItem(library)
         item.menu = menu; statusItem = item
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -69,13 +69,13 @@ final class QuickCaptureController: NSObject, NSWindowDelegate {
     /// Change chrome in place: a language switch must not recreate an editor or its draft.
     private func refreshLanguage() {
         panel?.title = L("Быстрая заметка")
-        statusItem?.button?.image?.accessibilityDescription = L("После")
+        statusItem?.button?.image?.accessibilityDescription = L("After")
         for item in statusItem?.menu?.items ?? [] {
             switch item.action {
             case #selector(showFromMenu): item.title = L("Быстрая заметка…")
             case #selector(markFromMenu): item.title = L("Отметить важный момент")
             case #selector(voiceFromMenu): item.title = L("Голосовое поручение…")
-            case #selector(openMain): item.title = L("Открыть После")
+            case #selector(openMain): item.title = L("Открыть After")
             default: break
             }
         }

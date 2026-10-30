@@ -242,9 +242,9 @@ struct CardsWorkspaceView: View {
         if panel.runModal() == .OK, let url = panel.url { importURL = url; showingImport = true }
     }
     private func exportCards() {
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.tabSeparatedText]; panel.nameFieldStringValue = L("После — карточки.tsv")
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.tabSeparatedText]; panel.nameFieldStringValue = L("After — карточки.tsv")
         if panel.runModal() == .OK, let url = panel.url {
-            do { try Exporter.anki(cards: matching.map(\.card), title: L("После")).write(to: url, atomically: true, encoding: .utf8) }
+            do { try Exporter.anki(cards: matching.map(\.card), title: L("After")).write(to: url, atomically: true, encoding: .utf8) }
             catch { workspace.error = error.localizedDescription }
         }
     }

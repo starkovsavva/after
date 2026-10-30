@@ -85,7 +85,7 @@ fn private_directory(path: &Path) -> Result<()> {
     let info = fs::symlink_metadata(path)?;
     ensure!(
         info.is_dir() && !info.file_type().is_symlink() && info.uid() == unsafe { libc::geteuid() },
-        "Компоненты медиа должны находиться в собственной папке «После»."
+        "Компоненты медиа должны находиться в собственной папке «After»."
     );
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())

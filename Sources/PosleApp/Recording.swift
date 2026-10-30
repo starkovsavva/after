@@ -21,10 +21,32 @@ struct RecordingDisplay: Identifiable, Equatable, Sendable {
 }
 
 /// Uses the macOS capture APIs. No virtual audio driver or meeting bot.
-final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate, AVAudioRecorderDelegate, @unchecked Sendable {
+final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate, @unchecked Sendable {
     var failed: (@Sendable (RecordingFailure) -> Void)?
-    private var stream: SCStream?
-    private var contentPicker: SystemCapturePicker?
+    var microphoneStatus: (@Sendable (RecordingMicrophoneUpdate) -> Void)?
+    // Cancel can read capture ownership while asynchronous Start is suspended.
+    // Keep strong-reference loads/stores synchronized with that cancellation.
+    private let captureLock = NSLock()
+    private var storedStream: SCStream?
+    private var storedPicker: SystemCapturePicker?
+    private var storedSink: CaptureSink?
+    private var storedMicrophone: MicrophoneCapture?
+    private var stream: SCStream? {
+        get { captureLock.withLock { storedStream } }
+        set { captureLock.withLock { storedStream = newValue } }
+    }
+    private var contentPicker: SystemCapturePicker? {
+        get { captureLock.withLock { storedPicker } }
+        set { captureLock.withLock { storedPicker = newValue } }
+    }
+    private var sink: CaptureSink? {
+        get { captureLock.withLock { storedSink } }
+        set { captureLock.withLock { storedSink = newValue } }
+    }
+    private var microphone: MicrophoneCapture? {
+        get { captureLock.withLock { storedMicrophone } }
+        set { captureLock.withLock { storedMicrophone = newValue } }
+    }
     private let startLock = NSLock()
     private var starting = false
     private var startCancelled = false
@@ -32,13 +54,9 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
     private let requestMicrophonePermission: RecordingPermissionRequest.Request
     private let failureLock = NSLock()
     private var streamFailure: (stream: ObjectIdentifier, sessionID: String)?
-    private var microphoneFailure: (recorder: ObjectIdentifier, sessionID: String)?
-    private var microphoneFailureReported = false
+    private var recordingSessionID: String?
     private var startupFailure: RecordingFailure?
-    private var sink: CaptureSink?
-    private var microphone: AVAudioRecorder?
     var levels: (@Sendable (Double?, Double?) -> Void)?
-    private var meterTask: Task<Void, Never>?
 
     init(requestMicrophonePermission: @escaping RecordingPermissionRequest.Request = {
         AVCaptureDevice.requestAccess(for: .audio, completionHandler: $0)
@@ -68,14 +86,14 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         let diagnostic = value.domain == SCStreamErrorDomain ? LF("ScreenCaptureKit, код {0}", arguments: [String(describing: code)]) : LF("код {0}", arguments: [String(describing: code)])
         let message: String
         if value.domain == SCStreamErrorDomain, code == SCStreamError.Code.userDeclined.rawValue {
-            message = L("macOS не разрешила запись выбранного экрана или звука. Повторите запись и подтвердите выбор в окне macOS. Если доступ уже включён, завершите «После», удалите старую запись «После» кнопкой «−» в настройках записи экрана и снова откройте установленное приложение, чтобы дать доступ этой копии.")
+            message = L("macOS не разрешила запись выбранного экрана или звука. Повторите запись и подтвердите выбор в окне macOS. Если доступ уже включён, завершите «After», удалите старую запись приложения кнопкой «−» в настройках записи экрана и снова откройте установленное приложение, чтобы дать доступ этой копии.")
         } else if value.domain == SCStreamErrorDomain,
                   [SCStreamError.Code.noDisplayList.rawValue, SCStreamError.Code.noCaptureSource.rawValue].contains(code) {
             message = L("macOS не нашла доступный экран. Проверьте подключение дисплея и повторите запись.")
         } else if value.domain == SCStreamErrorDomain, code == SCStreamError.Code.failedNoMatchingApplicationContext.rawValue {
-            message = L("macOS потеряла подключение к этой копии «После». Завершите приложение и откройте установленную копию снова.")
+            message = L("macOS потеряла подключение к этой копии «After». Завершите приложение и откройте установленную копию снова.")
         } else {
-            message = L("macOS не смогла получить доступные экраны и звук. Повторите попытку; если ошибка сохранится, перезапустите «После».")
+            message = L("macOS не смогла получить доступные экраны и звук. Повторите попытку; если ошибка сохранится, перезапустите «After».")
         }
         return .message("\(message) (\(diagnostic))")
     }
@@ -105,29 +123,24 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         let permission = try await permissionRequest.wait(request: requestMicrophonePermission)
         try checkStartCancellation()
         guard permission else {
-            throw AppError.message(L("Разрешите микрофон: Системные настройки → Конфиденциальность и безопасность → Микрофон → После."))
+            throw AppError.message(L("Разрешите микрофон: Системные настройки → Конфиденциальность и безопасность → Микрофон → After."))
         }
         if !systemAudio && !video {
-            let recorder = try AVAudioRecorder(url: url, settings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48000,
-                AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: audioQuality.bitRate
-            ])
-            recorder.delegate = self
-            microphone = recorder
-            bindMicrophoneFailure(recorder, sessionID: url.deletingLastPathComponent().lastPathComponent)
-            guard recorder.prepareToRecord(), recorder.record() else {
-                throw AppError.message(L("Не удалось включить микрофон. Проверьте выбранный микрофон в системных настройках."))
-            }
-            recorder.isMeteringEnabled = true
-            try checkStartCancellation()
-            if let failure = failureDuringMicrophoneStart(recorder) { throw AppError.message(failure.message) }
-            meterTask = Task { @MainActor [weak self] in
-                while !Task.isCancelled, recorder.isRecording {
-                    recorder.updateMeters()
-                    let value = pow(10.0, Double(recorder.averagePower(forChannel: 0)) / 20.0)
-                    self?.levels?(min(1, max(0, value)), nil)
-                    try? await Task.sleep(for: .milliseconds(100))
-                }
+            let sink = try CaptureSink(url: url, systemAudio: false, audioQuality: audioQuality)
+            let sessionID = url.deletingLastPathComponent().lastPathComponent
+            bindSink(sink, sessionID: sessionID)
+            let microphone = makeMicrophone(sink: sink, sessionID: sessionID)
+            self.sink = sink; self.microphone = microphone
+            do {
+                try checkStartCancellation()
+                try await microphone.start()
+                try checkStartCancellation()
+                if let failure = failureForSession(sessionID) { throw AppError.message(failure.message) }
+            } catch {
+                await microphone.stop(); await sink.cancel()
+                self.microphone = nil; self.sink = nil
+                bindSession(nil)
+                throw error
             }
             return
         }
@@ -162,7 +175,9 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         configuration.queueDepth = 3
         configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         configuration.capturesAudio = systemAudio
-        configuration.captureMicrophone = true
+        // Microphone has its own capture session, so a route change cannot
+        // restart or invalidate the selected screen and system-audio stream.
+        configuration.captureMicrophone = false
         configuration.excludesCurrentProcessAudio = true
         configuration.sampleRate = 48000; configuration.channelCount = 2
         let sink: CaptureSink
@@ -177,17 +192,10 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         }
         let sessionID = url.deletingLastPathComponent().lastPathComponent
         let reportFailure = failed
-        // Bind errors to this capture, even if an old writer reports after the next start.
-        sink.failed = { [weak self] message in
-            let failure = RecordingFailure(sessionID: sessionID, message: message)
-            self?.rememberFailure(failure)
-            reportFailure?(failure)
-        }
-        sink.levels = { [weak self] microphone, system in self?.levels?(microphone, system) }
+        bindSink(sink, sessionID: sessionID)
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
         do {
             if systemAudio { try stream.addStreamOutput(sink, type: .audio, sampleHandlerQueue: sink.queue) }
-            try stream.addStreamOutput(sink, type: .microphone, sampleHandlerQueue: sink.queue)
             try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: sink.queue)
             self.sink = sink; self.stream = stream
             bindFailure(stream: stream, sessionID: sessionID)
@@ -204,12 +212,18 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
             try checkStartCancellation()
             try await stream.startCapture()
             try checkStartCancellation()
+            let microphone = makeMicrophone(sink: sink, sessionID: sessionID)
+            self.microphone = microphone
+            try await microphone.start()
+            try checkStartCancellation()
             if let failure = failureDuringStart(stream) {
                 if failure.userInitiated { throw CancellationError() }
                 throw AppError.message(failure.message)
             }
         } catch {
             bindFailure(stream: nil, sessionID: nil)
+            bindSession(nil)
+            await microphone?.stop(); microphone = nil
             try? await stream.stopCapture()
             self.stream = nil; self.sink = nil
             await sink.cancel()
@@ -223,31 +237,28 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
     }
 
     func cancelPendingStart() async {
-        markStartCancelled()
+        guard markStartCancelled() else { return }
         await contentPicker?.cancelPendingSelection()
+        await microphone?.stop()
     }
 
-    private func markStartCancelled() {
+    private func markStartCancelled() -> Bool {
         startLock.lock()
         let pending = starting ? permissionRequest : nil
         if starting { startCancelled = true }
         startLock.unlock()
         pending?.cancel()
+        return pending != nil
     }
 
     func stop() async throws {
-        // AVAudioRecorder sends its completion delegate for an ordinary Stop
-        // too. Clear this session before stopping so only unexpected exits fail.
-        bindMicrophoneFailure(nil, sessionID: nil)
-        meterTask?.cancel(); meterTask = nil
-        microphone?.stop(); microphone = nil
-        guard let stream else {
-            await contentPicker?.cancelPendingSelection()
-            return
-        }
+        bindSession(nil)
         bindFailure(stream: nil, sessionID: nil)
+        await microphone?.stop(); microphone = nil
         var captureError: Error?
-        do { try await stream.stopCapture() } catch { captureError = error }
+        if let stream {
+            do { try await stream.stopCapture() } catch { captureError = error }
+        } else { await contentPicker?.cancelPendingSelection() }
         self.stream = nil
         let picker = contentPicker
         contentPicker = nil
@@ -260,7 +271,7 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
 
     private func reserveStart() throws -> RecordingPermissionRequest {
         startLock.lock(); defer { startLock.unlock() }
-        guard !starting, stream == nil, microphone == nil else {
+        guard !starting, stream == nil, microphone == nil, sink == nil else {
             throw AppError.message(L("Запись уже идёт. Сначала остановите её."))
         }
         starting = true
@@ -290,7 +301,7 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
 
     private func rememberFailure(_ failure: RecordingFailure) {
         failureLock.lock(); defer { failureLock.unlock() }
-        guard streamFailure?.sessionID == failure.sessionID || microphoneFailure?.sessionID == failure.sessionID else { return }
+        guard recordingSessionID == failure.sessionID else { return }
         startupFailure = failure
     }
 
@@ -309,50 +320,34 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         failed?(failure)
     }
 
-    private func bindMicrophoneFailure(_ recorder: AnyObject?, sessionID: String?) {
+    private func bindSession(_ sessionID: String?) {
         failureLock.lock(); defer { failureLock.unlock() }
-        microphoneFailure = recorder.flatMap { value in sessionID.map { (ObjectIdentifier(value), $0) } }
-        microphoneFailureReported = false
-        startupFailure = nil
+        recordingSessionID = sessionID; startupFailure = nil
     }
 
-    private func failureDuringMicrophoneStart(_ recorder: AnyObject) -> RecordingFailure? {
+    private func failureForSession(_ sessionID: String) -> RecordingFailure? {
         failureLock.lock(); defer { failureLock.unlock() }
-        return microphoneFailure?.recorder == ObjectIdentifier(recorder) ? startupFailure : nil
+        return recordingSessionID == sessionID ? startupFailure : nil
     }
 
-    private func reportMicrophoneFailure(_ recorder: AnyObject, error: Error?) {
-        failureLock.lock()
-        guard let identity = microphoneFailure, identity.recorder == ObjectIdentifier(recorder), !microphoneFailureReported else {
-            failureLock.unlock()
-            return
+    private func bindSink(_ sink: CaptureSink, sessionID: String) {
+        bindSession(sessionID)
+        let reportFailure = failed
+        sink.failed = { [weak self] message in
+            let failure = RecordingFailure(sessionID: sessionID, message: message)
+            self?.rememberFailure(failure); reportFailure?(failure)
         }
-        microphoneFailureReported = true
-        let failure = RecordingFailure(sessionID: identity.sessionID,
-            message: error?.localizedDescription ?? L("Запись с микрофона неожиданно завершилась. Проверьте микрофон и свободное место на диске."))
-        startupFailure = failure
-        failureLock.unlock()
-        failed?(failure)
+        sink.levels = { [weak self] microphone, system in self?.levels?(microphone, system) }
     }
 
-    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
-        reportMicrophoneFailure(recorder, error: error)
+    private func makeMicrophone(sink: CaptureSink, sessionID: String) -> MicrophoneCapture {
+        let update = microphoneStatus
+        return MicrophoneCapture(deliveryQueue: sink.queue,
+            deliver: { [weak sink] sample in sink?.consume(sample, type: .microphone) },
+            silence: { [weak sink] time in sink?.advanceMicrophone(to: time) },
+            status: { state in update?(RecordingMicrophoneUpdate(sessionID: sessionID, state: state)) })
     }
 
-    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-        reportMicrophoneFailure(recorder, error: nil)
-    }
-
-    #if DEBUG
-    /// Feed the exact identity/error path without creating an AVAudioRecorder,
-    /// asking for access, or opening an input device.
-    func bindSyntheticMicrophoneForChecks(_ recorder: AnyObject, sessionID: String) {
-        bindMicrophoneFailure(recorder, sessionID: sessionID)
-    }
-    func reportSyntheticMicrophoneFailureForChecks(_ recorder: AnyObject, error: Error? = nil) {
-        reportMicrophoneFailure(recorder, error: error)
-    }
-    #endif
 }
 
 final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
@@ -371,6 +366,12 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
     // Keep an owned copy so the static tail and H.264 encoder cannot exhaust
     // ScreenCaptureKit's small pool and freeze video while audio continues.
     private let videoFrameCopier = CaptureVideoFrameCopier()
+    private let microphoneNormalizer = CaptureAudioNormalizer()
+    private let systemNormalizer = CaptureAudioNormalizer()
+    private var microphonePending: [CaptureAudioPacket] = []
+    private var systemPending: [CaptureAudioPacket] = []
+    private var audioFinished = false
+    private var finishingError: Error?
     private var latestVideoFrame: CMSampleBuffer?
     private var pendingVideoFrame = false
     private var lastWrittenVideoTime = CMTime.invalid
@@ -382,7 +383,8 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
 
     init(url: URL, systemAudio: Bool = true, videoSize: RecordingVideoDimensions? = nil,
          videoQuality: RecordingVideoQuality = .compact, audioQuality: RecordingAudioQuality = .standard) throws {
-        writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        let audioOnly = url.pathExtension.lowercased() == "m4a"
+        writer = try AVAssetWriter(outputURL: url, fileType: audioOnly ? .m4a : .mov)
         nativeVideo = videoSize != nil && videoQuality == .native
         frameDuration = CMTime(value: 1, timescale: Int32(videoQuality.frameRate))
         let settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -413,12 +415,78 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
             writer.add(input); video = input
         } else { video = nil }
         // Fragmented QuickTime preserves completed fragments after an abnormal termination.
-        writer.movieFragmentInterval = CMTime(seconds: 10, preferredTimescale: 600)
+        if !audioOnly { writer.movieFragmentInterval = CMTime(seconds: 10, preferredTimescale: 600) }
         super.init()
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        consume(buffer, type: type)
+        consumeIncoming(buffer, type: type, clock: stream.synchronizationClock)
+    }
+
+    /// SCK also sends control events with no media samples or usable clock.
+    /// Classify those before applying the strict media-buffer clock conversion.
+    func consumeIncoming(_ buffer: CMSampleBuffer, type: SCStreamOutputType, clock: CMClock?) {
+        guard !ending, buffer.isValid else { return }
+        if type == .screen {
+            guard video != nil,
+                  let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
+                  let raw = attachments.first?[.status] as? Int,
+                  let status = SCFrameStatus(rawValue: raw) else { return }
+            switch status {
+            case .idle:
+                consumeIdle(buffer, clock: clock)
+                return
+            case .blank, .suspended:
+                // Even without a timestamp, discard the last visible surface:
+                // it must not become a tail through protected/suspended capture.
+                latestVideoFrame = nil; pendingVideoFrame = false
+                return
+            case .started, .stopped:
+                return
+            case .complete:
+                guard CMSampleBufferGetImageBuffer(buffer) != nil else { return }
+            @unknown default:
+                return
+            }
+        } else if type == .audio {
+            guard system != nil else { return }
+        } else if type != .microphone { return }
+        guard CMSampleBufferGetNumSamples(buffer) > 0, CMSampleBufferDataIsReady(buffer) else { return }
+        guard let clock else {
+            report(AppError.message(L("Не удалось синхронизировать звук и видео. Исходная запись сохранена."))); return
+        }
+        do { consume(try CaptureSampleClock.hostTimed(buffer, clock: clock), type: type) }
+        catch { report(error) }
+    }
+
+    /// Idle has no new image to copy. Its timestamp can still extend the last
+    /// owned static frame and drain encoder pressure, even in a zero-sample event.
+    func consumeIdle(_ buffer: CMSampleBuffer, clock: CMClock?) {
+        guard !ending, video != nil else { return }
+        let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
+        if let clock, pts.isValid, pts.isNumeric {
+            let host = CMClockGetHostTimeClock()
+            let time = CMSyncConvertTime(pts, from: clock, to: host)
+            if time.isValid, time.isNumeric {
+                let duration = CMSampleBufferGetDuration(buffer)
+                let end = duration.isValid && duration.isNumeric && duration > .zero
+                    ? CMSyncConvertTime(pts + duration, from: clock, to: host) : time + frameDuration
+                if end.isValid, end.isNumeric, !captureEndTime.isValid || end > captureEndTime { captureEndTime = end }
+            }
+        }
+        if started { do { try flushAudioFrames() } catch { report(error) } }
+        flushVideoFrame()
+    }
+
+    /// Advances a missing microphone in the same host-clock timeline. Long
+    /// absences are written incrementally instead of accumulating PCM in RAM.
+    func advanceMicrophone(to time: CMTime) {
+        guard !ending, started, time.isValid, time.isNumeric else { return }
+        do {
+            microphonePending += try microphoneNormalizer.fillSilence(until: time)
+            try flushAudioFrames()
+            if !captureEndTime.isValid || time > captureEndTime { captureEndTime = time }
+        } catch { report(error) }
     }
 
     /// Runs on `queue`; diagnostics feed generated buffers through the same path.
@@ -446,6 +514,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                 } catch { report(error); return }
             case .idle:
                 observeEnd(buffer, videoFrame: true)
+                if started { do { try flushAudioFrames() } catch { report(error) } }
                 flushVideoFrame()
                 return
             case .blank, .suspended:
@@ -464,7 +533,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
         } else if type == .audio { input = system }
         else if type == .microphone { input = microphone }
         else { return }
-        guard let input, CMSampleBufferDataIsReady(buffer) else { return }
+        guard input != nil, CMSampleBufferDataIsReady(buffer) else { return }
         let now = CMSampleBufferGetPresentationTimeStamp(buffer)
         guard now.isValid, now.isNumeric else { return }
         observeEnd(buffer, videoFrame: type == .screen)
@@ -481,12 +550,45 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
             started = true
         }
         guard writer.status == .writing else { report(); return }
+        do { try flushAudioFrames() } catch { report(error); return }
         if type == .screen { flushVideoFrame() }
         else {
-            if input.isReadyForMoreMediaData, !input.append(buffer) { report() }
+            do {
+                let normalizer = type == .audio ? systemNormalizer : microphoneNormalizer
+                let samples = try normalizer.normalize(buffer)
+                if type == .audio { systemPending += samples }
+                else { microphonePending += samples }
+                try flushAudioFrames()
+            } catch { report(error); return }
             // Retry a back-pressured first/last screen frame even while the
             // display is static and only audio callbacks continue to arrive.
             flushVideoFrame()
+        }
+    }
+
+    private func flushAudioFrames() throws {
+        if let system { try flushAudioFrames(&systemPending, to: system) }
+        try flushAudioFrames(&microphonePending, to: microphone)
+    }
+
+    private func flushAudioFrames(_ pending: inout [CaptureAudioPacket], to input: AVAssetWriterInput) throws {
+        while !pending.isEmpty, input.isReadyForMoreMediaData {
+            switch pending[0] {
+            case let .sample(sample):
+                guard input.append(sample) else { throw writingError }
+                pending.removeFirst()
+            case let .silence(start, frames):
+                let count = min(frames, 4096)
+                let sample = try CaptureAudioNormalizer.silence(at: start, frames: Int(count))
+                guard input.append(sample) else { throw writingError }
+                if count == frames { pending.removeFirst() }
+                else { pending[0] = .silence(start: start + CMTime(value: count, timescale: 48000), frames: frames - count) }
+            }
+        }
+        // At most two seconds of pending PCM per track. Report sustained
+        // encoder pressure instead of silently discarding audio samples.
+        guard pending.count <= 512, pending.reduce(0, { $0 + $1.bufferedFrames }) <= 96_000 else {
+            throw AppError.message(L("Кодировщик не успевает сохранять звук. Исходная запись сохранена."))
         }
     }
 
@@ -546,6 +648,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                 self.ending = true
                 self.writer.cancelWriting()
                 self.latestVideoFrame = nil
+                self.microphonePending.removeAll(); self.systemPending.removeAll()
                 continuation.resume()
             }
         }
@@ -565,6 +668,17 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
             continuation.resume(throwing: writingError)
             return
         }
+        if !audioFinished {
+            audioFinished = true
+            do { systemPending += try systemNormalizer.finish() }
+            catch { finishingError = finishingError ?? error }
+            do { microphonePending += try microphoneNormalizer.finish() }
+            catch { finishingError = finishingError ?? error }
+        }
+        if started {
+            do { try flushAudioFrames() }
+            catch { finishingError = finishingError ?? error }
+        }
         guard started else {
             writer.cancelWriting()
             continuation.resume(throwing: AppError.message(L("В записи нет звука. Проверьте микрофон и звук звонка.")))
@@ -575,7 +689,15 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
             continuation.resume(throwing: writingError)
             return
         }
-        var finishingError: Error?
+        if !systemPending.isEmpty || !microphonePending.isEmpty {
+            if DispatchTime.now() < deadline {
+                queue.asyncAfter(deadline: .now() + .milliseconds(10)) {
+                    self.finish(continuation, deadline: deadline)
+                }
+                return
+            }
+            finishingError = AppError.message(L("Не удалось сохранить весь звук. Исходная запись сохранена."))
+        }
         let tailTime = captureEndTime - frameDuration
         if let video, let frame = latestVideoFrame,
            captureEndTime.isValid,

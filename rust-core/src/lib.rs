@@ -20,6 +20,7 @@ pub mod knowledge;
 pub mod worker;
 pub mod jobs;
 pub mod corrections;
+pub mod source_snapshot;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -62,6 +63,7 @@ pub fn request(value: &Value) -> Result<Value> {
         "card-trash-list" | "card-restore" | "card-trash-purge" | "cards-batch-apply" | "cards-batch-undo" | "cards-batch-recover" | "cards-import" | "cards-import-preview" | "cards-library" | "card-save" | "card-delete" | "card-suspend" | "cards-review" | "cards-review-preview" | "cards-review-undo" => cards::dispatch(&root,value),
         command if command.starts_with("job-") => jobs::dispatch(&root, value),
         "meeting-content-snapshot" | "transcript-segment-save" | "summary-item-save" => corrections::dispatch(&root, value),
+        "source-snapshot" => source_snapshot::snapshot(&root, value),
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),
         "knowledge-search" => knowledge::lookup(&root, value),
         "knowledge-validate-source" => knowledge::validate_source(&root, value),
