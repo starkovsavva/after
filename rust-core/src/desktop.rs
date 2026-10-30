@@ -193,10 +193,12 @@ fn meeting_dto(root: &Path, meta: &Value, workspace: &notes::NotesWorkspace) -> 
     let id = meta["id"].as_str().ok_or_else(BridgeError::library)?;
     let directory = domain(storage::meeting_directory(root, id))?;
     let media_kind = crate::desktop_media::kind(root, id);
+    let duration = meta["duration"].as_f64().filter(|duration| *duration > 0.0)
+        .or_else(|| crate::desktop_import::existing_wav_duration(root, id, meta));
     Ok(
         json!({"id":id,"title":meta["title"],"startedAt":meta["createdAt"],
         "hasMedia":media_kind.is_some(),"mediaKind":media_kind,
-        "durationSeconds":meta["duration"],"folderId":folders::folder_id_for_meeting(workspace,id),
+        "durationSeconds":duration,"folderId":folders::folder_id_for_meeting(workspace,id),
         "hasTranscript":ordinary_content(&directory.join("transcript.json")),
         "hasSummary":ordinary_content(&directory.join("summary.json"))}),
     )
@@ -245,7 +247,7 @@ fn import_meeting(root: &Path, args: ImportArguments) -> Result<Value> {
         code: "import_failed", message: "Could not import this file. The original was preserved. Check the format, available disk space and file access."
     })?;
     let media_kind = meta["id"].as_str().and_then(|id| crate::desktop_media::kind(root, id));
-    Ok(json!({"id":meta["id"],"title":meta["title"],"startedAt":meta["createdAt"],"durationSeconds":0,
+    Ok(json!({"id":meta["id"],"title":meta["title"],"startedAt":meta["createdAt"],"durationSeconds":meta["duration"].as_f64().filter(|duration| *duration > 0.0),
         "folderId":null,"hasTranscript":false,"hasSummary":false,"hasMedia":media_kind.is_some(),"mediaKind":media_kind}))
 }
 fn meeting(root: &Path, args: MeetingArguments) -> Result<Value> {

@@ -30,6 +30,7 @@ test('dates support canonical epoch seconds and invalid input stays empty', () =
   assert.equal(formatDate('bad', 'ru'), '');
   assert.equal(formatDuration(961.9), '16:01');
   assert.equal(formatDuration(-10), '00:00');
+  assert.equal(formatDuration(null), '');
 });
 test('errors disclose neither raw engine messages nor filesystem paths', () => {
   const t = copy('en');
