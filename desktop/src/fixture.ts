@@ -1,7 +1,7 @@
 // Explicit development preview only. Production builds cannot select this transport.
-import type { Folder, LibraryAPI, MeetingDetail, Note, Workspace } from './types';
+import type { Folder, LibraryAPI, MeetingDetail, Note, RecordingStatus, Workspace } from './types';
 const storageKey = 'posle.demo.workspace.v1';
-const capabilities = { library: true, recording: false, calendar: false, assistant: false, cards: false, tasks: false };
+const capabilities = { library: true, import: true, recording: new URLSearchParams(location.search).get('recording') === '1', calendar: false, assistant: false, cards: false, tasks: false };
 const sample: Workspace = {
   folders: [{ id: 'work', name: 'Работа', revision: 1 }, { id: 'english', name: 'Английский', revision: 1 }],
   meetings: [
@@ -22,6 +22,8 @@ function initial(): Workspace {
   return structuredClone(sample);
 }
 let workspace = initial();
+const idleStatus = (): RecordingStatus => ({ sessionId: null, phase: 'idle', mode: null, elapsedMs: 0, warning: null });
+function fixtureRecording(): RecordingStatus { try { return JSON.parse(sessionStorage.getItem('posle.demo.recording') || 'null') || idleStatus(); } catch { return idleStatus(); } }
 function persist() { try { localStorage.setItem(storageKey, JSON.stringify(workspace)); } catch { /* No real data is stored in preview. */ } }
 function clone<T>(value: T): T { return structuredClone(value); }
 const delay = (ms = 80) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -39,6 +41,19 @@ const details: Record<string, Omit<MeetingDetail, 'meeting' | 'notes'>> = {
   ] },
 };
 export const fixtureAPI: LibraryAPI = {
+  async startRecording(mode) { await delay(); const status: RecordingStatus = { sessionId: crypto.randomUUID(), phase: 'recording', mode, elapsedMs: 0, warning: null }; sessionStorage.setItem('posle.demo.recording', JSON.stringify(status)); return status; },
+  async recordingStatus() { return fixtureRecording(); },
+  async stopRecording(title) { await delay(); if (!fixtureRecording().sessionId) throw { code: 'recording_error' }; sessionStorage.removeItem('posle.demo.recording'); const meeting = { id: crypto.randomUUID(), title, startedAt: Date.now() / 1000, durationSeconds: 1, folderId: null, hasTranscript: false, hasSummary: false }; workspace.meetings = [meeting, ...workspace.meetings]; persist(); return { meeting, interrupted: false }; },
+  async recoverableRecordings() { return []; },
+  async recoverRecording() { throw { code: 'unsupported_platform' }; },
+  async chooseAndImport() {
+    const scenario = new URLSearchParams(location.search).get('import');
+    await delay(scenario === 'slow' ? 500 : 80);
+    if (scenario === 'fail') throw { code: 'import_failed' };
+    if (scenario !== 'success' && scenario !== 'slow') return null;
+    const meeting = { id: crypto.randomUUID(), title: 'Imported fixture', startedAt: Date.now() / 1000, durationSeconds: 0, folderId: null, hasTranscript: false, hasSummary: false };
+    workspace.meetings = [meeting, ...workspace.meetings]; persist(); return clone(meeting);
+  },
   async getWorkspace() { await delay(); return clone(workspace); },
   async getMeeting(id) {
     await delay(id === 'sync' ? 250 : 60);

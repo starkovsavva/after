@@ -177,3 +177,12 @@ kbd { font-size: 11px; font-family: inherit; color: var(--muted); white-space: n
   .meeting-metadata { gap: 10px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+.recording-banner { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 24px; border-bottom: 1px solid var(--line); color: var(--ink); font-size: 13px; }
+.recording-banner strong { font-weight: 600; }
+.recovery-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.meeting-player { margin: 18px 0; }
+.meeting-player audio, .meeting-player video { display: block; width: min(100%, 680px); }
+.meeting-player video { max-height: 360px; background: #111; }
+.meeting-player p { color: var(--error); font-size: 13px; margin-top: 8px; }
+.feature-container { flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.feature-container .feature-view { height: 100%; }

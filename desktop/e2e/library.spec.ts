@@ -161,3 +161,46 @@ test('a failed native library load stays distinct from an empty library and can 
   await expect(page.getByRole('main').getByRole('button', {name:'New note',exact:true})).toBeVisible();
   await expect(page.getByRole('heading', {name:'Could not open the library.',exact:true})).toHaveCount(0);
 });
+
+test('import protects an active operation and opens the resulting meeting in all folders', async ({ page }) => {
+  await page.goto('/?demo=1&fixture=empty&import=slow');
+  await page.getByRole('button', { name: 'New folder', exact: true }).first().click();
+  await page.getByLabel('Folder name', { exact: true }).fill('Selected folder');
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+  await expect(page.getByLabel('Active folder')).toHaveValue(/.+/);
+  await page.getByRole('button', { name: 'Import recording', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Choose or import a recording…' })).toBeVisible();
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  })).toBe(true);
+  await expect(page.getByRole('main').getByRole('heading', { name: 'Imported fixture' })).toBeVisible();
+  await expect(page.getByLabel('Active folder')).toHaveValue('');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('cancelled import leaves the library unchanged and failed import reports recovery', async ({ page }) => {
+  await page.goto('/?demo=1&fixture=empty');
+  await page.getByRole('button', { name: 'Import recording', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Imported fixture/ })).toHaveCount(0);
+  await page.goto('/?demo=1&fixture=empty&import=fail');
+  await page.getByRole('button', { name: 'Import recording', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('The original was not changed');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('recording stays visible after interface reload and stops without discarding the library', async ({ page }) => {
+  await page.goto('/?demo=1&fixture=empty&recording=1');
+  await page.getByRole('button', { name: 'Record meeting', exact: true }).click();
+  await page.getByLabel('Meeting title').fill('Windows meeting');
+  await page.getByRole('button', { name: 'Start recording', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Stop and save/ })).toBeVisible();
+  expect(await page.evaluate(() => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; })).toBe(true);
+  await page.reload();
+  await expect(page.getByRole('button', { name: /Stop and save/ })).toBeVisible();
+  await page.getByRole('button', { name: /Stop and save/ }).click();
+  await expect(page.getByText('Recording saved.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Windows meeting/ })).toBeVisible();
+});

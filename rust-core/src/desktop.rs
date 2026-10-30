@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::{Component, Path};
 use uuid::Uuid;
+mod features;
 
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -53,6 +54,11 @@ fn domain<T>(value: anyhow::Result<T>) -> Result<T> {
         if message.contains("Заметка уже изменена")
             || message.contains("Папка уже изменилась")
             || message.contains("Состояние Корзины изменилось")
+            || message.contains("Задача или её контекст изменились")
+            || message.contains("Карточка изменилась")
+            || message.contains("Карточка уже изменена")
+            || message.contains("История повторений изменилась")
+            || message.contains("Повторение уже изменено")
         {
             BridgeError::conflict()
         } else if message.contains("Папка с таким названием уже есть") {
@@ -105,6 +111,12 @@ fn empty_object() -> Value {
 struct WorkspaceArguments {
     folder_id: Option<String>,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MediaArguments { meeting_id: String, offset: u64, length: u32 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ImportArguments { source_path: String, #[serde(default)] focus: String, title: Option<String> }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MeetingArguments {
@@ -180,8 +192,10 @@ fn ordinary_content(path: &Path) -> bool {
 fn meeting_dto(root: &Path, meta: &Value, workspace: &notes::NotesWorkspace) -> Result<Value> {
     let id = meta["id"].as_str().ok_or_else(BridgeError::library)?;
     let directory = domain(storage::meeting_directory(root, id))?;
+    let media_kind = crate::desktop_media::kind(root, id);
     Ok(
         json!({"id":id,"title":meta["title"],"startedAt":meta["createdAt"],
+        "hasMedia":media_kind.is_some(),"mediaKind":media_kind,
         "durationSeconds":meta["duration"],"folderId":folders::folder_id_for_meeting(workspace,id),
         "hasTranscript":ordinary_content(&directory.join("transcript.json")),
         "hasSummary":ordinary_content(&directory.join("summary.json"))}),
@@ -220,6 +234,19 @@ fn snapshot(root: &Path, args: WorkspaceArguments) -> Result<Value> {
         "capabilities":{"library":true,"recording":false,"calendar":false,"assistant":false,"cards":false,"tasks":false},
         "platform":crate::desktop_platform::manifest(),"truncated":false}),
     )
+}
+fn import_meeting(root: &Path, args: ImportArguments) -> Result<Value> {
+    bounded(&args.source_path, 32760)?;
+    bounded(&args.focus, 4096)?;
+    if let Some(title) = &args.title { bounded(title, 2000)?; }
+    let source = Path::new(&args.source_path);
+    if !source.is_absolute() { return Err(BridgeError::invalid()); }
+    let meta = crate::desktop_import::import(root, source, &args.focus, args.title.as_deref()).map_err(|_| BridgeError {
+        code: "import_failed", message: "Could not import this file. The original was preserved. Check the format, available disk space and file access."
+    })?;
+    let media_kind = meta["id"].as_str().and_then(|id| crate::desktop_media::kind(root, id));
+    Ok(json!({"id":meta["id"],"title":meta["title"],"startedAt":meta["createdAt"],"durationSeconds":0,
+        "folderId":null,"hasTranscript":false,"hasSummary":false,"hasMedia":media_kind.is_some(),"mediaKind":media_kind}))
 }
 fn meeting(root: &Path, args: MeetingArguments) -> Result<Value> {
     identifier(&args.meeting_id)?;
@@ -398,6 +425,13 @@ fn dispatch(root: &Path, request: Value) -> Result<Value> {
     let _root_guard=crate::platform_fs::private_directory(root)
         .and_then(|_|crate::platform_fs::pin_directory(root)).map_err(|_|BridgeError::library())?;
     match request.command.as_str() {
+        "import_meeting" => import_meeting(root, parse(request.arguments)?),
+        "read_media_chunk" => {
+            let args: MediaArguments = parse(request.arguments)?;
+            identifier(&args.meeting_id)?;
+            if args.length == 0 || args.length > crate::desktop_media::MAX_CHUNK || args.offset > 9_007_199_254_740_991 { return Err(BridgeError::invalid()); }
+            domain(crate::desktop_media::read(root, &args.meeting_id, args.offset, args.length))
+        },
         "get_workspace" => snapshot(root, parse(request.arguments)?),
         "get_meeting" => meeting(root, parse(request.arguments)?),
         "save_folder" => save_folder(
@@ -409,6 +443,10 @@ fn dispatch(root: &Path, request: Value) -> Result<Value> {
             parse::<SaveArguments<NoteInput>>(request.arguments)?.input,
         ),
         "search_library" => search(root, parse(request.arguments)?),
+        "list_tasks" | "get_task" | "create_task" | "update_task"
+        | "list_cards" | "save_card" | "delete_card" | "suspend_card"
+        | "preview_card_review" | "review_card" | "undo_card_review" =>
+            features::dispatch(root, &request.command, request.arguments),
         _ => Err(BridgeError {
             code: "unsupported_command",
             message: "This desktop command is not supported.",

@@ -34,6 +34,13 @@ fn main() {
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "get_workspace",
             "get_meeting",
+            "choose_and_import",
+            "start_recording",
+            "recording_status",
+            "stop_recording",
+            "recoverable_recordings",
+            "recover_recording",
+            "feature_operation",
             "save_note",
             "save_folder",
             "search_library",

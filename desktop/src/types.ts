@@ -19,7 +19,12 @@ export interface Meeting {
   folderId?: string | null;
   hasTranscript?: boolean;
   hasSummary?: boolean;
+  hasMedia?: boolean;
+  mediaKind?: 'audio' | 'video' | null;
 }
+export interface RecordingStatus { sessionId: string | null; phase: string; mode: string | null; elapsedMs: number; warning: string | null }
+export interface RecoverableRecording { sessionId: string; bytes: number }
+export interface SavedRecording { meeting: Meeting; interrupted: boolean }
 export interface Note {
   id: string;
   title: string;
@@ -31,6 +36,7 @@ export interface Note {
 }
 export interface Capabilities {
   library: boolean;
+  import: boolean;
   recording: boolean;
   calendar: boolean;
   assistant: boolean;
@@ -90,6 +96,12 @@ export interface BridgeError {
 export interface LibraryAPI {
   getWorkspace(): Promise<Workspace>;
   getMeeting(meetingId: string): Promise<MeetingDetail>;
+  chooseAndImport(): Promise<Meeting | null>;
+  startRecording(mode: 'microphone' | 'microphone_and_system'): Promise<RecordingStatus>;
+  recordingStatus(): Promise<RecordingStatus>;
+  stopRecording(title: string): Promise<SavedRecording>;
+  recoverableRecordings(): Promise<RecoverableRecording[]>;
+  recoverRecording(sessionId: string): Promise<SavedRecording>;
   saveNote(input: NoteInput): Promise<Note>;
   saveFolder(input: FolderInput): Promise<Folder>;
   searchLibrary(query: string, folderId?: string): Promise<SearchResponse>;
