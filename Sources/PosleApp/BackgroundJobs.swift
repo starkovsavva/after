@@ -495,7 +495,7 @@ private final class BackgroundJobSleepLease {
     func update(_ active: Bool) {
         if active, assertion == 0 {
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
-                IOPMAssertionLevel(kIOPMAssertionLevelOn), L("После обрабатывает фоновые задачи") as CFString, &assertion)
+                IOPMAssertionLevel(kIOPMAssertionLevelOn), L("After обрабатывает фоновые задачи") as CFString, &assertion)
         } else if !active, assertion != 0 {
             IOPMAssertionRelease(assertion); assertion = 0
         }

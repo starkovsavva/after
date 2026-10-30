@@ -117,7 +117,7 @@ struct CloudSettingsView: View {
                         Text("JSON Schema").tag("schema")
                         Text("JSON").tag("json")
                         Text(L("JSON по инструкции")).tag("prompt")
-                    }.help(L("JSON Schema проверяет структуру у провайдера. Два других режима нужны для моделей без этой возможности; «После» продолжает проверять поля и ссылки на источники."))
+                    }.help(L("JSON Schema проверяет структуру у провайдера. Два других режима нужны для моделей без этой возможности; «After» продолжает проверять поля и ссылки на источники."))
                     if store.settings.cloudOutput != "schema" {
                         Text(L("Модель должна соблюдать структуру JSON. Неподходящий ответ не заменит ваши данные."))
                             .font(AppTypography.caption).foregroundStyle(.secondary)

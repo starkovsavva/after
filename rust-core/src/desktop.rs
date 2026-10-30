@@ -394,6 +394,9 @@ fn dispatch(root: &Path, request: Value) -> Result<Value> {
         return Err(BridgeError::invalid());
     }
     let request: Request = parse(request)?;
+    #[cfg(windows)]
+    let _root_guard=crate::platform_fs::private_directory(root)
+        .and_then(|_|crate::platform_fs::pin_directory(root)).map_err(|_|BridgeError::library())?;
     match request.command.as_str() {
         "get_workspace" => snapshot(root, parse(request.arguments)?),
         "get_meeting" => meeting(root, parse(request.arguments)?),

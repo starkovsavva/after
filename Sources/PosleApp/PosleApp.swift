@@ -9,7 +9,7 @@ struct PosleApp: App {
     @ObservedObject private var localization = UILocalization.shared
 
     var body: some Scene {
-        WindowGroup(L("После")) {
+        WindowGroup(L("After")) {
             MainView().environmentObject(store)
                 .environment(\.locale, localization.locale)
                 .frame(minWidth: 1040, minHeight: 700)
@@ -25,8 +25,8 @@ struct PosleApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button(LF("О программе {0}", arguments: [L("После")])) {
-                    NSApp.orderFrontStandardAboutPanel(options: [.applicationName: L("После"), .applicationVersion: AppVersion.current ?? ""])
+                Button(LF("О программе {0}", arguments: [L("After")])) {
+                    NSApp.orderFrontStandardAboutPanel(options: [.applicationName: L("After"), .applicationVersion: AppVersion.current ?? ""])
                 }
             }
             CommandGroup(after: .appInfo) {
@@ -65,8 +65,10 @@ struct PosleApp: App {
                 Button(L("Заметки встречи")) { store.librarySection = "meetings"; store.tab = "notes" }.keyboardShortcut("4")
             }
             CommandGroup(replacing: .help) {
-                Button(L("Начало работы с После")) { GuidanceController.shared.presentGettingStarted() }
+                Button(L("Начало работы с After")) { GuidanceController.shared.presentGettingStarted() }
                 Button(L("Что нового")) { GuidanceController.shared.presentWhatsNew() }
+                Button(L("Поддержать After…")) { store.openSupport() }
+                    .disabled(store.showingSettings || store.showingRecord || store.showingSearch || store.showingCaptureDrafts)
                 Divider()
                 Button {
                     let settings = store.librarySection == "meetings" ? store.effectiveSettings(for: store.selection, folderID: store.folderSelection) : store.activeSettings
@@ -107,6 +109,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         #if DEBUG
+        let diagnosticArguments = ProcessInfo.processInfo.arguments
+        if diagnosticArguments.contains("--preview"), diagnosticArguments.contains("--native-light-appearance"),
+           diagnosticArguments.contains(where: { $0.hasPrefix("--check-") }) {
+            NSApp.appearance = NSAppearance(named: .aqua)
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-localization") {
             Task { @MainActor in
                 do { try await LocalizationNativeChecks.run(); NSApp.terminate(nil) }
@@ -181,6 +188,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task {
                 do { try await QueueNativeChecks.run(); NSApp.terminate(nil) }
                 catch { fputs("Queue check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-release-notes") {
+            Task {
+                do {
+                    guard let path = ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] else { throw AppError.message("Disposable release notes root required") }
+                    try await ReleaseNotesUINativeChecks.run(root: URL(fileURLWithPath: path))
+                    NSApp.terminate(nil)
+                } catch { fputs("Release notes UI check failed: \(error)\n", stderr); exit(1) }
             }
             return
         }
@@ -297,6 +314,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-source-popover") {
+            Task {
+                do {
+                    guard let path = ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] else { throw AppError.message("Disposable source popover root required") }
+                    try await SourcePopoverNativeChecks.run(root: URL(fileURLWithPath: path))
+                    try await ClaimSourcesNativeChecks.run(root: URL(fileURLWithPath: path))
+                    NSApp.terminate(nil)
+                } catch { fputs("Source popover check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-calendar-workspace") {
             Task {
                 do { try await CalendarWorkspaceNativeChecks.run(); NSApp.terminate(nil) }
@@ -398,7 +426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let content: AnyView
             switch screen {
             case "getting-started", "whats-new":
-                let guide = GuidanceController.shared
+                let guide = GuidanceController(version: AppVersion.current ?? ReleaseNotesCatalog.latestVersion)
                 guide.configure(root: previewStore.root, preview: true)
                 if screen == "getting-started" { guide.presentGettingStarted() } else { guide.presentWhatsNew() }
                 content = AnyView(GuidanceSheet(controller: guide))
@@ -406,6 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 content = AnyView(TranscriptSegmentEditor(meetingID: previewStore.selection ?? "", segmentID: previewStore.transcript?.segments.first?.id ?? 0).environmentObject(previewStore))
             case "insight-editor":
                 content = AnyView(SummaryInsightEditor(meetingID: previewStore.selection ?? "", itemIndex: 0).environmentObject(previewStore))
+            case "support": content = AnyView(SupportSheet(close: {}, feedback: {}))
             case "settings": content = AnyView(SettingsView(section: option("--settings-section") ?? "general").environmentObject(previewStore))
             case "tracker-sync": content = AnyView(SettingsView(section: "integrations").environmentObject(previewStore))
             case "note-editor":
@@ -435,8 +464,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let provider = option("--cloud-provider") { previewStore.settings.mode = "cloud"; previewStore.settings.switchCloudProvider(provider) }
             if let speechMode = option("--speech-mode") { previewStore.settings.speechMode = speechMode }
             let dark = option("--appearance") == "dark"
-            let defaultWidth: Double = screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : ["search", "search-semantic"].contains(screen) ? 760 : ["settings", "tracker-sync"].contains(screen) ? 900 : ["getting-started", "whats-new", "transcript-editor", "insight-editor"].contains(screen) ? 620 : screen == "record" ? 560 : screen == "speakers" ? 560 : screen.hasPrefix("sources") ? 470 : 1260
-            let defaultHeight: Double = screen == "note-editor" ? 650 : screen == "quick-note" ? 280 : ["search", "search-semantic"].contains(screen) ? 650 : ["settings", "tracker-sync"].contains(screen) ? 760 : ["getting-started", "whats-new", "transcript-editor", "insight-editor"].contains(screen) ? 480 : screen == "record" ? 660 : screen == "speakers" ? 430 : screen.hasPrefix("sources") ? 460 : 820
+            let defaultWidth: Double = screen == "whats-new" ? 940 : screen == "support" ? 720 : screen == "note-editor" ? 700 : screen == "quick-note" ? 490 : ["search", "search-semantic"].contains(screen) ? 760 : ["settings", "tracker-sync"].contains(screen) ? 900 : ["getting-started", "whats-new", "transcript-editor", "insight-editor"].contains(screen) ? 620 : screen == "record" ? 560 : screen == "speakers" ? 560 : screen.hasPrefix("sources") ? 470 : 1260
+            let defaultHeight: Double = screen == "whats-new" ? 680 : screen == "support" ? 400 : screen == "note-editor" ? 650 : screen == "quick-note" ? 280 : ["search", "search-semantic"].contains(screen) ? 650 : ["settings", "tracker-sync"].contains(screen) ? 760 : ["getting-started", "whats-new", "transcript-editor", "insight-editor"].contains(screen) ? 480 : screen == "record" ? 660 : screen == "speakers" ? 430 : screen.hasPrefix("sources") ? 460 : 820
             let width = option("--width").flatMap(Double.init) ?? defaultWidth
             let height = option("--height").flatMap(Double.init) ?? defaultHeight
             let view = NSHostingView(rootView: content

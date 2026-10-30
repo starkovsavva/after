@@ -11,13 +11,13 @@ enum ChatGPTCallbackPage {
     }
 
     static func body(received: Bool) -> Data {
-        let title = received ? L("Возвращаемся в «После»") : L("Вернитесь в «После»")
+        let title = received ? L("Возвращаемся в «After»") : L("Вернитесь в «After»")
         let message = received
             ? L("Результат входа появится в приложении.")
             : L("Не удалось продолжить вход. Начните подключение заново в приложении.")
         let guidance = received
-            ? L("Если окно не появилось, откройте «После» из Dock.")
-            : L("Откройте «После» из Dock, чтобы попробовать ещё раз.")
+            ? L("Если окно не появилось, откройте «After» из Dock.")
+            : L("Откройте «After» из Dock, чтобы попробовать ещё раз.")
         let favicon = Data(logo.utf8).base64EncodedString()
         return Data("""
         <!doctype html>

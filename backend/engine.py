@@ -146,7 +146,7 @@ def resolve_asr(root: Path, allow_download: bool = False):
     progress(f"Загружаю {catalog['name']}…")
     directory = snapshot_download(catalog["repo"], revision=catalog["revision"], cache_dir=str(root / "cache/huggingface/hub"),
                                   allow_patterns=["*.json", "*.safetensors", "*.npz"])
-    selected = local_models.inspect_model(Path(directory), "После", "mlx")
+    selected = local_models.inspect_model(Path(directory), "After", "mlx")
     if not selected["compatible"]:
         raise RuntimeError("Не удалось подготовить модель: " + selected["reason"])
     return selected
@@ -184,7 +184,7 @@ def installed_local_runtime(directory: Path):
             return False
         expected = stat.S_ISDIR if directory else stat.S_ISREG
         if info.st_uid != os.getuid() or not expected(info.st_mode):
-            raise RuntimeError("Папка локального ИИ должна содержать только собственные файлы «После».")
+            raise RuntimeError("Папка локального ИИ должна содержать только собственные файлы «After».")
         return True
     for parent in (directory.parent, directory, directory / "bin"):
         if not owned(parent, directory=True):
@@ -196,7 +196,7 @@ def installed_local_runtime(directory: Path):
         original, branded = parent / "ollama", parent / "После ИИ"
         if original.is_symlink():
             if original.lstat().st_uid != os.getuid() or os.readlink(original) != branded.name:
-                raise RuntimeError("Локальный ИИ «После» не может использовать внешний исполняемый файл.")
+                raise RuntimeError("Локальный ИИ «After» не может использовать внешний исполняемый файл.")
             binary = branded
         elif original.exists():
             binary = original
@@ -262,6 +262,24 @@ def audio_wave(source: Path, target: Path, track: int = 0, sample_rate: int = 16
     ffmpeg("-copyts", "-start_at_zero", "-i", source, "-map", f"0:a:{track}", "-vn",
            "-af", "aresample=async=1:first_pts=0", *channel_options,
            "-ar", sample_rate, "-c:a", "pcm_s16le", target)
+
+
+def prepare_playback(source: Path, directory: Path):
+    # Listening/export audio must come from the original first track. The ASR
+    # WAV is intentionally 16 kHz mono and would discard stereo and detail.
+    with tempfile.TemporaryDirectory(prefix=".posle-playback-", dir=directory) as temporary:
+        output = Path(temporary) / "playback.mp3"
+        if source.suffix.lower() == ".mp3":
+            ffmpeg("-i", source, "-map", "0:a:0", "-vn", "-c:a", "copy", output)
+        else:
+            # Match ASR's container timeline, including audio that begins after
+            # the first video frame, without its sample-rate/channel reduction.
+            ffmpeg("-copyts", "-start_at_zero", "-i", source, "-map", "0:a:0", "-vn",
+                   "-af", "aresample=async=1:first_pts=0", "-c:a", "libmp3lame", "-b:a", "128k", output)
+        with output.open("rb") as stream:
+            os.fsync(stream.fileno())
+        with publication():
+            os.replace(output, directory / "playback.mp3")
 
 
 def finalize_recording(directory: Path):
@@ -824,10 +842,7 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
         except RuntimeError:
             multitrack = False
     if source.name != "recording.mp3":
-        if source.suffix.lower() == ".mp3":
-            ffmpeg("-i", source, "-vn", "-c:a", "copy", directory / "playback.mp3")
-        else:
-            ffmpeg("-i", wav, "-c:a", "libmp3lame", "-b:a", "128k", directory / "playback.mp3")
+        prepare_playback(source, directory)
     duration = 0.0
     for track in tracks:
         with wave.open(str(track)) as f:

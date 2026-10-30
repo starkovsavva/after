@@ -81,7 +81,7 @@ struct SettingsView: View {
                             }
                         }
                     }.scrollIndicators(.hidden)
-                    Text(AppVersion.current.map { LF("После {0}", arguments: [$0]) } ?? L("После"))
+                    Text(AppVersion.current.map { LF("After {0}", arguments: [$0]) } ?? L("After"))
                         .font(AppTypography.caption).foregroundStyle(.secondary).padding(10)
                 }.padding(12).frame(width: 215).background(Ink.soft)
                 Divider()
@@ -246,9 +246,9 @@ struct SettingsView: View {
             }.pickerStyle(.segmented).tint(Ink.actionFill)
             if store.settings.mode == "local" {
                 Picker(L("Источник"), selection: Binding(get: { store.settings.localProvider }, set: { store.changeLocalProvider($0) })) {
-                    Text(L("После")).tag("managed"); Text("Ollama").tag("ollama"); Text("LM Studio").tag("lmstudio")
+                    Text(L("After")).tag("managed"); Text("Ollama").tag("ollama"); Text("LM Studio").tag("lmstudio")
                 }.pickerStyle(.segmented).tint(Ink.actionFill)
-                    .help(L("После хранит свою модель отдельно. Ollama и LM Studio используют свои установленные модели."))
+                    .help(L("After хранит свою модель отдельно. Ollama и LM Studio используют свои установленные модели."))
                 if store.settings.localProvider == "managed" {
                     Picker(L("Модель"), selection: localModelPreset) {
                         Text(L("Qwen3.5 9B · качество · 6,6 ГБ")).tag("quality")

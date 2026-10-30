@@ -10,6 +10,7 @@ use sha2::{Digest,Sha256};
 use std::collections::HashSet;
 use std::fs::{self,DirBuilder,OpenOptions};
 use std::io::{Read,Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt,OpenOptionsExt};
 use std::path::Path;
 use uuid::Uuid;
@@ -180,7 +181,7 @@ fn read(path:&Path)->Result<String> {
     ensure!(path.is_absolute(),"Выберите файл карточек");
     let info=fs::symlink_metadata(path).context("Файл карточек не найден")?;
     ensure!(info.is_file()&&!info.file_type().is_symlink()&&info.len()<=MAX_FILE,"Выберите обычный UTF-8 CSV/TSV файл до 10 МБ");
-    let mut bytes=Vec::new(); let mut file=OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    let mut bytes=Vec::new(); let mut file=crate::platform_fs::open_read(path)?;
     ensure!(file.metadata()?.is_file()&&file.metadata()?.len()<=MAX_FILE,"Файл карточек слишком большой");
     (&mut file).take(MAX_FILE+1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64<=MAX_FILE,"Файл карточек слишком большой");
@@ -214,9 +215,9 @@ fn import_scoped(root:&Path,path:&Path,separator:Option<&str>,title:Option<&str>
     let title=title.filter(|title|!title.trim().is_empty()).map(str::trim).unwrap_or_else(||path.file_stem().and_then(|name|name.to_str()).unwrap_or("Импортированные карточки"));
     ensure!(title.len()<=512&&!title.contains('\0'),"Слишком длинное название колоды");
     let id=Uuid::new_v4().to_string(); let directory=crate::storage::meeting_directory(root,&id)?;
-    DirBuilder::new().mode(0o700).create(&directory)?;
+    crate::platform_fs::create_private_directory(&directory)?;
     let result=(||->Result<Value> {
-        let mut output=OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(directory.join("cards.tsv"))?;
+        let mut output=crate::platform_fs::open_private(&directory.join("cards.tsv"),true)?;
         output.write_all(b"#separator:tab\n#html:false\n#columns:Front\tBack\tContext\tTags\n")?;
         for card in &parsed.cards {
             let row=[card["front"].as_str().unwrap(),card["back"].as_str().unwrap(),card["context"].as_str().unwrap(),card["kind"].as_str().unwrap()].map(quoted).join("\t");
@@ -265,7 +266,7 @@ pub fn dispatch(root:&Path,value:&Value)->Result<Value> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::{symlink,PermissionsExt};

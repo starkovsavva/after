@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -89,6 +90,7 @@ pub(crate) fn defaults() -> NotesWorkspace {
 fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
+#[cfg(unix)]
 fn private_directory(path: &Path) -> Result<()> {
     if let Ok(info) = fs::symlink_metadata(path) {
         ensure!(info.is_dir() && !info.file_type().is_symlink(), "Папка заметок не должна быть ссылкой");
@@ -99,6 +101,8 @@ fn private_directory(path: &Path) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
+#[cfg(windows)]
+fn private_directory(path: &Path) -> Result<()> { crate::platform_fs::private_directory(path) }
 pub(crate) fn directory(root: &Path) -> Result<PathBuf> {
     ensure!(root.is_absolute(), "Папка данных должна иметь абсолютный путь");
     private_directory(root)?;
@@ -108,15 +112,15 @@ pub(crate) fn directory(root: &Path) -> Result<PathBuf> {
 fn regular(path: &Path, max: u64) -> Result<File> {
     let info = fs::symlink_metadata(path)?;
     ensure!(info.is_file() && !info.file_type().is_symlink() && info.len() <= max, "Ожидался обычный файл допустимого размера");
-    let file = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    let file = crate::platform_fs::open_read(path)?;
     ensure!(file.metadata()?.is_file() && file.metadata()?.len() <= max, "Файл слишком большой");
     Ok(file)
 }
 pub(crate) fn lock(directory: &Path) -> Result<File> {
     let path = directory.join(".workspace.lock");
     if let Ok(info) = fs::symlink_metadata(&path) { ensure!(info.is_file() && !info.file_type().is_symlink(), "Некорректная блокировка заметок"); }
-    let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    let file = crate::platform_fs::open_private(&path,false)?;
+    crate::platform_fs::secure_file(&file)?;
     file.lock().context("Не удалось заблокировать заметки")?;
     Ok(file)
 }
@@ -242,7 +246,7 @@ pub fn trash_note(root:&Path,id:&str,revision:u64,restore:bool) -> Result<Captur
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
     let note=expected(&mut data,id,revision)?;
     if restore {
-        ensure!(note.trashed_at.is_some_and(|deleted| deleted <= now() && now()-deleted < crate::trash::RETENTION_SECONDS), "Срок восстановления заметки истёк");
+        ensure!(note.trashed_at.is_some_and(|deleted| deleted <= now() && now()-deleted < crate::storage::TRASH_RETENTION_SECONDS), "Срок восстановления заметки истёк");
     }
     note.trashed_at=if restore { None } else { note.trashed_at.or_else(||Some(now())) };
     note.revision=bumped(note.revision)?; note.updated_at=now();
@@ -250,7 +254,7 @@ pub fn trash_note(root:&Path,id:&str,revision:u64,restore:bool) -> Result<Captur
 }
 pub(crate) fn is_task_tombstone(note: &CapturedNote) -> bool {
     note.task_origin.as_ref().is_some_and(|origin| origin["sourceText"] == "")
-        && note.trashed_at.is_some_and(|deleted| now()-deleted >= crate::trash::RETENTION_SECONDS)
+        && note.trashed_at.is_some_and(|deleted| now()-deleted >= crate::storage::TRASH_RETENTION_SECONDS)
         && note.text.is_empty() && note.title.is_empty() && note.attachments.is_empty()
 }
 pub fn delete_note(root:&Path,id:&str,revision:u64) -> Result<Value> {
@@ -265,7 +269,7 @@ pub fn delete_note(root:&Path,id:&str,revision:u64) -> Result<Value> {
         note.task_origin=Some(json!({"meetingID":origin["meetingID"],"itemSignature":origin["itemSignature"],"sourceText":"","segmentIDs":[],"summaryTaskID":""}));
         note.text.clear(); note.title.clear(); note.content_rtf.clear(); note.owner.clear(); note.due.clear();
         note.source_url.clear(); note.tags.clear(); note.attachments.clear(); note.history.clear(); note.subtasks.clear(); note.expansion=None;
-        note.trashed_at=Some(now()-crate::trash::RETENTION_SECONDS-1.0); note.revision=bumped(note.revision)?; note.updated_at=now();
+        note.trashed_at=Some(now()-crate::storage::TRASH_RETENTION_SECONDS-1.0); note.revision=bumped(note.revision)?; note.updated_at=now();
     } else { data.notes.retain(|note|note.id != id); }
     persist(&dir,&data)?;
     for attachment in attachments { let _=remove_owned_attachment(root,&attachment); }
@@ -334,7 +338,7 @@ pub fn attach(root:&Path,id:&str,revision:u64,source:&Path) -> Result<CapturedNo
     ensure!(expected(&mut data,id,revision)?.attachments.len()<12,"В одной заметке можно сохранить до 12 вложений");
     let attachment_id=Uuid::new_v4().to_string(); let filename=format!("{attachment_id}.{extension}");
     let destination=attachment_folder(root)?.join(&filename);
-    let mut output=OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&destination)?;
+    let mut output=crate::platform_fs::open_private(&destination,true)?;
     let result=(|| -> Result<CapturedNote> {
         let copied=std::io::copy(&mut (&mut input).take(MAX_ATTACHMENT+1),&mut output)?;
         ensure!(copied<=MAX_ATTACHMENT,"Вложение должно быть не больше 25 МБ"); output.sync_all()?;
@@ -545,7 +549,7 @@ fn complete_task_checked(root:&Path,meeting_id:&str,item_index:usize,text:&str,c
     let dir=crate::storage::meeting_directory(root,meeting_id)?;
     let lock_path=dir.join(".posle-storage.lock");
     if let Ok(info)=fs::symlink_metadata(&lock_path) { ensure!(info.is_file() && !info.file_type().is_symlink(),"Некорректная блокировка встречи"); }
-    let lock=OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(lock_path)?;
+    let lock=crate::platform_fs::open_private(&lock_path,false)?;
     lock.lock()?;
     let read=|name:&str,max:u64|->Result<Value> {
         let mut bytes=Vec::new(); regular(&dir.join(name),max)?.take(max+1).read_to_end(&mut bytes)?;
@@ -572,7 +576,7 @@ fn complete_task_checked(root:&Path,meeting_id:&str,item_index:usize,text:&str,c
     Ok(json!({"saved":true}))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::{symlink,MetadataExt};

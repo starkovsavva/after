@@ -8,6 +8,7 @@ import { draftFromNote, errorMessage, formatDate, formatDuration, isDirty, noteI
 import type { Draft } from './model';
 import type { Folder, MeetingDetail, Note, SearchResult, Workspace } from './types';
 import Icon from './Icon';
+import { isPrimaryShortcut } from './shortcuts';
 
 function usePreference<T extends string>(key: string, fallback: T, allowed: readonly T[]) {
   const [value, setValue] = useState<T>(() => {
@@ -105,6 +106,7 @@ export default function App() {
   useEffect(() => { const update = () => setSystemLanguages([...navigator.languages]); window.addEventListener('languagechange', update); return () => window.removeEventListener('languagechange', update); }, []);
   const loadWorkspace = useCallback(async () => {
     const sequence = ++workspaceSequence.current;
+    if (!connected) { setLoading(false); setError(null); return; }
     setLoading(true); setError(null);
     try {
       const data = await api.getWorkspace();
@@ -144,7 +146,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      if (isPrimaryShortcut(event, 'k', navigator.platform)) {
         event.preventDefault();
         if (document.querySelector('[role=dialog][aria-modal=true]')) return; setSearchOpen(true); requestAnimationFrame(() => searchRef.current?.focus());
       }
@@ -248,7 +250,7 @@ export default function App() {
 
   return <div className="app-shell">
     <header className="titlebar">
-      <div className="brand"><img src="/logo.svg" alt=""/><span>{t.appName}</span>{demoMode && <span className="demo-label" title={t.demoHint}>{t.demo}</span>}</div>
+      <div className="brand"><img src="/logo.svg" alt=""/><span>{t.appName}</span><span className="demo-label" title={demoMode ? t.demoHint : t.previewHint}>{demoMode ? t.demo : t.preview}</span></div>
       <div className="titlebar-context"><Icon name="folder" size={16}/><select aria-label={t.activeFolder} value={folderId || ''} onChange={event => chooseFolder(event.target.value || undefined)} disabled={!workspace || saving}>{folderOptions}</select></div>
       <button className="icon-button" onClick={() => requestNavigation(() => { void loadWorkspace(); })} disabled={loading || saving || !connected} aria-label={t.refreshLibrary} title={t.refreshLibrary}><Icon name="refresh"/></button>
       <button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label={t.settings} title={t.settings}><Icon name="settings"/></button>
@@ -284,8 +286,8 @@ export default function App() {
         <div className="list-footer">{searchOpen ? searchResults.length : section === 'meetings' ? meetings.length : notes.length} {t.itemCount}</div>
       </section>
       <main className="detail-pane">
-        {error && <div className="error-banner" role="alert"><Icon name="alert"/><span>{error}</span><button className="text-button" onClick={() => void loadWorkspace()}>{t.retry}</button></div>}
-        {!connected ? <EmptyState icon="notes" title={t.connectionRequired} hint={t.connectionHint}/> : loading && !workspace ? <div className="detail-loading" role="status">{t.loading}</div> : draft ? <div className="note-editor" onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void saveNote(); } }}>
+        {error && workspace && <div className="error-banner" role="alert"><Icon name="alert"/><span>{error}</span><button className="text-button" onClick={() => void loadWorkspace()}>{t.retry}</button></div>}
+        {!connected ? <EmptyState icon="notes" title={t.connectionRequired} hint={t.connectionHint}/> : error && !workspace ? <EmptyState icon="notes" title={error} hint={t.errorUnavailable} action={<button className="button" onClick={() => void loadWorkspace()}>{t.retry}</button>}/> : loading && !workspace ? <div className="detail-loading" role="status">{t.loading}</div> : draft ? <div className="note-editor" onKeyDown={event => { if (isPrimaryShortcut(event.nativeEvent, 's', navigator.platform)) { event.preventDefault(); void saveNote(); } }}>
           <div className="editor-toolbar"><span className={dirty ? 'save-status changed' : 'save-status'}>{saving ? t.saving : dirty ? t.unsaved : original ? t.saved : t.newNote}</span><button className="button primary" onClick={() => void saveNote()} disabled={saving || (!dirty && !!original)}>{saving ? t.saving : t.save}</button></div>
           {saveError && <div className="error-banner" role="alert"><Icon name="alert"/><span>{saveError}</span></div>}
           <div className="editor-body"><input ref={titleRef} className="note-title" aria-label={t.noteTitle} placeholder={t.untitled} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} disabled={saving} maxLength={500}/><div className="note-metadata">{draft.id && <span>{formatDate(workspace?.notes.find(note => note.id === draft.id)?.updatedAt, language)}</span>}{draft.meetingId && <span><Icon name="meetings" size={14}/>{workspace?.meetings.find(item => item.id === draft.meetingId)?.title || t.relatedMeeting}</span>}</div><textarea aria-label={t.noteText} className="note-text" placeholder={t.writeSomething} value={draft.text} onChange={event => setDraft({ ...draft, text: event.target.value })} disabled={saving}/></div>
@@ -295,7 +297,7 @@ export default function App() {
             {tab === 'summary' && (detail.summary ? <div className="summary-text">{detail.summary}</div> : <EmptyState icon="notes" title={t.noSummary} hint={t.noSummaryHint}/>)}
             {tab === 'transcript' && (detail.transcript.length ? <div className="transcript-list">{detail.transcript.map((segment, index) => <div className="transcript-segment" key={`${segment.start}-${index}`}><time>{formatDuration(segment.start)}</time><div><div className="speaker"><span className="speaker-dot"/>{segment.speaker || t.unknownSpeaker}</div><p>{segment.text}</p></div></div>)}</div> : <EmptyState icon="meetings" title={t.noTranscript} hint={t.noTranscriptHint}/>)}
             {tab === 'notes' && <>{detail.notes.length ? <><div className="content-actions"><button className="button" onClick={() => newNote(detail.meeting.id)}><Icon name="plus" size={16}/>{t.newNote}</button></div>{detail.notes.map(note => <button className="meeting-note" key={note.id} onClick={() => openNote(note)}><strong>{note.title}</strong><span>{note.text}</span></button>)}</> : <EmptyState icon="notes" title={t.noMeetingNotes} hint={t.noMeetingNotesHint} action={<button className="button primary" onClick={() => newNote(detail.meeting.id)}><Icon name="plus" size={16}/>{t.newNote}</button>}/>}</>}
-          </section></article> : <EmptyState icon={section} title={section === 'meetings' ? (meetings.length ? t.chooseMeeting : t.noMeetings) : (notes.length ? t.chooseNote : t.noNotes)} hint={section === 'meetings' ? (meetings.length ? t.chooseMeetingHint : t.noMeetingsHint) : t.noNotesHint} action={section === 'notes' && workspace ? <button className="button primary" onClick={() => newNote()}><Icon name="plus" size={16}/>{t.newNote}</button> : undefined}/>}
+          </section></article> : <EmptyState icon={section} title={section === 'meetings' ? (meetings.length ? t.chooseMeeting : t.noMeetings) : (notes.length ? t.chooseNote : t.noNotes)} hint={section === 'meetings' ? (meetings.length ? t.chooseMeetingHint : t.noMeetingsHint) : t.noNotesHint} action={workspace && (section === 'notes' || !meetings.length) ? <button className="button primary" onClick={() => newNote()}><Icon name="plus" size={16}/>{t.newNote}</button> : undefined}/>}
       </main>
     </div>
     {folderEditor && <Dialog title={folderEditor.folder ? t.renameFolder : t.newFolder}><form onSubmit={event => void saveFolder(event)}><label className="field-label" htmlFor="folder-name">{t.folderName}</label><input id="folder-name" className="text-input" value={folderEditor.name} onChange={event => setFolderEditor({ ...folderEditor, name: event.target.value })} disabled={folderSaving} maxLength={200}/>{folderError && <p className="form-error" role="alert">{folderError}</p>}<div className="dialog-actions"><button type="button" className="button" onClick={() => setFolderEditor(null)} disabled={folderSaving}>{t.cancel}</button><button className="button primary" type="submit" disabled={folderSaving || !folderEditor.name.trim()}>{folderSaving ? t.saving : folderEditor.folder ? t.rename : t.create}</button></div></form></Dialog>}

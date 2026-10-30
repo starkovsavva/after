@@ -106,7 +106,7 @@ fn input(root: &Path, name: &str, args: Map<String, Value>) -> Result<Value> {
     let spec = *SPECS
         .iter()
         .find(|s| s.name == name)
-        .context("Неизвестный инструмент «После»")?;
+        .context("Неизвестный инструмент «After»")?;
     let schema = definition(spec);
     let properties = &schema.input_schema["properties"];
     ensure!(

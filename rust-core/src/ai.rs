@@ -89,21 +89,8 @@ replaces a factual note. The same fact may appear in both. Prefer no studyCards 
 trivial conversational phrases. Copy the supporting source id numbers into segmentIDs.
 Do not number facts or cards and use those new numbers as evidence IDs."#;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default, rename_all="camelCase")]
-pub struct Settings { pub features: AppFeatures, pub mode: String, pub local_model: String, pub local_provider: String, pub local_endpoint: String, pub cloud_model: String, pub cloud_provider: String, pub cloud_endpoint: String, #[serde(rename="cloudAPI", alias="cloudApi")] pub cloud_api: String, pub cloud_output: String, pub cloud_reasoning: String, #[serde(rename="chatGPTAccountID")] pub chat_gpt_account_id: String, pub language: String, pub focus: String, pub summary_user_context: String }
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(default, rename_all="camelCase")]
-pub struct AppFeatures {
-    pub cards: bool,
-    pub tasks: bool,
-    pub calendar: bool,
-    pub assistant: bool,
-    pub semantic_search: bool,
-}
-impl Default for Settings {
-    fn default() -> Self { Self { features:AppFeatures::default(), mode:"local".into(), local_model:"qwen3.5:9b-q4_K_M".into(), local_provider:"managed".into(), local_endpoint:String::new(), cloud_model:"gpt-4.1-mini".into(), cloud_provider:"openai".into(), cloud_endpoint:String::new(), cloud_api:"responses".into(), cloud_output:"schema".into(), cloud_reasoning:"none".into(), chat_gpt_account_id:String::new(), language:"ru".into(), focus:"Решения, задачи, ответственные, сроки, точные цифры, требования и риски. ".into(), summary_user_context:String::new() } }
-}
+pub use crate::ai_config::{AppFeatures, Settings};
+pub(crate) use crate::ai_config::{settings, snapshot_settings, live_features, FeatureResolver, live_features_for, live_features_for_input, profile_for_input, settings_for_input, require_profile_current, check_captured_profile};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Segment { pub id:u64, pub start:f64, pub end:f64, pub speaker:String, pub text:String, #[serde(default)] pub overlap:bool }
@@ -142,21 +129,6 @@ struct Example { example:String, translation:String, explanation:String }
 
 fn read(path:&Path) -> Result<Value> {
     serde_json::from_slice(&fs::read(path).context("Не удалось открыть данные встречи")?).context("Не удалось прочитать данные встречи")
-}
-fn snapshot_settings(snapshot: &str) -> Result<Settings> {
-    if snapshot.len() > 256 * 1024 { bail!("Сохранённые настройки операции слишком большие"); }
-    let value: Value = serde_json::from_str(snapshot).context("Не удалось прочитать настройки фоновой операции")?;
-    if !value.is_object() { bail!("Настройки фоновой операции должны быть объектом"); }
-    serde_json::from_value(value).context("Проверьте сохранённые настройки ИИ")
-}
-pub(crate) fn settings(root:&Path) -> Result<Settings> {
-    match std::env::var("POSLE_JOB_SETTINGS") {
-        Ok(snapshot) => return snapshot_settings(&snapshot),
-        Err(std::env::VarError::NotUnicode(_)) => bail!("Настройки операции должны быть в UTF-8"),
-        Err(std::env::VarError::NotPresent) => {},
-    }
-    if !root.join("settings.json").exists() { return Ok(Settings::default()); }
-    serde_json::from_value(read(&root.join("settings.json"))?).context("Проверьте настройки ИИ")
 }
 fn progress(message:impl AsRef<str>, fraction:f64) { println!("{}", json!({"event":"progress","message":message.as_ref(),"fraction":fraction})); }
 fn object(properties:Value) -> Value {
@@ -210,11 +182,11 @@ fn example_schema() -> Value {
 enum LocalProvider { Managed, Ollama, LmStudio }
 impl LocalProvider {
     fn id(self) -> &'static str { match self { Self::Managed=>"managed", Self::Ollama=>"ollama", Self::LmStudio=>"lmstudio" } }
-    fn title(self) -> &'static str { match self { Self::Managed=>"локальный ИИ «После»", Self::Ollama=>"Ollama", Self::LmStudio=>"LM Studio" } }
+    fn title(self) -> &'static str { match self { Self::Managed=>"локальный ИИ «After»", Self::Ollama=>"Ollama", Self::LmStudio=>"LM Studio" } }
     fn start_hint(self) -> &'static str { match self {
-        Self::Managed=>"Подготовьте локальный ИИ в настройках «После».",
-        Self::Ollama=>"Запустите Ollama и проверьте его локальный адрес в настройках «После».",
-        Self::LmStudio=>"В LM Studio откройте Developer и включите локальный сервер (Start Server). Затем обновите список моделей в «После».",
+        Self::Managed=>"Подготовьте локальный ИИ в настройках «After».",
+        Self::Ollama=>"Запустите Ollama и проверьте его локальный адрес в настройках «After».",
+        Self::LmStudio=>"В LM Studio откройте Developer и включите локальный сервер (Start Server). Затем обновите список моделей в «After».",
     } }
 }
 #[derive(Debug)]
@@ -238,7 +210,7 @@ fn loopback_url(raw:&str) -> Result<Url> {
 fn local_config(settings:&Settings) -> Result<LocalConfig> {
     let provider=match settings.local_provider.as_str() {
         "managed"=>LocalProvider::Managed, "ollama"=>LocalProvider::Ollama, "lmstudio"=>LocalProvider::LmStudio,
-        _=>bail!("Выберите источник локальной модели: «После», Ollama или LM Studio."),
+        _=>bail!("Выберите источник локальной модели: «After», Ollama или LM Studio."),
     };
     let raw=if provider==LocalProvider::Managed {
         std::env::var("POSLE_OLLAMA_URL").unwrap_or_else(|_|"http://127.0.0.1:11436".into())
@@ -282,7 +254,7 @@ fn selected_model(config:&LocalConfig,settings:&Settings,models:&[String]) -> Re
     let exists=models.iter().any(|model|model==&settings.local_model
         || (config.provider!=LocalProvider::LmStudio && model==&format!("{}:latest",settings.local_model)));
     if !exists {
-        bail!("Модель «{}» не найдена в {}. Выберите её из списка или скачайте в этом приложении; «После» не скачивает модели внешнего источника.",settings.local_model,config.provider.title());
+        bail!("Модель «{}» не найдена в {}. Выберите её из списка или скачайте в этом приложении; «After» не скачивает модели внешнего источника.",settings.local_model,config.provider.title());
     }
     if config.provider!=LocalProvider::LmStudio {
         let info=local_post(config,"api/show",&json!({"model":settings.local_model}),4)?;
@@ -515,92 +487,6 @@ fn summary_context(settings: &Settings, meta: &Value, language: &str, names: ser
         "focus":context_excerpt(focus,2000),
         "speaker_names":names,
         "generate_cards":settings.features.cards && meta["generateCards"].as_bool() == Some(true)})
-}
-/// Current feature permissions must never come from a frozen job snapshot.
-/// A queued job may keep its provider, but feature revocation applies at once.
-pub(crate) fn live_features(root: &Path) -> Result<AppFeatures> { crate::folders::available_features(root) }
-
-/// Resolve source permissions from one committed workspace snapshot. This must
-/// also work while a domain command already holds the workspace file lock.
-pub(crate) struct FeatureResolver {
-    global: Value,
-    workspace: crate::notes::NotesWorkspace,
-}
-impl FeatureResolver {
-    pub(crate) fn new(root: &Path) -> Result<Self> {
-        Ok(Self { global: if root.join("settings.json").exists() { read(&root.join("settings.json"))? } else { json!({}) },
-            workspace:crate::folders::workspace_snapshot(root)? })
-    }
-    pub(crate) fn folder_for(&self, source: &Value) -> Result<Option<String>> {
-        let explicit=source["folderID"].as_str();
-        let note=source["noteID"].as_str().or_else(||source["taskID"].as_str().and_then(|id|if id.starts_with("summary:"){None}else{Some(id.strip_prefix("manual:").unwrap_or(id))}));
-        let meeting=source["meetingID"].as_str().filter(|id|!id.is_empty())
-            .or_else(||source["taskID"].as_str().and_then(|id|id.strip_prefix("summary:")).and_then(|id|id.split(':').next()));
-        // A selected object owns its canonical scope, including the base inbox.
-        // An old UI folder selection cannot grant permissions to another task.
-        let folder=if let Some(note)=note.and_then(|id|self.workspace.notes.iter().find(|n|n.id==id)) {
-            crate::folders::folder_id_for_note(&self.workspace,&note.id)
-        } else if let Some(meeting)=meeting {
-            crate::folders::folder_id_for_meeting(&self.workspace,meeting)
-        } else { explicit };
-        if let Some(id)=folder { if !self.workspace.folders.iter().any(|f|f.id==id) { bail!("Папка удалена. Обновите данные."); } }
-        Ok(folder.map(str::to_owned))
-    }
-    pub(crate) fn settings_for(&self, source: &Value) -> Result<Settings> {
-        let mut value=self.global.clone();
-        if let Some(id)=self.folder_for(source)? {
-            let folder=self.workspace.folders.iter().find(|f|f.id==id).context("Папка удалена")?;
-            crate::folders::apply_overrides(&mut value,&folder.overrides)?;
-        }
-        serde_json::from_value(value).context("Некорректные настройки профиля папки")
-    }
-    pub(crate) fn features_for(&self, source: &Value) -> Result<AppFeatures> { Ok(self.settings_for(source)?.features) }
-    pub(crate) fn in_scope(&self, source: &Value, input: &Value) -> bool {
-        input["folderID"].as_str().is_none_or(|folder|self.folder_for(source).is_ok_and(|id|id.as_deref()==Some(folder)))
-    }
-}
-pub(crate) fn live_features_for(root:&Path,meeting:Option<&str>,folder:Option<&str>)->Result<AppFeatures> {
-    FeatureResolver::new(root)?.features_for(&json!({"meetingID":meeting,"folderID":folder}))
-}
-pub(crate) fn live_features_for_input(root:&Path,input:&Value)->Result<AppFeatures> {
-    FeatureResolver::new(root)?.features_for(input)
-}
-pub(crate) fn profile_for_input(root:&Path,input:&Value)->Result<crate::folders::ProfileSnapshot> {
-    let resolver=FeatureResolver::new(root)?;
-    let folder=resolver.folder_for(input)?;
-    crate::folders::resolve(root,None,folder.as_deref())
-}
-fn check_captured_profile(root:&Path,input:&Value)->Result<crate::folders::ProfileSnapshot> {
-    let current=profile_for_input(root,input)?;
-    match std::env::var("POSLE_JOB_FOLDER_PROFILE") {
-        Ok(snapshot)=>{
-            if snapshot.len()>128*1024 { bail!("Сохранённый профиль папки слишком большой"); }
-            let saved:Value=serde_json::from_str(&snapshot).context("Не удалось прочитать профиль фоновой операции")?;
-            if saved["fingerprint"]!=current.fingerprint || saved["folderID"].as_str()!=current.folder_id.as_deref() {
-                bail!("Профиль папки изменился после постановки в очередь. Запустите операцию заново; данные сохранены.");
-            }
-        },
-        Err(std::env::VarError::NotPresent)=>{
-            if std::env::var_os("POSLE_JOB_SETTINGS").is_some() && current.folder_id.is_some() {
-                bail!("У фоновой операции нет сохранённого профиля папки. Запустите её заново из встречи.");
-            }
-        },
-        Err(_)=>bail!("Профиль операции должен быть в UTF-8"),
-    }
-    Ok(current)
-}
-pub(crate) fn settings_for_input(root:&Path,input:&Value)->Result<Settings> {
-    check_captured_profile(root,input)?;
-    let live=FeatureResolver::new(root)?.settings_for(input)?;
-    if std::env::var_os("POSLE_JOB_SETTINGS").is_some() {
-        let captured=settings(root)?;
-        if serde_json::to_value(&captured)?!=serde_json::to_value(&live)? { bail!("Настройки модели не совпадают с сохранённым профилем операции. Запустите обработку заново."); }
-        Ok(captured)
-    } else { Ok(live) }
-}
-pub(crate) fn require_profile_current(root:&Path,input:&Value,fingerprint:&str)->Result<()> {
-    if profile_for_input(root,input)?.fingerprint!=fingerprint { bail!("Профиль папки изменился во время обработки. Повторите операцию; предыдущие данные сохранены."); }
-    Ok(())
 }
 fn card_id(meeting:&str,front:&str)->String { format!("{:x}",Sha256::digest(format!("{meeting}{}",front.to_lowercase().trim()).as_bytes()))[..24].to_owned() }
 
@@ -1287,20 +1173,20 @@ fn model_directories(root:&Path) -> Result<std::path::PathBuf> {
         if let Some(component)=component {directory.push(component);}
         match fs::symlink_metadata(&directory) {
             Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink()=>{},
-            Ok(_)=>bail!("Папка моделей «После» не должна быть файлом или символической ссылкой: {}",directory.display()),
+            Ok(_)=>bail!("Папка моделей «After» не должна быть файлом или символической ссылкой: {}",directory.display()),
             Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{
-                fs::DirBuilder::new().mode(0o700).create(&directory).context("Не удалось создать папку моделей «После»")?;
+                fs::DirBuilder::new().mode(0o700).create(&directory).context("Не удалось создать папку моделей «After»")?;
             },
-            Err(error)=>return Err(error).context("Не удалось открыть папку моделей «После»"),
+            Err(error)=>return Err(error).context("Не удалось открыть папку моделей «After»"),
         }
     }
     Ok(directory)
 }
 fn verify_blob(path:&Path,hash:&str,size:u64) -> Result<()> {
     let mut file=plain_model_file(path)?;
-    if file.metadata()?.len()!=size {bail!("Существующий файл модели «После» повреждён: размер не совпадает. Исходный GGUF сохранён.");}
+    if file.metadata()?.len()!=size {bail!("Существующий файл модели «After» повреждён: размер не совпадает. Исходный GGUF сохранён.");}
     let (actual,_)=hash_model(&mut file,"Проверяю подключённый файл модели",0.45,0.75)?;
-    if actual!=hash {bail!("Существующий файл модели «После» повреждён: SHA-256 не совпадает. Исходный GGUF сохранён.");} Ok(())
+    if actual!=hash {bail!("Существующий файл модели «After» повреждён: SHA-256 не совпадает. Исходный GGUF сохранён.");} Ok(())
 }
 #[cfg(target_os="macos")]
 fn clone_model(source:&Path,destination:&Path) -> bool {
@@ -1362,7 +1248,7 @@ fn install_gguf_blob(root:&Path,source:&Path,input:&mut fs::File,hash:&str,size:
                 if bytes>size {bail!("GGUF изменился во время копирования. Дождитесь окончания загрузки и повторите.");}
                 output.write_all(&buffer[..count]).context("Не удалось сохранить GGUF. Проверьте свободное место.")?;
                 let percent=(bytes.saturating_mul(100)/size).min(100);
-                if percent>=previous+5 {progress(format!("Копирую GGUF в хранилище «После» · {percent}%"),0.4+0.3*percent as f64/100.0); previous=percent;}
+                if percent>=previous+5 {progress(format!("Копирую GGUF в хранилище «After» · {percent}%"),0.4+0.3*percent as f64/100.0); previous=percent;}
             }
             output.sync_all()?;
         }
@@ -1372,7 +1258,7 @@ fn install_gguf_blob(root:&Path,source:&Path,input:&mut fs::File,hash:&str,size:
         match fs::hard_link(&temporary,&destination) {
             Ok(())=>{},
             Err(error) if error.kind()==std::io::ErrorKind::AlreadyExists=>verify_blob(&destination,hash,size)?,
-            Err(error)=>return Err(error).context("Не удалось подключить GGUF в хранилище «После»"),
+            Err(error)=>return Err(error).context("Не удалось подключить GGUF в хранилище «After»"),
         }
         if let Ok(file)=fs::File::open(&directory) {let _=file.sync_all();}
         Ok(())
@@ -1389,7 +1275,7 @@ pub fn import_gguf(root:&Path,source:&Path) -> Result<Value> {
 }
 fn import_gguf_with_config(root:&Path,source:&Path,config:&LocalConfig) -> Result<Value> {
     if config.provider!=LocalProvider::Managed {
-        bail!("Импорт GGUF в «После» доступен для источника «После». Для Ollama или LM Studio импортируйте файл в самом приложении и обновите список моделей.");
+        bail!("Импорт GGUF в «After» доступен для источника «After». Для Ollama или LM Studio импортируйте файл в самом приложении и обновите список моделей.");
     }
     if !source.is_absolute() {bail!("Выберите GGUF-файл по полному пути.");}
     let source=source.canonicalize().context("Не удалось найти выбранный GGUF-файл")?;
@@ -1408,10 +1294,10 @@ fn import_gguf_with_config(root:&Path,source:&Path,config:&LocalConfig) -> Resul
     let model=format!("posle-gguf-{}:latest",&hash[..12]);
     let chosen=Settings{local_model:model.clone(),..Settings::default()};
     if !models.contains(&model) {
-        progress("Регистрирую GGUF в локальном ИИ «После»…",0.8);
+        progress("Регистрирую GGUF в локальном ИИ «After»…",0.8);
         let response=client(true,600)?.post(config.url.join("api/create")?).json(&json!({
             "model":model,"files":{"model.gguf":format!("sha256:{hash}")},"stream":false
-        })).send().map_err(|_|anyhow::anyhow!("Нет ответа от локального ИИ «После». Запустите его и повторите подключение GGUF."))?;
+        })).send().map_err(|_|anyhow::anyhow!("Нет ответа от локального ИИ «After». Запустите его и повторите подключение GGUF."))?;
         let status=response.status();
         let mut bytes=Vec::new(); response.take(1024*1024).read_to_end(&mut bytes)?;
         let payload:Value=serde_json::from_slice(&bytes).context("Ollama вернул некорректный ответ при подключении GGUF")?;

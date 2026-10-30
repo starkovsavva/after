@@ -10,7 +10,7 @@ SOURCE_REVISION="$(git rev-parse --verify HEAD)"
 SOURCE_STATUS="$(git status --porcelain)"
 mkdir -p "$PROJECT/dist"
 STAGING="$(mktemp -d "$PROJECT/dist/.posle-build.XXXXXX")"
-APP="$STAGING/После.app"
+APP="$STAGING/After.app"
 trap 'rm -rf "$STAGING"' EXIT
 
 # Rust is required only on the developer's machine; users run the bundled binary.
@@ -67,15 +67,16 @@ import plistlib, shutil, sys
 from pathlib import Path
 app, engine, version_file = map(Path, sys.argv[1:])
 with version_file.open("rb") as stream: version = plistlib.load(stream)
-for title, executable, identifier in [
-    ("После Распознавание", "После Речь", "app.posle.meetings.speech"),
-    ("После Обработка", "После Обработка", "app.posle.meetings.processing"),
+# Keep helper bundle paths and executable names stable for runtime integrity checks.
+for title, executable, identifier, display in [
+    ("После Распознавание", "После Речь", "app.posle.meetings.speech", "After Speech"),
+    ("После Обработка", "После Обработка", "app.posle.meetings.processing", "After Processing"),
 ]:
     helper = app / "Contents/Helpers" / (title + ".app") / "Contents"
     (helper / "MacOS").mkdir(parents=True, exist_ok=True)
     shutil.copy2(engine, helper / "MacOS" / executable)
     with (helper / "Info.plist").open("wb") as stream:
-        plistlib.dump({"CFBundleName": title, "CFBundleDisplayName": title,
+        plistlib.dump({"CFBundleName": display, "CFBundleDisplayName": display,
                       "CFBundleExecutable": executable, "CFBundleIdentifier": identifier,
                       "CFBundlePackageType": "APPL", "CFBundleVersion": version["CFBundleVersion"],
                       "CFBundleShortVersionString": version["CFBundleShortVersionString"], "LSBackgroundOnly": True,
@@ -125,7 +126,7 @@ fi
 # Publish only a complete verified bundle. On macOS RENAME_SWAP atomically
 # exchanges two existing directories on the same volume; the old bundle stays
 # in our disposable staging folder until cleanup.
-python3 - "$APP" "$PROJECT/dist/После.app" <<'PYPUBLISH'
+python3 - "$APP" "$PROJECT/dist/After.app" <<'PYPUBLISH'
 import ctypes, os, sys
 from pathlib import Path
 source, destination = map(Path, sys.argv[1:])
@@ -144,6 +145,6 @@ else:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code), str(destination))
 PYPUBLISH
-APP="$PROJECT/dist/После.app"
+APP="$PROJECT/dist/After.app"
 bash "$PROJECT/scripts/package.sh"
 echo "Готово: $APP"

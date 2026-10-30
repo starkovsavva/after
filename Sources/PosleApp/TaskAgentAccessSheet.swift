@@ -60,7 +60,7 @@ struct TaskTrackerSheet: View {
                     Button(L("Добавить задачу…")) { newSource = source }.buttonStyle(.bordered)
                 }.padding(.vertical, 10)
             }
-            Text(L("Ссылка открывает оригинал. Статус, мысли и материалы остаются в «После»; автоматическая синхронизация не подключена."))
+            Text(L("Ссылка открывает оригинал. Статус, мысли и материалы остаются в «After»; автоматическая синхронизация не подключена."))
                 .font(AppTypography.control).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button(L("Интеграции…")) { dismiss(); app.openSettings("integrations") }.buttonStyle(.borderless)

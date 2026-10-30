@@ -89,7 +89,7 @@ impl Api {
         // of changing the running Swift app's environment or restoring it racily.
         // https://github.com/python/cpython/blob/v3.12.12/Modules/getpath.c
         if std::env::var_os("__PYVENV_LAUNCHER__").is_some() {
-            bail!("Среда запуска содержит служебные настройки Python. Закройте «После» и откройте его из Finder.");
+            bail!("Среда запуска содержит служебные настройки Python. Закройте «After» и откройте его из Finder.");
         }
         let path=runtime.loader_path()?;
         let handle=libc::dlopen(path.as_ptr(),libc::RTLD_NOW|libc::RTLD_GLOBAL);
@@ -106,7 +106,7 @@ impl Api {
             utf8:symbol(handle,c"PyUnicode_AsUTF8AndSize")?,decref:symbol(handle,c"Py_DecRef")?,clear_error:symbol(handle,c"PyErr_Clear")?};
         runtime.require_image(api.get_version as *const libc::c_void)?;
         runtime.require_version(CStr::from_ptr((api.get_version)()).to_bytes())?;
-        if (api.initialized)()!=0 {bail!("В приложении уже работает другой Python-движок. Перезапустите «После».");}
+        if (api.initialized)()!=0 {bail!("В приложении уже работает другой Python-движок. Перезапустите «After».");}
         Ok(api)
     }
     unsafe fn initialize(&self,runtime:&Runtime)->Result<()> {
@@ -210,12 +210,12 @@ unsafe extern "C" fn cancellation()->c_int {i32::from(CANCELLED.load(Ordering::A
 fn host()->Result<&'static mpsc::Sender<Job>> {
     match HOST.get_or_init(|| {
         let (sender,receiver)=mpsc::channel::<Job>();
-        std::thread::Builder::new().name("После · Распознавание".into()).spawn(move|| {
+        std::thread::Builder::new().name("After · Speech".into()).spawn(move|| {
             let mut selected:Option<(Runtime,Api)>=None;
             for mut job in receiver {
                 let result=(||->Result<Value> {
                     let runtime=runtime(&job.input)?;
-                    if selected.as_ref().is_some_and(|(old,_)|old!=&runtime) {bail!("Компоненты распознавания изменились. Перезапустите «После».");}
+                    if selected.as_ref().is_some_and(|(old,_)|old!=&runtime) {bail!("Компоненты распознавания изменились. Перезапустите «After».");}
                     if selected.is_none() {
                         let api=unsafe{Api::load(&runtime.verified)?};
                         unsafe{api.initialize(&runtime)?;}

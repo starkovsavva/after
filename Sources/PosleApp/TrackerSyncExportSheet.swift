@@ -38,7 +38,7 @@ struct TrackerSyncExportSheet: View {
                         ForEach(scopes) { scope in Text(scope.title).tag(scope.id) }
                     }.disabled(scopes.isEmpty)
                 }
-                Text(L("Будут отправлены название, описание, статус и срок. Материалы и история останутся в «После»."))
+                Text(L("Будут отправлены название, описание, статус и срок. Материалы и история останутся в «After»."))
                     .font(AppTypography.caption).foregroundStyle(.secondary)
             }
             if let error = coordinator.error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled) }

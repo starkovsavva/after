@@ -220,7 +220,7 @@ def public_model(model: dict):
 
 def search_roots(root: Path, home: Path | None = None):
     home = home or Path.home()
-    candidates = [(root / "cache/huggingface/hub", "После")]
+    candidates = [(root / "cache/huggingface/hub", "After")]
     for name in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
         if os.environ.get(name):
             candidates.append((Path(os.environ[name]).expanduser(), "Hugging Face"))

@@ -69,13 +69,13 @@ fn new_deck(root: &Path, title: &str, card: Value, folder_id:Option<&str>) -> Re
     if folder_id.is_some() { crate::folders::resolve(root,None,folder_id)?; }
     ensure!(!title.trim().is_empty() && title.len() <= 512, "Укажите название колоды до 512 символов");
     let id = Uuid::new_v4().to_string(); let dir = meeting_directory(root,&id)?;
-    fs::create_dir(&dir)?;
+    crate::platform_fs::create_private_directory(&dir)?;
     let result = (|| -> Result<Value> {
         let now = Utc::now().timestamp_millis() as f64 / 1000.0;
         atomic_json(&dir.join("summary.json"), &json!({"overview":"","items":[],"cards":[card],"provider":"manual","model":"manual","generatedAt":now,"warnings":[],"overviewClaims":[]}))?;
         // Keep a regular source file for compatibility with deck import/export.
-        use std::{io::Write, os::unix::fs::OpenOptionsExt};
-        let mut source = fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(dir.join("cards.tsv"))?;
+        use std::io::Write;
+        let mut source = crate::platform_fs::open_private(&dir.join("cards.tsv"),true)?;
         source.write_all(b"#separator:tab\n#html:false\n#columns:Front\tBack\tContext\tTags\n")?; source.sync_all()?;
         let meeting = json!({"id":id,"title":title.trim(),"createdAt":now,"source":"cards.tsv","status":"ready","duration":0,"speakerNames":{},"completedTasks":[],"focus":"","recordingTracks":false,"hasVideo":false,"libraryKind":"cards"});
         super::publish_deck(root,&dir,&meeting,folder_id)?;
@@ -165,7 +165,7 @@ pub(super) fn dispatch(root:&Path,input:&Value)->Result<Value> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     fn request(root:&Path,command:&str,mut args:Value)->Result<Value> { args["command"]=json!(command); dispatch(root,&args) }

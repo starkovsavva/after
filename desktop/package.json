@@ -1,6 +1,6 @@
 {
-  "name": "posle-desktop",
-  "version": "0.1.0",
+  "name": "after-desktop",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "scripts": {

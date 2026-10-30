@@ -252,6 +252,7 @@ fn bridge_rejects_generic_commands_paths_extra_fields_and_oversized_input() {
     assert!(!root.path().join("core.sqlite").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn meeting_reader_refuses_symlinks_and_large_metadata_without_leaking_errors() {
     use std::os::unix::fs::symlink;

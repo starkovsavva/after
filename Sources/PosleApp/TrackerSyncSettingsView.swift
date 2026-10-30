@@ -186,7 +186,7 @@ private struct TrackerSyncConnectionEditor: View {
                         Toggle(L("Синхронизировать автоматически"), isOn: $config.enabled)
                         Toggle(L("Отправлять изменения в трекер"), isOn: $config.pushEnabled)
                         Toggle(L("Приостановить синхронизацию"), isOn: $config.paused)
-                        Text(L("Отправляются название, описание, статус и срок связанных задач. Материалы, записи встреч и заметки к задаче остаются в «После». Удаления автоматически не передаются."))
+                        Text(L("Отправляются название, описание, статус и срок связанных задач. Материалы, записи встреч и заметки к задаче остаются в «After». Удаления автоматически не передаются."))
                             .font(AppTypography.caption).foregroundStyle(.secondary)
                     }
                     Section {
@@ -263,7 +263,7 @@ private struct TrackerSyncConflictView: View {
             Text(conflict.reason).font(AppTypography.control).foregroundStyle(.secondary)
             ScrollView {
                 HStack(alignment: .top, spacing: 20) {
-                    version(L("В «После»"), fields: conflict.local, unavailable: L("Локальная задача удалена"))
+                    version(L("В «After»"), fields: conflict.local, unavailable: L("Локальная задача удалена"))
                     Divider()
                     version(L("В трекере"), fields: conflict.remote.deleted ? nil : conflict.remote.fields, unavailable: L("Внешняя задача удалена"))
                 }

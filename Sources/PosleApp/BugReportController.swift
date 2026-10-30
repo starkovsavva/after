@@ -46,7 +46,7 @@ final class BugReportController: NSObject, NSWindowDelegate {
         guard let window, window.attachedSheet == nil, let session, session.draft.isValid else { return }
         let document = session.document
         let panel = NSSavePanel(); panel.allowedContentTypes = [.plainText, .json]; panel.allowsOtherFileTypes = false
-        panel.nameFieldStringValue = "Posle-Bug-Report.txt"; panel.title = L("Сохранить отчёт об ошибке")
+        panel.nameFieldStringValue = "After-Bug-Report.txt"; panel.title = L("Сохранить отчёт об ошибке")
         panel.beginSheetModal(for: window) { [weak self] result in
             guard result == .OK, let url = panel.url else { return }
             Task { @MainActor in self?.save(document, to: url) }

@@ -2,7 +2,7 @@
 name = "posle-engine"
 version = "0.17.6"
 edition = "2021"
-description = "Local-first meeting library, grounded notes and spaced repetition for Posle"
+description = "Local-first meeting library, grounded notes and spaced repetition for After"
 license = "MIT"
 
 [lib]
@@ -30,6 +30,9 @@ uuid = { version = "1", features = ["v4"] }
 ignore = "=0.4.25"
 rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "time", "sync"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Memory"] }
 
 [dev-dependencies]
 tempfile = "3"

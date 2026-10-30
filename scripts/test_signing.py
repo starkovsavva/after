@@ -1,5 +1,6 @@
 import os
 import hashlib
+import plistlib
 import re
 from pathlib import Path
 import shutil
@@ -72,10 +73,33 @@ class SigningSelectionTests(unittest.TestCase):
 
 
 class SigningCommandsTests(unittest.TestCase):
+    def test_after_helper_display_names_preserve_trusted_paths_and_executables(self):
+        project = Path(__file__).resolve().parents[1]
+        script = (project / 'scripts/build.sh').read_text().split("<<'PYHELPERS'\n", 1)[1].split('\nPYHELPERS', 1)[0]
+        with tempfile.TemporaryDirectory(prefix='after-helpers-', dir='/private/tmp') as temporary:
+            root = Path(temporary)
+            engine = root / 'synthetic-engine'
+            engine.write_bytes(b'never executed')
+            app = root / 'After.app'
+            subprocess.run([sys.executable, '-', str(app), str(engine), str(project / 'packaging/Info.plist')],
+                           input=script, text=True, capture_output=True, check=True)
+            helpers = app / 'Contents/Helpers'
+            self.assertEqual({path.name for path in helpers.iterdir()}, {'После Распознавание.app', 'После Обработка.app'})
+            for name, executable, identifier, display in (
+                ('После Распознавание', 'После Речь', 'app.posle.meetings.speech', 'After Speech'),
+                ('После Обработка', 'После Обработка', 'app.posle.meetings.processing', 'After Processing'),
+            ):
+                contents = helpers / (name + '.app') / 'Contents'
+                metadata = plistlib.loads((contents / 'Info.plist').read_bytes())
+                self.assertEqual((metadata['CFBundleName'], metadata['CFBundleDisplayName']), (display, display))
+                self.assertEqual(metadata['CFBundleIdentifier'], identifier)
+                self.assertEqual(metadata['CFBundleExecutable'], executable)
+                self.assertEqual((contents / 'MacOS' / executable).read_bytes(), engine.read_bytes())
+
     def test_sign_owned_components_inside_out_preserving_sparkle_and_default_requirements(self):
         with tempfile.TemporaryDirectory(prefix='posle-sign-commands-', dir='/private/tmp') as temporary:
             root = Path(temporary)
-            app = root / 'После.app'
+            app = root / 'After.app'
             relative = ('Contents/Frameworks/libposle_core.dylib', 'Contents/MacOS/posle-engine', 'Contents/Helpers/После Распознавание.app', 'Contents/Helpers/После Обработка.app')
             for name in relative:
                 path = app / name
@@ -106,7 +130,7 @@ class SigningCommandsTests(unittest.TestCase):
     def test_apple_display_name_does_not_bypass_chain_verification(self):
         with tempfile.TemporaryDirectory(prefix='posle-sign-chain-', dir='/private/tmp') as temporary:
             root = Path(temporary)
-            app = root / 'После.app'
+            app = root / 'After.app'
             components = ('Contents/Frameworks/libposle_core.dylib', 'Contents/MacOS/posle-engine', 'Contents/Helpers/После Распознавание.app', 'Contents/Helpers/После Обработка.app')
             for name in components:
                 path = app / name
@@ -158,7 +182,7 @@ class SigningCommandsTests(unittest.TestCase):
 
 class CoreIntegritySigningTests(unittest.TestCase):
     def fixture(self, root):
-        app = root / 'После.app'
+        app = root / 'After.app'
         for name in ('Contents/Frameworks/libposle_core.dylib', 'Contents/MacOS/posle-engine', 'Contents/Helpers/После Распознавание.app', 'Contents/Helpers/После Обработка.app'):
             path = app / name; path.parent.mkdir(parents=True, exist_ok=True)
             path.mkdir() if name.endswith('.app') else path.write_bytes(b'fixture')

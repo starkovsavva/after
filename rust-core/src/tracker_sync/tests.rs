@@ -157,7 +157,7 @@ fn edit(root: &Path, local_id: &str, title: &str) {
 fn created(root: &Path) -> String {
     let task = crate::task_workspace::dispatch(
         root,
-        &json!({"command":"task-create","operationID":id(),"title":"Новая","text":"Из После"}),
+        &json!({"command":"task-create","operationID":id(),"title":"Новая","text":"Из After"}),
     )
     .unwrap();
     task["id"]

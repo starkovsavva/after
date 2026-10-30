@@ -1,9 +1,11 @@
 #!/bin/bash
 # Package the verified app as both a ZIP and a normal in-place Mac installer.
-# There are no install scripts: the payload is only /Applications/После.app.
+# There are no install scripts: the payload is only /Applications/After.app.
+# A legacy /Applications/После.app is left untouched; never remove or relocate
+# an existing installation, its permissions, or user data during a brand rename.
 set -euo pipefail
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$PROJECT/dist/После.app"
+APP="$PROJECT/dist/After.app"
 STAGING="$(mktemp -d "${TMPDIR:-/private/tmp}/posle-package.XXXXXX")"
 trap 'rm -rf "$STAGING"' EXIT
 cd "$PROJECT"
@@ -41,7 +43,7 @@ if app.is_symlink() or not app.is_dir():
 # to an arbitrary Downloads copy. Version checking prevents an accidental downgrade.
 with component.open("wb") as stream:
     plistlib.dump([{
-        "RootRelativeBundlePath": "После.app",
+        "RootRelativeBundlePath": "After.app",
         "BundleIsRelocatable": False,
         "BundleIsVersionChecked": True,
         "BundleHasStrictIdentifier": True,
@@ -51,21 +53,21 @@ version_file.write_text(version)
 PYINFO
 VERSION="$(cat "$STAGING/version")"
 mkdir "$STAGING/root"
-ditto --noextattr --norsrc --noqtn "$APP" "$STAGING/root/После.app"
+ditto --noextattr --norsrc --noqtn "$APP" "$STAGING/root/After.app"
 # Strip removable metadata only from our disposable copy. macOS may retain
 # protected provenance, which pkgbuild serializes as AppleDouble metadata. The
 # verifier below checks these companions and the fully extracted logical payload.
 xattr -cr "$STAGING/root"
-codesign --verify --deep --strict "$STAGING/root/После.app"
+codesign --verify --deep --strict "$STAGING/root/After.app"
 pkgbuild --root "$STAGING/root" --component-plist "$STAGING/components.plist" \
     --identifier app.posle.meetings.pkg --version "$VERSION" \
     --install-location /Applications --ownership recommended \
-    "$STAGING/Posle-Mac-AppleSilicon.pkg"
+    "$STAGING/After-Mac-AppleSilicon.pkg"
 # Inspect, never install: publication must fail if another payload or install
 # script accidentally makes its way into this personal app package.
-pkgutil --expand "$STAGING/Posle-Mac-AppleSilicon.pkg" "$STAGING/expanded"
-pkgutil --payload-files "$STAGING/Posle-Mac-AppleSilicon.pkg" > "$STAGING/payload-files"
-pkgutil --expand-full "$STAGING/Posle-Mac-AppleSilicon.pkg" "$STAGING/expanded-full"
+pkgutil --expand "$STAGING/After-Mac-AppleSilicon.pkg" "$STAGING/expanded"
+pkgutil --payload-files "$STAGING/After-Mac-AppleSilicon.pkg" > "$STAGING/payload-files"
+pkgutil --expand-full "$STAGING/After-Mac-AppleSilicon.pkg" "$STAGING/expanded-full"
 python3 - "$STAGING" "$VERSION" <<'PYVERIFY'
 import hashlib
 import os
@@ -86,7 +88,7 @@ if (staging / "expanded/Scripts").exists() or package.find("scripts") is not Non
 if package.get("relocatable") != "false" or len(package.findall("relocate/bundle")) != 0:
     raise SystemExit("Application relocation must stay disabled")
 bundles = package.findall("bundle")
-if len(bundles) != 1 or bundles[0].get("id") != "app.posle.meetings" or bundles[0].get("path") != "./После.app":
+if len(bundles) != 1 or bundles[0].get("id") != "app.posle.meetings" or bundles[0].get("path") != "./After.app":
     raise SystemExit("Unexpected app bundle in installer")
 for policy in ("upgrade-bundle", "strict-identifier", "bundle-version"):
     entries = package.findall(policy + "/bundle")
@@ -103,10 +105,10 @@ for line in (staging / "payload-files").read_text().splitlines():
         raise SystemExit("Installer payload escapes the application: " + name)
     if parts[-1].startswith("._"):
         # pkgutil lists serialized xattrs as AppleDouble entries, including a
-        # root ._После.app companion. They are merged into the real app during
+        # root ._After.app companion. They are merged into the real app during
         # extraction/installation, not installed as neighboring user files.
         companion = (*parts[:-1], parts[-1][2:])
-        if (not companion[-1] or companion[0] != "После.app"
+        if (not companion[-1] or companion[0] != "After.app"
                 or any(part.startswith("._") for part in companion)
                 or not staging.joinpath("root", *companion).exists()):
             raise SystemExit("Unexpected metadata companion: " + name)
@@ -124,14 +126,14 @@ for line in (staging / "payload-files").read_text().splitlines():
             raise SystemExit("Unexpected AppleDouble entry or resource data: " + name)
         metadata_companions += 1
         continue
-    if parts[0] != "После.app":
+    if parts[0] != "After.app":
         raise SystemExit("Installer payload escapes the application: " + name)
 
 # Verify the same extraction path macOS provides for flat installer packages.
 # All metadata companions must disappear into xattrs; the sole installed path
 # is the app, with identical normal files and no scripts or user-data folders.
 logical = staging / "expanded-full/Payload"
-if {child.name for child in logical.iterdir()} != {"После.app"}:
+if {child.name for child in logical.iterdir()} != {"After.app"}:
     raise SystemExit("Extracted installer contains a path outside the app")
 def contents(root):
     result = {}
@@ -151,12 +153,12 @@ def contents(root):
     return result
 if contents(staging / "root") != contents(logical):
     raise SystemExit("Installer extraction differs from the verified app")
-print(f"Verified: /Applications/После.app; {metadata_companions} validated metadata companions; no extra installed files or scripts")
+print(f"Verified: /Applications/After.app; {metadata_companions} validated metadata companions; no extra installed files or scripts")
 PYVERIFY
-codesign --verify --deep --strict "$STAGING/expanded-full/Payload/После.app"
+codesign --verify --deep --strict "$STAGING/expanded-full/Payload/After.app"
 # Produce both files from exactly the verified bundle, even after --skip-build.
 # Rename only completed artifacts so a failed packaging command preserves them.
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$STAGING/Posle-Mac-AppleSilicon.zip"
-mv -f "$STAGING/Posle-Mac-AppleSilicon.pkg" "$PROJECT/dist/Posle-Mac-AppleSilicon.pkg"
-mv -f "$STAGING/Posle-Mac-AppleSilicon.zip" "$PROJECT/dist/Posle-Mac-AppleSilicon.zip"
-echo "Готово: $PROJECT/dist/Posle-Mac-AppleSilicon.pkg"
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$STAGING/After-Mac-AppleSilicon.zip"
+mv -f "$STAGING/After-Mac-AppleSilicon.pkg" "$PROJECT/dist/After-Mac-AppleSilicon.pkg"
+mv -f "$STAGING/After-Mac-AppleSilicon.zip" "$PROJECT/dist/After-Mac-AppleSilicon.zip"
+echo "Готово: $PROJECT/dist/After-Mac-AppleSilicon.pkg"

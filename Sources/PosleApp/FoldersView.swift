@@ -224,7 +224,7 @@ struct FolderSettingsView: View {
     private var localModel: some View {
         VStack(alignment: .leading, spacing: 14) {
             Picker(L("Источник"), selection: modelString(\.localProvider, inherited: inherited.localProvider)) {
-                Text(L("После")).tag("managed"); Text("Ollama").tag("ollama"); Text("LM Studio").tag("lmstudio")
+                Text(L("After")).tag("managed"); Text("Ollama").tag("ollama"); Text("LM Studio").tag("lmstudio")
             }
             LabeledContent(L("Модель")) { TextField(L("ID локальной модели"), text: modelString(\.localModel, inherited: inherited.localModel)).textFieldStyle(.roundedBorder).accessibilityIdentifier("folder.model.localModel") }
             if effective.localProvider != "managed" {

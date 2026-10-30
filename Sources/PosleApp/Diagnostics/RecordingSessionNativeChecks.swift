@@ -135,7 +135,12 @@ enum RecordingSessionNativeChecks {
         try await runtimeAdmission()
         try await CaptureSelectionNativeChecks.run()
         try await CaptureWriterNativeChecks.run(root: root)
-        print("9 native recording session groups passed"); fflush(stdout)
+        try await CaptureAudioNativeChecks.run(root: root)
+        try CaptureClockNativeChecks.run()
+        try await MicrophoneStatusNativeChecks.run(root: root)
+        try await MicrophoneRouteNativeChecks.run(root: root)
+        try CaptureDriftNativeChecks.run()
+        print("Recording session, writer, audio, clock and microphone route checks passed"); fflush(stdout)
     }
     private static func runtimeAdmission() async throws {
         let lease = LocalRuntimeLease()
@@ -221,7 +226,7 @@ private final class RecordingSessionWatchdog: @unchecked Sendable {
     private let lock = NSLock()
     private var finished = false
     func start() {
-        DispatchQueue.global().asyncAfter(deadline: .now() + 25) { [self] in
+        DispatchQueue.global().asyncAfter(deadline: .now() + 45) { [self] in
             lock.lock(); let timedOut = !finished; lock.unlock()
             if timedOut { fputs("Recording session regression timed out\n", stderr); fflush(stderr); exit(2) }
         }

@@ -595,7 +595,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     fn folder(id: &str, name: &str, overrides: Value) -> Folder {

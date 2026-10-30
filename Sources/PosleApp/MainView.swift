@@ -53,7 +53,20 @@ struct MainView: View {
         .onAppear {
             theme.configure(root: store.root)
             guide.configure(root: store.root, preview: store.isPreview)
-            guide.considerStartup(hasMeetings: !store.meetings.isEmpty)
+            store.updateGuidanceContext(guide)
+            considerGuidanceStartup()
+        }
+        .onChange(of: store.canPresentGuidance) { _, allowed in if allowed { considerGuidanceStartup() } }
+        .onChange(of: store.availableFeatures) { _, _ in store.updateGuidanceContext(guide) }
+        .onReceive(NotificationCenter.default.publisher(for: .posleUnsavedEditorsChanged)) { _ in
+            Task { @MainActor in considerGuidanceStartup() }
+        }
+        .onChange(of: store.librarySection) { _, section in
+            let featureID = section == "contexts" ? "tasks" : section
+            guide.recordUsage(featureID, root: store.root)
+        }
+        .onChange(of: store.tab) { _, tab in
+            if tab == "summary" { guide.recordUsage("summary", root: store.root) }
         }
         .task { await TrashMaintenance.run(app: store) }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("PosleEditFolder"))) { notification in
@@ -81,9 +94,21 @@ struct MainView: View {
             case .semantic: store.openSettings("semantic")
             case .trash: store.librarySection = "trash"
             case .features: store.openSettings("features")
+            case .settings(let section): store.openSettings(section)
+            case .support: store.showingSupport = true
             case nil: break
             }
         }) { _ in GuidanceSheet(controller: guide) }
+        .sheet(isPresented: $store.showingSupport, onDismiss: {
+            if store.supportFeedbackPending {
+                store.supportFeedbackPending = false
+                store.openBugReport()
+            }
+        }) {
+            SupportSheet(close: { store.showingSupport = false }, feedback: {
+                store.supportFeedbackPending = true; store.showingSupport = false
+            })
+        }
         .onChange(of: store.selection) { _, _ in store.selectionDidChange() }
         .onDrop(of: [.fileURL], isTargeted: $dropping) { providers in
             guard store.librarySection == "meetings", store.tab != "notes", let provider = providers.first else { return false }
@@ -140,6 +165,10 @@ struct MainView: View {
             Button(L("Отмена"), role: .cancel) {}
             Button(L("В Корзину"), role: .destructive) { store.trashSelected() }
         } message: { Text(L("Встречу и все её материалы можно будет восстановить в Корзине приложения в течение 30 дней.")) }
+    }
+
+    private func considerGuidanceStartup() {
+        guide.considerStartup(hasMeetings: !store.meetings.isEmpty, canPresent: store.canPresentGuidance)
     }
 
     private var unavailableFeature: AppFeature? {
@@ -385,7 +414,7 @@ struct MainView: View {
 
     private var topbar: some View {
         HStack(spacing: 10) {
-            Text(L("После")).font(AppTypography.controlStrong).padding(.leading, 4)
+            Text(L("After")).font(AppTypography.controlStrong).padding(.leading, 4)
             HStack(spacing: 8) {
                 if store.isRecording {
                     if store.stoppingRecording { ProgressView().controlSize(.small) }

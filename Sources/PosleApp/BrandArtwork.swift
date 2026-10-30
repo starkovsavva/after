@@ -18,7 +18,7 @@ enum BrandArtwork {
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = L("После")
+        image.accessibilityDescription = L("After")
         return image
     }
 
@@ -52,7 +52,7 @@ enum BrandArtwork {
     // Also used by the browser handoff and its embedded favicon. The native
     // auth check compares these exact bytes with packaging/Logo.svg.
     static let svg = #"""
-    <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="После / After — a.">
+    <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="After — a.">
       <defs>
         <linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="50" y1="50" x2="462" y2="462">
           <stop stop-color="#FFFFFF"/>

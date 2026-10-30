@@ -60,6 +60,52 @@ fn meeting_roundtrip_retains_files_and_stale_preview_cannot_delete() {
         .unwrap()
         .is_empty());
 }
+
+/// Fill the bounded presentation journal and exercise its normal eviction
+/// path, preserving the durable SQLite receipt from the original deletion.
+fn evict_trash_receipt(root: &Path) {
+    let directory = notes::directory(root).unwrap();
+    let _lock = notes::lock(&directory).unwrap();
+    let mut workspace = notes::load(&directory).unwrap();
+    while workspace.voice_operations.len() < 500 {
+        let index = workspace.voice_operations.len();
+        workspace.voice_operations.push(json!({"operationID":format!("fixture-{index}"),"pending":false}));
+    }
+    record(&directory, &mut workspace, "evict-first", "fixture-hash", &json!({})).unwrap();
+    assert!(!workspace.voice_operations.iter().any(|receipt| receipt["domainOperationID"] == "original-delete"));
+}
+
+#[test]
+fn evicted_delete_receipt_cannot_delete_a_restored_meeting_again() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    meeting(root, "m1");
+    let deletion = change_request(root, "meeting", "m1", false, "original-delete");
+    let result = change(root, &deletion).unwrap();
+    change(root, &change_request(root, "meeting", "m1", true, "restore")).unwrap();
+    evict_trash_receipt(root);
+
+    assert_eq!(change(root, &deletion).unwrap(), result);
+    assert_eq!(storage::list_meetings(root).unwrap().len(), 1);
+    assert_eq!(fs::read(storage::meeting_directory(root, "m1").unwrap().join("source.wav")).unwrap(), b"audio-source");
+}
+
+#[test]
+fn evicted_receipt_rejects_reused_operation_before_moving_another_meeting() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    meeting(root, "m1");
+    meeting(root, "m2");
+    change(root, &change_request(root, "meeting", "m1", false, "original-delete")).unwrap();
+    evict_trash_receipt(root);
+
+    let reused = change_request(root, "meeting", "m2", false, "original-delete");
+    let error = change(root, &reused).unwrap_err();
+    assert!(storage::meeting_directory(root, "m2").unwrap().join("source.wav").is_file());
+    assert!(!archived(root, "m2").unwrap().exists());
+    assert!(error.to_string().contains("другими параметрами"));
+}
+
 #[test]
 fn notes_reject_stale_versions_keep_deleted_time_and_expire() {
     let temp = tempfile::tempdir().unwrap();

@@ -165,6 +165,39 @@ class EngineTests(unittest.TestCase):
             self.assertFalse(source.exists())
             self.assertEqual(list(self.root.glob(".posle-finalize-*")), [])
 
+    def test_imported_playback_failure_and_cancel_preserve_previous_audio_and_retry(self):
+        source = self.root / "source.wav"; source.write_bytes(b"original imported audio")
+        playback = self.root / "playback.mp3"; playback.write_bytes(b"previous complete playback")
+        for failure in (RuntimeError("decode failed"), KeyboardInterrupt()):
+            def convert(*arguments):
+                Path(arguments[-1]).write_bytes(b"partial encoding")
+                raise failure
+            with patch.object(engine, "ffmpeg", side_effect=convert), self.assertRaises(type(failure)):
+                engine.prepare_playback(source, self.root)
+            self.assertEqual(source.read_bytes(), b"original imported audio")
+            self.assertEqual(playback.read_bytes(), b"previous complete playback")
+            self.assertEqual(list(self.root.glob(".posle-playback-*")), [])
+        def convert(*arguments):
+            Path(arguments[-1]).write_bytes(b"complete new playback")
+        with patch.object(engine, "ffmpeg", side_effect=convert):
+            engine.prepare_playback(source, self.root)
+        self.assertEqual(source.read_bytes(), b"original imported audio")
+        self.assertEqual(playback.read_bytes(), b"complete new playback")
+        self.assertEqual(list(self.root.glob(".posle-playback-*")), [])
+
+    def test_failed_imported_playback_publication_preserves_previous_audio(self):
+        source = self.root / "source.mp3"; source.write_bytes(b"original imported MP3")
+        playback = self.root / "playback.mp3"; playback.write_bytes(b"previous complete playback")
+        def convert(*arguments):
+            Path(arguments[-1]).write_bytes(b"complete new playback")
+        with patch.object(engine, "ffmpeg", side_effect=convert), \
+                patch.object(engine.os, "replace", side_effect=OSError("disk unavailable")), \
+                self.assertRaisesRegex(OSError, "disk unavailable"):
+            engine.prepare_playback(source, self.root)
+        self.assertEqual(source.read_bytes(), b"original imported MP3")
+        self.assertEqual(playback.read_bytes(), b"previous complete playback")
+        self.assertEqual(list(self.root.glob(".posle-playback-*")), [])
+
 
 class DiarizationTests(unittest.TestCase):
     def setUp(self):
@@ -695,7 +728,8 @@ class WhisperChunkTests(unittest.TestCase):
     def pipeline(self, progress):
         import shutil
         with patch.object(engine, "audio_wave", side_effect=lambda source, target, *a: shutil.copyfile(source, target)), \
-                patch.object(engine, "ffmpeg"), patch.object(engine, "resolve_asr", return_value=self.selected), \
+                patch.object(engine, "ffmpeg", side_effect=lambda *a: Path(a[-1]).write_bytes(b"synthetic playback")), \
+                patch.object(engine, "resolve_asr", return_value=self.selected), \
                 patch.object(engine, "ASRAdapter", return_value=self.adapter), patch.object(engine, "progress", side_effect=progress):
             engine.transcribe(self.directory, self.root, 0, False)
 

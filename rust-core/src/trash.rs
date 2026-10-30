@@ -225,13 +225,24 @@ pub fn change(root: &Path, input: &Value) -> Result<Value> {
     let directory = crate::notes::directory(root)?;
     let _lock = crate::notes::lock(&directory)?;
     let mut workspace = crate::notes::load(&directory)?;
-    if let Some(receipt) = workspace
+    let receipt = workspace
         .voice_operations
         .iter()
         .find(|r| r["domainOperationID"] == operation && r["trashDomain"] == true)
-    {
+        .cloned();
+    let receipt = match receipt {
+        Some(receipt) => Some(receipt),
+        None => crate::workspace_repository::operation_receipt_locked(
+            &directory,
+            "voice",
+            &format!("trash-domain-{}", hash(&json!(operation))),
+        )?,
+    };
+    if let Some(receipt) = receipt {
         ensure!(
-            receipt["requestHash"] == request_hash,
+            receipt["trashDomain"] == true
+                && receipt["domainOperationID"] == operation
+                && receipt["requestHash"] == request_hash,
             "Операция уже использована с другими параметрами"
         );
         return Ok(receipt["result"].clone());

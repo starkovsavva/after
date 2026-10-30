@@ -40,7 +40,7 @@ struct ThemePalette: Codable, Equatable {
               hex.count == 6, hex.allSatisfy({ $0.isHexDigit && $0.isASCII }),
               (12...18).contains(textSize), ["regular", "compact"].contains(density),
               AppearanceMaterial(rawValue: material) != nil else {
-            throw AppError.message(L("В файле темы неверные параметры. Нужна тема После версии 1."))
+            throw AppError.message(L("В файле темы неверные параметры. Нужна тема After версии 1."))
         }
         var result = self; result.accent = hex
         return result
@@ -140,7 +140,7 @@ final class ThemeController: ObservableObject {
         } catch { self.error = LF("Не удалось импортировать тему: {0}", arguments: [String(describing: (error.localizedDescription))]) }
     }
     func exportPalette() {
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = LF("После — {0}.json", arguments: [String(describing: (palette.name))])
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = LF("After — {0}.json", arguments: [String(describing: (palette.name))])
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

@@ -262,10 +262,12 @@ enum ContextsNativeChecks {
     }
     private static func fieldValue(_ window: NSWindow, placeholder: String) -> String? {
         func fields(_ root: NSView) -> [NSTextField] { (root as? NSTextField).map { [$0] } ?? root.subviews.flatMap(fields) }
-        return roots(window).flatMap(fields).first(where: { $0.placeholderString == placeholder })?.stringValue
+        return roots(window).reversed().flatMap(fields).first(where: { $0.placeholderString == placeholder })?.stringValue
     }
     private static func checked(_ window: NSWindow, _ id: String) -> Bool? {
-        roots(window).reversed().flatMap(nodes).filter { $0.identifier == id }.compactMap(\.checked).first
+        let matching = roots(window).reversed().flatMap(nodes).filter { $0.identifier == id }
+        let checkboxes = matching.filter { $0.role == NSAccessibility.Role.checkBox.rawValue }
+        return (checkboxes.isEmpty ? matching : checkboxes).compactMap(\.checked).first
     }
     private static func postKey(_ window: NSWindow, character: String, code: UInt16) {
         let target = window.attachedSheet ?? window; target.makeKeyAndOrderFront(nil)
@@ -293,7 +295,7 @@ enum ContextsNativeChecks {
     }
     private static func edit(_ window: NSWindow, placeholder: String, value: String) throws {
         func fields(_ root: NSView) -> [NSTextField] { (root as? NSTextField).map { [$0] } ?? root.subviews.flatMap(fields) }
-        guard let field = roots(window).flatMap(fields).first(where: { $0.placeholderString == placeholder }) else { throw AppError.message("Context field missing: " + placeholder) }
+        guard let field = roots(window).reversed().flatMap(fields).first(where: { $0.placeholderString == placeholder }) else { throw AppError.message("Context field missing: " + placeholder) }
         let target = window.attachedSheet ?? window; target.makeFirstResponder(field)
         guard let editor = field.currentEditor() as? NSTextView else { throw AppError.message("Context field editor missing") }
         editor.selectAll(nil); editor.insertText(value, replacementRange: editor.selectedRange())
@@ -302,9 +304,13 @@ enum ContextsNativeChecks {
         let target = window.attachedSheet ?? window
         NSApp.activate(ignoringOtherApps: true); target.makeKeyAndOrderFront(nil)
         target.contentView?.layoutSubtreeIfNeeded()
-        let matching = roots(window).flatMap(nodes).filter { $0.identifier == id }
-        for node in matching { if node.press() { return } }
-        if let frame = matching.compactMap(\.frame).first(where: { $0.width > 0 && $0.height > 0 }) {
+        let matching = roots(window).reversed().flatMap(nodes).filter { $0.identifier == id }
+        // A Toggle's identifier can also appear on its containing SwiftUI
+        // element. Operate/read the checkbox itself when macOS exposes it.
+        let checkboxes = matching.filter { $0.role == NSAccessibility.Role.checkBox.rawValue }
+        let actionable = checkboxes.isEmpty ? matching : checkboxes
+        for node in actionable { if node.press() { return } }
+        if let frame = actionable.compactMap(\.frame).first(where: { $0.width > 0 && $0.height > 0 }) {
             let target = window.attachedSheet ?? window; target.makeKeyAndOrderFront(nil)
             let point = target.convertPoint(fromScreen: NSPoint(x: frame.midX, y: frame.midY))
             // Post the complete pair before yielding: AppKit's mouse tracking
@@ -351,7 +357,13 @@ enum ContextsNativeChecks {
         private var modern: (any NSAccessibilityProtocol)? { object as? any NSAccessibilityProtocol }
         private func get(_ name: String) -> Any? { let selector = NSSelectorFromString(name); return object.responds(to: selector) ? object.perform(selector)?.takeUnretainedValue() : nil }
         var identifier: String? { modern?.accessibilityIdentifier() ?? get("accessibilityIdentifier") as? String }
-        var children: [Any] { modern?.accessibilityChildren() ?? get("accessibilityChildren") as? [Any] ?? [] }
+        var role: String? { modern?.accessibilityRole()?.rawValue ?? get("accessibilityRole") as? String }
+        var children: [Any] {
+            let children = modern?.accessibilityChildren() ?? get("accessibilityChildren") as? [Any] ?? []
+            return children + (get("accessibilityVisibleChildren") as? [Any] ?? [])
+                + (get("accessibilityContents") as? [Any] ?? [])
+                + (get("accessibilityChildrenInNavigationOrder") as? [Any] ?? [])
+        }
         var checked: Bool? {
             let value = modern?.accessibilityValue() ?? get("accessibilityValue")
             if let value = value as? NSNumber { return value.boolValue }
@@ -368,7 +380,11 @@ enum ContextsNativeChecks {
         func press() -> Bool {
             if let cell = object as? NSButtonCell, let control = cell.controlView as? NSButton, control.isEnabled { control.performClick(nil); return true }
             if let control = object as? NSControl, control.isEnabled { control.performClick(nil); return true }
-            return modern?.accessibilityPerformPress() ?? false
+            if let modern { return modern.accessibilityPerformPress() }
+            let selector = NSSelectorFromString("accessibilityPerformPress")
+            guard object.responds(to: selector), let method = object.method(for: selector) else { return false }
+            typealias Press = @convention(c) (AnyObject, Selector) -> Bool
+            return unsafeBitCast(method, to: Press.self)(object, selector)
         }
     }
 }

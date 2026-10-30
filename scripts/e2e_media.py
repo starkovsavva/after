@@ -514,7 +514,7 @@ class MediaE2E:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", type=Path, default=PROJECT / ".test-data/runtime/venv/bin/python")
-    parser.add_argument("--engine", type=Path, default=PROJECT / "dist/После.app/Contents/MacOS/posle-engine")
+    parser.add_argument("--engine", type=Path, default=PROJECT / "dist/After.app/Contents/MacOS/posle-engine")
     parser.add_argument("--backend", type=Path, default=PROJECT / "backend")
     parser.add_argument("--work-dir", type=Path, help="Parent for a new unique fixture (never an existing library)")
     parser.add_argument("--native-capture", type=Path, help="Finalize only the generated native recording-session fixture in this directory")

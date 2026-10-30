@@ -28,15 +28,26 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 PROJECT = Path(__file__).resolve().parent.parent
+DEFAULT_REPO = "starkovsavva/after"
+LEGACY_REPO = "starkovsavva/posle"
 ACCOUNT = "app.posle.meetings.updates"
 BRANCH = "updates"
-APP = "После.app"
-ZIP = "Posle-Mac-AppleSilicon.zip"
-PKG = "Posle-Mac-AppleSilicon.pkg"
-SOURCE = "Posle-Source.zip"
+APP = "After.app"
+ZIP = "After-Mac-AppleSilicon.zip"
+PKG = "After-Mac-AppleSilicon.pkg"
+SOURCE = "After-Source.zip"
+SOURCE_ROOT = "after"
 FEED = "appcast.xml"
 CHECKSUMMED = (PKG, ZIP, SOURCE, FEED)
 ASSETS = (*CHECKSUMMED, "SHA256SUMS")
+# Existing signed releases stay immutable. Verification accepts either complete
+# naming family, never a mixture or an arbitrary archive/application name.
+LEGACY_APP = "После.app"
+LEGACY_ZIP = "Posle-Mac-AppleSilicon.zip"
+LEGACY_PKG = "Posle-Mac-AppleSilicon.pkg"
+LEGACY_SOURCE = "Posle-Source.zip"
+LEGACY_SOURCE_ROOT = "posle"
+ARTIFACT_FAMILIES = ((APP, ZIP, PKG, SOURCE), (LEGACY_APP, LEGACY_ZIP, LEGACY_PKG, LEGACY_SOURCE))
 SPARKLE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 POSLE = "https://posle.app/xml-namespaces/release"
 MAX_FEED = 2 * 1024 * 1024
@@ -53,6 +64,17 @@ def validate_repo(repo: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise RuntimeError("Expected a GitHub owner/repository")
     return repo
+
+
+def canonical_repository(repo: str) -> str:
+    repo = validate_repo(repo)
+    return DEFAULT_REPO if repo == LEGACY_REPO else repo
+
+
+def repository_aliases(repo: str) -> set[str]:
+    """Only the explicitly renamed repository may verify its old signed URLs."""
+    repo = validate_repo(repo)
+    return {repo, LEGACY_REPO} if repo == DEFAULT_REPO else {repo}
 
 
 def feed_url(repo: str) -> str:
@@ -115,7 +137,7 @@ def identity(info: dict, repo: str, revision: str | None = None) -> Identity:
         raise RuntimeError("Release requires a strictly positive integer build number")
     if info.get("CFBundleIdentifier") != "app.posle.meetings":
         raise RuntimeError("Unexpected app bundle identifier")
-    if info.get("SUFeedURL") != feed_url(repo):
+    if info.get("SUFeedURL") not in {feed_url(origin) for origin in repository_aliases(repo)}:
         raise RuntimeError("The app update feed must use this repository's updates branch")
     if info.get("SURequireSignedFeed") is not True or info.get("SUVerifyUpdateBeforeExtraction") is not True or info.get("SUSignedFeedFailureExpirationInterval") != 0:
         raise RuntimeError("Signed feeds, verification before extraction, and zero signature-failure expiration are required")
@@ -136,15 +158,16 @@ def read_identity(app: Path, repo: str, revision: str | None = None) -> Identity
 
 
 def make_appcast(release: Identity, repo: str, signature: str, files: dict[str, Path], notes: str) -> bytes:
+    repo = canonical_repository(repo)
     decode64(signature, 64, "archive signature")
     rss = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
-    ET.SubElement(channel, "title").text = "После"
+    ET.SubElement(channel, "title").text = "After"
     ET.SubElement(channel, "link").text = f"https://github.com/{repo}/releases"
-    ET.SubElement(channel, "description").text = "Обновления После для macOS"
+    ET.SubElement(channel, "description").text = "Обновления After для macOS"
     ET.SubElement(channel, "language").text = "ru"
     item = ET.SubElement(channel, "item")
-    ET.SubElement(item, "title").text = "После " + release.version
+    ET.SubElement(item, "title").text = "After " + release.version
     ET.SubElement(item, f"{{{SPARKLE}}}version").text = str(release.build)
     ET.SubElement(item, f"{{{SPARKLE}}}shortVersionString").text = release.version
     ET.SubElement(item, f"{{{SPARKLE}}}minimumSystemVersion").text = release.minimum_os
@@ -243,11 +266,15 @@ def parse_feed(data: bytes, repo: str) -> dict:
     if len(enclosures) != 1:
         raise RuntimeError("Expected one update archive")
     enclosure = enclosures[0]
-    if enclosure.get("url") != asset_url(repo, "v" + version, ZIP) or not re.fullmatch(r"[1-9][0-9]*", enclosure.get("length", "")):
+    family = next((names for names in ARTIFACT_FAMILIES
+                   if enclosure.get("url") in {asset_url(origin, "v" + version, names[1])
+                                               for origin in repository_aliases(repo)}), None)
+    if family is None or not re.fullmatch(r"[1-9][0-9]*", enclosure.get("length", "")):
         raise RuntimeError("Update archive must use its immutable release URL and exact length")
+    app, archive, package, source = family
     signature = enclosure.get(f"{{{SPARKLE}}}edSignature", "")
     decode64(signature, 64, "archive signature")
-    hashes = {name: field(POSLE, prop) for name, prop in ((ZIP, "archiveSHA256"), (SOURCE, "sourceSHA256"), (PKG, "packageSHA256"))}
+    hashes = {name: field(POSLE, prop) for name, prop in ((archive, "archiveSHA256"), (source, "sourceSHA256"), (package, "packageSHA256"))}
     if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes.values()):
         raise RuntimeError("Invalid authenticated release checksum")
     if field(SPARKLE, "hardwareRequirements") != "arm64":
@@ -255,12 +282,15 @@ def parse_feed(data: bytes, repo: str) -> dict:
     if field(SPARKLE, "minimumSystemVersion") != "15.0":
         raise RuntimeError("Unexpected update minimum macOS version")
     return {"version": version, "build": int(build), "revision": revision, "tag": "v" + version,
-            "signature": signature, "length": int(enclosure.get("length")), "hashes": hashes}
+            "signature": signature, "length": int(enclosure.get("length")), "hashes": hashes,
+            "app": app, "archive": archive, "package": package, "source": source}
 
 
 class GitHub:
     def __init__(self, repo: str, executable: str):
-        self.repo = validate_repo(repo)
+        # GitHub redirects old repository URLs, but redirected POST/PATCH requests
+        # must never be relied upon for publication or the feed compare-and-swap.
+        self.repo = canonical_repository(repo)
         self.executable = executable
 
     def api(self, route: str, method: str = "GET", body: dict | None = None, missing_ok=False):
@@ -333,7 +363,7 @@ def anonymous_download(url: str, path: Path, expected_size: int):
         raise RuntimeError("Unexpected release asset size")
     # This opener has no credentials, cookies, proxy credentials or gh auth.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _HTTPSRedirect())
-    request = urllib.request.Request(url, headers={"User-Agent": "Posle-release-verifier", "Accept": "application/octet-stream"})
+    request = urllib.request.Request(url, headers={"User-Agent": "After-release-verifier", "Accept": "application/octet-stream"})
     with opener.open(request, timeout=30) as response, path.open("wb") as output:
         if response.status != 200:
             raise RuntimeError("Public release download did not return HTTP 200")
@@ -347,17 +377,17 @@ def anonymous_download(url: str, path: Path, expected_size: int):
         raise RuntimeError("Public release asset is truncated")
 
 
-def verify_checksums(directory: Path):
+def verify_checksums(directory: Path, names: tuple[str, ...] = CHECKSUMMED):
     lines = (directory / "SHA256SUMS").read_text().splitlines()
-    if len(lines) != len(CHECKSUMMED):
+    if len(lines) != len(names):
         raise RuntimeError("Unexpected release checksum manifest")
     expected = {}
     for line in lines:
         match = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9.-]+)", line)
-        if match is None or match[2] not in CHECKSUMMED or match[2] in expected:
+        if match is None or match[2] not in names or match[2] in expected:
             raise RuntimeError("Invalid release checksum manifest")
         expected[match[2]] = match[1]
-    for name in CHECKSUMMED:
+    for name in names:
         if expected.get(name) != digest(directory / name):
             raise RuntimeError("Public release checksum mismatch: " + name)
 
@@ -404,16 +434,18 @@ def validate_archive_paths(archive: zipfile.ZipFile, roots: tuple[str, ...]):
         raise RuntimeError("Damaged release archive")
 
 
-def verify_zip(path: Path, expected: Identity, repo: str):
+def verify_zip(path: Path, expected: Identity, repo: str, *, app_name: str = APP):
+    if app_name not in (APP, LEGACY_APP):
+        raise RuntimeError("Unexpected release application name")
     # macOS ditto stores UTF-8 names even when the ZIP UTF-8 flag is absent.
     with zipfile.ZipFile(path, metadata_encoding="utf-8") as archive:
-        validate_archive_paths(archive, (APP, "__MACOSX"))
-        actual = identity(plistlib.loads(archive.read(APP + "/Contents/Info.plist")), repo, expected.revision)
+        validate_archive_paths(archive, (app_name, "__MACOSX"))
+        actual = identity(plistlib.loads(archive.read(app_name + "/Contents/Info.plist")), repo, expected.revision)
         if actual != expected:
             raise RuntimeError("Downloaded app identity differs from the signed update")
     with tempfile.TemporaryDirectory(prefix="posle-update-unpack-") as temporary:
         subprocess.run(["/usr/bin/ditto", "-x", "-k", str(path), temporary], check=True, capture_output=True)
-        subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(Path(temporary) / APP)], check=True, capture_output=True)
+        subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(Path(temporary) / app_name)], check=True, capture_output=True)
 
 
 def git_source_tree(revision: str, github=None) -> dict[str, tuple[str, str]]:
@@ -443,21 +475,25 @@ def git_source_tree(revision: str, github=None) -> dict[str, tuple[str, str]]:
     return result
 
 
-def verify_source(path: Path, expected: Identity, repo: str, *, tree: dict[str, tuple[str, str]]):
+def verify_source(path: Path, expected: Identity, repo: str, *, tree: dict[str, tuple[str, str]], source_root: str = SOURCE_ROOT):
+    if source_root not in (SOURCE_ROOT, LEGACY_SOURCE_ROOT):
+        raise RuntimeError("Unexpected release source root")
     with zipfile.ZipFile(path, metadata_encoding="utf-8") as archive:
-        validate_archive_paths(archive, ("posle",))
-        info = plistlib.loads(archive.read("posle/packaging/Info.plist"))
+        validate_archive_paths(archive, (source_root,))
+        info = plistlib.loads(archive.read(source_root + "/packaging/Info.plist"))
         if product_version(info) != expected.version:
             raise RuntimeError("Published source archive differs from the app: PosleProductVersion")
         for field, value in (("CFBundleShortVersionString", expected.bundle_version), ("CFBundleVersion", str(expected.build)),
-                             ("SUPublicEDKey", expected.public_key), ("SUFeedURL", feed_url(repo))):
+                             ("SUPublicEDKey", expected.public_key)):
             if info.get(field) != value:
                 raise RuntimeError("Published source archive differs from the app: " + field)
+        if info.get("SUFeedURL") not in {feed_url(origin) for origin in repository_aliases(repo)}:
+            raise RuntimeError("Published source archive differs from the app: SUFeedURL")
         actual = {}
         for entry in archive.infolist():
             if entry.is_dir():
                 continue
-            name = str(PurePosixPath(entry.filename).relative_to("posle"))
+            name = str(PurePosixPath(entry.filename).relative_to(source_root))
             mode = entry.external_attr >> 16
             git_mode = "120000" if stat.S_ISLNK(mode) else "100755" if mode & 0o111 else "100644"
             content = archive.read(entry)
@@ -468,9 +504,13 @@ def verify_source(path: Path, expected: Identity, repo: str, *, tree: dict[str, 
 
 
 def verify_local_artifacts(app: Path, source: Path, expected: Identity, repo: str):
+    repo = canonical_repository(repo)
     with (app / "Contents/Info.plist").open("rb") as stream:
-        if plistlib.load(stream).get("PosleSourceClean") is not True:
+        info = plistlib.load(stream)
+        if info.get("PosleSourceClean") is not True:
             raise RuntimeError("This app was built from uncommitted sources; rebuild the clean release commit")
+        if info.get("SUFeedURL") != feed_url(canonical_repository(repo)):
+            raise RuntimeError("New release builds must use the canonical repository update feed")
     verify_zip(app.parent / ZIP, expected, repo)
     verify_source(source, expected, repo, tree=git_source_tree(expected.revision))
 
@@ -487,36 +527,44 @@ def verify_public_release(github: GitHub, release: dict, public_key: str, verifi
     tag = release["tag_name"]
     assets = release.get("assets", [])
     by_name = {asset["name"]: asset for asset in assets}
-    if len(by_name) != len(assets) or set(by_name) != set(ASSETS):
+    family = next((names for names in ARTIFACT_FAMILIES
+                   if set(by_name) == {names[1], names[2], names[3], FEED, "SHA256SUMS"}), None)
+    if len(by_name) != len(assets) or family is None:
         raise RuntimeError("Published release must contain exactly the verified release assets")
+    app, archive, package, source = family
+    checksummed = (package, archive, source, FEED)
     with tempfile.TemporaryDirectory(prefix="posle-public-release-") as temporary:
         directory = Path(temporary)
-        for name in ASSETS:
+        for name in (*checksummed, "SHA256SUMS"):
             asset = by_name[name]
-            limit = {FEED: MAX_FEED, "SHA256SUMS": 16 * 1024, SOURCE: 256 * 1024 * 1024}.get(name, 1024 * 1024 * 1024)
+            limit = {FEED: MAX_FEED, "SHA256SUMS": 16 * 1024, source: 256 * 1024 * 1024}.get(name, 1024 * 1024 * 1024)
             if not isinstance(asset.get("size"), int) or not 0 < asset["size"] <= limit:
                 raise RuntimeError("Unexpected public release asset size: " + name)
             expected_url = asset_url(github.repo, tag, name)
-            if asset.get("state") != "uploaded" or asset.get("browser_download_url") != expected_url or not isinstance(asset.get("size"), int):
+            allowed_urls = {asset_url(origin, tag, name) for origin in repository_aliases(github.repo)}
+            if asset.get("state") != "uploaded" or asset.get("browser_download_url") not in allowed_urls or not isinstance(asset.get("size"), int):
                 raise RuntimeError("Invalid public release asset: " + name)
             anonymous_download(expected_url, directory / name, asset["size"])
             if asset.get("digest") != "sha256:" + digest(directory / name):
                 raise RuntimeError("Public release asset digest mismatch: " + name)
-        verify_checksums(directory)
+        verify_checksums(directory, checksummed)
         appcast = (directory / FEED).read_bytes()
         verifier.verify_feed(directory / FEED, public_key)
         parsed = parse_feed(appcast, github.repo)
+        if (parsed["app"], parsed["archive"], parsed["package"], parsed["source"]) != family:
+            raise RuntimeError("Signed feed and release asset names differ")
         if parsed["tag"] != tag or github.tag_revision(tag) != parsed["revision"]:
             raise RuntimeError("Published tag differs from the authenticated source revision")
         expected = Identity(parsed["version"], parsed["build"], parsed["revision"], public_key)
         for name, expected_hash in parsed["hashes"].items():
             if digest(directory / name) != expected_hash:
                 raise RuntimeError("Authenticated release digest mismatch: " + name)
-        if (directory / ZIP).stat().st_size != parsed["length"]:
+        if (directory / archive).stat().st_size != parsed["length"]:
             raise RuntimeError("Authenticated update archive length mismatch")
-        verifier.verify(directory / ZIP, parsed["signature"], public_key)
-        verify_zip(directory / ZIP, expected, github.repo)
-        verify_source(directory / SOURCE, expected, github.repo, tree=git_source_tree(expected.revision, github))
+        verifier.verify(directory / archive, parsed["signature"], public_key)
+        verify_zip(directory / archive, expected, github.repo, app_name=app)
+        source_root = LEGACY_SOURCE_ROOT if source == LEGACY_SOURCE else SOURCE_ROOT
+        verify_source(directory / source, expected, github.repo, tree=git_source_tree(expected.revision, github), source_root=source_root)
         return VerifiedRelease(expected, appcast)
 
 
@@ -565,10 +613,11 @@ def find_gh() -> str:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", default="starkovsavva/posle")
+    parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--info-plist", type=Path, default=PROJECT / "packaging/Info.plist", help="Trusted local app metadata supplying the update public key")
     args = parser.parse_args()
+    args.repo = canonical_repository(args.repo)
     with args.info_plist.open("rb") as stream:
         public_key = plistlib.load(stream).get("SUPublicEDKey", "")
     decode64(public_key, 32, "update public key")

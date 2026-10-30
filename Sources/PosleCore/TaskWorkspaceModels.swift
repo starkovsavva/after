@@ -15,7 +15,7 @@ public enum TaskWorkspaceSource: String, Codable, CaseIterable, Identifiable {
     case local, manual, yandex, google
     public var id: String { rawValue }
     public var title: String {
-        switch self { case .local: return "После"; case .manual: return "По внешней ссылке"; case .yandex: return "Яндекс Трекер"; case .google: return "Google Tasks" }
+        switch self { case .local: return "After"; case .manual: return "По внешней ссылке"; case .yandex: return "Яндекс Трекер"; case .google: return "Google Tasks" }
     }
     public var symbol: String { self == .local ? "checklist" : "link" }
 }

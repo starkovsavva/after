@@ -1,6 +1,7 @@
 """Translation assets must preserve arguments and cover explicit interface keys."""
 import json
 from pathlib import Path
+import plistlib
 import re
 import unittest
 
@@ -43,13 +44,23 @@ class LocalizationTests(unittest.TestCase):
 
     def test_brand_and_language_are_independent_of_content_language(self):
         catalog = json.loads(CATALOG.read_text())
-        self.assertEqual('After', catalog['После'])
+        self.assertEqual('After', catalog['After'])
         self.assertEqual('Interface language', catalog['Язык интерфейса'])
         self.assertEqual('Summary language', catalog['Язык конспекта'])
-        english = (PROJECT / 'packaging/en.lproj/InfoPlist.strings').read_text()
-        russian = (PROJECT / 'packaging/ru.lproj/InfoPlist.strings').read_text()
-        self.assertIn('"CFBundleDisplayName" = "After";', english)
-        self.assertIn('"CFBundleDisplayName" = "После";', russian)
+        for language in ('en', 'ru'):
+            localized = (PROJECT / f'packaging/{language}.lproj/InfoPlist.strings').read_text()
+            for key in ('CFBundleName', 'CFBundleDisplayName'):
+                self.assertIn(f'"{key}" = "After";', localized)
+            for key in ('NSCalendarsFullAccessUsageDescription', 'NSMicrophoneUsageDescription',
+                        'NSScreenCaptureUsageDescription', 'NSAudioCaptureUsageDescription'):
+                self.assertRegex(localized, f'"{key}" = "After ')
+        metadata = plistlib.loads((PROJECT / 'packaging/Info.plist').read_bytes())
+        self.assertEqual(metadata['CFBundleName'], 'After')
+        self.assertEqual(metadata['CFBundleDisplayName'], 'After')
+        self.assertEqual(metadata['CFBundleIdentifier'], 'app.posle.meetings')
+        self.assertEqual(metadata['CFBundleExecutable'], 'Posle')
+        self.assertEqual(metadata['SUFeedURL'], 'https://raw.githubusercontent.com/starkovsavva/after/updates/appcast.xml')
+        self.assertIn('aria-label="After — a."', (PROJECT / 'packaging/Logo.svg').read_text())
 
 
 if __name__ == '__main__':

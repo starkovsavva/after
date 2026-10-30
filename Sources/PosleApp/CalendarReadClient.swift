@@ -98,5 +98,5 @@ private actor CalendarReadWorker {
 
 enum CalendarReadError: LocalizedError {
     case permissionRequired
-    var errorDescription: String? { L("Разрешите «После» полный доступ к календарям в настройках macOS.") }
+    var errorDescription: String? { L("Разрешите «After» полный доступ к календарям в настройках macOS.") }
 }

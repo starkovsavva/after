@@ -39,6 +39,38 @@ class MediaRuntimeChecks(unittest.TestCase):
             (root / 'runtime/media').symlink_to(root)
             with self.assertRaises(RuntimeError): media_runtime.install(source, root)
 
+    def test_same_size_target_corruption_is_repaired_even_with_original_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"; source.write_bytes(b"original-native-binary"); source.chmod(0o700)
+            target = media_runtime.install(source, root)
+            before = target.stat()
+            target.write_bytes(b"corrupt!-native-binary")
+            os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+            self.assertEqual(target.stat().st_size, before.st_size)
+            self.assertEqual(target.stat().st_mtime_ns, before.st_mtime_ns)
+            self.assertEqual(target.stat().st_mode, before.st_mode)
+            repaired = media_runtime.install(source, root)
+            self.assertEqual(repaired.read_bytes(), b"original-native-binary")
+            self.assertEqual(source.read_bytes(), b"original-native-binary")
+            self.assertEqual(repaired.stat().st_mode & 0o777, 0o700)
+            self.assertNotEqual(repaired.stat().st_ino, before.st_ino)
+
+    def test_same_size_source_change_is_copied_even_with_original_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"; source.write_bytes(b"original-native-binary"); source.chmod(0o700)
+            target = media_runtime.install(source, root)
+            before = source.stat()
+            source.write_bytes(b"updated!-native-binary")
+            os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+            self.assertEqual(source.stat().st_size, before.st_size)
+            self.assertEqual(source.stat().st_mtime_ns, before.st_mtime_ns)
+            self.assertEqual(source.stat().st_mode, before.st_mode)
+            self.assertEqual(media_runtime.install(source, root).read_bytes(), b"updated!-native-binary")
+            self.assertEqual(source.read_bytes(), b"updated!-native-binary")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+
     def test_failed_install_leaves_previous_binary(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -252,10 +252,14 @@ struct SummaryView: View {
     private func section(_ kind: String, _ items: [Insight]) -> some View {
         let title = ["decision": L("Решения"), "action": L("Задачи"), "detail": L("Детали"), "question": L("Вопросы")][kind]!
         let icon = ["decision": "checkmark.seal", "action": "checklist", "detail": "pin", "question": "questionmark.bubble"][kind]!
+        // Insight.id includes its text and references. Build the inverse once,
+        // rather than recreating/comparing every preceding ID for every row.
+        let indices = Dictionary((store.summary?.items ?? []).enumerated().map { ($0.element.id, $0.offset) },
+                                 uniquingKeysWith: { first, _ in first })
         return VStack(alignment: .leading, spacing: 15) {
             Label(title, systemImage: icon).font(AppTypography.heading)
             ForEach(items) { item in
-                let index = store.summary?.items.firstIndex(where: { $0.id == item.id }) ?? -1
+                let index = indices[item.id] ?? -1
                 let targeted = store.navigationTarget?.meetingID == store.selection && store.navigationTarget?.kind == "item" && store.navigationTarget?.itemIndex == index
                 HStack(alignment: .top, spacing: 12) {
                     if kind == "action" && profileSettings.features.tasks {
