@@ -40,6 +40,19 @@ pub struct Meeting {
     pub folder_id: Option<String>,
     pub has_transcript: bool,
     pub has_summary: bool,
+    #[serde(default)]
+    pub has_media: bool,
+    #[serde(default)]
+    pub media_kind: Option<String>,
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MediaChunk {
+    pub meeting_id: String,
+    pub offset: u64,
+    pub total_bytes: u64,
+    pub content_type: String,
+    pub data_base64: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +69,8 @@ pub struct Note {
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
     pub library: bool,
+    #[serde(default)]
+    pub import: bool,
     pub recording: bool,
     pub calendar: bool,
     pub assistant: bool,

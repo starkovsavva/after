@@ -187,6 +187,85 @@ try {
     Assert-Smoke ((Get-Item -LiteralPath (Join-Path $library 'core.sqlite')).Length -gt 0) 'Canonical SQLite was not created.'
     $passes.Add('real-search-folder-scope-and-durability-across-processes')
 
+    # A valid synthetic PCM WAV; both source and library live inside the new
+    # temporary fixture, never in the user's library.
+    $source = Join-Path $fixture 'исходная запись café.wav'
+    $wavStream = [System.IO.MemoryStream]::new()
+    $wavWriter = [System.IO.BinaryWriter]::new($wavStream)
+    try {
+        $wavWriter.Write([System.Text.Encoding]::ASCII.GetBytes('RIFF'))
+        $wavWriter.Write([uint32]236)
+        $wavWriter.Write([System.Text.Encoding]::ASCII.GetBytes('WAVEfmt '))
+        $wavWriter.Write([uint32]16)
+        $wavWriter.Write([uint16]1); $wavWriter.Write([uint16]1)
+        $wavWriter.Write([uint32]8000); $wavWriter.Write([uint32]16000)
+        $wavWriter.Write([uint16]2); $wavWriter.Write([uint16]16)
+        $wavWriter.Write([System.Text.Encoding]::ASCII.GetBytes('data'))
+        $wavWriter.Write([uint32]200)
+        for ($i = 0; $i -lt 100; $i++) { $wavWriter.Write([int16]($i * 200 - 10000)) }
+        $wavWriter.Flush()
+        $wavBytes = $wavStream.ToArray()
+    } finally { $wavWriter.Dispose(); $wavStream.Dispose() }
+    [System.IO.File]::WriteAllBytes($source, $wavBytes)
+    $originalHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+    $meeting = Expect-Result (Invoke-Engine 'import_meeting' @{ sourcePath = $source; focus = ''; title = 'Тестовая запись café' })
+    Assert-Smoke ($meeting.title -ceq 'Тестовая запись café' -and $meeting.hasMedia -eq $true -and $meeting.mediaKind -ceq 'audio') 'Imported meeting metadata is incorrect.'
+    Assert-Smoke ($null -eq $meeting.folderId) 'New imports should start in the unfiled library.'
+    $detail = Expect-Result (Invoke-Engine 'get_meeting' @{ meetingId = $meeting.id })
+    Assert-Smoke ($detail.meeting.hasMedia -eq $true -and $detail.meeting.mediaKind -ceq 'audio') 'A new engine process did not reopen imported media.'
+    $stored = Join-Path (Join-Path (Join-Path $library 'meetings') $meeting.id) 'source.wav'
+    Assert-Smoke ((Get-FileHash -LiteralPath $stored -Algorithm SHA256).Hash -ceq $originalHash) 'Imported media does not match its source.'
+    $part = Expect-Result (Invoke-Engine 'read_media_chunk' @{ meetingId = $meeting.id; offset = 6; length = 11 })
+    $expectedPart = [Convert]::ToBase64String([byte[]]$wavBytes[6..16])
+    Assert-Smoke ($part.offset -eq 6 -and $part.totalBytes -eq $wavBytes.Length -and $part.contentType -ceq 'audio/wav' -and $part.dataBase64 -ceq $expectedPart) 'Media seeking or byte range returned incorrect data.'
+    $tailOffset = $wavBytes.Length - 3
+    $tail = Expect-Result (Invoke-Engine 'read_media_chunk' @{ meetingId = $meeting.id; offset = $tailOffset; length = 100 })
+    Assert-Smoke ($tail.dataBase64 -ceq [Convert]::ToBase64String([byte[]]$wavBytes[$tailOffset..($wavBytes.Length - 1)])) 'Media range did not clamp at end of file.'
+    $eof = Expect-Result (Invoke-Engine 'read_media_chunk' @{ meetingId = $meeting.id; offset = $wavBytes.Length; length = 1 })
+    Assert-Smoke ($eof.dataBase64 -ceq '') 'End-of-file returned unexpected data.'
+    $badRange = Invoke-Engine 'read_media_chunk' @{ meetingId = $meeting.id; offset = 0; length = 1048577 }
+    $badId = Invoke-Engine 'read_media_chunk' @{ meetingId = '../outside'; offset = 0; length = 1 }
+    Assert-Smoke (-not $badRange.ok -and -not $badId.ok) 'Invalid media range or traversal was accepted.'
+    Assert-Smoke ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ceq $originalHash) 'Import or reads modified the original WAV.'
+    $passes.Add('synthetic-wav-import-media-seek-and-original-preservation')
+
+    $task = Expect-Result (Invoke-Engine 'create_task' @{ title = 'Подготовить встречу'; text = 'Synthetic task'; operationId = 'smoke-create-task' })
+    Assert-Smoke ($task.title -ceq 'Подготовить встречу') 'Task creation lost its Unicode title.'
+    $taskUpdate = @{ taskId = $task.id; expectedRevision = $task.revision; operationId = 'smoke-update-task'; patch = @{ status = 'done' } }
+    $done = Expect-Result (Invoke-Engine 'update_task' $taskUpdate)
+    Assert-Smoke ($done.completed -eq $true) 'Task completion was not saved.'
+    $taskUpdate.operationId = 'smoke-stale-task'
+    $taskConflict = Invoke-Engine 'update_task' $taskUpdate
+    Assert-Smoke (-not $taskConflict.ok -and $taskConflict.error.code -ceq 'conflict') 'A stale task update was accepted.'
+    $reopenedTask = Expect-Result (Invoke-Engine 'get_task' @{ taskId = $task.id })
+    Assert-Smoke ($reopenedTask.status -ceq 'done' -and $reopenedTask.title -ceq $task.title) 'A stale task update changed committed data.'
+    $passes.Add('task-completion-stale-update-and-reopen')
+
+    $savedCard = Expect-Result (Invoke-Engine 'save_card' @{ front = 'Hello'; back = 'Привет'; newDeckTitle = 'Synthetic cards' })
+    $cards = Expect-Result (Invoke-Engine 'list_cards')
+    $matchingCards = @($cards.cards | Where-Object { $_.meetingId -ceq $savedCard.meetingId -and $_.card.id -ceq $savedCard.card.id })
+    Assert-Smoke ($matchingCards.Count -eq 1 -and $matchingCards[0].card.back -ceq 'Привет') 'Card was not persisted with its text.'
+    $card = $matchingCards[0]
+    $reference = @{ meetingId = $card.meetingId; cardId = $card.card.id; expectedFingerprint = $card.fingerprint; expectedReviewFingerprint = $card.reviewFingerprint }
+    $preview = Expect-Result (Invoke-Engine 'preview_card_review' $reference)
+    Assert-Smoke (@($preview.options).Count -eq 4) 'Card review did not expose the expected options.'
+    $reference.rating = 3
+    $review = Expect-Result (Invoke-Engine 'review_card' $reference)
+    Assert-Smoke ($review.state.count -eq 1) 'Card review was not saved.'
+    $staleReview = Invoke-Engine 'review_card' $reference
+    Assert-Smoke (-not $staleReview.ok -and $staleReview.error.code -ceq 'conflict') 'A stale card review was accepted.'
+    [void](Expect-Result (Invoke-Engine 'undo_card_review' @{ meetingId = $review.meetingID; undoId = $review.undoID }))
+    $cardsAfter = Expect-Result (Invoke-Engine 'list_cards')
+    $after = @($cardsAfter.cards | Where-Object { $_.meetingId -ceq $card.meetingId -and $_.card.id -ceq $card.card.id })
+    Assert-Smoke ($after.Count -eq 1 -and $null -eq $after[0].review -and $after[0].card.back -ceq 'Привет') 'Card undo or stale review damaged the card.'
+    $passes.Add('cards-review-stale-update-and-undo')
+
+    $preserved = Expect-Result (Invoke-Engine 'get_workspace')
+    $oldNote = @($preserved.notes | Where-Object { $_.id -ceq $note.id })
+    Assert-Smoke ($oldNote.Count -eq 1 -and $oldNote[0].text -ceq $updated.text -and $oldNote[0].folderId -ceq $folder.id) 'Import or task/card operations modified an existing note.'
+    Assert-Smoke ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ceq $originalHash) 'A later operation modified the original WAV.'
+    $passes.Add('prior-library-and-original-remain-unchanged')
+
     $outside = Join-Path $fixture 'outside-junction-target'
     [void][System.IO.Directory]::CreateDirectory($outside)
     $canary = Join-Path $outside 'untouched.txt'

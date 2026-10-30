@@ -3,6 +3,8 @@ mod ai_config;
 #[cfg(windows)]
 pub mod ai { pub use crate::ai_config::*; }
 pub mod desktop;
+mod desktop_import;
+mod desktop_media;
 pub mod desktop_platform;
 #[cfg(unix)]
 pub mod python_runtime;

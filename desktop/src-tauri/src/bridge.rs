@@ -21,6 +21,7 @@ const MAX_INPUT: usize = 256 * 1024;
 const MAX_OUTPUT: usize = 8 * 1_048_576;
 const MAX_STDERR: usize = 64 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(12);
+const IMPORT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_PARALLEL: usize = 4;
 
 #[derive(Clone)]
@@ -35,6 +36,7 @@ struct Engine {
     digest: Option<String>,
 }
 impl LibraryBridge {
+    pub(crate) fn data_root(&self) -> PathBuf { self.root.clone() }
     pub fn bundled(resource_dir: &Path, default_data_dir: &Path) -> Result<Self, HostError> {
         let root =
             development_override("AFTER_DATA_DIR").unwrap_or_else(|| default_data_dir.into());
@@ -71,7 +73,12 @@ impl LibraryBridge {
     }
 
     pub fn workspace(&self) -> Result<Workspace, HostError> {
-        self.call("get_workspace", json!({}))
+        let mut workspace: Workspace = self.call("get_workspace", json!({}))?;
+        workspace.capabilities.import = cfg!(windows);
+        workspace.capabilities.recording = cfg!(windows);
+        workspace.capabilities.tasks = cfg!(windows);
+        workspace.capabilities.cards = cfg!(windows);
+        Ok(workspace)
     }
     pub fn meeting(&self, id: String) -> Result<MeetingDetail, HostError> {
         validate_id(&id)?;
@@ -80,6 +87,24 @@ impl LibraryBridge {
     pub fn save_note(&self, input: SaveNoteInput) -> Result<Note, HostError> {
         input.validate()?;
         self.call("save_note", json!({"input":input}))
+    }
+    /// Only host-selected files or host-owned recordings may cross this boundary.
+    /// The renderer cannot supply a path.
+    pub(crate) fn import_meeting(&self, source: &Path, title: Option<&str>) -> Result<Meeting, HostError> {
+        if !source.is_absolute() { return Err(HostError::invalid()); }
+        let path = source.to_str().ok_or_else(HostError::invalid)?;
+        self.call_with_timeout("import_meeting", json!({"sourcePath": path, "focus": "", "title": title}), IMPORT_TIMEOUT)
+    }
+    pub(crate) fn media_chunk(&self, id: &str, offset: u64, length: u32) -> Result<MediaChunk, HostError> {
+        validate_id(id)?;
+        if length == 0 || length > 1_048_576 || offset > 9_007_199_254_740_991 { return Err(HostError::invalid()); }
+        self.call("read_media_chunk", json!({"meetingId":id, "offset":offset, "length":length}))
+    }
+    pub fn feature_operation(&self, operation: &str, arguments: Value) -> Result<Value, HostError> {
+        let allowed = ["list_tasks", "get_task", "create_task", "update_task", "list_cards", "save_card", "delete_card", "suspend_card", "preview_card_review", "review_card", "undo_card_review"];
+        let command = allowed.iter().copied().find(|value| *value == operation).ok_or_else(HostError::invalid)?;
+        if !arguments.is_object() { return Err(HostError::invalid()); }
+        self.call(command, arguments)
     }
     pub fn save_folder(&self, input: SaveFolderInput) -> Result<Folder, HostError> {
         input.validate()?;
@@ -101,6 +126,14 @@ impl LibraryBridge {
         command: &'static str,
         arguments: Value,
     ) -> Result<T, HostError> {
+        self.call_with_timeout(command, arguments, TIMEOUT)
+    }
+    fn call_with_timeout<T: DeserializeOwned>(
+        &self,
+        command: &'static str,
+        arguments: Value,
+        timeout: Duration,
+    ) -> Result<T, HostError> {
         let count = self.running.fetch_add(1, Ordering::AcqRel);
         let _permit = Permit(&self.running);
         if count >= MAX_PARALLEL {
@@ -115,7 +148,7 @@ impl LibraryBridge {
         if bytes.len() > MAX_INPUT {
             return Err(HostError::invalid());
         }
-        let output = execute(&self.engine.path, &self.root, bytes, TIMEOUT)?;
+        let output = execute(&self.engine.path, &self.root, bytes, timeout)?;
         decode(&output)
     }
 }
@@ -280,6 +313,7 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, HostError> {
                 "library_error",
                 "content_too_large",
                 "unsupported_platform",
+                "import_failed",
             ];
             if !allowed.contains(&error.code.as_str())
                 || error.message.len() > 1024

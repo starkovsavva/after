@@ -98,9 +98,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist/windows-preview | Out-Null
           $installer = Get-ChildItem '.build/tauri/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe'
-          Copy-Item $installer.FullName 'dist/windows-preview/After-Preview-0.1.1-Windows-x64-setup.exe'
+          Copy-Item $installer.FullName 'dist/windows-preview/After-Preview-0.1.2-Windows-x64-setup.exe'
           Copy-Item scripts/windows-preview-README.txt dist/windows-preview/README.txt
-          $file = Get-Item 'dist/windows-preview/After-Preview-0.1.1-Windows-x64-setup.exe'
+          $file = Get-Item 'dist/windows-preview/After-Preview-0.1.2-Windows-x64-setup.exe'
           $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $($file.Name)" | Set-Content dist/windows-preview/SHA256SUMS.txt -Encoding utf8NoBOM
           Copy-Item .build/windows-preview-smoke.json,.build/windows-preview-dependencies.json dist/windows-preview/
