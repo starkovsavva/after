@@ -37,8 +37,8 @@ export function formatDate(date: string | number | undefined, language: Language
   const value = new Date(typeof date === 'number' ? date * 1000 : date);
   return Number.isNaN(value.getTime()) ? '' : new Intl.DateTimeFormat(language === 'ru' ? 'ru-RU' : 'en-US', {day:'numeric',month:'short',year:'numeric'}).format(value);
 }
-export function formatDuration(seconds: number | undefined): string {
-  if (seconds === undefined || !Number.isFinite(seconds)) return '';
+export function formatDuration(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds)) return '';
   const value = Math.max(0, Math.floor(seconds));
   return `${Math.floor(value / 60).toString().padStart(2, '0')}:${(value % 60).toString().padStart(2, '0')}`;
 }

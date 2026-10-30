@@ -15,7 +15,7 @@ export interface Meeting {
   id: string;
   title: string;
   startedAt?: number | string;
-  durationSeconds?: number;
+  durationSeconds?: number | null;
   folderId?: string | null;
   hasTranscript?: boolean;
   hasSummary?: boolean;

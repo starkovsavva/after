@@ -36,7 +36,9 @@ struct Engine {
     digest: Option<String>,
 }
 impl LibraryBridge {
-    pub(crate) fn data_root(&self) -> PathBuf { self.root.clone() }
+    pub(crate) fn data_root(&self) -> PathBuf {
+        self.root.clone()
+    }
     pub fn bundled(resource_dir: &Path, default_data_dir: &Path) -> Result<Self, HostError> {
         let root =
             development_override("AFTER_DATA_DIR").unwrap_or_else(|| default_data_dir.into());
@@ -90,20 +92,58 @@ impl LibraryBridge {
     }
     /// Only host-selected files or host-owned recordings may cross this boundary.
     /// The renderer cannot supply a path.
-    pub(crate) fn import_meeting(&self, source: &Path, title: Option<&str>) -> Result<Meeting, HostError> {
-        if !source.is_absolute() { return Err(HostError::invalid()); }
+    pub(crate) fn import_meeting(
+        &self,
+        source: &Path,
+        title: Option<&str>,
+    ) -> Result<Meeting, HostError> {
+        if !source.is_absolute() {
+            return Err(HostError::invalid());
+        }
         let path = source.to_str().ok_or_else(HostError::invalid)?;
-        self.call_with_timeout("import_meeting", json!({"sourcePath": path, "focus": "", "title": title}), IMPORT_TIMEOUT)
+        self.call_with_timeout(
+            "import_meeting",
+            json!({"sourcePath": path, "focus": "", "title": title}),
+            IMPORT_TIMEOUT,
+        )
     }
-    pub(crate) fn media_chunk(&self, id: &str, offset: u64, length: u32) -> Result<MediaChunk, HostError> {
+    pub(crate) fn media_chunk(
+        &self,
+        id: &str,
+        offset: u64,
+        length: u32,
+    ) -> Result<MediaChunk, HostError> {
         validate_id(id)?;
-        if length == 0 || length > 1_048_576 || offset > 9_007_199_254_740_991 { return Err(HostError::invalid()); }
-        self.call("read_media_chunk", json!({"meetingId":id, "offset":offset, "length":length}))
+        if length == 0 || length > 1_048_576 || offset > 9_007_199_254_740_991 {
+            return Err(HostError::invalid());
+        }
+        self.call(
+            "read_media_chunk",
+            json!({"meetingId":id, "offset":offset, "length":length}),
+        )
     }
     pub fn feature_operation(&self, operation: &str, arguments: Value) -> Result<Value, HostError> {
-        let allowed = ["list_tasks", "get_task", "create_task", "update_task", "list_cards", "save_card", "delete_card", "suspend_card", "preview_card_review", "review_card", "undo_card_review"];
-        let command = allowed.iter().copied().find(|value| *value == operation).ok_or_else(HostError::invalid)?;
-        if !arguments.is_object() { return Err(HostError::invalid()); }
+        let allowed = [
+            "list_tasks",
+            "get_task",
+            "create_task",
+            "update_task",
+            "list_cards",
+            "save_card",
+            "delete_card",
+            "suspend_card",
+            "preview_card_review",
+            "review_card",
+            "undo_card_review",
+        ];
+        let command = allowed
+            .iter()
+            .copied()
+            .find(|value| *value == operation)
+            .ok_or_else(HostError::invalid)?;
+        if !arguments.is_object() {
+            return Err(HostError::invalid());
+        }
         self.call(command, arguments)
     }
     pub fn save_folder(&self, input: SaveFolderInput) -> Result<Folder, HostError> {

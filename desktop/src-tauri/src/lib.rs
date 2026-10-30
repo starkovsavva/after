@@ -1,28 +1,39 @@
 pub mod bridge;
-pub mod models;
 mod capture;
 mod media;
+pub mod models;
 
 use bridge::LibraryBridge;
 use models::*;
-use tauri::Manager;
 use serde::Serialize;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use tauri::Manager;
 
 struct RecordingGate(AtomicBool);
 struct RecordingPermit(Arc<RecordingGate>);
 impl RecordingPermit {
     fn acquire(gate: Arc<RecordingGate>) -> Result<Self, HostError> {
-        gate.0.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        gate.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| HostError::new("busy", "A recording operation is already in progress."))?;
         Ok(Self(gate))
     }
 }
-impl Drop for RecordingPermit { fn drop(&mut self) { self.0.0.store(false, Ordering::Release); } }
+impl Drop for RecordingPermit {
+    fn drop(&mut self) {
+        self.0 .0.store(false, Ordering::Release);
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SavedRecording { meeting: Meeting, interrupted: bool }
+struct SavedRecording {
+    meeting: Meeting,
+    interrupted: bool,
+}
 
 fn capture_error(_: String) -> HostError {
     HostError::new("recording_error", "Recording could not be completed. Check microphone permissions and available devices. Any captured audio remains available for recovery.")
@@ -54,25 +65,44 @@ async fn get_meeting(
     background(move || bridge.meeting(meeting_id)).await
 }
 #[tauri::command]
-async fn choose_and_import(state: tauri::State<'_, LibraryBridge>) -> Result<Option<Meeting>, HostError> {
+async fn choose_and_import(
+    state: tauri::State<'_, LibraryBridge>,
+) -> Result<Option<Meeting>, HostError> {
     let bridge = state.inner().clone();
     background(move || {
         #[cfg(windows)]
         {
             let selected = rfd::FileDialog::new()
-                .add_filter("Audio and video", &["mp4", "mov", "m4a", "mp3", "wav", "aiff", "aif", "caf", "flac", "ogg", "webm", "mkv", "aac"])
+                .add_filter(
+                    "Audio and video",
+                    &[
+                        "mp4", "mov", "m4a", "mp3", "wav", "aiff", "aif", "caf", "flac", "ogg",
+                        "webm", "mkv", "aac",
+                    ],
+                )
                 .pick_file();
-            selected.map(|path| bridge.import_meeting(&path, None)).transpose()
+            selected
+                .map(|path| bridge.import_meeting(&path, None))
+                .transpose()
         }
         #[cfg(not(windows))]
         {
             let _ = bridge;
-            Err(HostError::new("unsupported_platform", "Import is not available on this platform."))
+            Err(HostError::new(
+                "unsupported_platform",
+                "Import is not available on this platform.",
+            ))
         }
-    }).await
+    })
+    .await
 }
 #[tauri::command]
-async fn start_recording(state: tauri::State<'_, Arc<capture::Recorder>>, bridge: tauri::State<'_, LibraryBridge>, gate: tauri::State<'_, Arc<RecordingGate>>, mode: String) -> Result<capture::RecordingStatus, HostError> {
+async fn start_recording(
+    state: tauri::State<'_, Arc<capture::Recorder>>,
+    bridge: tauri::State<'_, LibraryBridge>,
+    gate: tauri::State<'_, Arc<RecordingGate>>,
+    mode: String,
+) -> Result<capture::RecordingStatus, HostError> {
     let recorder = state.inner().clone();
     let bridge = bridge.inner().clone();
     let permit = RecordingPermit::acquire(gate.inner().clone())?;
@@ -82,41 +112,72 @@ async fn start_recording(state: tauri::State<'_, Arc<capture::Recorder>>, bridge
         // the recorder creates a child directory inheriting those permissions.
         bridge.workspace()?;
         recorder.start(mode).map_err(capture_error)
-    }).await
+    })
+    .await
 }
 #[tauri::command]
-fn recording_status(state: tauri::State<'_, std::sync::Arc<capture::Recorder>>) -> capture::RecordingStatus { state.status() }
+fn recording_status(
+    state: tauri::State<'_, std::sync::Arc<capture::Recorder>>,
+) -> capture::RecordingStatus {
+    state.status()
+}
 
 #[tauri::command]
-async fn stop_recording(state: tauri::State<'_, Arc<capture::Recorder>>, bridge: tauri::State<'_, LibraryBridge>, gate: tauri::State<'_, Arc<RecordingGate>>, title: String) -> Result<SavedRecording, HostError> {
-    let recorder = state.inner().clone(); let bridge = bridge.inner().clone();
+async fn stop_recording(
+    state: tauri::State<'_, Arc<capture::Recorder>>,
+    bridge: tauri::State<'_, LibraryBridge>,
+    gate: tauri::State<'_, Arc<RecordingGate>>,
+    title: String,
+) -> Result<SavedRecording, HostError> {
+    let recorder = state.inner().clone();
+    let bridge = bridge.inner().clone();
     let permit = RecordingPermit::acquire(gate.inner().clone())?;
     background(move || {
         let _permit = permit;
         let completed = recorder.stop().map_err(capture_error)?;
         let meeting = bridge.import_meeting(&completed.path, Some(&title))?;
-        if let Some(id) = &completed.status.session_id { let _ = recorder.mark_imported(id); }
-        Ok(SavedRecording { meeting, interrupted: completed.status.phase == "interrupted" })
-    }).await
+        if let Some(id) = &completed.status.session_id {
+            let _ = recorder.mark_imported(id);
+        }
+        Ok(SavedRecording {
+            meeting,
+            interrupted: completed.status.phase == "interrupted",
+        })
+    })
+    .await
 }
 
 #[tauri::command]
-async fn recoverable_recordings(state: tauri::State<'_, std::sync::Arc<capture::Recorder>>) -> Result<Vec<capture::RecoverableRecording>, HostError> {
+async fn recoverable_recordings(
+    state: tauri::State<'_, std::sync::Arc<capture::Recorder>>,
+) -> Result<Vec<capture::RecoverableRecording>, HostError> {
     let recorder = state.inner().clone();
     background(move || recorder.recoverable().map_err(capture_error)).await
 }
 
 #[tauri::command]
-async fn recover_recording(state: tauri::State<'_, Arc<capture::Recorder>>, bridge: tauri::State<'_, LibraryBridge>, gate: tauri::State<'_, Arc<RecordingGate>>, session_id: String) -> Result<SavedRecording, HostError> {
-    let recorder = state.inner().clone(); let bridge = bridge.inner().clone();
+async fn recover_recording(
+    state: tauri::State<'_, Arc<capture::Recorder>>,
+    bridge: tauri::State<'_, LibraryBridge>,
+    gate: tauri::State<'_, Arc<RecordingGate>>,
+    session_id: String,
+) -> Result<SavedRecording, HostError> {
+    let recorder = state.inner().clone();
+    let bridge = bridge.inner().clone();
     let permit = RecordingPermit::acquire(gate.inner().clone())?;
     background(move || {
         let _permit = permit;
-        let completed = recorder.recover(session_id.clone()).map_err(capture_error)?;
+        let completed = recorder
+            .recover(session_id.clone())
+            .map_err(capture_error)?;
         let meeting = bridge.import_meeting(&completed.path, None)?;
         let _ = recorder.mark_imported(&session_id);
-        Ok(SavedRecording { meeting, interrupted: true })
-    }).await
+        Ok(SavedRecording {
+            meeting,
+            interrupted: true,
+        })
+    })
+    .await
 }
 #[tauri::command]
 async fn save_note(
@@ -144,7 +205,11 @@ async fn search_library(
     background(move || bridge.search(query, folder_id)).await
 }
 #[tauri::command]
-async fn feature_operation(state: tauri::State<'_, LibraryBridge>, operation: String, args: serde_json::Value) -> Result<serde_json::Value, HostError> {
+async fn feature_operation(
+    state: tauri::State<'_, LibraryBridge>,
+    operation: String,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, HostError> {
     let bridge = state.inner().clone();
     background(move || bridge.feature_operation(&operation, args)).await
 }
@@ -162,27 +227,40 @@ fn local_navigation(url: &tauri::Url) -> bool {
 }
 
 fn library_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
-    builder.register_asynchronous_uri_scheme_protocol("after-media", |context, request, responder| {
-        if context.webview_label() != "main" {
-            responder.respond(tauri::http::Response::builder().status(403).body(Vec::new()).unwrap());
-            return;
-        }
-        let bridge = context.app_handle().state::<LibraryBridge>().inner().clone();
-        tauri::async_runtime::spawn_blocking(move || responder.respond(media::respond(&bridge, request)));
-    }).invoke_handler(tauri::generate_handler![
-        get_workspace,
-        get_meeting,
-        choose_and_import,
-        start_recording,
-        recording_status,
-        stop_recording,
-        recoverable_recordings,
-        recover_recording,
-        feature_operation,
-        save_note,
-        save_folder,
-        search_library
-    ])
+    builder
+        .register_asynchronous_uri_scheme_protocol("after-media", |context, request, responder| {
+            if context.webview_label() != "main" {
+                responder.respond(
+                    tauri::http::Response::builder()
+                        .status(403)
+                        .body(Vec::new())
+                        .unwrap(),
+                );
+                return;
+            }
+            let bridge = context
+                .app_handle()
+                .state::<LibraryBridge>()
+                .inner()
+                .clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(media::respond(&bridge, request))
+            });
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_workspace,
+            get_meeting,
+            choose_and_import,
+            start_recording,
+            recording_status,
+            stop_recording,
+            recoverable_recordings,
+            recover_recording,
+            feature_operation,
+            save_note,
+            save_folder,
+            search_library
+        ])
 }
 
 fn application_context<R: tauri::Runtime>() -> tauri::Context<R> {
@@ -195,7 +273,9 @@ pub fn run() {
             let resource_dir = app.path().resource_dir()?;
             let data_dir = app.path().app_local_data_dir()?;
             let bridge = LibraryBridge::bundled(&resource_dir, &data_dir)?;
-            app.manage(std::sync::Arc::new(capture::Recorder::new(bridge.data_root())));
+            app.manage(std::sync::Arc::new(capture::Recorder::new(
+                bridge.data_root(),
+            )));
             app.manage(Arc::new(RecordingGate(AtomicBool::new(false))));
             app.manage(bridge);
             tauri::WebviewWindowBuilder::new(
@@ -213,9 +293,15 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let operation_running = window.try_state::<Arc<RecordingGate>>().is_some_and(|gate| gate.0.load(Ordering::Acquire));
-                let recording_active = window.try_state::<Arc<capture::Recorder>>().is_some_and(|recorder| recorder.status().session_id.is_some());
-                if operation_running || recording_active { api.prevent_close(); }
+                let operation_running = window
+                    .try_state::<Arc<RecordingGate>>()
+                    .is_some_and(|gate| gate.0.load(Ordering::Acquire));
+                let recording_active = window
+                    .try_state::<Arc<capture::Recorder>>()
+                    .is_some_and(|recorder| recorder.status().session_id.is_some());
+                if operation_running || recording_active {
+                    api.prevent_close();
+                }
             }
         })
         .run(application_context())
@@ -325,7 +411,13 @@ mod ipc_tests {
         // is distinct from the permission failure returned for every other case.
         let allowed = request(&main, "get_workspace", json!({}), local_origin()).unwrap_err();
         assert_eq!(allowed["code"], "engine_failure");
-        let invalid = request(&main, "feature_operation", json!({"operation":"read_file","args":{}}), local_origin()).unwrap_err();
+        let invalid = request(
+            &main,
+            "feature_operation",
+            json!({"operation":"read_file","args":{}}),
+            local_origin(),
+        )
+        .unwrap_err();
         assert_eq!(invalid["code"], "invalid_request");
         for (window, origin, command) in [
             (&main, "https://example.org", "get_workspace"),
@@ -360,9 +452,25 @@ mod ipc_tests {
         assert_eq!(initial["notes"], json!([]));
         let task = request(&main, "feature_operation", json!({"operation":"create_task","args":{"title":"IPC task","operationId":"ipc-task-create"}}), local_origin()).unwrap();
         assert_eq!(task["title"], "IPC task");
-        let tasks = request(&main, "feature_operation", json!({"operation":"list_tasks","args":{}}), local_origin()).unwrap();
-        assert!(tasks["tasks"].as_array().unwrap().iter().any(|item| item["id"] == task["id"]));
-        let cards = request(&main, "feature_operation", json!({"operation":"list_cards","args":{}}), local_origin()).unwrap();
+        let tasks = request(
+            &main,
+            "feature_operation",
+            json!({"operation":"list_tasks","args":{}}),
+            local_origin(),
+        )
+        .unwrap();
+        assert!(tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == task["id"]));
+        let cards = request(
+            &main,
+            "feature_operation",
+            json!({"operation":"list_cards","args":{}}),
+            local_origin(),
+        )
+        .unwrap();
         assert_eq!(cards["cards"], json!([]));
         let folder = request(
             &main,
@@ -389,5 +497,47 @@ mod ipc_tests {
         assert_eq!(workspace["notes"][0]["title"], "Edited");
         assert_eq!(workspace["notes"][0]["revision"], 2);
         assert!(fixture.path().join("data/core.sqlite").is_file());
+        let source = fixture.path().join("synthetic.wav");
+        let bytes: Vec<u8> = (0..1_048_600).map(|n| (n % 251) as u8).collect();
+        std::fs::write(&source, &bytes).unwrap();
+        let bridge = app.state::<LibraryBridge>();
+        let meeting = bridge
+            .import_meeting(&source, Some("Synthetic media"))
+            .unwrap();
+        let request = tauri::http::Request::builder()
+            .uri(format!("http://after-media.localhost/{}", meeting.id))
+            .header("Range", "bytes=101-150")
+            .body(Vec::new())
+            .unwrap();
+        let response = media::respond(&bridge, request);
+        assert_eq!(response.status(), tauri::http::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.headers()["content-range"], "bytes 101-150/1048600");
+        assert_eq!(response.body(), &bytes[101..151]);
+        let full = tauri::http::Request::builder()
+            .uri(format!("http://after-media.localhost/{}", meeting.id))
+            .body(Vec::new())
+            .unwrap();
+        let response = media::respond(&bridge, full);
+        assert_eq!(response.status(), tauri::http::StatusCode::OK);
+        assert_eq!(response.body(), &bytes);
+        let head = tauri::http::Request::builder()
+            .method("HEAD")
+            .uri(format!("http://after-media.localhost/{}", meeting.id))
+            .body(Vec::new())
+            .unwrap();
+        let response = media::respond(&bridge, head);
+        assert_eq!(response.status(), tauri::http::StatusCode::OK);
+        assert_eq!(response.headers()["content-length"], "1048600");
+        assert!(response.body().is_empty());
+        let bad_origin = tauri::http::Request::builder()
+            .uri(format!("http://after-media.localhost/{}", meeting.id))
+            .header("Origin", "https://example.org")
+            .body(Vec::new())
+            .unwrap();
+        assert_eq!(
+            media::respond(&bridge, bad_origin).status(),
+            tauri::http::StatusCode::FORBIDDEN
+        );
+        assert_eq!(std::fs::read(source).unwrap(), bytes);
     }
 }
