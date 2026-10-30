@@ -358,6 +358,12 @@ mod ipc_tests {
         let main = window(&app, "main", fixture.path());
         let initial = request(&main, "get_workspace", json!({}), local_origin()).unwrap();
         assert_eq!(initial["notes"], json!([]));
+        let task = request(&main, "feature_operation", json!({"operation":"create_task","args":{"title":"IPC task","operationId":"ipc-task-create"}}), local_origin()).unwrap();
+        assert_eq!(task["title"], "IPC task");
+        let tasks = request(&main, "feature_operation", json!({"operation":"list_tasks","args":{}}), local_origin()).unwrap();
+        assert!(tasks["tasks"].as_array().unwrap().iter().any(|item| item["id"] == task["id"]));
+        let cards = request(&main, "feature_operation", json!({"operation":"list_cards","args":{}}), local_origin()).unwrap();
+        assert_eq!(cards["cards"], json!([]));
         let folder = request(
             &main,
             "save_folder",
