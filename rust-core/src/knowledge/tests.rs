@@ -376,6 +376,9 @@ fn public_answer_uses_existing_settings_and_localhost_ai_stack() {
                     Err(e) => panic!("{e}"),
                 }
             };
+            // Darwin can inherit the listener's nonblocking flag. HTTP headers
+            // may arrive after accept(), so use the bounded blocking read below.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

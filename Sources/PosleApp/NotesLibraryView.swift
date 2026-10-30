@@ -52,12 +52,12 @@ private final class LibraryNoteDocument: ObservableObject {
     @discardableResult func flush() -> Bool {
         pending?.cancel(); pending = nil
         guard var value = session, value.hasUnsavedChanges else { return true }
-        guard !value.conflicted else { saveError = "Заметка изменилась в другом окне. Ваши правки сохранены в редакторе."; return false }
+        guard !value.conflicted else { saveError = L("Заметка изменилась в другом окне. Ваши правки сохранены в редакторе."); return false }
         guard let saved = notes.save(value.draft) else {
             notes.reload()
             value.receive(notes.workspace.notes.first { $0.id == value.baseline.id })
             session = value
-            saveError = value.conflicted ? "Заметка изменилась в другом окне. Ваши правки сохранены в редакторе." : (notes.error ?? "Не удалось сохранить заметку.")
+            saveError = value.conflicted ? L("Заметка изменилась в другом окне. Ваши правки сохранены в редакторе.") : (notes.error ?? L("Не удалось сохранить заметку."))
             return false
         }
         value.didPersist(saved); session = value; saveError = ""
@@ -73,7 +73,7 @@ private final class LibraryNoteDocument: ObservableObject {
     func receive(_ note: CapturedNote?) {
         guard var value = session else { return }
         value.receive(note); session = value
-        if value.conflicted { saveError = "Заметка изменилась в другом окне. Ваши правки сохранены в редакторе." }
+        if value.conflicted { saveError = L("Заметка изменилась в другом окне. Ваши правки сохранены в редакторе.") }
     }
     @discardableResult func clear() -> Bool {
         guard flush() else { return false }
@@ -102,7 +102,7 @@ private final class LibraryNoteDocument: ObservableObject {
     @discardableResult func saveCopy() -> CapturedNote? {
         guard let session, let saved = notes.save(session.asNewNote()) else { return nil }
         self.session = NoteEditingSession(note: saved); saveError = ""; notes.selectedNoteID = saved.id
-        notes.notice = "Копия сохранена. Вложения остались в исходной заметке."
+        notes.notice = L("Копия сохранена. Вложения остались в исходной заметке.")
         return saved
     }
 }
@@ -155,8 +155,8 @@ struct NotesLibraryView: View {
             else {
                 VStack(spacing: 14) {
                     Image(systemName: "note.text").font(.system(size: 30)).foregroundStyle(Ink.accent).accessibilityHidden(true)
-                    Text(filter == "trash" ? "Корзина пуста" : "Выберите заметку").font(AppTypography.heading)
-                    if filter != "trash" { Button("Новая заметка") { createNote() }.buttonStyle(.borderedProminent).tint(Ink.actionFill) }
+                    Text(filter == "trash" ? L("Корзина пуста") : L("Выберите заметку")).font(AppTypography.heading)
+                    if filter != "trash" { Button(L("Новая заметка")) { createNote() }.buttonStyle(.borderedProminent).tint(Ink.actionFill) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.background(Ink.paper)
@@ -191,9 +191,9 @@ struct NotesLibraryView: View {
             .sheet(item: $advanced, onDismiss: { notes.reload(); document.receive(persisted) }) { note in
                 NoteEditorView(notes: notes, note: note).environmentObject(app)
             }
-            .alert("Новая папка", isPresented: $showFolder) {
-                TextField("Название папки", text: $newFolder)
-                Button(folderNoteID == nil ? "Создать" : "Создать и переместить") {
+            .alert(L("Новая папка"), isPresented: $showFolder) {
+                TextField(L("Название папки"), text: $newFolder)
+                Button(folderNoteID == nil ? L("Создать") : L("Создать и переместить")) {
                     let name = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !name.isEmpty else { return }
                     if let noteID = folderNoteID {
@@ -203,43 +203,43 @@ struct NotesLibraryView: View {
                     }
                     newFolder = ""; folderNoteID = nil
                 }.disabled(newFolder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                Button("Отмена", role: .cancel) { newFolder = ""; folderNoteID = nil }
+                Button(L("Отмена"), role: .cancel) { newFolder = ""; folderNoteID = nil }
             }
-            .confirmationDialog("Удалить заметку навсегда?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
-                Button("Удалить навсегда", role: .destructive) {
+            .confirmationDialog(L("Удалить заметку навсегда?"), isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible) {
+                Button(L("Удалить навсегда"), role: .destructive) {
                     guard let note = deleting else { return }
                     notes.purge(note)
                     if !notes.workspace.notes.contains(where: { $0.id == note.id }) { _ = document.clear(); if let first = visibleNotes.first { select(first) } }
                     deleting = nil
                 }
-                Button("Отмена", role: .cancel) { deleting = nil }
-            } message: { Text("Вложения этой заметки тоже будут удалены.") }
-            .confirmationDialog("Открыть сохранённую версию?", isPresented: $confirmReload, titleVisibility: .visible) {
-                Button("Открыть сохранённую версию", role: .destructive) { document.reloadPersisted() }
-                Button("Продолжить редактирование", role: .cancel) {}
-            } message: { Text("Несохранённые правки в этом редакторе будут заменены.") }
+                Button(L("Отмена"), role: .cancel) { deleting = nil }
+            } message: { Text(L("Вложения этой заметки тоже будут удалены.")) }
+            .confirmationDialog(L("Открыть сохранённую версию?"), isPresented: $confirmReload, titleVisibility: .visible) {
+                Button(L("Открыть сохранённую версию"), role: .destructive) { document.reloadPersisted() }
+                Button(L("Продолжить редактирование"), role: .cancel) {}
+            } message: { Text(L("Несохранённые правки в этом редакторе будут заменены.")) }
     }
     private var noteList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            AppListHeader(title: notes.folder(app.folderSelection)?.name ?? "Заметки") {
+            AppListHeader(title: notes.folder(app.folderSelection)?.name ?? L("Заметки")) {
                 Menu {
-                    Button("Новая заметка") { createNote() }
-                    Button("Новая папка…") { folderNoteID = nil; showFolder = true }
-                } label: { Image(systemName: "square.and.pencil").frame(width: 26, height: 26) }.menuStyle(.borderlessButton).frame(width: 30).help("Создать заметку или папку")
+                    Button(L("Новая заметка")) { createNote() }
+                    Button(L("Новая папка…")) { folderNoteID = nil; showFolder = true }
+                } label: { Image(systemName: "square.and.pencil").frame(width: 26, height: 26) }.menuStyle(.borderlessButton).frame(width: 30).help(L("Создать заметку или папку"))
             }
             VStack(spacing: 9) {
                 HStack(spacing: 7) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Поиск заметок", text: $query).textFieldStyle(.plain).accessibilityLabel("Поиск по заголовкам, тексту, тегам и вложениям")
-                    if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Очистить поиск заметок") }
+                    TextField(L("Поиск заметок"), text: $query).textFieldStyle(.plain).accessibilityLabel(L("Поиск по заголовкам, тексту, тегам и вложениям"))
+                    if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel(L("Очистить поиск заметок")) }
                 }.padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 7))
-                Picker("Показать", selection: $filter) {
-                    Text("Все заметки").tag("all"); Text("Без встречи").tag("inbox")
-                    Text("Закреплённые").tag("pinned"); Text("Корзина").tag("trash")
+                Picker(L("Показать"), selection: $filter) {
+                    Text(L("Все заметки")).tag("all"); Text(L("Без встречи")).tag("inbox")
+                    Text(L("Закреплённые")).tag("pinned"); Text(L("Корзина")).tag("trash")
                 }.labelsHidden()
                 if !folders.isEmpty && filter != "trash" && app.folderSelection == nil {
-                    Picker("Папка", selection: $folder) {
-                        Text("Все папки").tag("")
+                    Picker(L("Папка"), selection: $folder) {
+                        Text(L("Все папки")).tag("")
                         ForEach(folders) { Text($0.name).tag($0.id) }
                     }.labelsHidden()
                 }
@@ -253,24 +253,24 @@ struct NotesLibraryView: View {
                         .listRowBackground(Color.clear)
                         .contextMenu {
                             if note.trashedAt == nil {
-                                Button(note.pinned ? "Открепить" : "Закрепить") { if select(note) { document.edit { $0.pinned.toggle() }; _ = document.flush() } }
-                                Button("Переместить в корзину", role: .destructive) { trash(note) }
+                                Button(note.pinned ? L("Открепить") : L("Закрепить")) { if select(note) { document.edit { $0.pinned.toggle() }; _ = document.flush() } }
+                                Button(L("Переместить в корзину"), role: .destructive) { trash(note) }
                             } else {
-                                Button("Восстановить") { restore(note) }
-                                Button("Удалить навсегда", role: .destructive) { deleting = note }
+                                Button(L("Восстановить")) { restore(note) }
+                                Button(L("Удалить навсегда"), role: .destructive) { deleting = note }
                             }
                         }
                 }
             }.listStyle(.plain).scrollContentBackground(.hidden)
                 .overlay(alignment: .top) {
                     if visibleNotes.isEmpty {
-                        Text(query.isEmpty ? (filter == "trash" ? "Корзина пуста" : "Нет заметок") : "Ничего не найдено")
+                        Text(query.isEmpty ? (filter == "trash" ? L("Корзина пуста") : L("Нет заметок")) : L("Ничего не найдено"))
                             .font(AppTypography.control).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 28)
                             .allowsHitTesting(false)
                     }
                 }
             Divider()
-            Text("Всего: \(visibleNotes.count)").font(AppTypography.caption).foregroundStyle(.secondary).padding(.horizontal, 16).frame(height: 32)
+            Text(LF("Всего: {0}", arguments: [String(describing: (visibleNotes.count))])).font(AppTypography.caption).foregroundStyle(.secondary).padding(.horizontal, 16).frame(height: 32)
         }.background(Ink.soft)
     }
     private func row(_ note: CapturedNote) -> some View {
@@ -297,24 +297,24 @@ struct NotesLibraryView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 if draft.trashedAt != nil {
-                    Label("В корзине", systemImage: "trash").font(AppTypography.control).foregroundStyle(.secondary)
+                    Label(L("В корзине"), systemImage: "trash").font(AppTypography.control).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Восстановить") { restore(draft) }.buttonStyle(.bordered)
-                    Button { deleting = persisted ?? draft } label: { Image(systemName: "trash.slash") }.help("Удалить навсегда")
+                    Button(L("Восстановить")) { restore(draft) }.buttonStyle(.bordered)
+                    Button { deleting = persisted ?? draft } label: { Image(systemName: "trash.slash") }.help(L("Удалить навсегда"))
                 } else {
-                    Button { document.edit { $0.pinned.toggle() }; _ = document.flush() } label: { Image(systemName: draft.pinned ? "pin.fill" : "pin") }.help(draft.pinned ? "Открепить" : "Закрепить")
+                    Button { document.edit { $0.pinned.toggle() }; _ = document.flush() } label: { Image(systemName: draft.pinned ? "pin.fill" : "pin") }.help(draft.pinned ? L("Открепить") : L("Закрепить"))
                     Button {
                         guard document.flush(), let note = persisted else { return }
                         advanced = note
-                    } label: { Image(systemName: "paperclip") }.help("Вложения, источник и свойства заметки")
+                    } label: { Image(systemName: "paperclip") }.help(L("Вложения, источник и свойства заметки"))
                     Spacer()
-                    Text(!document.saveError.isEmpty ? "Не сохранено" : document.dirty ? "Сохраняю…" : "Сохранено").font(AppTypography.caption).foregroundStyle(.secondary)
+                    Text(!document.saveError.isEmpty ? L("Не сохранено") : document.dirty ? L("Сохраняю…") : L("Сохранено")).font(AppTypography.caption).foregroundStyle(.secondary)
                     Menu {
-                        Button("RTF с форматированием…") { export(draft, format: "rtf") }
-                        Button("Текст…") { export(draft, format: "txt") }
+                        Button(L("RTF с форматированием…")) { export(draft, format: "rtf") }
+                        Button(L("Текст…")) { export(draft, format: "txt") }
                         Button("Markdown…") { export(draft, format: "md") }
-                    } label: { Image(systemName: "square.and.arrow.up") }.menuStyle(.borderlessButton).frame(width: 28).help("Экспорт заметки")
-                    Button { trash(draft) } label: { Image(systemName: "trash") }.help("Переместить в корзину")
+                    } label: { Image(systemName: "square.and.arrow.up") }.menuStyle(.borderlessButton).frame(width: 28).help(L("Экспорт заметки"))
+                    Button { trash(draft) } label: { Image(systemName: "trash") }.help(L("Переместить в корзину"))
                 }
             }.buttonStyle(.borderless).frame(height: 40).padding(.horizontal, 20)
             Divider()
@@ -322,23 +322,23 @@ struct NotesLibraryView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Label(document.saveError, systemImage: "exclamationmark.circle").font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled)
                     HStack {
-                        if document.session?.conflicted != true { Button("Повторить") { _ = document.flush() } }
-                        Button("Сохранить копию") { if let saved = document.saveCopy() { filter = "all"; folder = ""; query = ""; select(saved) } }
-                        if persisted != nil { Button("Открыть сохранённую версию…") { confirmReload = true } }
+                        if document.session?.conflicted != true { Button(L("Повторить")) { _ = document.flush() } }
+                        Button(L("Сохранить копию")) { if let saved = document.saveCopy() { filter = "all"; folder = ""; query = ""; select(saved) } }
+                        if persisted != nil { Button(L("Открыть сохранённую версию…")) { confirmReload = true } }
                     }.font(AppTypography.caption)
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Ink.warning.opacity(0.06))
             }
             VStack(alignment: .leading, spacing: 8) {
-                TextField("Новая заметка", text: binding(\.title)).font(AppTypography.pageTitle).textFieldStyle(.plain).disabled(draft.trashedAt != nil)
-                    .accessibilityLabel("Заголовок заметки")
+                TextField(L("Новая заметка"), text: binding(\.title)).font(AppTypography.pageTitle).textFieldStyle(.plain).disabled(draft.trashedAt != nil)
+                    .accessibilityLabel(L("Заголовок заметки"))
                 HStack(spacing: 10) {
                     Text(Date(timeIntervalSince1970: draft.updatedAt), style: .date).font(AppTypography.caption).foregroundStyle(.secondary)
                     if let meetingID = draft.meetingID {
                         if let meeting = app.allNoteMeetings.first(where: { $0.id == meetingID }) {
                             Button { if document.flush() { app.openMeeting(meetingID, tab: "notes") } } label: { Label(meeting.title, systemImage: "waveform").lineLimit(1) }.buttonStyle(.link).font(AppTypography.caption)
                         } else {
-                            Label("Встреча недоступна", systemImage: "waveform").font(AppTypography.caption).foregroundStyle(.secondary)
-                                .help("Связь с встречей сохранена. После восстановления из Корзины она снова откроется.")
+                            Label(L("Встреча недоступна"), systemImage: "waveform").font(AppTypography.caption).foregroundStyle(.secondary)
+                                .help(L("Связь с встречей сохранена. После восстановления из Корзины она снова откроется."))
                         }
                     }
                     Spacer(minLength: 0)
@@ -362,16 +362,16 @@ struct NotesLibraryView: View {
                     Divider()
                     HStack(spacing: 10) {
                         Menu {
-                            Button(draft.meetingID == nil ? "Без папки" : "Как у встречи") { moveNote(to: nil) }
+                            Button(draft.meetingID == nil ? L("Без папки") : L("Как у встречи")) { moveNote(to: nil) }
                             ForEach(folders) { folder in Button(folder.name) { moveNote(to: folder) } }
                             Divider()
-                            Button("Новая папка…") { folderNoteID = draft.id; showFolder = true }
-                        } label: { Label(notes.folder(noteFolderID(draft))?.name ?? (draft.folder.isEmpty ? "Папка" : draft.folder), systemImage: "folder").lineLimit(1) }.menuStyle(.borderlessButton).frame(maxWidth: 170)
-                        TextField("#теги через пробел", text: Binding(get: { tagsInput }, set: { value in
+                            Button(L("Новая папка…")) { folderNoteID = draft.id; showFolder = true }
+                        } label: { Label(notes.folder(noteFolderID(draft))?.name ?? (draft.folder.isEmpty ? L("Папка") : draft.folder), systemImage: "folder").lineLimit(1) }.menuStyle(.borderlessButton).frame(maxWidth: 170)
+                        TextField(L("#теги через пробел"), text: Binding(get: { tagsInput }, set: { value in
                             tagsInput = value
                             let tags = value.split { $0.isWhitespace || $0 == "," }.map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "#")) }.filter { !$0.isEmpty }
                             document.edit { $0.tags = Array(NSOrderedSet(array: tags)) as? [String] ?? tags }
-                        })).textFieldStyle(.plain).font(AppTypography.caption).accessibilityLabel("Теги заметки")
+                        })).textFieldStyle(.plain).font(AppTypography.caption).accessibilityLabel(L("Теги заметки"))
                     }.frame(height: 30)
                 }
             }.padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 14)

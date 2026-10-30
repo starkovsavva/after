@@ -197,7 +197,7 @@ final class CalendarStore: ObservableObject {
             visibleCalendarIDs = preferences.visibleCalendarIDs
         } catch {
             preferenceLoadFailed = true
-            self.error = "Не удалось прочитать связи с календарём. Файл сохранён без изменений: \(error.localizedDescription)"
+            self.error = LF("Не удалось прочитать связи с календарём. Файл сохранён без изменений: {0}", arguments: [String(describing: error.localizedDescription)])
         }
         do {
             let url = try stateURL(filename: "calendar-view.json")
@@ -208,7 +208,7 @@ final class CalendarStore: ObservableObject {
             }
         } catch {
             viewPreferenceLoadFailed = true
-            if self.error == nil { self.error = "Не удалось прочитать вид календаря. Файл calendar-view.json сохранён без изменений." }
+            if self.error == nil { self.error = L("Не удалось прочитать вид календаря. Файл calendar-view.json сохранён без изменений.") }
         }
         permissionDenied = [.denied, .restricted, .writeOnly].contains(authorizationStatus)
         // Existing explicit opt-in survives restart, but never asks the OS for access here.
@@ -263,9 +263,9 @@ final class CalendarStore: ObservableObject {
     private var authorizationStatus: EKAuthorizationStatus { readClient?.authorizationStatus() ?? .notDetermined }
 
     func connect() async {
-        guard featureEnabled else { error = "Включите календарь в возможностях этой папки или приложения."; return }
+        guard featureEnabled else { error = L("Включите календарь в возможностях этой папки или приложения."); return }
         guard !requesting, let readClient else { return }
-        guard !preferenceLoadFailed else { error = "Сначала восстановите файл calendar-state.json: новые связи не будут записаны поверх повреждённых."; return }
+        guard !preferenceLoadFailed else { error = L("Сначала восстановите файл calendar-state.json: новые связи не будут записаны поверх повреждённых."); return }
         requesting = true
         let generation = connectionGeneration
         defer { requesting = false }
@@ -294,8 +294,8 @@ final class CalendarStore: ObservableObject {
             permissionDenied = [.denied, .restricted, .writeOnly].contains(status)
             guard status == .fullAccess else {
                 error = status == .notDetermined
-                    ? "macOS пока не подтвердила доступ к календарям. Повторите подключение."
-                    : "Разрешите «После» полный доступ к календарям в настройках macOS, затем вернитесь в приложение."
+                    ? L("macOS пока не подтвердила доступ к календарям. Повторите подключение.")
+                    : L("Разрешите «После» полный доступ к календарям в настройках macOS, затем вернитесь в приложение.")
                 return
             }
             activate()
@@ -363,7 +363,7 @@ final class CalendarStore: ObservableObject {
         guard authorizationStatus == .fullAccess else {
             suspendConnection()
             permissionDenied = [.denied, .restricted, .writeOnly].contains(authorizationStatus)
-            if permissionDenied { error = "Разрешите «После» полный доступ к календарям в настройках macOS." }
+            if permissionDenied { error = L("Разрешите «После» полный доступ к календарям в настройках macOS.") }
             return
         }
         if !connected { activate(); return }
@@ -499,7 +499,7 @@ final class CalendarStore: ObservableObject {
         let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: chosen)
         return eventStore.events(matching: predicate).map { event in
             CalendarAgendaEvent(id: event.eventIdentifier + ":" + String(event.startDate.timeIntervalSince1970), eventID: event.eventIdentifier,
-                title: event.title ?? "Без названия", start: event.startDate, end: event.endDate, allDay: event.isAllDay,
+                title: event.title ?? L("Без названия"), start: event.startDate, end: event.endDate, allDay: event.isAllDay,
                 calendarID: event.calendar.calendarIdentifier, calendarTitle: event.calendar.title,
                 account: event.calendar.source.title, color: NSColor(cgColor: event.calendar.cgColor) ?? .systemPurple,
                 writable: event.calendar.allowsContentModifications && !event.hasRecurrenceRules)
@@ -597,22 +597,22 @@ final class CalendarStore: ObservableObject {
 
     /// A new block is explicit. A persisted creation intent plus marker recovers an interrupted save.
     @discardableResult func schedule(task: LibraryTask?, title: String, start: Date, end: Date, calendarID: String, expected: CalendarTaskLink? = nil) -> Bool {
-        guard featureEnabled, task.map { tasksEnabled && (taskIsEnabled?($0) ?? true) } ?? true else { error = "Включите нужную возможность в настройках."; return false }
-        guard !preview, connected, let eventStore, !preferenceLoadFailed else { error = "Сначала подключите календарь."; return false }
+        guard featureEnabled, task.map { tasksEnabled && (taskIsEnabled?($0) ?? true) } ?? true else { error = L("Включите нужную возможность в настройках."); return false }
+        guard !preview, connected, let eventStore, !preferenceLoadFailed else { error = L("Сначала подключите календарь."); return false }
         guard end > start, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            error = "Укажите название и время окончания позже начала."; return false
+            error = L("Укажите название и время окончания позже начала."); return false
         }
         guard let calendar = eventStore.calendar(withIdentifier: calendarID), calendar.allowsContentModifications else {
-            error = "Этот календарь недоступен для записи. Выберите другой."; return false
+            error = L("Этот календарь недоступен для записи. Выберите другой."); return false
         }
         do {
             var link: CalendarTaskLink? = task.flatMap { self.link(for: $0) }
             var event: EKEvent
             if let existing = link {
-                guard !existing.conflict && !existing.sourceChanged else { error = "Сначала разрешите конфликт связанной задачи."; return false }
+                guard !existing.conflict && !existing.sourceChanged else { error = L("Сначала разрешите конфликт связанной задачи."); return false }
                 guard let recovered = findEvent(existing) else {
                     if !existing.eventID.isEmpty || existing.missing {
-                        error = "Связанное событие удалено или недоступно. Сначала отвяжите его, чтобы создать новое."; return false
+                        error = L("Связанное событие удалено или недоступно. Сначала отвяжите его, чтобы создать новое."); return false
                     }
                     event = EKEvent(eventStore: eventStore); event.timeZone = .current
                     event.url = existing.marker
@@ -621,10 +621,10 @@ final class CalendarStore: ObservableObject {
                 if let expected {
                     guard recovered.title == expected.lastEventTitle, recovered.startDate == expected.start,
                           recovered.endDate == expected.end, recovered.calendar.calendarIdentifier == expected.calendarID else {
-                        error = "Событие изменилось в календаре. Закройте редактор и откройте его снова: ваши правки не перезаписаны."; refresh(); return false
+                        error = L("Событие изменилось в календаре. Закройте редактор и откройте его снова: ваши правки не перезаписаны."); refresh(); return false
                     }
                 } else {
-                    error = "Для задачи уже создан блок времени. Закройте и откройте редактор, чтобы обновить данные."; refresh(); return false
+                    error = L("Для задачи уже создан блок времени. Закройте и откройте редактор, чтобы обновить данные."); refresh(); return false
                 }
                 event = recovered
             } else {
@@ -638,7 +638,7 @@ final class CalendarStore: ObservableObject {
                     event.url = link!.marker
                 }
             }
-            guard !event.hasRecurrenceRules else { error = "Повторяющееся событие измените в системном Календаре."; return false }
+            guard !event.hasRecurrenceRules else { error = L("Повторяющееся событие измените в системном Календаре."); return false }
             event.calendar = calendar; event.startDate = start; event.endDate = end; event.isAllDay = false
             event.title = task.map { CalendarTaskLink.eventTitle(title, completed: $0.completed) } ?? title
             try eventStore.save(event, span: .thisEvent, commit: true)
@@ -646,7 +646,7 @@ final class CalendarStore: ObservableObject {
                 update(&link, from: event, task: task); replace(link); try persist()
             }
             selectedCalendarID = calendarID; try persist(); error = nil; refresh(); return true
-        } catch { self.error = "Не удалось сохранить событие: \(error.localizedDescription)"; return false }
+        } catch { self.error = LF("Не удалось сохранить событие: {0}", arguments: [String(describing: error.localizedDescription)]); return false }
     }
 
     private func saveNew(_ event: EKEvent, task: LibraryTask?, existing: CalendarTaskLink, title: String, start: Date, end: Date, calendar: EKCalendar) throws -> Bool {
@@ -661,7 +661,7 @@ final class CalendarStore: ObservableObject {
     }
 
     @discardableResult func edit(event item: CalendarAgendaEvent, title: String, start: Date, end: Date, calendarID: String) -> Bool {
-        guard featureEnabled, item.taskID == nil || tasksEnabled else { error = "Включите нужную возможность в настройках."; return false }
+        guard featureEnabled, item.taskID == nil || tasksEnabled else { error = L("Включите нужную возможность в настройках."); return false }
         if let taskID = item.taskID, let task = task(for: taskID) {
             return schedule(task: task, title: title, start: start, end: end, calendarID: calendarID, expected: link(for: task))
         }
@@ -670,11 +670,11 @@ final class CalendarStore: ObservableObject {
               event.calendar.allowsContentModifications, !event.hasRecurrenceRules,
               let calendar = eventStore.calendar(withIdentifier: calendarID), calendar.allowsContentModifications,
               end > start, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            error = "Событие изменилось или недоступно для редактирования. Обновите календарь."; return false
+            error = L("Событие изменилось или недоступно для редактирования. Обновите календарь."); return false
         }
         guard event.title == item.title, event.startDate == item.start, event.endDate == item.end,
               event.calendar.calendarIdentifier == item.calendarID else {
-            error = "Событие изменилось в календаре. Закройте редактор и откройте его снова, чтобы сохранить обе правки."; refresh(); return false
+            error = L("Событие изменилось в календаре. Закройте редактор и откройте его снова, чтобы сохранить обе правки."); refresh(); return false
         }
         // Foreign events are edited only from their explicit editor. Never replace attendees, URL, notes or alerts.
         do {
@@ -701,7 +701,7 @@ final class CalendarStore: ObservableObject {
             } else if let completed = CalendarTaskLink.completion(in: event.title ?? ""), completed != task.completed {
                 notes?.complete(task, completed: completed)
                 guard notes?.tasks.first(where: { $0.id == task.id })?.completed == completed else {
-                    error = "Не удалось изменить задачу. Календарь сохранён без изменений."; return
+                    error = L("Не удалось изменить задачу. Календарь сохранён без изменений."); return
                 }
             }
             update(&link, from: event, task: notes?.tasks.first(where: { $0.id == task.id }) ?? task)
@@ -749,7 +749,7 @@ final class CalendarStore: ObservableObject {
             if decision.writeBlocked {
                 link.start = event.startDate; link.end = event.endDate; link.title = CalendarTaskLink.plainTitle(eventTitle)
                 link.missing = false; links[index] = link
-                error = "Связанный календарь недоступен для изменений. Статус задачи сохранён в «После»."
+                error = L("Связанный календарь недоступен для изменений. Статус задачи сохранён в «После».")
                 continue
             }
             do {
@@ -759,12 +759,12 @@ final class CalendarStore: ObservableObject {
                 } else if let completed = decision.taskCompleted {
                     notes.complete(task, completed: completed)
                     guard notes.tasks.first(where: { $0.id == task.id })?.completed == completed else {
-                        error = "Не удалось синхронизировать статус задачи. Обновите задачи и повторите."; continue
+                        error = L("Не удалось синхронизировать статус задачи. Обновите задачи и повторите."); continue
                     }
                 }
                 update(&link, from: event, task: notes.tasks.first(where: { $0.id == task.id }) ?? task)
                 links[index] = link
-            } catch { self.error = "Не удалось обновить связанное событие: \(error.localizedDescription)" }
+            } catch { self.error = LF("Не удалось обновить связанное событие: {0}", arguments: [String(describing: error.localizedDescription)]) }
         }
         if links != original { do { try persist() } catch { self.error = error.localizedDescription } }
     }
@@ -1074,5 +1074,5 @@ final class CalendarStore: ObservableObject {
 
 private enum CalendarError: LocalizedError {
     case invalidState
-    var errorDescription: String? { "Файл связей с календарём повреждён или ведёт за пределы папки приложения." }
+    var errorDescription: String? { L("Файл связей с календарём повреждён или ведёт за пределы папки приложения.") }
 }

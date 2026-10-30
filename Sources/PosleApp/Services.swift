@@ -169,8 +169,8 @@ final class ProcessRunner: @unchecked Sendable {
                 if process.terminationStatus == 0 { continuation.resume(returning: completion.value) }
                 else {
                     let fallback = process.terminationReason == .uncaughtSignal
-                        ? "Обработка остановлена. Исходная запись сохранена."
-                        : "Не удалось завершить обработку. \(diagnostic.text)"
+                        ? L("Обработка остановлена. Исходная запись сохранена.")
+                        : LF("Не удалось завершить обработку. {0}", arguments: [String(describing: diagnostic.text)])
                     continuation.resume(throwing: lastFailure ?? WorkerFailure(message: fallback, chatGPTDiagnostics: nil))
                 }
             }
@@ -188,7 +188,7 @@ private final class LockedTail: @unchecked Sendable {
     }
     var text: String {
         lock.lock(); defer { lock.unlock() }
-        return String(data: data, encoding: .utf8) ?? "Откройте настройки и проверьте установку моделей."
+        return String(data: data, encoding: .utf8) ?? L("Откройте настройки и проверьте установку моделей.")
     }
 }
 
@@ -249,7 +249,7 @@ enum Keychain {
         if status == errSecItemNotFound { return "" }
         guard status == errSecSuccess, let data = value as? Data,
               let result = String(data: data, encoding: .utf8) else {
-            throw AppError.message("Не удалось прочитать сессию из Связки ключей macOS.")
+            throw AppError.message(L("Не удалось прочитать сессию из Связки ключей macOS."))
         }
         return result
     }
@@ -260,7 +260,7 @@ enum Keychain {
         if key.isEmpty {
             let status = SecItemDelete(query as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw AppError.message("Связка ключей не разрешила удалить ключ: \(status)")
+                throw AppError.message(LF("Связка ключей не разрешила удалить ключ: {0}", arguments: [String(describing: status)]))
             }
             return
         }
@@ -269,7 +269,7 @@ enum Keychain {
         let update = SecItemUpdate(query as CFDictionary, values as CFDictionary)
         let status = update == errSecItemNotFound
             ? SecItemAdd(query.merging(values) { _, new in new } as CFDictionary, nil) : update
-        guard status == errSecSuccess else { throw AppError.message("Связка ключей не сохранила ключ: \(status)") }
+        guard status == errSecSuccess else { throw AppError.message(LF("Связка ключей не сохранила ключ: {0}", arguments: [String(describing: status)])) }
     }
 }
 
@@ -375,11 +375,11 @@ enum ManagedModelRuntime {
     }
 
     private static func notPrepared() -> AppError {
-        .message("Локальный ИИ «После» не подготовлен. В настройках «Конспект и карточки → На Mac → После» нажмите «Подготовить ИИ».")
+        .message(L("Локальный ИИ «После» не подготовлен. В настройках «Конспект и карточки → На Mac → После» нажмите «Подготовить ИИ»."))
     }
 
     private static func failure() -> AppError {
-        .message("Не удалось подготовить процессы локального ИИ «После». В настройках «Конспект и карточки» повторите подготовку ИИ.")
+        .message(L("Не удалось подготовить процессы локального ИИ «После». В настройках «Конспект и карточки» повторите подготовку ИИ."))
     }
 }
 
@@ -408,25 +408,25 @@ final class LocalModelService {
               components.query == nil, components.fragment == nil,
               components.port.map({ (1...65535).contains($0) }) ?? true,
               ["", "/"].contains(components.path) else {
-            throw AppError.message("Укажите локальный адрес сервера без /v1, например http://127.0.0.1:1234. Номер порта должен быть от 1 до 65535.")
+            throw AppError.message(L("Укажите локальный адрес сервера без /v1, например http://127.0.0.1:1234. Номер порта должен быть от 1 до 65535."))
         }
         var clean = components
         clean.path = ""
-        guard let endpoint = clean.string else { throw AppError.message("Проверьте адрес локального сервера.") }
+        guard let endpoint = clean.string else { throw AppError.message(L("Проверьте адрес локального сервера.")) }
         return endpoint
     }
 
     func ensure(root: URL, settings: AppSettings, cancelled: @MainActor () -> Bool = { false }) async throws {
-        guard !cancelled() else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
+        guard !cancelled() else { throw AppError.message(L("Обработка остановлена. Запись сохранена.")) }
         if settings.localProvider != "managed" {
             guard ["ollama", "lmstudio"].contains(settings.localProvider) else {
-                throw AppError.message("Выберите После, Ollama или LM Studio в настройках.")
+                throw AppError.message(L("Выберите После, Ollama или LM Studio в настройках."))
             }
             stop()
             externalURL = try Self.validatedEndpoint(settings.resolvedLocalEndpoint)
             // Rust checks connection, HTTP errors and the actual selected model.
             // This service owns only the managed process; external servers are untouched.
-            guard !cancelled() else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
+            guard !cancelled() else { throw AppError.message(L("Обработка остановлена. Запись сохранена.")) }
             return
         }
         externalURL = nil
@@ -438,11 +438,11 @@ final class LocalModelService {
         // The managed service owns its port and model cache. External servers are selected explicitly.
         var available = false
         for candidate in 11436...11456 {
-            guard !cancelled() else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
+            guard !cancelled() else { throw AppError.message(L("Обработка остановлена. Запись сохранена.")) }
             port = candidate
             if !(await healthy()) { available = true; break }
         }
-        guard available else { throw AppError.message("Порты локального ИИ заняты. Перезапустите После.") }
+        guard available else { throw AppError.message(L("Порты локального ИИ заняты. Перезапустите После.")) }
         let p = Process(); p.executableURL = binary; p.arguments = ["serve"]
         p.standardInput = FileHandle.nullDevice; p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         p.environment = ProcessEnvironment.withoutSecrets(ProcessInfo.processInfo.environment).merging([
@@ -452,16 +452,16 @@ final class LocalModelService {
         ]) { _, new in new }
         do { try p.run() }
         catch {
-            throw AppError.message("Не удалось запустить локальный ИИ «После». В настройках «Конспект и карточки» повторите подготовку ИИ.")
+            throw AppError.message(L("Не удалось запустить локальный ИИ «После». В настройках «Конспект и карточки» повторите подготовку ИИ."))
         }
         process = p
         for _ in 0..<40 {
-            guard !cancelled() else { throw AppError.message("Обработка остановлена. Запись сохранена.") }
+            guard !cancelled() else { throw AppError.message(L("Обработка остановлена. Запись сохранена.")) }
             if await healthy() { return }
-            if !p.isRunning { throw AppError.message("Локальный ИИ не запустился. Повторите подготовку в настройках.") }
+            if !p.isRunning { throw AppError.message(L("Локальный ИИ не запустился. Повторите подготовку в настройках.")) }
             try await Task.sleep(for: .milliseconds(250))
         }
-        throw AppError.message("Локальный ИИ долго запускается. Повторите через несколько секунд.")
+        throw AppError.message(L("Локальный ИИ долго запускается. Повторите через несколько секунд."))
     }
     private func healthy() async -> Bool {
         let path = "/api/tags"

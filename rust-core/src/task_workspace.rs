@@ -1620,8 +1620,14 @@ fn agent_result(workspace: &NotesWorkspace, mut v: Value) -> Value {
 /// available while a module is hidden; this flag never comes from tool args.
 fn require_task_feature(root: &Path, input: &Value) -> Result<()> {
     if input["requireTaskFeature"] == true {
-        ensure!(crate::ai::live_features_for_input(root,input)?.tasks,
+        let resolver = crate::ai::FeatureResolver::new(root)?;
+        ensure!(resolver.features_for(input)?.tasks,
             "Задачи выключены в профиле этой папки. Изменения не сохранены.");
+        if let Some(expected) = input.get("expectedTaskFolderID") {
+            ensure!(expected.is_null() || expected.is_string(), "Некорректная область переноса задачи");
+            ensure!(resolver.folder_for(input)?.as_deref() == expected.as_str(),
+                "Папка задачи изменилась во время переноса. Обновите доску и повторите.");
+        }
     }
     Ok(())
 }

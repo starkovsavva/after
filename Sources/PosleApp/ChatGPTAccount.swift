@@ -118,7 +118,7 @@ final class ChatGPTAccount: ObservableObject {
             let snapshot = try await operation.value
             guard revision == operationID else { return }
             apply(snapshot)
-            message = profile?.planEnabled == true ? "ChatGPT подключён" : "Вход выполнен. Разреши приложению использовать подписку ChatGPT."
+            message = profile?.planEnabled == true ? L("ChatGPT подключён") : L("Вход выполнен. Разреши приложению использовать подписку ChatGPT.")
             handoff.finished()
         } catch {
             guard revision == operationID else { return }
@@ -138,7 +138,7 @@ final class ChatGPTAccount: ObservableObject {
         do {
             let result = try await engine.signOut()
             apply(result.snapshot)
-            message = result.remoteRevoked ? "Выход выполнен" : "Выход выполнен на этом Mac. Отозвать доступ также можно в настройках ChatGPT."
+            message = result.remoteRevoked ? L("Выход выполнен") : L("Выход выполнен на этом Mac. Отозвать доступ также можно в настройках ChatGPT.")
             isError = !result.remoteRevoked
         } catch { report(error) }
     }
@@ -154,7 +154,7 @@ final class ChatGPTAccount: ObservableObject {
             try Task.checkCancellation()
             guard catalogRevision == operationID, profile?.id == accountID else { return }
             models = catalog
-            if catalog.isEmpty { message = "Для этого аккаунта пока нет доступных моделей"; isError = false }
+            if catalog.isEmpty { message = L("Для этого аккаунта пока нет доступных моделей"); isError = false }
         } catch {
             // Closing settings cancels its catalog task, not the connected account
             // or the model the user already selected.
@@ -187,7 +187,7 @@ final class ChatGPTAccount: ObservableObject {
     }
     private func report(_ error: Error) {
         isError = true
-        message = (error as? ChatGPTSignInError)?.errorDescription ?? "Не удалось подключиться к ChatGPT. Проверь сеть и попробуй ещё раз."
+        message = (error as? ChatGPTSignInError)?.errorDescription ?? L("Не удалось подключиться к ChatGPT. Проверь сеть и попробуй ещё раз.")
     }
     #if DEBUG
     static func verifyCancelledCatalog() async throws {
@@ -294,18 +294,18 @@ enum ChatGPTSignInError: LocalizedError, Equatable {
     case keychain, network, unavailable, invalidClient, refreshTooEarly, oauthDenied
     var errorDescription: String? {
         switch self {
-        case .callback: return "Не удалось подтвердить ответ браузера. Начни вход заново."
-        case .identity: return "Не удалось проверить аккаунт ChatGPT. Начни вход заново."
-        case .registration: return "ChatGPT не завершил регистрацию приложения. Попробуй войти заново."
-        case .accountChanged: return "Выбран другой аккаунт ChatGPT. Запусти задачу заново для нужного аккаунта."
-        case .permission: return "Разреши приложению использовать подписку ChatGPT в настройках подключения."
-        case .signInRequired: return "Сессия ChatGPT завершилась. Войди заново."
-        case .keychain: return "Связка ключей не сохранила сессию. Проверь доступ и войди снова."
-        case .network: return "Не удалось подключиться к ChatGPT. Проверь сеть и попробуй ещё раз."
-        case .unavailable: return "ChatGPT временно недоступен. Попробуй позже."
-        case .invalidClient: return "ChatGPT не принял регистрацию приложения. Переподключи аккаунт."
-        case .refreshTooEarly: return "ChatGPT ещё не разрешил обновление сессии. Попробуй немного позже."
-        case .oauthDenied: return "Доступ не разрешён. Текущий аккаунт не изменён."
+        case .callback: return L("Не удалось подтвердить ответ браузера. Начни вход заново.")
+        case .identity: return L("Не удалось проверить аккаунт ChatGPT. Начни вход заново.")
+        case .registration: return L("ChatGPT не завершил регистрацию приложения. Попробуй войти заново.")
+        case .accountChanged: return L("Выбран другой аккаунт ChatGPT. Запусти задачу заново для нужного аккаунта.")
+        case .permission: return L("Разреши приложению использовать подписку ChatGPT в настройках подключения.")
+        case .signInRequired: return L("Сессия ChatGPT завершилась. Войди заново.")
+        case .keychain: return L("Связка ключей не сохранила сессию. Проверь доступ и войди снова.")
+        case .network: return L("Не удалось подключиться к ChatGPT. Проверь сеть и попробуй ещё раз.")
+        case .unavailable: return L("ChatGPT временно недоступен. Попробуй позже.")
+        case .invalidClient: return L("ChatGPT не принял регистрацию приложения. Переподключи аккаунт.")
+        case .refreshTooEarly: return L("ChatGPT ещё не разрешил обновление сессии. Попробуй немного позже.")
+        case .oauthDenied: return L("Доступ не разрешён. Текущий аккаунт не изменён.")
         }
     }
 }

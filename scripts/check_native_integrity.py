@@ -61,7 +61,8 @@ def main() -> None:
         def build(section: bytes | None) -> None:
             binary.unlink(missing_ok=True)
             arguments = ["swiftc", "-parse-as-library", "-module-cache-path", str(root / "module-cache"),
-                         str(PROJECT / "Sources/PosleApp/NativeLibraryIntegrity.swift"), str(swift_main), "-o", str(binary)]
+                         str(PROJECT / "Sources/PosleApp/NativeLibraryIntegrity.swift"),
+                         str(PROJECT / "scripts/fixtures/CanonicalLocalization.swift"), str(swift_main), "-o", str(binary)]
             if section is not None:
                 digest_file = root / "core.sha256"; digest_file.write_bytes(section)
                 arguments += ["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__posle_core", "-Xlinker", str(digest_file)]

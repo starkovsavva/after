@@ -20,7 +20,7 @@ struct TrackerSyncConfiguration: Codable, Identifiable, Equatable {
     var error: String?
     var requiresAuth = false
     var revision = 0
-    var providerTitle: String { provider == "google" ? "Google Tasks" : "Яндекс Трекер" }
+    var providerTitle: String { provider == "google" ? "Google Tasks" : L("Яндекс Трекер") }
 }
 struct TrackerSyncScope: Decodable, Identifiable { var id: String; var title: String }
 struct TrackerSyncConflict: Decodable, Identifiable {

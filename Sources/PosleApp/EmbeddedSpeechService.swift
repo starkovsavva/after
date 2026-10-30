@@ -69,7 +69,7 @@ final class EmbeddedSpeechService: @unchecked Sendable {
         if let settings { input["settings"] = try JSONSerialization.jsonObject(with: settings) }
         let response = try await perform(input: input, event: event)
         guard let value = response["value"] as? [String: Any] else {
-            throw AppError.message("Распознавание не вернуло текст поручения.")
+            throw AppError.message(L("Распознавание не вернуло текст поручения."))
         }
         return try JSONDecoder().decode(DictationResult.self, from: JSONSerialization.data(withJSONObject: value))
     }
@@ -80,7 +80,7 @@ final class EmbeddedSpeechService: @unchecked Sendable {
             DispatchQueue.global(qos: .userInitiated).async {
                 self.lock.lock()
                 if self.running {
-                    self.lock.unlock(); continuation.resume(throwing: AppError.message("Распознавание уже выполняется.")); return
+                    self.lock.unlock(); continuation.resume(throwing: AppError.message(L("Распознавание уже выполняется."))); return
                 }
                 self.running = true
                 self.lock.unlock()
@@ -100,17 +100,17 @@ final class EmbeddedSpeechService: @unchecked Sendable {
                     }
                     let response: Data = try String(decoding: data, as: UTF8.self).withCString { input in
                         guard let output = api.run(input, callback, retained.toOpaque()) else {
-                            throw AppError.message("Встроенное распознавание вернуло пустой ответ.")
+                            throw AppError.message(L("Встроенное распознавание вернуло пустой ответ."))
                         }
                         defer { api.release(output) }
                         return Data(String(cString: output).utf8)
                     }
                     guard let envelope = try JSONSerialization.jsonObject(with: response) as? [String: Any] else {
-                        throw AppError.message("Некорректный ответ встроенного распознавания.")
+                        throw AppError.message(L("Некорректный ответ встроенного распознавания."))
                     }
                     guard envelope["ok"] as? Bool == true else {
                         if envelope["cancelled"] as? Bool == true { throw CancellationError() }
-                        throw AppError.message(envelope["error"] as? String ?? "Не удалось завершить распознавание.")
+                        throw AppError.message(envelope["error"] as? String ?? L("Не удалось завершить распознавание."))
                     }
                     continuation.resume(returning: envelope)
                 } catch { continuation.resume(throwing: error) }
@@ -125,7 +125,7 @@ final class EmbeddedSpeechService: @unchecked Sendable {
         guard let run = dlsym(handle, "posle_speech_run"), let cancel = dlsym(handle, "posle_speech_set_cancelled"),
               let release = dlsym(handle, "posle_free_string") else {
             dlclose(handle)
-            throw AppError.message("Версия ядра распознавания не соответствует приложению.")
+            throw AppError.message(L("Версия ядра распознавания не соответствует приложению."))
         }
         let loaded = API(handle: handle, run: unsafeBitCast(run, to: Run.self),
                          setCancelled: unsafeBitCast(cancel, to: SetCancelled.self), release: unsafeBitCast(release, to: Release.self))

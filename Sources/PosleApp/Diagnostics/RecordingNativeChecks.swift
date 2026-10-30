@@ -58,21 +58,6 @@ enum RecordingNativeChecks {
         reopened.saveSettings()
         print("PASS: unknown future quality values preserve the rest of the saved settings")
 
-        let displays = RecordingDisplay.choices(preview: true)
-        try expect(displays.count == 2 && displays.filter(\.isMain).count == 1 &&
-                   Set(displays.map(\.persistentID)).count == displays.count,
-                   "Preview monitors must have stable unique invented identities")
-        try expect(RecordingDisplay.selectionIsAvailable("", in: displays) &&
-                   RecordingDisplay.selectionIsAvailable("preview-external", in: displays),
-                   "Current primary and explicit connected display must resolve")
-        let replaced = [RecordingDisplay(id: displays[1].id, title: "Другой экран", pixelWidth: 1920,
-                                        pixelHeight: 1080, isMain: true, persistentID: "replacement-display")]
-        try expect(!RecordingDisplay.selectionIsAvailable("preview-external", in: replaced) &&
-                   !RecordingDisplay.selectionIsAvailable("missing-display", in: displays) &&
-                   !RecordingDisplay.selectionIsAvailable("", in: []),
-                   "A disconnected UUID must never resolve to a different monitor with the same transient ID")
-        print("PASS: disconnected display UUIDs cannot silently select another monitor, including transient ID reuse")
-
         let accessibilityMode = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
         let previousAccessibilityMode = NSApp.accessibilityAttributeValue(accessibilityMode)
         NSApp.accessibilitySetValue(true, forAttribute: accessibilityMode)
@@ -82,27 +67,22 @@ enum RecordingNativeChecks {
             ThemeRuntime.shared.set(originalPalette)
         }
         let options = OptionState()
-        let optionHost = NativeHost(AnyView(ObservedOptions(state: options, displays: displays)
+        let optionHost = NativeHost(AnyView(ObservedOptions(state: options)
             .padding(28).frame(width: 560)), height: 420)
         defer { optionHost.close() }
         try await settle(optionHost) { node("record.audioQuality", in: optionHost) != nil }
-        try expect(node("record.display", in: optionHost) == nil && node("record.videoQuality", in: optionHost) == nil,
-                   "Audio-only options must not expose video controls")
+        try expect(node("record.display", in: optionHost) == nil && node("record.videoQuality", in: optionHost) == nil
+                   && node("record.screenSelection", in: optionHost) != nil && node("record.audioSelection", in: optionHost) != nil,
+                   "System-audio options must explain per-session screen consent without enumerating monitors")
         let videoToggle = try required(node("record.video", in: optionHost), "Native video toggle missing")
         try expect(videoToggle.press(), "Native video toggle must support accessibility press")
         try await settle(optionHost) { options.video && node("record.videoQuality", in: optionHost) != nil }
-        try expect(node("record.display", in: optionHost) != nil && node("record.dimensions", in: optionHost) != nil,
-                   "Turning on video must reveal screen, quality and full-frame dimensions")
-        options.videoQuality = .native; options.displayUUID = "preview-external"
-        try await settle(optionHost) {
-            let text = node("record.dimensions", in: optionHost)?.text ?? ""
-            return text.contains("3840") && text.contains("2160")
-        }
-        options.displayUUID = "missing-display"
-        try await settle(optionHost) { node("record.displayUnavailable", in: optionHost) != nil }
-        try expect(options.displayUUID == "missing-display" && node("record.dimensions", in: optionHost) == nil,
-                   "Disconnected selection must show an error without replacing its identity or stale dimensions")
-        print("PASS: actual native video toggle updates bindings, conditional controls, dimensions and disconnected state")
+        try expect(node("record.display", in: optionHost) == nil && node("record.format", in: optionHost) != nil
+                   && node("record.audioSelection", in: optionHost) == nil,
+                   "Video must show format and quality, without guessing a display or dimensions before selection")
+        options.video = false; options.systemAudio = false
+        try await settle(optionHost) { node("record.screenSelection", in: optionHost) == nil }
+        print("PASS: native recording controls explain per-session screen consent only for video or Mac audio")
         optionHost.close()
 
         for density in ["regular", "compact"] {
@@ -113,23 +93,25 @@ enum RecordingNativeChecks {
                 .environment(\.locale, Locale(identifier: "ru_RU"))), height: 680)
             defer { recordHost.close() }
             try await settle(recordHost) {
-                node("record.displayUnavailable", in: recordHost) != nil && node("record.start", in: recordHost) != nil
+                node("record.screenSelection", in: recordHost) != nil && node("record.start", in: recordHost) != nil
             }
             let start = try required(node("record.start", in: recordHost), "Native Start button missing")
-            try expect(!start.isEnabled, "Start must be disabled for an unavailable selected video screen")
-            try assertVisibleControls(recordHost, identifiers: ["record.audioQuality", "record.video", "record.display",
-                "record.videoQuality", "record.displayUnavailable", "record.start"])
+            try expect(start.isEnabled, "A stale saved display must not block per-session screen selection")
+            try expect(node("record.display", in: recordHost) == nil && node("record.displayUnavailable", in: recordHost) == nil,
+                       "Recording must not resurrect the legacy monitor selector")
+            try assertVisibleControls(recordHost, identifiers: ["record.audioQuality", "record.video",
+                "record.videoQuality", "record.screenSelection", "record.start", "record.cancel"])
             try expect(try required(node("record.video", in: recordHost), "Native video toggle missing").press(),
                        "Record dialog video toggle must support accessibility press")
             try await settle(recordHost) {
-                node("record.displayUnavailable", in: recordHost) == nil && node("record.start", in: recordHost)?.isEnabled == true
+                node("record.videoQuality", in: recordHost) == nil && node("record.start", in: recordHost)?.isEnabled == true
             }
-            try assertVisibleControls(recordHost, identifiers: ["record.audioQuality", "record.video", "record.start"])
+            try assertVisibleControls(recordHost, identifiers: ["record.audioQuality", "record.video", "record.start", "record.cancel"])
             try expect(!reopened.isRecording && !reopened.busy && reopened.meetings.isEmpty,
                        "Rendering and toggling options must never start a recording or create a meeting")
             recordHost.close()
         }
-        print("PASS: 560 px native dialog fits both densities at largest text size, disables disconnected video and permits audio-only")
+        print("PASS: 560 px native dialog fits both densities at largest text size; stale display preference cannot block Start")
         try await folderProfiles(root: root)
         print("6 native recording groups passed")
     }
@@ -156,7 +138,7 @@ enum RecordingNativeChecks {
         let host = NativeHost(AnyView(RecordView().environmentObject(app)), height: 720)
         defer { host.close() }
         try await settle(host) { node("record.processing", in: host)?.text.contains("English test model") == true }
-        try chooseFolder("Рабочие синки", in: host)
+        try await chooseFolder("Рабочие синки", in: host)
         try await settle(host) { node("record.processing", in: host)?.text.contains("Work test model") == true }
         try expect(node("record.processing", in: host)?.text.contains("Русский") == true,
                    "Native folder selection did not update the inherited language")
@@ -165,7 +147,7 @@ enum RecordingNativeChecks {
         try expect(node("record.generateCards", in: host) == nil, "Disabled folder must explain unavailable cards instead of exposing an inert control")
         try expect(try required(node("record.processing.done", in: host), "Processing Done missing").press(), "Processing Done cannot be pressed")
         try await settle(host) { node("record.processing.done", in: host) == nil }
-        try chooseFolder("Английский", in: host)
+        try await chooseFolder("Английский", in: host)
         try await settle(host) { node("record.processing", in: host)?.text.contains("English test model") == true }
         try expect(try required(node("record.processing", in: host), "Processing button missing").press(), "Processing popover cannot open")
         try await settle(host) { node("record.generateCards.off", in: host) != nil }
@@ -189,15 +171,8 @@ enum RecordingNativeChecks {
                    "Native recording profile flow started unrelated work or failed to stop injected capture")
         print("PASS: actual recording controls select independent folder profiles, explain disabled cards and persist per-meeting override through native Start/reopen")
     }
-    private static func chooseFolder(_ title: String, in host: NativeHost) throws {
-        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
-        guard let popup = descendants(host.view).compactMap({ $0 as? NSPopUpButton }).first(where: { $0.itemTitles.contains(title) }) else {
-            throw AppError.message("Native recording folder popup missing")
-        }
-        popup.selectItem(withTitle: title)
-        guard let menu = popup.menu, popup.indexOfSelectedItem >= 0 else { throw AppError.message("Native recording folder menu missing") }
-        // SwiftUI PickerOptionTarget belongs to the selected menu item.
-        menu.performActionForItem(at: popup.indexOfSelectedItem)
+    private static func chooseFolder(_ title: String, in host: NativeHost) async throws {
+        try await NativePickerChecks.select(title: title, identifier: "record.folder", in: [host.view])
     }
     private static func snapshot(_ view: NSView, _ url: URL) throws {
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw AppError.message("Recording snapshot missing") }
@@ -212,6 +187,9 @@ enum RecordingNativeChecks {
         private(set) var startCount = 0
         func start(url: URL, systemAudio: Bool, video: Bool, videoQuality: RecordingVideoQuality,
                    audioQuality: RecordingAudioQuality, displayID: UInt32?, expectedDisplayUUID: String?) async throws {
+            guard displayID == nil, expectedDisplayUUID == nil else {
+                throw AppError.message("Legacy monitor preference reached the recording backend")
+            }
             try Data("synthetic native capture".utf8).write(to: url, options: .atomic)
             active = true; startCount += 1
         }
@@ -221,14 +199,13 @@ enum RecordingNativeChecks {
         @Published var audioQuality: RecordingAudioQuality = .standard
         @Published var video = false
         @Published var videoQuality: RecordingVideoQuality = .compact
-        @Published var displayUUID = ""
+        @Published var systemAudio = true
     }
     private struct ObservedOptions: View {
         @ObservedObject var state: OptionState
-        let displays: [RecordingDisplay]
         var body: some View {
             RecordingOptionsView(audioQuality: $state.audioQuality, video: $state.video,
-                                 videoQuality: $state.videoQuality, displayUUID: $state.displayUUID, displays: displays)
+                                 videoQuality: $state.videoQuality, systemAudio: state.systemAudio)
         }
     }
     @MainActor private final class NativeHost {

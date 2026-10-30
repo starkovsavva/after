@@ -27,7 +27,7 @@ struct CloudSettingsView: View {
     }
     private func registerDrafts() {
         guard mounted else { return }
-        SettingsDraftRegistry.set(id: editorID, title: "API-ключи конспекта", dirty: hasPendingKeys)
+        SettingsDraftRegistry.set(id: editorID, title: L("API-ключи конспекта"), dirty: hasPendingKeys)
     }
     private var keyBinding: Binding<String> {
         Binding(get: { key }, set: { value in
@@ -42,14 +42,14 @@ struct CloudSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
-            Picker("Провайдер", selection: Binding(get: { store.settings.cloudProvider }, set: {
+            Picker(L("Провайдер"), selection: Binding(get: { store.settings.cloudProvider }, set: {
                 store.settings.switchCloudProvider($0)
             })) {
-                Text("ChatGPT (подписка)").tag("chatgpt")
+                Text(L("ChatGPT (подписка)")).tag("chatgpt")
                 Text("OpenAI API").tag("openai")
                 Text("OpenRouter").tag("openrouter")
                 Text("Polza").tag("polza")
-                Text("Свой провайдер").tag("custom")
+                Text(L("Свой провайдер")).tag("custom")
             }
             if store.settings.cloudProvider == "chatgpt" {
                 ChatGPTSettingsView(account: chatGPTAccount)
@@ -57,7 +57,7 @@ struct CloudSettingsView: View {
                 apiSettings
             }
             if hasPendingKeys {
-                Button("Отменить правки ключей") { drafts = savedKeys; keyMessage = ""; registerDrafts() }
+                Button(L("Отменить правки ключей")) { drafts = savedKeys; keyMessage = ""; registerDrafts() }
                     .buttonStyle(.bordered).accessibilityIdentifier("cloud.key.cancel")
             }
         }
@@ -72,70 +72,70 @@ struct CloudSettingsView: View {
     private var apiSettings: some View {
         Group {
             if store.settings.cloudProvider == "custom" {
-                LabeledContent("Адрес API") {
+                LabeledContent(L("Адрес API")) {
                     TextField("https://example.com/v1", text: $store.settings.cloudEndpoint)
-                        .textFieldStyle(.roundedBorder).accessibilityLabel("Базовый адрес облачного API")
-                        .help("Базовый URL совместимого API, включая /v1 при необходимости. HTTPS; HTTP разрешён только на localhost.")
+                        .textFieldStyle(.roundedBorder).accessibilityLabel(L("Базовый адрес облачного API"))
+                        .help(L("Базовый URL совместимого API, включая /v1 при необходимости. HTTPS; HTTP разрешён только на localhost."))
                 }
                 if !store.settings.cloudEndpoint.isEmpty && account == nil {
-                    Text("Нужен HTTPS-адрес без логина, пароля и параметров.")
+                    Text(L("Нужен HTTPS-адрес без логина, пароля и параметров."))
                         .font(AppTypography.caption).foregroundStyle(Ink.warning)
                 }
             } else {
-                LabeledContent("Адрес API") {
+                LabeledContent(L("Адрес API")) {
                     Text(store.settings.resolvedCloudEndpoint).font(AppTypography.caption)
                         .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                         .textSelection(.enabled).help(store.settings.resolvedCloudEndpoint)
                 }
             }
-            LabeledContent("Модель") {
-                TextField("ID модели у провайдера", text: $store.settings.cloudModel)
-                    .textFieldStyle(.roundedBorder).accessibilityLabel("Облачная модель для конспекта и карточек")
+            LabeledContent(L("Модель")) {
+                TextField(L("ID модели у провайдера"), text: $store.settings.cloudModel)
+                    .textFieldStyle(.roundedBorder).accessibilityLabel(L("Облачная модель для конспекта и карточек"))
             }
-            LabeledContent("API-ключ") {
-                SecureField(account == nil ? "Сначала укажите адрес API" : "Ключ выбранного провайдера", text: keyBinding)
+            LabeledContent(L("API-ключ")) {
+                SecureField(account == nil ? L("Сначала укажите адрес API") : L("Ключ выбранного провайдера"), text: keyBinding)
                     .textFieldStyle(.roundedBorder).disabled(account == nil)
-                    .accessibilityLabel("API-ключ \(store.settings.cloudProviderTitle)").accessibilityIdentifier("cloud.key")
+                    .accessibilityLabel(LF("API-ключ {0}", arguments: [String(describing: (store.settings.cloudProviderTitle))])).accessibilityIdentifier("cloud.key")
             }
             HStack(spacing: 10) {
-                Button(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !savedKey.isEmpty ? "Удалить ключ" : "Сохранить ключ", action: saveKey)
+                Button(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !savedKey.isEmpty ? L("Удалить ключ") : L("Сохранить ключ"), action: saveKey)
                     .buttonStyle(.bordered).disabled(account == nil || !keyIsDirty).accessibilityIdentifier("cloud.key.save")
                 if keyIsDirty {
-                    Text("Не сохранён").font(AppTypography.caption).foregroundStyle(Ink.warning)
+                    Text(L("Не сохранён")).font(AppTypography.caption).foregroundStyle(Ink.warning)
                 } else if !keyMessage.isEmpty {
                     Label(keyMessage, systemImage: keyError ? "exclamationmark.triangle" : "checkmark.circle")
                         .font(AppTypography.caption).foregroundStyle(keyError ? Ink.warning : Ink.green)
                 }
             }
-            DisclosureGroup("Дополнительно") {
+            DisclosureGroup(L("Дополнительно")) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker("Формат API", selection: $store.settings.cloudAPI) {
+                    Picker(L("Формат API"), selection: $store.settings.cloudAPI) {
                         Text("Chat Completions").tag("chat")
                         Text("Responses").tag("responses")
                     }
-                    Picker("Формат ответа", selection: $store.settings.cloudOutput) {
+                    Picker(L("Формат ответа"), selection: $store.settings.cloudOutput) {
                         Text("JSON Schema").tag("schema")
                         Text("JSON").tag("json")
-                        Text("JSON по инструкции").tag("prompt")
-                    }.help("JSON Schema проверяет структуру у провайдера. Два других режима нужны для моделей без этой возможности; «После» продолжает проверять поля и ссылки на источники.")
+                        Text(L("JSON по инструкции")).tag("prompt")
+                    }.help(L("JSON Schema проверяет структуру у провайдера. Два других режима нужны для моделей без этой возможности; «После» продолжает проверять поля и ссылки на источники."))
                     if store.settings.cloudOutput != "schema" {
-                        Text("Модель должна соблюдать структуру JSON. Неподходящий ответ не заменит ваши данные.")
+                        Text(L("Модель должна соблюдать структуру JSON. Неподходящий ответ не заменит ваши данные."))
                             .font(AppTypography.caption).foregroundStyle(.secondary)
                     }
                 }.padding(.top, 10)
             }
             HStack(spacing: 10) {
-                Button("Проверить подключение") { store.checkCloudConnection() }
+                Button(L("Проверить подключение")) { store.checkCloudConnection() }
                     .buttonStyle(.bordered)
                     .disabled(account == nil || keyIsDirty || savedKey.isEmpty || store.settings.cloudModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy)
-                    .help("Один короткий запрос {ok:true}, без текста и записей встреч. Провайдер может списать стоимость запроса.")
+                    .help(L("Один короткий запрос {ok:true}, без текста и записей встреч. Провайдер может списать стоимость запроса."))
                 if let status = store.cloudConnectionStatus {
                     Text(status).font(AppTypography.caption)
                         .foregroundStyle(store.cloudConnectionError ? Ink.warning : Ink.green)
                         .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 }
             }
-            Text("Для конспекта сервис получает текст встречи. API и проверка подключения оплачиваются по тарифу провайдера.")
+            Text(L("Для конспекта сервис получает текст встречи. API и проверка подключения оплачиваются по тарифу провайдера."))
                 .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -152,7 +152,7 @@ struct CloudSettingsView: View {
         do {
             try Keychain.save(value, account: account)
             drafts[account] = value; savedKeys[account] = value
-            keyError = false; keyMessage = value.isEmpty ? "Ключ удалён" : "Сохранён в Связке ключей"
+            keyError = false; keyMessage = value.isEmpty ? L("Ключ удалён") : L("Сохранён в Связке ключей")
             store.clearCloudConnectionResult()
         } catch {
             keyError = true; keyMessage = error.localizedDescription

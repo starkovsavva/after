@@ -23,7 +23,7 @@ final class SourcePlaybackState: ObservableObject {
         if self.meetingID == meetingID && (playingID == expected.id || preparingID == expected.id) { stop(); return }
         stop()
         guard let url = audioURL(store: store, meetingID: meetingID) else {
-            error = "Аудиозапись недоступна. Исходный текст можно прочитать здесь."
+            error = L("Аудиозапись недоступна. Исходный текст можно прочитать здесь.")
             return
         }
         begin(store: store, meetingID: meetingID, expected: expected, url: url, muted: false,
@@ -56,7 +56,7 @@ final class SourcePlaybackState: ObservableObject {
                        additionalValidation: @escaping @MainActor () -> Bool) {
         guard expected.start.isFinite, expected.end.isFinite, expected.start >= 0, expected.end > expected.start,
               current(store, meetingID: meetingID, expected: expected), additionalValidation() else {
-            error = "Источник изменился. Откройте актуальный конспект."
+            error = L("Источник изменился. Откройте актуальный конспект.")
             return
         }
         store.pause()
@@ -70,10 +70,10 @@ final class SourcePlaybackState: ObservableObject {
                 let playable = try await asset.load(.isPlayable)
                 guard self.generation == token, !Task.isCancelled else { return }
                 guard playable, duration.seconds.isFinite, duration.seconds > expected.start else {
-                    throw AppError.message("Этот фрагмент недоступен в аудиозаписи.")
+                    throw AppError.message(L("Этот фрагмент недоступен в аудиозаписи."))
                 }
                 guard self.current(store, meetingID: meetingID, expected: expected), additionalValidation() else {
-                    throw AppError.message("Источник изменился. Откройте актуальный конспект.")
+                    throw AppError.message(L("Источник изменился. Откройте актуальный конспект."))
                 }
                 let item = AVPlayerItem(asset: asset)
                 let end = CMTime(seconds: min(duration.seconds, expected.end), preferredTimescale: 600)
@@ -87,7 +87,7 @@ final class SourcePlaybackState: ObservableObject {
                 }
                 guard self.generation == token, !Task.isCancelled else { player.pause(); return }
                 guard sought, self.current(store, meetingID: meetingID, expected: expected), additionalValidation() else {
-                    throw AppError.message("Источник изменился или фрагмент больше недоступен.")
+                    throw AppError.message(L("Источник изменился или фрагмент больше недоступен."))
                 }
                 self.boundary = player.addBoundaryTimeObserver(forTimes: [NSValue(time: end)], queue: .main) { [weak self] in
                     Task { @MainActor in if self?.generation == token { self?.stop() } }

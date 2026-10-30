@@ -13,7 +13,7 @@ final class RichNoteCommands: ObservableObject {
             guard let view else { return }
             owner.restore(before, selection: selection, typing: typing, view: view)
         }
-        view.undoManager?.setActionName("Форматирование")
+        view.undoManager?.setActionName(L("Форматирование"))
     }
     private func restore(_ value: NSAttributedString, selection: NSRange, typing: [NSAttributedString.Key: Any], view: NSTextView) {
         recordUndo(view)
@@ -72,7 +72,7 @@ final class RichNoteCommands: ObservableObject {
                 block.setWidth(8, type: .absoluteValueType, for: .padding)
                 block.setContentWidth(50, type: .percentageValueType)
                 let paragraph = NSMutableParagraphStyle(); paragraph.textBlocks = [block]
-                result.append(NSAttributedString(string: row == 0 ? "Столбец \(column + 1)\n" : "\t\n", attributes: [.paragraphStyle: paragraph, .font: NSFont.systemFont(ofSize: CGFloat(ThemeRuntime.shared.palette.textSize)), .foregroundColor: NSColor.labelColor]))
+                result.append(NSAttributedString(string: row == 0 ? LF("Столбец {0}\n", arguments: [String(describing: (column + 1))]) : "\t\n", attributes: [.paragraphStyle: paragraph, .font: NSFont.systemFont(ofSize: CGFloat(ThemeRuntime.shared.palette.textSize)), .foregroundColor: NSColor.labelColor]))
             }
         }
         result.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: CGFloat(ThemeRuntime.shared.palette.textSize)), .foregroundColor: NSColor.labelColor]))
@@ -88,21 +88,21 @@ struct RichNoteToolbar: View {
     var body: some View {
         HStack(spacing: 5) {
             Menu {
-                Button("Заголовок") { commands.style(24, bold: true) }
-                Button("Подзаголовок") { commands.style(18, bold: true) }
-                Button("Основной текст") { commands.style(CGFloat(theme.palette.textSize)) }
-            } label: { Text("Aa").font(AppTypography.bodyStrong) }.menuStyle(.borderlessButton).frame(width: 42).help("Стиль текста")
+                Button(L("Заголовок")) { commands.style(24, bold: true) }
+                Button(L("Подзаголовок")) { commands.style(18, bold: true) }
+                Button(L("Основной текст")) { commands.style(CGFloat(theme.palette.textSize)) }
+            } label: { Text("Aa").font(AppTypography.bodyStrong) }.menuStyle(.borderlessButton).frame(width: 42).help(L("Стиль текста"))
             Divider().frame(height: 18)
-            control("bold", "Жирный") { commands.trait(.boldFontMask) }
-            control("italic", "Курсив") { commands.trait(.italicFontMask) }
-            control("underline", "Подчёркнутый") { commands.underline() }
+            control("bold", L("Жирный")) { commands.trait(.boldFontMask) }
+            control("italic", L("Курсив")) { commands.trait(.italicFontMask) }
+            control("underline", L("Подчёркнутый")) { commands.underline() }
             Divider().frame(height: 18)
-            control("checklist", "Чеклист; нажмите квадратик в тексте, чтобы отметить пункт") { commands.list("☐ ") }
-            control("list.bullet", "Маркированный список") { commands.list("• ") }
-            control("tablecells", "Вставить таблицу") { commands.table() }
+            control("checklist", L("Чеклист; нажмите квадратик в тексте, чтобы отметить пункт")) { commands.list("☐ ") }
+            control("list.bullet", L("Маркированный список")) { commands.list("• ") }
+            control("tablecells", L("Вставить таблицу")) { commands.table() }
             Spacer(minLength: 4)
-            control("arrow.uturn.backward", "Отменить") { commands.undo() }
-            control("arrow.uturn.forward", "Повторить") { commands.redo() }
+            control("arrow.uturn.backward", L("Отменить")) { commands.undo() }
+            control("arrow.uturn.forward", L("Повторить")) { commands.redo() }
         }.frame(height: 34).buttonStyle(.borderless)
     }
     private func control(_ icon: String, _ title: String, _ action: @escaping () -> Void) -> some View {
@@ -172,7 +172,7 @@ struct RichNoteEditor: NSViewRepresentable {
         editor.textContainer?.widthTracksTextView = true; editor.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         editor.isAutomaticLinkDetectionEnabled = true; editor.isAutomaticSpellingCorrectionEnabled = false
         editor.attachmentPaste = onAttachmentPaste
-        editor.delegate = context.coordinator; editor.setAccessibilityLabel("Содержимое заметки")
+        editor.delegate = context.coordinator; editor.setAccessibilityLabel(L("Содержимое заметки"))
         scroll.documentView = editor; commands.editor = editor
         context.coordinator.load(editor, text: text, rtf: rtf)
         return scroll

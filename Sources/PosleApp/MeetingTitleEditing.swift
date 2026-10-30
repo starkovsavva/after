@@ -28,7 +28,7 @@ final class MeetingTitleEdits: ObservableObject {
     func edit(_ id: String, text: String) {
         guard var draft = drafts[id] else { return }
         draft.text = text; draft.error = nil; drafts[id] = draft
-        UnsavedEditorRegistry.set(id: draft.token, title: "Название встречи «\(draft.original.prefix(60))»", dirty: text != draft.original)
+        UnsavedEditorRegistry.set(id: draft.token, title: LF("Название встречи «{0}»", arguments: [String(describing: (draft.original.prefix(60)))]), dirty: text != draft.original)
     }
     func cancel(_ id: String) {
         // A completed edit must not replay its menu focus request when this
@@ -41,7 +41,7 @@ final class MeetingTitleEdits: ObservableObject {
         guard var draft = drafts[id] else { return true }
         let title = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else {
-            draft.error = "Введите название встречи."; drafts[id] = draft; return false
+            draft.error = L("Введите название встречи."); drafts[id] = draft; return false
         }
         // Returning to the original text is a cancellation, including after a
         // concurrent rename; it must never restore the outdated original title.
@@ -57,7 +57,7 @@ final class MeetingTitleEdits: ObservableObject {
 
 extension AppStore {
     func renameMeeting(_ id: String, title: String, expectedTitle: String) throws {
-        guard meetings.contains(where: { $0.id == id }) else { throw AppError.message("Встреча недоступна. Ваше название осталось в поле.") }
+        guard meetings.contains(where: { $0.id == id }) else { throw AppError.message(L("Встреча недоступна. Ваше название осталось в поле.")) }
         do {
             let data = try RustBridge.shared.get().request(root: root, command: "meeting-rename", arguments: [
                 "meetingID": id, "title": title, "expectedTitle": expectedTitle
@@ -95,7 +95,7 @@ struct MeetingTitleHeading: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning)
                         .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("meeting.rename.error")
-                    Button("Отменить") { edits.cancel(meeting.id) }.buttonStyle(.borderless).font(AppTypography.caption)
+                    Button(L("Отменить")) { edits.cancel(meeting.id) }.buttonStyle(.borderless).font(AppTypography.caption)
                         .accessibilityIdentifier("meeting.rename.cancel")
                 }
             }
@@ -129,11 +129,11 @@ private struct NativeMeetingTitle: NSViewRepresentable {
         field.isBezeled = false; field.drawsBackground = false; field.textColor = .labelColor
         field.lineBreakMode = .byTruncatingTail; field.maximumNumberOfLines = 1
         field.cell?.usesSingleLineMode = true; field.focusRingType = .exterior
-        field.placeholderString = "Название встречи"
+        field.placeholderString = L("Название встречи")
         field.identifier = NSUserInterfaceItemIdentifier("meeting.title")
-        field.setAccessibilityIdentifier("meeting.title"); field.setAccessibilityLabel("Название встречи")
-        field.setAccessibilityHelp("Return — сохранить, Escape — отменить.")
-        field.toolTip = "Нажмите на название, чтобы переименовать"
+        field.setAccessibilityIdentifier("meeting.title"); field.setAccessibilityLabel(L("Название встречи"))
+        field.setAccessibilityHelp(L("Return — сохранить, Escape — отменить."))
+        field.toolTip = L("Нажмите на название, чтобы переименовать")
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         field.delegate = context.coordinator
         return field

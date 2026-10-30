@@ -19,7 +19,7 @@ PROFILES = {
     "release": "All profiles plus the real Sparkle SDK on signed disposable fixtures",
 }
 NATIVE = (
-    "folders", "folder-jobs", "meeting-rename", "responsiveness", "contexts", "feature-ui", "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-sessions", "corrections", "tasks", "task-workspace", "integrations", "trash", "themes", "typography", "guidance", "voice", "bug-report", "copy-transcript", "updates",
+    "folders", "localization", "folder-jobs", "meeting-rename", "responsiveness", "contexts", "feature-ui", "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-start", "recording-sessions", "corrections", "tasks", "task-workspace", "integrations", "trash", "themes", "typography", "guidance", "voice", "bug-report", "copy-transcript", "updates",
     "calendar", "calendar-workspace", "notes", "overview", "jobs", "navigation", "cards", "queue", "source-playback",
 )
 

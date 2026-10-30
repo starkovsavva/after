@@ -67,6 +67,16 @@ enum ChatGPTAuthNativeChecks {
         print("PASS: concurrent refresh serializes one rotation, atomic replacement, account mismatch, temporary and terminal failures")
         try await ChatGPTSecurity.verifyLoopback()
         print("PASS: actual loopback ephemeral listener, bad-state rejection, valid callback and cancellation")
+        let logoURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("packaging/Logo.svg")
+        let currentLogo = try String(contentsOf: logoURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let favicon = Data(currentLogo.utf8).base64EncodedString()
+        for received in [true, false] {
+            let page = String(decoding: ChatGPTCallbackPage.body(received: received), as: UTF8.self)
+            try expect(page.contains(currentLogo) && page.contains("href=\"data:image/svg+xml;base64,\(favicon)\""),
+                       "Both callback states and their favicon must use the current application logo from packaging/Logo.svg")
+        }
+        print("PASS: browser callback mark and favicon match the current After application icon")
         let startup = try ChatGPTAccount.restoringFixture()
         try expect(startup.account.profile == nil, "The fixture must begin before asynchronous restoration")
         let restoredToken = try await startup.account.accessToken(expectedAccountID: startup.id)
@@ -91,7 +101,7 @@ enum ChatGPTAuthNativeChecks {
         try await ChatGPTAccount.verifyCancelledSignIn()
         try ChatGPTAccount.verifyLoginHandoff()
         print("PASS: cancelled catalog requests preserve the selected model and account; cancelled sign-in tasks cannot open a browser; callback/terminal focus intents stay within the current login; cancellation, preview and stale attempts cannot focus")
-        print("7 native ChatGPT auth checks passed (synthetic credentials only)")
+        print("8 native ChatGPT auth checks passed (synthetic credentials only)")
     }
     private enum CheckFailure: Error { case failed(String) }
     private static func expect(_ value: @autoclosure () throws -> Bool, _ message: String) throws { guard try value() else { throw CheckFailure.failed(message) } }

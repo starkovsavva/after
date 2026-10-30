@@ -21,15 +21,31 @@ struct RecordingDisplay: Identifiable, Equatable, Sendable {
 }
 
 /// Uses the macOS capture APIs. No virtual audio driver or meeting bot.
-final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate, @unchecked Sendable {
+final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate, AVAudioRecorderDelegate, @unchecked Sendable {
     var failed: (@Sendable (RecordingFailure) -> Void)?
     private var stream: SCStream?
+    private var contentPicker: SystemCapturePicker?
+    private let startLock = NSLock()
+    private var starting = false
+    private var startCancelled = false
+    private var permissionRequest: RecordingPermissionRequest?
+    private let requestMicrophonePermission: RecordingPermissionRequest.Request
     private let failureLock = NSLock()
     private var streamFailure: (stream: ObjectIdentifier, sessionID: String)?
+    private var microphoneFailure: (recorder: ObjectIdentifier, sessionID: String)?
+    private var microphoneFailureReported = false
+    private var startupFailure: RecordingFailure?
     private var sink: CaptureSink?
     private var microphone: AVAudioRecorder?
     var levels: (@Sendable (Double?, Double?) -> Void)?
     private var meterTask: Task<Void, Never>?
+
+    init(requestMicrophonePermission: @escaping RecordingPermissionRequest.Request = {
+        AVCaptureDevice.requestAccess(for: .audio, completionHandler: $0)
+    }) {
+        self.requestMicrophonePermission = requestMicrophonePermission
+        super.init()
+    }
 
     /// NSScreen/Core Graphics enumerate devices without asking for Screen Recording access.
     @MainActor static func availableDisplays() -> [RecordingDisplay] {
@@ -49,19 +65,27 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
     static func shareableContentError(_ error: Error) -> AppError {
         let value = error as NSError
         let code = value.code
-        let diagnostic = value.domain == SCStreamErrorDomain ? "ScreenCaptureKit, код \(code)" : "код \(code)"
+        let diagnostic = value.domain == SCStreamErrorDomain ? LF("ScreenCaptureKit, код {0}", arguments: [String(describing: code)]) : LF("код {0}", arguments: [String(describing: code)])
         let message: String
         if value.domain == SCStreamErrorDomain, code == SCStreamError.Code.userDeclined.rawValue {
-            message = "macOS не разрешила запись экрана или звука. Разрешите доступ для открытой копии «После» в настройках конфиденциальности, затем завершите и откройте приложение снова."
+            message = L("macOS не разрешила запись выбранного экрана или звука. Повторите запись и подтвердите выбор в окне macOS. Если доступ уже включён, завершите «После», удалите старую запись «После» кнопкой «−» в настройках записи экрана и снова откройте установленное приложение, чтобы дать доступ этой копии.")
         } else if value.domain == SCStreamErrorDomain,
                   [SCStreamError.Code.noDisplayList.rawValue, SCStreamError.Code.noCaptureSource.rawValue].contains(code) {
-            message = "macOS не нашла доступный экран. Проверьте подключение дисплея и повторите запись."
+            message = L("macOS не нашла доступный экран. Проверьте подключение дисплея и повторите запись.")
         } else if value.domain == SCStreamErrorDomain, code == SCStreamError.Code.failedNoMatchingApplicationContext.rawValue {
-            message = "macOS потеряла подключение к этой копии «После». Завершите приложение и откройте установленную копию снова."
+            message = L("macOS потеряла подключение к этой копии «После». Завершите приложение и откройте установленную копию снова.")
         } else {
-            message = "macOS не смогла получить доступные экраны и звук. Повторите попытку; если ошибка сохранится, перезапустите «После»."
+            message = L("macOS не смогла получить доступные экраны и звук. Повторите попытку; если ошибка сохранится, перезапустите «После».")
         }
         return .message("\(message) (\(diagnostic))")
+    }
+
+    static func captureFailure(_ error: Error, sessionID: String) -> RecordingFailure {
+        let value = error as NSError
+        let userStopped = value.domain == SCStreamErrorDomain && value.code == SCStreamError.Code.userStopped.rawValue
+        return RecordingFailure(sessionID: sessionID,
+            message: userStopped ? L("Запись завершена в macOS.") : shareableContentError(error).localizedDescription,
+            userInitiated: userStopped)
     }
 
     private static func persistentDisplayID(_ id: UInt32) -> String? {
@@ -73,36 +97,30 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
                videoQuality: RecordingVideoQuality = .compact,
                audioQuality: RecordingAudioQuality = .standard,
                displayID: UInt32? = nil, expectedDisplayUUID: String? = nil) async throws {
-        guard stream == nil, microphone == nil else {
-            throw AppError.message("Запись уже идёт. Сначала остановите её.")
-        }
-        // Snapshot the target before a potentially long permission prompt. A display ID
-        // can be reused after disconnect; compare its persistent identity after the await.
-        let initialDisplayID = displayID ?? CGMainDisplayID()
-        let initialDisplayUUID = video ? (expectedDisplayUUID ?? Self.persistentDisplayID(initialDisplayID)) : nil
-        if video {
-            guard CGDisplayIsActive(initialDisplayID) != 0 else {
-                throw AppError.message("Выбранный экран отключён. Выберите подключённый экран перед записью.")
-            }
-            guard let initialDisplayUUID,
-                  Self.persistentDisplayID(initialDisplayID) == initialDisplayUUID else {
-                throw AppError.message("Выбранный экран изменился. Выберите экран повторно перед записью.")
-            }
-        }
-        let permission = await AVCaptureDevice.requestAccess(for: .audio)
+        let permissionRequest = try reserveStart()
+        defer { releaseStart() }
+        try checkStartCancellation()
+        // The macOS picker is the source of truth for this recording. Previously
+        // selected display IDs remain accepted for backend compatibility only.
+        let permission = try await permissionRequest.wait(request: requestMicrophonePermission)
+        try checkStartCancellation()
         guard permission else {
-            throw AppError.message("Разрешите микрофон: Системные настройки → Конфиденциальность и безопасность → Микрофон → После.")
+            throw AppError.message(L("Разрешите микрофон: Системные настройки → Конфиденциальность и безопасность → Микрофон → После."))
         }
         if !systemAudio && !video {
             let recorder = try AVAudioRecorder(url: url, settings: [
                 AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 48000,
                 AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: audioQuality.bitRate
             ])
+            recorder.delegate = self
+            microphone = recorder
+            bindMicrophoneFailure(recorder, sessionID: url.deletingLastPathComponent().lastPathComponent)
             guard recorder.prepareToRecord(), recorder.record() else {
-                throw AppError.message("Не удалось включить микрофон. Проверьте выбранный микрофон в системных настройках.")
+                throw AppError.message(L("Не удалось включить микрофон. Проверьте выбранный микрофон в системных настройках."))
             }
             recorder.isMeteringEnabled = true
-            microphone = recorder
+            try checkStartCancellation()
+            if let failure = failureDuringMicrophoneStart(recorder) { throw AppError.message(failure.message) }
             meterTask = Task { @MainActor [weak self] in
                 while !Task.isCancelled, recorder.isRecording {
                     recorder.updateMeters()
@@ -113,32 +131,29 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
             }
             return
         }
-        let content: SCShareableContent
-        do { content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) }
+        let picker = await MainActor.run { SystemCapturePicker() }
+        contentPicker = picker
+        let filter: SCContentFilter
+        do {
+            try checkStartCancellation()
+            filter = try await picker.selectDisplay()
+        }
         catch {
-            throw Self.shareableContentError(error)
+            await picker.close()
+            contentPicker = nil
+            throw error
         }
-        guard let selectedID = RecordingDisplaySelection.resolve(
-            requested: video ? initialDisplayID : nil,
-            available: content.displays.map(\.displayID), main: CGMainDisplayID()),
-              let display = content.displays.first(where: { $0.displayID == selectedID }) else {
-            throw AppError.message(video && displayID != nil
-                ? "Выбранный экран отключён. Выберите подключённый экран перед записью."
-                : "Основной экран недоступен. Проверьте подключение дисплея и повторите запись.")
-        }
-        if video, Self.persistentDisplayID(selectedID) != initialDisplayUUID {
-            throw AppError.message("Выбранный экран отключён или заменён. Выберите экран повторно перед записью.")
-        }
-        // Empty exclusion list includes the entire selected display, including all windows.
-        // Leave sourceRect unset: a source rectangle would crop the display.
-        let filter = SCContentFilter(display: display, excludingWindows: [])
-        filter.includeMenuBar = true
-        guard let size = videoQuality.dimensions(width: filter.contentRect.width,
-            height: filter.contentRect.height, scale: Double(filter.pointPixelScale)) else {
-            throw AppError.message("Не удалось определить разрешение экрана. Повторно выберите экран для записи.")
+        // Use the exact filter selected by macOS, including its menu-bar policy.
+        // Do not expand it or re-query SCShareableContent for broader access.
+        let size = videoQuality.dimensions(width: filter.contentRect.width,
+            height: filter.contentRect.height, scale: Double(filter.pointPixelScale))
+        guard !video || size != nil else {
+            await picker.close()
+            contentPicker = nil
+            throw AppError.message(L("Не удалось определить разрешение экрана. Повторно выберите экран для записи."))
         }
         let configuration = SCStreamConfiguration()
-        configuration.width = video ? size.width : 2; configuration.height = video ? size.height : 2
+        configuration.width = video ? size!.width : 2; configuration.height = video ? size!.height : 2
         configuration.preservesAspectRatio = true
         configuration.scalesToFit = true
         configuration.captureResolution = video ? .best : .nominal
@@ -150,12 +165,24 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         configuration.captureMicrophone = true
         configuration.excludesCurrentProcessAudio = true
         configuration.sampleRate = 48000; configuration.channelCount = 2
-        let sink = try CaptureSink(url: url, systemAudio: systemAudio,
-            videoSize: video ? size : nil, videoQuality: videoQuality, audioQuality: audioQuality)
+        let sink: CaptureSink
+        do {
+            try checkStartCancellation()
+            sink = try CaptureSink(url: url, systemAudio: systemAudio,
+                videoSize: video ? size : nil, videoQuality: videoQuality, audioQuality: audioQuality)
+        } catch {
+            await picker.close()
+            contentPicker = nil
+            throw error
+        }
         let sessionID = url.deletingLastPathComponent().lastPathComponent
         let reportFailure = failed
         // Bind errors to this capture, even if an old writer reports after the next start.
-        sink.failed = { message in reportFailure?(RecordingFailure(sessionID: sessionID, message: message)) }
+        sink.failed = { [weak self] message in
+            let failure = RecordingFailure(sessionID: sessionID, message: message)
+            self?.rememberFailure(failure)
+            reportFailure?(failure)
+        }
         sink.levels = { [weak self] microphone, system in self?.levels?(microphone, system) }
         let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
         do {
@@ -164,33 +191,112 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
             try stream.addStreamOutput(sink, type: .screen, sampleHandlerQueue: sink.queue)
             self.sink = sink; self.stream = stream
             bindFailure(stream: stream, sessionID: sessionID)
+            await picker.bind(stream)
+            await MainActor.run {
+                picker.selectionChanged = { [weak self] in
+                    let failure = RecordingFailure(sessionID: sessionID,
+                        message: L("Выбор экрана изменён в macOS. Исходная запись сохранена; начните новую запись для другого экрана."),
+                        userInitiated: true)
+                    self?.rememberFailure(failure)
+                    reportFailure?(failure)
+                }
+            }
+            try checkStartCancellation()
             try await stream.startCapture()
+            try checkStartCancellation()
+            if let failure = failureDuringStart(stream) {
+                if failure.userInitiated { throw CancellationError() }
+                throw AppError.message(failure.message)
+            }
         } catch {
             bindFailure(stream: nil, sessionID: nil)
+            try? await stream.stopCapture()
             self.stream = nil; self.sink = nil
             await sink.cancel()
-            let hint = video && videoQuality == .native ? " Попробуйте качество 1080p." : ""
-            throw AppError.message("Не удалось начать запись: \(error.localizedDescription)\(hint)")
+            await picker.close()
+            contentPicker = nil
+            if error is CancellationError { throw error }
+            if let appError = error as? AppError { throw appError }
+            let hint = video && videoQuality == .native ? L(" Попробуйте качество 1080p.") : ""
+            throw AppError.message(LF("Не удалось начать запись: {0}{1}", arguments: [Self.shareableContentError(error).localizedDescription, String(describing: hint)]))
         }
     }
 
+    func cancelPendingStart() async {
+        markStartCancelled()
+        await contentPicker?.cancelPendingSelection()
+    }
+
+    private func markStartCancelled() {
+        startLock.lock()
+        let pending = starting ? permissionRequest : nil
+        if starting { startCancelled = true }
+        startLock.unlock()
+        pending?.cancel()
+    }
+
     func stop() async throws {
+        // AVAudioRecorder sends its completion delegate for an ordinary Stop
+        // too. Clear this session before stopping so only unexpected exits fail.
+        bindMicrophoneFailure(nil, sessionID: nil)
         meterTask?.cancel(); meterTask = nil
         microphone?.stop(); microphone = nil
-        guard let stream else { return }
+        guard let stream else {
+            await contentPicker?.cancelPendingSelection()
+            return
+        }
         bindFailure(stream: nil, sessionID: nil)
         var captureError: Error?
         do { try await stream.stopCapture() } catch { captureError = error }
         self.stream = nil
+        let picker = contentPicker
+        contentPicker = nil
+        await picker?.close()
         if let sink {
             self.sink = nil
             try await sink.finish()
         } else if let captureError { throw captureError }
     }
 
+    private func reserveStart() throws -> RecordingPermissionRequest {
+        startLock.lock(); defer { startLock.unlock() }
+        guard !starting, stream == nil, microphone == nil else {
+            throw AppError.message(L("Запись уже идёт. Сначала остановите её."))
+        }
+        starting = true
+        startCancelled = false
+        let request = RecordingPermissionRequest()
+        permissionRequest = request
+        return request
+    }
+
+    private func checkStartCancellation() throws {
+        try Task.checkCancellation()
+        startLock.lock(); defer { startLock.unlock() }
+        if startCancelled { throw CancellationError() }
+    }
+
+    private func releaseStart() {
+        startLock.lock(); defer { startLock.unlock() }
+        starting = false
+        permissionRequest = nil
+    }
+
     private func bindFailure(stream: SCStream?, sessionID: String?) {
         failureLock.lock(); defer { failureLock.unlock() }
         streamFailure = stream.flatMap { value in sessionID.map { (ObjectIdentifier(value), $0) } }
+        startupFailure = nil
+    }
+
+    private func rememberFailure(_ failure: RecordingFailure) {
+        failureLock.lock(); defer { failureLock.unlock() }
+        guard streamFailure?.sessionID == failure.sessionID || microphoneFailure?.sessionID == failure.sessionID else { return }
+        startupFailure = failure
+    }
+
+    private func failureDuringStart(_ stream: SCStream) -> RecordingFailure? {
+        failureLock.lock(); defer { failureLock.unlock() }
+        return streamFailure?.stream == ObjectIdentifier(stream) ? startupFailure : nil
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -198,8 +304,55 @@ final class MeetingRecorder: NSObject, MeetingRecordingBackend, SCStreamDelegate
         let identity = streamFailure
         failureLock.unlock()
         guard let identity, identity.stream == ObjectIdentifier(stream) else { return }
-        failed?(RecordingFailure(sessionID: identity.sessionID, message: error.localizedDescription))
+        let failure = Self.captureFailure(error, sessionID: identity.sessionID)
+        rememberFailure(failure)
+        failed?(failure)
     }
+
+    private func bindMicrophoneFailure(_ recorder: AnyObject?, sessionID: String?) {
+        failureLock.lock(); defer { failureLock.unlock() }
+        microphoneFailure = recorder.flatMap { value in sessionID.map { (ObjectIdentifier(value), $0) } }
+        microphoneFailureReported = false
+        startupFailure = nil
+    }
+
+    private func failureDuringMicrophoneStart(_ recorder: AnyObject) -> RecordingFailure? {
+        failureLock.lock(); defer { failureLock.unlock() }
+        return microphoneFailure?.recorder == ObjectIdentifier(recorder) ? startupFailure : nil
+    }
+
+    private func reportMicrophoneFailure(_ recorder: AnyObject, error: Error?) {
+        failureLock.lock()
+        guard let identity = microphoneFailure, identity.recorder == ObjectIdentifier(recorder), !microphoneFailureReported else {
+            failureLock.unlock()
+            return
+        }
+        microphoneFailureReported = true
+        let failure = RecordingFailure(sessionID: identity.sessionID,
+            message: error?.localizedDescription ?? L("Запись с микрофона неожиданно завершилась. Проверьте микрофон и свободное место на диске."))
+        startupFailure = failure
+        failureLock.unlock()
+        failed?(failure)
+    }
+
+    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        reportMicrophoneFailure(recorder, error: error)
+    }
+
+    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        reportMicrophoneFailure(recorder, error: nil)
+    }
+
+    #if DEBUG
+    /// Feed the exact identity/error path without creating an AVAudioRecorder,
+    /// asking for access, or opening an input device.
+    func bindSyntheticMicrophoneForChecks(_ recorder: AnyObject, sessionID: String) {
+        bindMicrophoneFailure(recorder, sessionID: sessionID)
+    }
+    func reportSyntheticMicrophoneFailureForChecks(_ recorder: AnyObject, error: Error? = nil) {
+        reportMicrophoneFailure(recorder, error: error)
+    }
+    #endif
 }
 
 final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
@@ -215,7 +368,9 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
     private let nativeVideo: Bool
     private let frameDuration: CMTime
     // ScreenCaptureKit emits complete frames only when the display changes.
-    // Retain one surface so a static screen can last until the capture ends.
+    // Keep an owned copy so the static tail and H.264 encoder cannot exhaust
+    // ScreenCaptureKit's small pool and freeze video while audio continues.
+    private let videoFrameCopier = CaptureVideoFrameCopier()
     private var latestVideoFrame: CMSampleBuffer?
     private var pendingVideoFrame = false
     private var lastWrittenVideoTime = CMTime.invalid
@@ -236,9 +391,9 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
         microphone = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
         system?.expectsMediaDataInRealTime = true; microphone.expectsMediaDataInRealTime = true
         guard writer.canAdd(microphone) else {
-            throw AppError.message("macOS не смогла создать звуковые дорожки.")
+            throw AppError.message(L("macOS не смогла создать звуковые дорожки."))
         }
-        if let system { guard writer.canAdd(system) else { throw AppError.message("Не удалось создать системную аудиодорожку") }; writer.add(system) }
+        if let system { guard writer.canAdd(system) else { throw AppError.message(L("Не удалось создать системную аудиодорожку")) }; writer.add(system) }
         writer.add(microphone)
         if let size = videoSize {
             let outputSettings: [String: Any] = [
@@ -246,14 +401,15 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                 AVVideoScalingModeKey: AVVideoScalingModeResizeAspect,
                 AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: videoQuality.bitRate(for: size),
                     AVVideoExpectedSourceFrameRateKey: videoQuality.frameRate, AVVideoMaxKeyFrameIntervalDurationKey: 2,
+                    AVVideoAllowFrameReorderingKey: false,
                     AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel]
             ]
             guard writer.canApply(outputSettings: outputSettings, forMediaType: .video) else {
-                throw AppError.message("macOS не поддерживает H.264 для разрешения \(size.width) × \(size.height). Выберите качество 1080p.")
+                throw AppError.message(LF("macOS не поддерживает H.264 для разрешения {0} × {1}. Выберите качество 1080p.", arguments: [String(describing: size.width), String(describing: size.height)]))
             }
             let input = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
             input.expectsMediaDataInRealTime = true
-            guard writer.canAdd(input) else { throw AppError.message("Не удалось включить кодирование видео H.264") }
+            guard writer.canAdd(input) else { throw AppError.message(L("Не удалось включить кодирование видео H.264")) }
             writer.add(input); video = input
         } else { video = nil }
         // Fragmented QuickTime preserves completed fragments after an abnormal termination.
@@ -279,8 +435,15 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                 guard CMSampleBufferDataIsReady(buffer), CMSampleBufferGetImageBuffer(buffer) != nil,
                       CMSampleBufferGetPresentationTimeStamp(buffer).isValid,
                       CMSampleBufferGetPresentationTimeStamp(buffer).isNumeric else { return }
-                latestVideoFrame = buffer
-                pendingVideoFrame = true
+                do {
+                    guard let owned = try videoFrameCopier.copy(buffer) else {
+                        observeEnd(buffer, videoFrame: true)
+                        flushVideoFrame()
+                        return
+                    }
+                    latestVideoFrame = owned
+                    pendingVideoFrame = true
+                } catch { report(error); return }
             case .idle:
                 observeEnd(buffer, videoFrame: true)
                 flushVideoFrame()
@@ -367,14 +530,14 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     private var writingError: Error {
-        let message = writer.error?.localizedDescription ?? "Не удалось записать аудио или видео."
-        return AppError.message(message + (nativeVideo ? " Попробуйте качество 1080p." : ""))
+        let message = writer.error?.localizedDescription ?? L("Не удалось записать аудио или видео.")
+        return AppError.message(message + (nativeVideo ? L(" Попробуйте качество 1080p.") : ""))
     }
 
-    private func report() {
+    private func report(_ error: Error? = nil) {
         guard !reportedFailure else { return }
         reportedFailure = true
-        failed?(writingError.localizedDescription)
+        failed?((error ?? writingError).localizedDescription)
     }
 
     func cancel() async {
@@ -404,7 +567,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
         }
         guard started else {
             writer.cancelWriting()
-            continuation.resume(throwing: AppError.message("В записи нет звука. Проверьте микрофон и звук звонка."))
+            continuation.resume(throwing: AppError.message(L("В записи нет звука. Проверьте микрофон и звук звонка.")))
             return
         }
         flushVideoFrame()
@@ -424,7 +587,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                     }
                     return
                 }
-                finishingError = AppError.message("Не удалось сохранить последний видеокадр. Исходная запись со звуком сохранена.")
+                finishingError = AppError.message(L("Не удалось сохранить последний видеокадр. Исходная запись со звуком сохранена."))
             } else {
                 var timing = CMSampleTimingInfo(duration: frameDuration,
                     presentationTimeStamp: tailTime, decodeTimeStamp: .invalid)
@@ -435,7 +598,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
                 if status == noErr, let tail {
                     if !video.append(tail) { finishingError = writingError }
                 } else {
-                    finishingError = AppError.message("Не удалось завершить видеодорожку. Исходная запись со звуком сохранена.")
+                    finishingError = AppError.message(L("Не удалось завершить видеодорожку. Исходная запись со звуком сохранена."))
                 }
             }
         }
@@ -444,7 +607,7 @@ final class CaptureSink: NSObject, SCStreamOutput, @unchecked Sendable {
             return
         }
         if video != nil && writtenVideoFrames == 0 {
-            finishingError = AppError.message("macOS не передала ни одного видеокадра. Исходная запись со звуком сохранена. Проверьте доступ к записи экрана и повторите попытку.")
+            finishingError = AppError.message(L("macOS не передала ни одного видеокадра. Исходная запись со звуком сохранена. Проверьте доступ к записи экрана и повторите попытку."))
         }
         if captureEndTime.isValid { writer.endSession(atSourceTime: captureEndTime) }
         system?.markAsFinished(); microphone.markAsFinished(); video?.markAsFinished()

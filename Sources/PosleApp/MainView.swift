@@ -11,6 +11,7 @@ struct MainView: View {
     @State private var confirmDelete = false
     @State private var filteringMeetings = false
     @State private var folderEditor: FolderEditorTarget?
+    @State private var showingFeatureDefaults = false
     @State private var folderNameEditor: FolderNameTarget?
     @State private var meetingFolderTarget: MeetingFolderTarget?
     @State private var folderMeetingPicker: LibraryFolder?
@@ -57,7 +58,7 @@ struct MainView: View {
         .task { await TrashMaintenance.run(app: store) }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("PosleEditFolder"))) { notification in
             guard let id = notification.object as? String, let folder = store.notes.folder(id) else { return }
-            folderEditor = FolderEditorTarget(folder: folder)
+            folderEditor = FolderEditorTarget(folder: folder, section: notification.userInfo?["section"] as? String ?? "general")
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("PosleMoveMeeting"))) { notification in
             guard let id = notification.object as? String, let meeting = store.meetings.first(where: { $0.id == id }) else { return }
@@ -95,7 +96,7 @@ struct MainView: View {
             if dropping {
                 RoundedRectangle(cornerRadius: 12).fill(Ink.accent.opacity(0.08))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Ink.accent, style: StrokeStyle(lineWidth: 2, dash: [8])))
-                    .overlay(Label("Отпустите запись встречи", systemImage: "arrow.down.doc.fill").font(AppTypography.heading))
+                    .overlay(Label(L("Отпустите запись встречи"), systemImage: "arrow.down.doc.fill").font(AppTypography.heading))
                     .padding(10).allowsHitTesting(false)
             }
         }
@@ -109,17 +110,18 @@ struct MainView: View {
         .sheet(isPresented: $store.showingCaptureDrafts) {
             VStack(spacing: 0) {
                 HStack {
-                    Text("Черновик заметки").font(AppTypography.modalTitle)
+                    Text(L("Черновик заметки")).font(AppTypography.modalTitle)
                     Spacer()
-                    Button("Закрыть") { store.showingCaptureDrafts = false }.keyboardShortcut(.cancelAction)
+                    Button(L("Закрыть")) { store.showingCaptureDrafts = false }.keyboardShortcut(.cancelAction)
                 }.padding(22)
                 Divider()
                 NotesInboxView(notes: store.notes, draftKey: store.recoveryCaptureDraftKey).environmentObject(store)
             }.frame(width: 700, height: 600).appControlDefaults()
         }
         .sheet(item: $folderEditor) { target in
-            FolderSettingsView(folder: target.folder).environmentObject(store)
+            FolderSettingsView(folder: target.folder, section: target.section).environmentObject(store)
         }
+        .sheet(isPresented: $showingFeatureDefaults) { FeatureDefaultsSheet().environmentObject(store) }
         .sheet(item: $folderNameEditor) { target in
             FolderNameSheet(folder: target.folder, isNew: target.isNew) { saved in
                 if target.isNew { selectFolder(saved.id) }
@@ -134,10 +136,10 @@ struct MainView: View {
         .sheet(isPresented: $store.showingSettings) { SettingsView(section: store.settingsSection).environmentObject(store) }
         .sheet(isPresented: $store.showingRecord) { RecordView().environmentObject(store) }
         .sheet(isPresented: $store.showingSearch) { SearchView().environmentObject(store) }
-        .alert("Переместить встречу в Корзину?", isPresented: $confirmDelete) {
-            Button("Отмена", role: .cancel) {}
-            Button("В Корзину", role: .destructive) { store.trashSelected() }
-        } message: { Text("Встречу и все её материалы можно будет восстановить в Корзине приложения в течение 30 дней.") }
+        .alert(L("Переместить встречу в Корзину?"), isPresented: $confirmDelete) {
+            Button(L("Отмена"), role: .cancel) {}
+            Button(L("В Корзину"), role: .destructive) { store.trashSelected() }
+        } message: { Text(L("Встречу и все её материалы можно будет восстановить в Корзине приложения в течение 30 дней.")) }
     }
 
     private var unavailableFeature: AppFeature? {
@@ -156,68 +158,109 @@ struct MainView: View {
             Button { store.openGlobalSearch() } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    Text("Поиск").foregroundStyle(.secondary)
+                    Text(L("Поиск")).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                     Text("⌘K").font(AppTypography.caption).foregroundStyle(.tertiary)
                 }.font(AppTypography.control).padding(8).background(Ink.soft, in: RoundedRectangle(cornerRadius: 6))
             }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 18).padding(.bottom, 18)
-                .accessibilityLabel("Поиск по всей библиотеке. Command K")
+                .accessibilityLabel(L("Поиск по всей библиотеке. Command K"))
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+            folderScope.padding(.horizontal, 12).padding(.bottom, 8)
             VStack(spacing: 2) {
-                libraryButton("meetings", "Встречи", "waveform")
-                libraryButton("inbox", "Заметки", "note.text")
-                if store.isFeatureEnabled(.tasks) { libraryButton("tasks", "Задачи", "checklist") }
-                if store.isFeatureEnabled(.cards) { libraryButton("cards", "Карточки", "rectangle.on.rectangle") }
-                if store.isFeatureEnabled(.calendar) { libraryButton("calendar", "Календарь", "calendar") }
+                libraryButton("meetings", L("Встречи"), "waveform")
+                libraryButton("inbox", L("Заметки"), "note.text")
+                if store.isFeatureEnabled(.tasks) { libraryButton("tasks", L("Задачи"), "checklist") }
+                if store.isFeatureEnabled(.cards) { libraryButton("cards", L("Карточки"), "rectangle.on.rectangle") }
+                if store.isFeatureEnabled(.calendar) { libraryButton("calendar", L("Календарь"), "calendar") }
             }.padding(.horizontal, 8)
             folderNavigation
             if store.isFeatureEnabled(.tasks) {
-                Text("Библиотека").font(AppTypography.captionStrong).foregroundStyle(.secondary)
+                Text(L("Библиотека")).font(AppTypography.captionStrong).foregroundStyle(.secondary)
                     .padding(.horizontal, 18).padding(.top, 24).padding(.bottom, 7)
-                libraryButton("contexts", "Проекты и люди", "folder").padding(.horizontal, 8)
+                libraryButton("contexts", L("Проекты и люди"), "folder").padding(.horizontal, 8)
             }
-            libraryButton("trash", "Корзина", "trash").padding(.horizontal, 8)
+            libraryButton("trash", L("Корзина"), "trash").padding(.horizontal, 8)
                 .padding(.top, store.isFeatureEnabled(.tasks) ? 0 : 20)
                 }
             }
             Spacer(minLength: 12)
             if ProcessInfo.processInfo.arguments.contains("--preview") && !ProcessInfo.processInfo.arguments.contains("--snapshot") {
-                Text("Демонстрационные данные").font(AppTypography.caption).foregroundStyle(Ink.warning).padding(.horizontal, 18).padding(.bottom, 8)
+                Text(L("Демонстрационные данные")).font(AppTypography.caption).foregroundStyle(Ink.warning).padding(.horizontal, 18).padding(.bottom, 8)
             }
             Button { store.openSettings() } label: {
                 HStack(spacing: 9) {
                     Image(systemName: "slider.horizontal.3").frame(width: 18)
-                    Text("Настройки")
+                    Text(L("Настройки"))
                     Spacer()
                 }.font(AppTypography.control).foregroundStyle(.secondary).padding(.horizontal, 10).frame(height: 34)
             }.buttonStyle(.plain).padding(.horizontal, 8).padding(.bottom, 12)
         }.appSurface(.sidebar)
     }
 
+    private var folderScope: some View {
+        HStack(spacing: 6) {
+            Menu {
+                Button { selectFolder(nil) } label: {
+                    Label(L("Все папки"), systemImage: store.folderSelection == nil ? "checkmark" : "tray.full")
+                }.accessibilityIdentifier("folder.scope.select.all")
+                ForEach(store.notes.folders) { folder in
+                    Button { selectFolder(folder.id) } label: {
+                        Label(folder.name, systemImage: store.folderSelection == folder.id ? "checkmark" : "folder")
+                    }.accessibilityIdentifier("folder.scope.select." + folder.id)
+                }
+                Divider()
+                Button(L("Новая папка…")) { folderNameEditor = FolderNameTarget(folder: LibraryFolder(), isNew: true) }
+                    .accessibilityIdentifier("folder.scope.new")
+            } label: {
+                Label(store.notes.folder(store.folderSelection)?.name ?? L("Все папки"), systemImage: store.folderSelection == nil ? "tray.full" : "folder")
+                    .lineLimit(1)
+            }.menuStyle(.borderlessButton).menuIndicator(.visible).font(AppTypography.controlStrong)
+                .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                .accessibilityLabel(L("Выбор папки: ") + (store.notes.folder(store.folderSelection)?.name ?? L("Все папки")))
+                .accessibilityIdentifier("folder.scope.menu")
+                .help(L("Выбрать папку · ") + (store.notes.folder(store.folderSelection)?.name ?? L("Все папки")))
+            Button { openScopeFeatures() } label: {
+                Image(systemName: "slider.horizontal.3").frame(width: 28, height: 30).contentShape(Rectangle())
+            }.buttonStyle(.plain).foregroundStyle(Ink.secondaryText)
+                .help(store.notes.folder(store.folderSelection).map { LF("Возможности папки «{0}»", arguments: [$0.name]) } ?? L("Общие возможности по умолчанию"))
+                .accessibilityLabel(store.folderSelection == nil ? L("Общие возможности") : L("Возможности папки"))
+                .accessibilityIdentifier("folder.features.open")
+        }
+    }
     private var folderNavigation: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Папки").font(AppTypography.captionStrong).foregroundStyle(.secondary)
-                .padding(.horizontal, 10).padding(.bottom, 4)
-            folderRow(nil, "Все папки", icon: "tray.full")
-            ForEach(store.notes.folders) { folder in
-                folderRow(folder.id, folder.name, icon: "folder")
-                    .simultaneousGesture(TapGesture(count: 2).onEnded { folderNameEditor = FolderNameTarget(folder: folder) })
-                    .contextMenu {
-                        Button("Переименовать…") { folderNameEditor = FolderNameTarget(folder: folder) }
-                        Button("Переместить встречу сюда…") { folderMeetingPicker = folder }
-                        Divider()
-                        Button("Настройки папки…") { folderEditor = FolderEditorTarget(folder: folder) }
-                    }
-                    .accessibilityAction(named: "Переименовать") { folderNameEditor = FolderNameTarget(folder: folder) }
-            }
-            Button { folderNameEditor = FolderNameTarget(folder: LibraryFolder(), isNew: true) } label: {
-                Label("Новая папка…", systemImage: "folder.badge.plus")
-                    .frame(maxWidth: .infinity, alignment: .leading).font(AppTypography.control)
-                    .padding(.horizontal, 10).frame(height: 32).contentShape(Rectangle())
-            }.buttonStyle(.plain).foregroundStyle(.secondary).help("Создать папку для встреч и заметок")
-                .accessibilityIdentifier("folder.new")
-        }.padding(.horizontal, 8).padding(.top, 20)
+        DisclosureGroup(isExpanded: Binding(get: { store.foldersExpanded }, set: { store.setFoldersExpanded($0) })) {
+            VStack(alignment: .leading, spacing: 3) {
+                folderRow(nil, L("Все папки"), icon: "tray.full")
+                ForEach(store.notes.folders) { folder in
+                    folderRow(folder.id, folder.name, icon: "folder")
+                        .simultaneousGesture(TapGesture(count: 2).onEnded { folderNameEditor = FolderNameTarget(folder: folder) })
+                        .contextMenu {
+                            Button(L("Переименовать…")) { folderNameEditor = FolderNameTarget(folder: folder) }
+                            Button(L("Переместить встречу сюда…")) { folderMeetingPicker = folder }
+                            Divider()
+                            Button(L("Возможности папки…")) { folderEditor = FolderEditorTarget(folder: folder, section: "features") }
+                            Button(L("Настройки папки…")) { folderEditor = FolderEditorTarget(folder: folder) }
+                        }
+                        .accessibilityAction(named: L("Переименовать")) { folderNameEditor = FolderNameTarget(folder: folder) }
+                }
+                Button { folderNameEditor = FolderNameTarget(folder: LibraryFolder(), isNew: true) } label: {
+                    Label(L("Новая папка…"), systemImage: "folder.badge.plus")
+                        .frame(maxWidth: .infinity, alignment: .leading).font(AppTypography.control)
+                        .padding(.horizontal, 10).frame(height: 32).contentShape(Rectangle())
+                }.buttonStyle(.plain).foregroundStyle(.secondary).help(L("Создать папку для встреч и заметок"))
+                    .accessibilityIdentifier("folder.new")
+            }.padding(.top, 5).accessibilityElement(children: .contain)
+        } label: {
+            Text(L("Папки")).font(AppTypography.captionStrong).foregroundStyle(Ink.secondaryText)
+                .accessibilityIdentifier("folder.list.label")
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("folder.list.toggle")
+            .padding(.horizontal, 12).padding(.top, 20)
+    }
+    private func openScopeFeatures() {
+        if let folder = store.notes.folder(store.folderSelection) {
+            folderEditor = FolderEditorTarget(folder: folder, section: "features")
+        } else { showingFeatureDefaults = true }
     }
     private func selectFolder(_ id: String?) {
         store.pause(); store.folderSelection = id
@@ -233,7 +276,7 @@ struct MainView: View {
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityIdentifier("folder.select." + (id ?? "all"))
             .accessibilityAddTraits(store.folderSelection == id ? .isSelected : [])
-            .help(id == nil ? name : name + " · Двойной щелчок — переименовать")
+            .help(id == nil ? name : name + L(" · Двойной щелчок — переименовать"))
     }
 
     private func libraryButton(_ id: String, _ title: String, _ icon: String) -> some View {
@@ -260,16 +303,16 @@ struct MainView: View {
         let today = rows.filter { calendar.isDateInToday(Date(timeIntervalSince1970: $0.createdAt)) }
         let recent = rows.filter { !calendar.isDateInToday(Date(timeIntervalSince1970: $0.createdAt)) && Date(timeIntervalSince1970: $0.createdAt) >= weekStart }
         let earlier = rows.filter { Date(timeIntervalSince1970: $0.createdAt) < weekStart }
-        return [("Сегодня", today), ("За неделю", recent), ("Ранее", earlier)].filter { !$0.1.isEmpty }
+        return [(L("Сегодня"), today), (L("За неделю"), recent), (L("Ранее"), earlier)].filter { !$0.1.isEmpty }
     }
     private var meetingList: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(store.notes.folder(store.folderSelection)?.name ?? "Встречи").font(AppTypography.controlStrong).lineLimit(1)
+                Text(store.notes.folder(store.folderSelection)?.name ?? L("Встречи")).font(AppTypography.controlStrong).lineLimit(1)
                 if let folder = store.notes.folder(store.folderSelection) {
                     Button { folderEditor = FolderEditorTarget(folder: folder) } label: {
                         Image(systemName: "slider.horizontal.3").frame(width: 24, height: 24)
-                    }.buttonStyle(.plain).foregroundStyle(.secondary).help("Настройки папки")
+                    }.buttonStyle(.plain).foregroundStyle(.secondary).help(L("Настройки папки"))
                         .accessibilityIdentifier("folder.current.settings")
                 }
                 Spacer()
@@ -278,14 +321,14 @@ struct MainView: View {
                     if !filteringMeetings { store.libraryFilter = "" }
                 } label: { Image(systemName: "line.3.horizontal.decrease").frame(width: 26, height: 26) }
                     .buttonStyle(.plain).foregroundStyle(filteringMeetings ? Ink.accent : Color.secondary)
-                    .accessibilityLabel("Фильтр встреч").help("Фильтр по названию")
+                    .accessibilityLabel(L("Фильтр встреч")).help(L("Фильтр по названию"))
             }.padding(.horizontal, 16).padding(.top, 15).padding(.bottom, 12)
             if filteringMeetings || !store.libraryFilter.isEmpty {
                 HStack(spacing: 7) {
-                    TextField("Название встречи", text: $store.libraryFilter).textFieldStyle(.plain)
+                    TextField(L("Название встречи"), text: $store.libraryFilter).textFieldStyle(.plain)
                     if !store.libraryFilter.isEmpty {
                         Button { store.libraryFilter = "" } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Очистить фильтр")
+                            .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel(L("Очистить фильтр"))
                     }
                 }.font(AppTypography.control).padding(8).background(Ink.soft, in: RoundedRectangle(cornerRadius: 6))
                     .padding(.horizontal, 12).padding(.bottom, 8)
@@ -304,35 +347,35 @@ struct MainView: View {
                                     Text(meeting.title).font(store.selection == meeting.id ? AppTypography.controlStrong : AppTypography.control)
                                         .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                                     HStack {
-                                        Text(Date(timeIntervalSince1970: meeting.createdAt).formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "ru_RU"))))
+                                        Text(Date(timeIntervalSince1970: meeting.createdAt).formatted(.dateTime.day().month(.abbreviated).locale(UILocale())))
                                         Spacer()
-                                        Text(meeting.status == "recording" ? "Запись" : meeting.duration > 0 ? Exporter.timestamp(meeting.duration) : "Добавлена")
+                                        Text(meeting.status == "recording" ? L("Запись") : meeting.duration > 0 ? Exporter.timestamp(meeting.duration) : L("Добавлена"))
                                     }.font(AppTypography.caption).foregroundStyle(.secondary)
                                 }.padding(11).background(store.selection == meeting.id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
                                     .contentShape(Rectangle())
                             }.buttonStyle(.plain).padding(.horizontal, 8).padding(.bottom, 3)
                                 .accessibilityIdentifier("meeting.select." + meeting.id)
                                 .contextMenu {
-                                    Button("Переместить в папку…") { meetingFolderTarget = MeetingFolderTarget(meeting: meeting) }
+                                    Button(L("Переместить в папку…")) { meetingFolderTarget = MeetingFolderTarget(meeting: meeting) }
                                         .disabled(store.captureMeetingID == meeting.id || store.isTerminating)
-                                    Button("Переименовать…") {
+                                    Button(L("Переименовать…")) {
                                         let currentTab = store.selection == meeting.id ? store.tab : "summary"
                                         store.openMeeting(meeting.id, tab: currentTab); store.meetingTitleEdits.begin(meeting)
                                     }
                                         .disabled(store.captureMeetingID == meeting.id || store.isTerminating)
                                 }
-                                .accessibilityValue(store.selection == meeting.id ? "Выбрана" : "")
+                                .accessibilityValue(store.selection == meeting.id ? L("Выбрана") : "")
                                 .accessibilityAddTraits(store.selection == meeting.id ? .isSelected : [])
                         }
                     }
                     if store.filteredMeetings.isEmpty && store.libraryFilter.isEmpty, let folder = store.notes.folder(store.folderSelection) {
-                        Button { folderMeetingPicker = folder } label: { Label("Выбрать из библиотеки…", systemImage: "folder.badge.plus") }
+                        Button { folderMeetingPicker = folder } label: { Label(L("Выбрать из библиотеки…"), systemImage: "folder.badge.plus") }
                             .buttonStyle(.borderless).font(AppTypography.control).padding(16).accessibilityIdentifier("folder.addMeetings")
                     }
                     if store.filteredMeetings.isEmpty && !store.libraryFilter.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Встречи не найдены").font(AppTypography.controlStrong)
-                            Button("Сбросить поиск") { store.libraryFilter = "" }.buttonStyle(.borderless)
+                            Text(L("Встречи не найдены")).font(AppTypography.controlStrong)
+                            Button(L("Сбросить поиск")) { store.libraryFilter = "" }.buttonStyle(.borderless)
                         }.padding(16)
                     }
                 }
@@ -342,34 +385,34 @@ struct MainView: View {
 
     private var topbar: some View {
         HStack(spacing: 10) {
-            Text("После").font(AppTypography.controlStrong).padding(.leading, 4)
+            Text(L("После")).font(AppTypography.controlStrong).padding(.leading, 4)
             HStack(spacing: 8) {
                 if store.isRecording {
                     if store.stoppingRecording { ProgressView().controlSize(.small) }
                     else { Image(systemName: "record.circle.fill").foregroundStyle(Ink.recordFill) }
-                    Text(store.stoppingRecording ? "Сохраняю запись…" : "Запись").lineLimit(1)
+                    Text(store.stoppingRecording ? L("Сохраняю запись…") : L("Запись")).lineLimit(1)
                     if !store.stoppingRecording, let date = store.recordingDate { Text(date, style: .timer).monospacedDigit() }
                     if !store.stoppingRecording { AudioLevelView(levels: store.audioLevels, systemAudio: store.settings.recordSystemAudio, compact: true) }
                     Button { store.bookmarkAction?() } label: { Image(systemName: "bookmark").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).disabled(store.stoppingRecording).accessibilityLabel("Отметить важный момент").help("Отметить момент · ⌃⌥B")
+                        .buttonStyle(.plain).disabled(store.stoppingRecording).accessibilityLabel(L("Отметить важный момент")).help(L("Отметить момент · ⌃⌥B"))
                 } else if store.busy {
                     ProgressView().controlSize(.small)
                     Text(store.progressText).lineLimit(1).truncationMode(.middle).help(store.progressText)
                     if store.canCancelJob {
                         Button { store.cancelJob() } label: { Image(systemName: "xmark.circle").frame(width: 24, height: 24) }
-                            .buttonStyle(.plain).accessibilityLabel("Отменить обработку")
+                            .buttonStyle(.plain).accessibilityLabel(L("Отменить обработку"))
                     }
                 }
             }.font(AppTypography.caption).foregroundStyle(.secondary).padding(.leading, 12).frame(maxWidth: .infinity, alignment: .leading)
             BackgroundJobsButton(jobs: store.jobs)
             UpdateAvailabilityButton(updates: store.updates)
             Button { store.quickCaptureAction?() } label: { Image(systemName: "square.and.pencil").frame(width: 28, height: 28) }
-                .buttonStyle(.plain).appLayoutAnchor("toolbar.note").help("Быстрая заметка · ⇧⌘N").accessibilityLabel("Быстрая заметка")
+                .buttonStyle(.plain).appLayoutAnchor("toolbar.note").help(L("Быстрая заметка · ⇧⌘N")).accessibilityLabel(L("Быстрая заметка"))
             Button { store.chooseFile() } label: { Image(systemName: "arrow.down.doc").frame(width: 28, height: 28) }
-                .disabled(store.startingRecording).buttonStyle(.plain).appLayoutAnchor("toolbar.file").help("Импорт аудио или видео · ⌘O").accessibilityLabel("Импорт аудио или видео")
+                .disabled(store.startingRecording).buttonStyle(.plain).appLayoutAnchor("toolbar.file").help(L("Импорт аудио или видео · ⌘O")).accessibilityLabel(L("Импорт аудио или видео"))
             if store.isFeatureEnabled(.assistant) {
                 Button { store.presentVoice() } label: { Image(systemName: "mic").frame(width: 28, height: 28) }
-                    .buttonStyle(.plain).help("Голосовое поручение · ⇧⌘M").accessibilityLabel("Голосовое поручение")
+                    .buttonStyle(.plain).help(L("Голосовое поручение · ⇧⌘M")).accessibilityLabel(L("Голосовое поручение"))
                     .accessibilityIdentifier("voice.open")
             }
             Divider().frame(height: 18).padding(.horizontal, 3)
@@ -377,11 +420,11 @@ struct MainView: View {
                 if store.isRecording { Task { await store.stopRecording() } }
                 else { store.showingRecord = true }
             } label: {
-                Label(store.stoppingRecording ? "Сохраняю…" : store.isRecording ? "Остановить" : "Записать",
+                Label(store.stoppingRecording ? L("Сохраняю…") : store.isRecording ? L("Остановить") : L("Записать"),
                       systemImage: store.isRecording ? "stop.circle" : "record.circle").frame(width: 108)
             }.disabled(store.stoppingRecording || store.startingRecording)
                 .buttonStyle(.bordered).foregroundStyle(store.isRecording ? Ink.recordFill : Color.primary)
-                .appLayoutAnchor("toolbar.record").help(store.isRecording ? "Остановить и сохранить запись" : "Записать встречу · ⌘N")
+                .appLayoutAnchor("toolbar.record").help(store.isRecording ? L("Остановить и сохранить запись") : L("Записать встречу · ⌘N"))
         }.font(AppTypography.control).controlSize(.regular).padding(.horizontal, 16)
             .frame(height: AppLayout.toolbarHeight).appSurface(.toolbar).appLayoutAnchor("toolbar")
             .overlay(alignment: .bottom) {
@@ -392,10 +435,10 @@ struct MainView: View {
     private func message(_ text: String, error: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: error ? "exclamationmark.circle" : "checkmark.circle").foregroundStyle(error ? Ink.warning : Ink.green)
-            Text(text).font(AppTypography.control).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            Text(error ? L(text) : text).font(AppTypography.control).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
             if !error { OpenUpdateDraft(updates: store.updates).buttonStyle(.borderless) }
             Button { if error { store.error = nil } else { store.notice = nil } } label: { Image(systemName: "xmark") }
-                .buttonStyle(.plain).accessibilityLabel("Закрыть сообщение")
+                .buttonStyle(.plain).accessibilityLabel(L("Закрыть сообщение"))
         }.padding(14).background(Ink.paper, in: RoundedRectangle(cornerRadius: AppLayout.cardRadius))
             .overlay(RoundedRectangle(cornerRadius: AppLayout.cardRadius).strokeBorder(error ? Ink.warning.opacity(0.5) : Ink.line))
             .shadow(color: .black.opacity(0.10), radius: 12, y: 4)
@@ -404,14 +447,14 @@ struct MainView: View {
     private var welcome: some View {
         VStack(spacing: 16) {
             Image(systemName: "waveform").font(.system(size: 34, weight: .light)).foregroundStyle(Ink.accent).accessibilityHidden(true)
-            Text(store.folderSelection == nil ? "Пока нет встреч" : "В папке пока нет встреч").font(AppTypography.pageTitle)
-            Text("Перетащите сюда аудио или видео").font(AppTypography.body).foregroundStyle(.secondary)
+            Text(store.folderSelection == nil ? L("Пока нет встреч") : L("В папке пока нет встреч")).font(AppTypography.pageTitle)
+            Text(L("Перетащите сюда аудио или видео")).font(AppTypography.body).foregroundStyle(.secondary)
             HStack(spacing: 10) {
-                Button("Импортировать запись") { store.chooseFile() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(store.busy)
-                Button("Записать встречу") { store.showingRecord = true }.buttonStyle(.bordered).disabled(store.startingRecording)
+                Button(L("Импортировать запись")) { store.chooseFile() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(store.busy)
+                Button(L("Записать встречу")) { store.showingRecord = true }.buttonStyle(.bordered).disabled(store.startingRecording)
             }
             if let folder = store.notes.folder(store.folderSelection), store.meetings.contains(where: { $0.libraryKind != "cards" && store.folderID(for: $0.id) != folder.id }) {
-                Button("Переместить встречу из библиотеки…") { folderMeetingPicker = folder }.buttonStyle(.borderless)
+                Button(L("Переместить встречу из библиотеки…")) { folderMeetingPicker = folder }.buttonStyle(.borderless)
                     .accessibilityIdentifier("folder.addExistingMeeting")
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(AppLayout.contentInset)
@@ -420,27 +463,27 @@ struct MainView: View {
         HStack(spacing: 14) {
             Button { store.togglePlayback() } label: {
                 Image(systemName: store.isPlaying ? "pause.fill" : "play.fill").frame(width: 22, height: 22)
-            }.buttonStyle(.bordered).accessibilityLabel(store.isPlaying ? "Приостановить" : "Воспроизвести")
+            }.buttonStyle(.bordered).accessibilityLabel(store.isPlaying ? L("Приостановить") : L("Воспроизвести"))
             Text(Exporter.timestamp(store.playbackTime)).monospacedDigit().frame(width: 52)
             Slider(value: Binding(get: { store.playbackTime }, set: { store.seek($0) }), in: 0...max(1, store.playbackDuration))
-                .accessibilityLabel("Позиция в записи")
+                .accessibilityLabel(L("Позиция в записи"))
             Text(Exporter.timestamp(store.playbackDuration)).monospacedDigit().foregroundStyle(.secondary).frame(width: 52)
             Menu {
-                Button("Конспект и транскрипция (.md)") { store.export(false) }
-                Button("Аудиозапись (.mp3)") { store.exportAudio() }
+                Button(L("Конспект и транскрипция (.md)")) { store.export(false) }
+                Button(L("Аудиозапись (.mp3)")) { store.exportAudio() }
                 if store.selected?.hasVideo == true {
-                    Button("Открыть видео (.mp4)") {
+                    Button(L("Открыть видео (.mp4)")) {
                         if let directory = store.selectedDirectory { NSWorkspace.shared.open(directory.appendingPathComponent("video.mp4")) }
                     }
                 }
                 if store.isFeatureEnabled(.cards) {
-                    Button("Карточки для Anki (.tsv)") { store.export(true) }.disabled(store.summary?.cards.isEmpty ?? true)
+                    Button(L("Карточки для Anki (.tsv)")) { store.export(true) }.disabled(store.summary?.cards.isEmpty ?? true)
                 }
                 Divider()
-                Button("Показать файлы встречи") { if let directory = store.selectedDirectory { NSWorkspace.shared.open(directory) } }
-                Button("Переместить в Корзину", role: .destructive) { confirmDelete = true }.disabled(store.busy || store.isRecording)
+                Button(L("Показать файлы встречи")) { if let directory = store.selectedDirectory { NSWorkspace.shared.open(directory) } }
+                Button(L("Переместить в Корзину"), role: .destructive) { confirmDelete = true }.disabled(store.busy || store.isRecording)
             } label: { Image(systemName: "square.and.arrow.up").frame(width: 25) }.menuStyle(.borderlessButton).frame(width: 35)
-                .accessibilityLabel("Экспорт встречи")
+                .accessibilityLabel(L("Экспорт встречи"))
         }.font(AppTypography.control).padding(.horizontal, AppLayout.contentInset)
             .frame(height: AppLayout.statusHeight).appSurface(.toolbar)
             .overlay(alignment: .top) { Rectangle().fill(Ink.line).frame(height: 1) }

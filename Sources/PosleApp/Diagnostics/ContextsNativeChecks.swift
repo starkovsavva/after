@@ -116,7 +116,7 @@ enum ContextsNativeChecks {
         try press(window, "contexts.edit." + meeting.id)
         try await wait(window) { ids(window).contains("notes.context.save") && window.attachedSheet != nil }
         try edit(window, placeholder: "Проект", value: "План английского")
-        try selectTemplate(window, title: template.name)
+        try await selectTemplate(window, title: template.name)
         try await wait(window) { ids(window).contains("notes.context.insertTemplate") }
         try press(window, "notes.context.insertTemplate")
         try await wait(window) { checked(window, "notes.context.insertTemplate") == true && UnsavedEditorRegistry.hasUnsaved }
@@ -196,11 +196,11 @@ enum ContextsNativeChecks {
         try await wait(window) { ids(window).contains("contexts.edit." + meeting.id) }
         try press(window, "contexts.edit." + meeting.id)
         try await wait(window) { ids(window).contains("notes.context.save") }
-        try selectTemplate(window, title: template.name)
+        try await selectTemplate(window, title: template.name)
         try await wait(window) { ids(window).contains("notes.context.insertTemplate") }
         try press(window, "notes.context.insertTemplate")
         try await wait(window) { checked(window, "notes.context.insertTemplate") == true }
-        try selectTemplate(window, title: "Без шаблона")
+        try await selectTemplate(window, title: "Без шаблона")
         try await wait(window) { !ids(window).contains("notes.context.insertTemplate") && !UnsavedEditorRegistry.hasUnsaved }
         try press(window, "notes.context.save")
         try await wait(window) { window.attachedSheet == nil }
@@ -224,7 +224,7 @@ enum ContextsNativeChecks {
         defer { presentation.showing = false; window.orderOut(nil); window.contentView = nil }
         try await wait(window) { window.attachedSheet != nil && ids(window).contains("notes.context.insertTemplate") }
         try expect(selectedTemplate(window) == template.name && !UnsavedEditorRegistry.hasUnsaved, "A new editor must display the inherited default without inventing a dirty change")
-        try selectTemplate(window, title: "Без шаблона")
+        try await selectTemplate(window, title: "Без шаблона")
         try await wait(window) { !ids(window).contains("notes.context.insertTemplate") && UnsavedEditorRegistry.hasUnsaved }
         postKey(window, character: "\r", code: 36)
         try await wait(window) { window.attachedSheet == nil && !UnsavedEditorRegistry.hasUnsaved }
@@ -243,8 +243,7 @@ enum ContextsNativeChecks {
         print("PASS: explicit None overrides an inherited default on a fresh meeting and survives reopening without redundant writes")
     }
     private static func selectedTemplate(_ window: NSWindow) -> String? {
-        func controls(_ root: NSView) -> [NSPopUpButton] { (root as? NSPopUpButton).map { [$0] } ?? root.subviews.flatMap(controls) }
-        return window.attachedSheet?.contentView.flatMap { controls($0).first?.titleOfSelectedItem }
+        NativePickerChecks.value("notes.context.template", in: roots(window))
     }
     private static func fixtureSQL(root: URL, sql: String) throws {
         let canonical = root.resolvingSymlinksInPath()
@@ -258,18 +257,15 @@ enum ContextsNativeChecks {
         let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         try expect(process.terminationStatus == 0, "Synthetic SQLite fixture command failed: " + output)
     }
-    private static func selectTemplate(_ window: NSWindow, title: String) throws {
-        func controls(_ root: NSView) -> [NSPopUpButton] { (root as? NSPopUpButton).map { [$0] } ?? root.subviews.flatMap(controls) }
-        guard let root = window.attachedSheet?.contentView, let picker = controls(root).first, let menu = picker.menu,
-              let item = menu.items.first(where: { $0.title == title }) else { throw AppError.message("Context template option missing: " + title) }
-        picker.select(item); menu.performActionForItem(at: picker.indexOfSelectedItem)
+    private static func selectTemplate(_ window: NSWindow, title: String) async throws {
+        try await NativePickerChecks.select(title: title, identifier: "notes.context.template", in: roots(window))
     }
     private static func fieldValue(_ window: NSWindow, placeholder: String) -> String? {
         func fields(_ root: NSView) -> [NSTextField] { (root as? NSTextField).map { [$0] } ?? root.subviews.flatMap(fields) }
         return roots(window).flatMap(fields).first(where: { $0.placeholderString == placeholder })?.stringValue
     }
     private static func checked(_ window: NSWindow, _ id: String) -> Bool? {
-        roots(window).flatMap(nodes).filter { $0.identifier == id }.compactMap(\.checked).first
+        roots(window).reversed().flatMap(nodes).filter { $0.identifier == id }.compactMap(\.checked).first
     }
     private static func postKey(_ window: NSWindow, character: String, code: UInt16) {
         let target = window.attachedSheet ?? window; target.makeKeyAndOrderFront(nil)
@@ -280,10 +276,15 @@ enum ContextsNativeChecks {
     private static func expect(_ value: @autoclosure () throws -> Bool, _ message: String) throws { if try !value() { throw AppError.message(message) } }
     private static func roots(_ window: NSWindow) -> [NSView] { [window.contentView, window.attachedSheet?.contentView].compactMap { $0 } }
     private static func ids(_ window: NSWindow) -> Set<String> { Set(roots(window).flatMap(nodes).compactMap(\.identifier)) }
-    private static func wait(_ window: NSWindow, condition: () -> Bool) async throws {
+    private static func wait(_ window: NSWindow, line: UInt = #line, condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(10)
         while !condition() {
-            if Date() > deadline { throw AppError.message("Context native control timeout: " + ids(window).sorted().joined(separator: ", ")) }
+            if Date() > deadline {
+                if let root = ProcessInfo.processInfo.environment["POSLE_DATA_DIR"], let view = window.attachedSheet?.contentView ?? window.contentView {
+                    try? snapshot(view, URL(fileURLWithPath: root).appendingPathComponent("context-failure.png"))
+                }
+                throw AppError.message("Context native control timeout at line \(line); window=\(window.frame), sheet=\(String(describing: window.attachedSheet?.frame)), screen=\(String(describing: NSScreen.main?.frame)): " + ids(window).sorted().joined(separator: ", "))
+            }
             window.contentView?.layoutSubtreeIfNeeded(); window.attachedSheet?.contentView?.layoutSubtreeIfNeeded()
             try await Task.sleep(for: .milliseconds(40))
         }

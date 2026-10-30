@@ -33,17 +33,17 @@ struct EvidenceButton: View {
                 if let first = visibleSegments.first {
                     Text(Exporter.timestamp(first.start)).monospacedDigit()
                     if uniqueIDs.count > 1 { Text("+\(uniqueIDs.count - 1)") }
-                } else { Text("Источники: \(uniqueIDs.count)") }
+                } else { Text(LF("Источники: {0}", arguments: [String(describing: (uniqueIDs.count))])) }
             }.font(AppTypography.controlStrong).foregroundStyle(Ink.accent)
                 .padding(.horizontal, 9).padding(.vertical, 7).background(Ink.accent.opacity(0.07), in: Capsule())
-        }.buttonStyle(.plain).help("Показать исходные реплики")
-            .accessibilityLabel("Исходные реплики: \(uniqueIDs.count)")
+        }.buttonStyle(.plain).help(L("Показать исходные реплики"))
+            .accessibilityLabel(LF("Исходные реплики: {0}", arguments: [String(describing: (uniqueIDs.count))]))
             .popover(isPresented: $showing, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Text("Источники").font(AppTypography.heading)
+                        Text(L("Источники")).font(AppTypography.heading)
                         Spacer()
-                        Button { showing = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Закрыть источники")
+                        Button { showing = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel(L("Закрыть источники"))
                     }
                     if !sourceTitle.isEmpty { Text(sourceTitle).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2) }
                     ScrollView {
@@ -62,7 +62,7 @@ struct EvidenceButton: View {
               let expected = sourceSnapshot.first(where: { $0.id == id }) else { return }
         let fresh: Transcript? = store.read(store.meetingDirectory(meeting).appendingPathComponent("transcript.json"))
         guard fresh?.segments.first(where: { $0.id == id }) == expected else {
-            store.error = "Источник изменился. Откройте актуальный конспект."; showing = false; return
+            store.error = L("Источник изменился. Откройте актуальный конспект."); showing = false; return
         }
         if play {
             playback.toggle(store: store, meetingID: meeting, expected: expected)
@@ -104,7 +104,7 @@ struct SourceQuotes: View {
         }
         VStack(alignment: .leading, spacing: 14) {
             if verified.count < uniqueIDs.count || uniqueIDs.isEmpty {
-                Label(verified.isEmpty ? "Источник недоступен. Обновите конспект." : "Некоторые исходные реплики недоступны.", systemImage: "exclamationmark.circle")
+                Label(verified.isEmpty ? L("Источник недоступен. Обновите конспект.") : L("Некоторые исходные реплики недоступны."), systemImage: "exclamationmark.circle")
                     .font(AppTypography.control).foregroundStyle(Ink.warning).padding(10)
             }
             ForEach(verified) { segment in
@@ -120,11 +120,11 @@ struct SourceQuotes: View {
                             }
                         }
                         .font(AppTypography.control).monospacedDigit().buttonStyle(.borderless).foregroundStyle(Ink.accent)
-                        .help(playingID == segment.id ? "Остановить реплику" : "Прослушать реплику здесь")
-                        .accessibilityLabel(playingID == segment.id ? "Остановить реплику" : "Прослушать с \(Exporter.timestamp(segment.start))")
+                        .help(playingID == segment.id ? L("Остановить реплику") : L("Прослушать реплику здесь"))
+                        .accessibilityLabel(playingID == segment.id ? L("Остановить реплику") : LF("Прослушать с {0}", arguments: [String(describing: (Exporter.timestamp(segment.start)))]))
                     }
                     Text(segment.text).font(AppTypography.body).lineSpacing(5).textSelection(.enabled)
-                    Button { open(segment.id, false) } label: { Label("Открыть транскрипт", systemImage: "arrow.up.forward") }
+                    Button { open(segment.id, false) } label: { Label(L("Открыть транскрипт"), systemImage: "arrow.up.forward") }
                         .font(AppTypography.control).buttonStyle(.borderless).foregroundStyle(Ink.accent)
                 }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Ink.soft, in: RoundedRectangle(cornerRadius: 9))
@@ -148,14 +148,14 @@ struct ClaimReferenceButton: View {
             sourceSnapshot = store.transcript?.segments ?? []
             showing = true
         }.font(AppTypography.controlStrong).buttonStyle(.borderless)
-            .help("Факты и исходные реплики для этого утверждения")
-            .accessibilityLabel("Показать факты для утверждения \(number)")
+            .help(L("Факты и исходные реплики для этого утверждения"))
+            .accessibilityLabel(LF("Показать факты для утверждения {0}", arguments: [String(describing: (number))]))
             .popover(isPresented: $showing, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
-                        Text("Источники").font(AppTypography.heading)
+                        Text(L("Источники")).font(AppTypography.heading)
                         Spacer()
-                        Button { showing = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Закрыть факты")
+                        Button { showing = false } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel(L("Закрыть факты"))
                     }
                     ScrollView {
                         VStack(alignment: .leading, spacing: 20) {
@@ -177,7 +177,7 @@ struct ClaimReferenceButton: View {
                                     }
                                 }
                             } else {
-                                Label("Конспект изменился. Откройте актуальную версию.", systemImage: "exclamationmark.circle")
+                                Label(L("Конспект изменился. Откройте актуальную версию."), systemImage: "exclamationmark.circle")
                                     .font(AppTypography.control).foregroundStyle(Ink.warning)
                             }
                         }
@@ -193,7 +193,7 @@ struct ClaimReferenceButton: View {
         guard let meeting = sourceMeetingID, let expected = sourceSnapshot.first(where: { $0.id == id }) else { return }
         let fresh: Transcript? = store.read(store.meetingDirectory(meeting).appendingPathComponent("transcript.json"))
         guard validSummary(meetingID: meeting), fresh?.segments.first(where: { $0.id == id }) == expected else {
-            playback.stop(); store.error = "Источник изменился. Откройте актуальный конспект."; showing = false; return
+            playback.stop(); store.error = L("Источник изменился. Откройте актуальный конспект."); showing = false; return
         }
         if play {
             playback.toggle(store: store, meetingID: meeting, expected: expected) { validSummary(meetingID: meeting) }

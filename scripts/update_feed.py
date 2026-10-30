@@ -73,6 +73,25 @@ def decode64(value: str, size: int, label: str) -> bytes:
     return result
 
 
+def product_bundle_version(version: str) -> str:
+    """Map a public hotfix version to Apple's three-component bundle version."""
+    if isinstance(version, str) and re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", version):
+        return version  # Preserve verification of existing two/three-part releases.
+    if isinstance(version, str) and re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}\.[1-9][0-9]{0,3}", version):
+        return version.rsplit(".", 1)[0]
+    raise RuntimeError("Product version requires two or three numeric components, with an optional positive hotfix from 1 to 9999 after three components")
+
+
+def product_version(info: dict) -> str:
+    bundle = info.get("CFBundleShortVersionString", "")
+    if not isinstance(bundle, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", bundle):
+        raise RuntimeError("The bundle version must have two or three numeric components")
+    product = info.get("PosleProductVersion", bundle)
+    if product_bundle_version(product) != bundle:
+        raise RuntimeError("Product version does not match the bundle version")
+    return product
+
+
 @dataclass(frozen=True)
 class Identity:
     version: str
@@ -85,11 +104,15 @@ class Identity:
     def tag(self) -> str:
         return "v" + self.version
 
+    @property
+    def bundle_version(self) -> str:
+        return product_bundle_version(self.version)
+
 
 def identity(info: dict, repo: str, revision: str | None = None) -> Identity:
-    version, build = str(info.get("CFBundleShortVersionString", "")), str(info.get("CFBundleVersion", ""))
-    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", version) or not re.fullmatch(r"[1-9][0-9]*", build):
-        raise RuntimeError("Release requires a numeric version and strictly positive integer build number")
+    version, build = product_version(info), str(info.get("CFBundleVersion", ""))
+    if not re.fullmatch(r"[1-9][0-9]*", build):
+        raise RuntimeError("Release requires a strictly positive integer build number")
     if info.get("CFBundleIdentifier") != "app.posle.meetings":
         raise RuntimeError("Unexpected app bundle identifier")
     if info.get("SUFeedURL") != feed_url(repo):
@@ -213,7 +236,8 @@ def parse_feed(data: bytes, repo: str) -> dict:
         return value
     version, build = field(SPARKLE, "shortVersionString"), field(SPARKLE, "version")
     revision = field(POSLE, "sourceRevision")
-    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", version) or not re.fullmatch(r"[1-9][0-9]*", build) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+    product_bundle_version(version)
+    if not re.fullmatch(r"[1-9][0-9]*", build) or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise RuntimeError("Invalid feed version or source revision")
     enclosures = item.findall("enclosure")
     if len(enclosures) != 1:
@@ -423,7 +447,9 @@ def verify_source(path: Path, expected: Identity, repo: str, *, tree: dict[str, 
     with zipfile.ZipFile(path, metadata_encoding="utf-8") as archive:
         validate_archive_paths(archive, ("posle",))
         info = plistlib.loads(archive.read("posle/packaging/Info.plist"))
-        for field, value in (("CFBundleShortVersionString", expected.version), ("CFBundleVersion", str(expected.build)),
+        if product_version(info) != expected.version:
+            raise RuntimeError("Published source archive differs from the app: PosleProductVersion")
+        for field, value in (("CFBundleShortVersionString", expected.bundle_version), ("CFBundleVersion", str(expected.build)),
                              ("SUPublicEDKey", expected.public_key), ("SUFeedURL", feed_url(repo))):
             if info.get(field) != value:
                 raise RuntimeError("Published source archive differs from the app: " + field)

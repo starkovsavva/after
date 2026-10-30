@@ -15,7 +15,7 @@ struct JobConfiguration: Codable {
     var folderProfile: Data? = nil
     var folderID: String? = nil
     var profileMeetingID: String? = nil
-    /// Explicitly reopened input creates a new operation; old attempts stay in history.
+    /// Explicit recovery creates a new operation; old attempts stay in history.
     var restartOfJobID: String? = nil
 
     /// Speech keeps its separate API-key billing path even when summaries use ChatGPT.
@@ -45,25 +45,49 @@ struct BackgroundJob: Decodable, Identifiable {
     var createdAt: Double
     var updatedAt: Double
     var active: Bool { ["queued", "running"].contains(state) }
-    var canReopenVoiceCommand: Bool {
-        guard kind == "voice-plan", config.command == "voice-plan", config.input != nil,
-              ["failed", "interrupted"].contains(state) else { return false }
+    var hasProfileFailure: Bool {
+        guard ["failed", "interrupted"].contains(state) else { return false }
         return ["Настройки модели не совпадают с сохранённым профилем операции.",
                 "Профиль папки изменился после постановки в очередь.",
                 "Профиль папки изменился во время обработки.",
                 "Папка или её настройки изменились.", "У встречи появилась папка.",
-                "У фоновой операции нет сохранённого профиля папки.",
-                "Данные изменились после постановки в очередь."].contains { message.hasPrefix($0) }
+                "У фоновой операции нет сохранённого профиля папки."].contains { message.hasPrefix($0) }
+    }
+    var canReopenVoiceCommand: Bool {
+        kind == "voice-plan" && config.command == "voice-plan" && config.input != nil
+            && (hasProfileFailure || (["failed", "interrupted"].contains(state) && message.hasPrefix("Данные изменились после постановки в очередь.")))
+    }
+    static let changedNoteSourceMessage = "Исходная заметка или запись изменились. Запустите дополнение заново с текущими данными."
+    var canRestartWithCurrentProfile: Bool {
+        let changedNoteSource = config.command == "expand-notes" && ["failed", "interrupted"].contains(state)
+            && message == Self.changedNoteSourceMessage
+        guard kind == config.command, hasProfileFailure || changedNoteSource else { return false }
+        switch config.command {
+        case "summarize", "example": return config.meetingID != nil
+        case "expand-notes":
+            return config.extra.firstIndex(of: "--note").map { config.extra.indices.contains($0 + 1) && !config.extra[$0 + 1].isEmpty } == true
+        default: return false
+        }
+    }
+    var retryTitle: String {
+        if canReopenVoiceCommand { return L("Открыть поручение…") }
+        if canRestartWithCurrentProfile { return L("Запустить заново…") }
+        return L("Повторить")
+    }
+    var retryHelp: String {
+        if canReopenVoiceCommand { return L("Открыть исходный текст в помощнике. Новый запуск использует текущие настройки и требует нажатия «Выполнить».") }
+        if canRestartWithCurrentProfile { return L("Создать новую операцию с текущими настройками папки. Предыдущая попытка останется в истории; перед запуском будут показаны выбранные модель и провайдер.") }
+        return L("Повторить с сохранёнными настройками этой операции.")
     }
     var stateLabel: String {
         switch state {
-        case "queued": return "В очереди"
-        case "running": return message.isEmpty ? "Выполняется" : message
-        case "succeeded": return "Готово"
-        case "cancelled": return "Отменено"
-        case "interrupted": return "Прервано — можно повторить"
-        case "blocked": return "Ожидает предыдущего этапа"
-        default: return message.isEmpty ? "Не удалось завершить" : message
+        case "queued": return L("В очереди")
+        case "running": return message.isEmpty ? L("Выполняется") : L(message)
+        case "succeeded": return L("Готово")
+        case "cancelled": return L("Отменено")
+        case "interrupted": return L("Прервано — можно повторить")
+        case "blocked": return L("Ожидает предыдущего этапа")
+        default: return message.isEmpty ? L("Не удалось завершить") : L(message)
         }
     }
 }
@@ -119,11 +143,15 @@ actor JobCoordinator {
         try RustBridge.shared.get().request(root: root, command: command, arguments: arguments)
     }
     func snapshot() throws -> [BackgroundJob] {
-        struct Response: Decodable { var jobs: [BackgroundJob] }
-        return try JSONDecoder().decode(Response.self, from: request("job-list")).jobs
+        struct Response: Decodable { var jobs: [BackgroundJob]; var pausedChatGPTFailures: [BackgroundJob] }
+        let response = try JSONDecoder().decode(Response.self, from: request("job-list"))
+        pausedChatGPTFailures = Dictionary(uniqueKeysWithValues: response.pausedChatGPTFailures.compactMap { job in
+            job.config.chatGPTPlanAccountID.map { ($0, job) }
+        })
+        return response.jobs
     }
     private func failQueue(_ error: Error) {
-        let message = "Не удалось обновить очередь. Операции сохранены; перезапустите приложение. \(error.localizedDescription)"
+        let message = LF("Не удалось обновить очередь. Операции сохранены; перезапустите приложение. {0}", arguments: [String(describing: error.localizedDescription)])
         if queueFailure != message { failed(message) }
         queueFailure = message
         let pendingIDs = waiters.keys.filter { running[$0] == nil }
@@ -134,17 +162,14 @@ actor JobCoordinator {
         }
     }
     private func publish() {
-        admissionChanged(pausedChatGPTFailures)
-        do { changed(try snapshot()) } catch { failQueue(error) }
+        do {
+            let jobs = try snapshot()
+            admissionChanged(pausedChatGPTFailures)
+            changed(jobs)
+        } catch { failQueue(error) }
     }
     private func admissionPaused(_ job: BackgroundJob) -> Bool {
         job.config.chatGPTPlanAccountID.map { pausedChatGPTFailures[$0] != nil || signingOutChatGPTAccounts.contains($0) } == true
-    }
-    private static func reachedChatGPTLimit(_ error: Error) -> Bool {
-        // Match the transport's exact allowlisted code, not a provider message
-        // containing the same word or a longer unrelated code.
-        error.localizedDescription.range(of: #"^ChatGPT: HTTP [0-9]{3} · subscription_sharing_usage_limit_exceeded\."#,
-                                         options: .regularExpression) != nil
     }
     func start(executor: @escaping Executor) throws {
         // A second UI connection must never recover an attempt still executing.
@@ -179,7 +204,7 @@ actor JobCoordinator {
         let response = try JSONDecoder().decode(Response.self, from: request("job-enqueue", enqueue))
         guard response.job.state != "interrupted" else {
             publish()
-            throw AppError.message("Предыдущая операция прервалась. Повторите её в списке фоновых задач.")
+            throw AppError.message(L("Предыдущая операция прервалась. Повторите её в списке фоновых задач."))
         }
         let subscriber = UUID()
         return try await withTaskCancellationHandler {
@@ -248,21 +273,16 @@ actor JobCoordinator {
         case .success:
             // Success means the executor committed its result. A cancellation
             // arriving immediately after publication cannot make that unsaved.
-            arguments["state"] = "succeeded"; arguments["message"] = "Готово"
+            arguments["state"] = "succeeded"; arguments["message"] = L("Готово")
         case .failure(let error):
-            if !cancelled, !(error is CancellationError), let account = job.config.chatGPTPlanAccountID,
-               Self.reachedChatGPTLimit(error) {
-                var failure = job; failure.state = "failed"; failure.message = String(error.localizedDescription.prefix(1000))
-                pausedChatGPTFailures[account] = failure
-            }
             let interrupted = stopping && (cancelled || error is CancellationError)
             arguments["state"] = interrupted ? "interrupted" : cancelled || error is CancellationError ? "cancelled" : "failed"
-            arguments["message"] = interrupted ? "Работа прервалась при закрытии приложения." : cancelled || error is CancellationError ? "Отменено" : String(error.localizedDescription.prefix(1000))
+            arguments["message"] = interrupted ? L("Работа прервалась при закрытии приложения.") : cancelled || error is CancellationError ? L("Отменено") : String(error.localizedDescription.prefix(1000))
         }
         var delivery = result
         if case .failure(let error) = result, cancelled || error is CancellationError { delivery = .failure(CancellationError()) }
         do { _ = try request("job-update", arguments) }
-        catch { failQueue(error); delivery = .failure(AppError.message("Результат операции сохранён отдельно, но статус очереди обновить не удалось. Перезапустите приложение.")) }
+        catch { failQueue(error); delivery = .failure(AppError.message(L("Результат операции сохранён отдельно, но статус очереди обновить не удалось. Перезапустите приложение."))) }
         running.removeValue(forKey: job.id); lastProgress.removeValue(forKey: job.id)
         for continuation in waiters.removeValue(forKey: job.id)?.values ?? Dictionary<UUID, CheckedContinuation<WorkerEvent?, Error>>().values {
             continuation.resume(with: delivery)
@@ -299,17 +319,18 @@ actor JobCoordinator {
         if requiringLatestGeneration {
             let current = try snapshot()
             let quotaRecovery = resumingPausedAccount.map { account in
-                pausedChatGPTFailures[account]?.id == id && current.first(where: { $0.id == id })?.config.chatGPTPlanAccountID == account
+                // Pauses include their complete failure even after the normal
+                // 50-row history window no longer includes that operation.
+                guard let failure = pausedChatGPTFailures[account] else { return false }
+                return failure.id == id && failure.config.chatGPTPlanAccountID == account
             } == true
             guard quotaRecovery || BackgroundJobPresentation.latestIDs(in: current).contains(id) else {
-                throw AppError.message("У операции есть более новая попытка. Используйте её в списке фоновых задач.")
+                throw AppError.message(L("У операции есть более новая попытка. Используйте её в списке фоновых задач."))
             }
         }
-        struct Response: Decodable { var job: BackgroundJob }
-        let response = try JSONDecoder().decode(Response.self, from: request("job-retry", ["jobID": id, "confirmPaid": confirmPaid]))
-        // Only a successful explicit retry authorizes new requests for this
-        // account. A rejected paid confirmation leaves admission paused.
-        if let account = response.job.config.chatGPTPlanAccountID { pausedChatGPTFailures.removeValue(forKey: account) }
+        _ = try request("job-retry", ["jobID": id, "confirmPaid": confirmPaid])
+        // Rust commits the explicit retry and its account's admission decision
+        // together; publish reloads it before any queued request can start.
         publish(); pump()
     }
     func observe(_ id: String) async throws -> WorkerEvent? {
@@ -350,6 +371,7 @@ final class BackgroundJobsController: ObservableObject {
     @Published var error: String?
     @Published var showing = false
     var reopenVoiceCommand: ((BackgroundJob) -> Void)?
+    var restartWithCurrentProfile: ((BackgroundJob) -> Void)?
     @Published private(set) var pendingSubmissions = 0 { didSet { updateActivityLease() } }
     @Published private(set) var pausedChatGPTAccounts: Set<String> = [] { didSet { updateActivityLease() } }
     @Published private(set) var pausedChatGPTFailures: [BackgroundJob] = []
@@ -414,22 +436,27 @@ final class BackgroundJobsController: ObservableObject {
             pausedChatGPTFailures.contains(where: { $0.id == job.id && $0.config.chatGPTPlanAccountID == account }) ? account : nil
         } : nil
         guard quotaAccount != nil || latestAttemptIDs.contains(job.id) else {
-            error = "У операции есть более новая попытка. Используйте её в списке фоновых задач."
+            error = L("У операции есть более новая попытка. Используйте её в списке фоновых задач.")
             return
         }
         if job.canReopenVoiceCommand {
-            guard let reopenVoiceCommand else { error = "Откройте помощника и запустите поручение заново с текущими настройками."; return }
+            guard let reopenVoiceCommand else { error = L("Откройте помощника и запустите поручение заново с текущими настройками."); return }
             error = nil; showing = false; reopenVoiceCommand(job)
+            return
+        }
+        if job.canRestartWithCurrentProfile {
+            guard let restartWithCurrentProfile else { error = L("Откройте исходную встречу или заметку и запустите обработку заново с текущими настройками."); return }
+            error = nil; restartWithCurrentProfile(job)
             return
         }
         var confirmed = !job.paid
         if job.paid {
             let alert = NSAlert()
-            alert.messageText = "Повторить облачный запрос?"
+            alert.messageText = L("Повторить облачный запрос?")
             alert.informativeText = job.config.settings.cloudProvider == "chatgpt" && ["summarize", "example", "expand-notes", "voice-plan"].contains(job.config.command)
-                ? "ChatGPT мог обработать предыдущий запрос до прерывания. Повтор снова использует лимит подписки. Будут использованы сохранённые настройки этой операции."
-                : "Сервис мог обработать предыдущий запрос до прерывания. Повтор может оплачиваться ещё раз. Будут использованы сохранённые настройки этой операции."
-            alert.addButton(withTitle: "Повторить"); alert.addButton(withTitle: "Отмена")
+                ? L("ChatGPT мог обработать предыдущий запрос до прерывания. Повтор снова использует лимит подписки. Будут использованы сохранённые настройки этой операции.")
+                : L("Сервис мог обработать предыдущий запрос до прерывания. Повтор может оплачиваться ещё раз. Будут использованы сохранённые настройки этой операции.")
+            alert.addButton(withTitle: L("Повторить")); alert.addButton(withTitle: L("Отмена"))
             confirmed = alert.runModal() == .alertFirstButtonReturn
         }
         guard confirmed else { return }
@@ -468,7 +495,7 @@ private final class BackgroundJobSleepLease {
     func update(_ active: Bool) {
         if active, assertion == 0 {
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
-                IOPMAssertionLevel(kIOPMAssertionLevelOn), "После обрабатывает фоновые задачи" as CFString, &assertion)
+                IOPMAssertionLevel(kIOPMAssertionLevelOn), L("После обрабатывает фоновые задачи") as CFString, &assertion)
         } else if !active, assertion != 0 {
             IOPMAssertionRelease(assertion); assertion = 0
         }
@@ -482,7 +509,7 @@ struct BackgroundJobsButton: View {
     @ObservedObject var jobs: BackgroundJobsController
     var body: some View {
         Button { jobs.showing.toggle() } label: {
-            Label(jobs.activeCount == 0 ? "Фоновые задачи" : "Фоновые задачи · \(jobs.activeCount)", systemImage: jobs.needsAttention ? "exclamationmark.circle" : "clock.arrow.circlepath")
+            Label(jobs.activeCount == 0 ? L("Фоновые задачи") : LF("Фоновые задачи · {0}", arguments: [String(describing: jobs.activeCount)]), systemImage: jobs.needsAttention ? "exclamationmark.circle" : "clock.arrow.circlepath")
                 .font(AppTypography.caption)
         }.buttonStyle(.borderless).accessibilityIdentifier("jobs.open")
             .popover(isPresented: $jobs.showing) { BackgroundJobsView(jobs: jobs) }
@@ -494,24 +521,24 @@ struct BackgroundJobsView: View {
     var body: some View {
         let latest = jobs.latestAttemptIDs
         return VStack(alignment: .leading, spacing: 16) {
-            Text("Фоновые задачи").font(AppTypography.modalTitle)
-            if jobs.jobs.isEmpty { Text("Здесь появятся операции обработки встреч и генерации.").foregroundStyle(.secondary) }
+            Text(L("Фоновые задачи")).font(AppTypography.modalTitle)
+            if jobs.jobs.isEmpty { Text(L("Здесь появятся операции обработки встреч и генерации.")).foregroundStyle(.secondary) }
             if !jobs.pausedChatGPTAccounts.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("Запросы ChatGPT приостановлены", systemImage: "pause.circle")
+                    Label(L("Запросы ChatGPT приостановлены"), systemImage: "pause.circle")
                         .font(AppTypography.controlStrong)
-                    Text("Проверьте лимиты и нажмите «Продолжить очередь». Неудавшийся запрос будет повторён после подтверждения.")
+                    Text(L("Проверьте лимиты и нажмите «Продолжить очередь». Неудавшийся запрос будет повторён после подтверждения."))
                         .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                     HStack(spacing: 12) {
-                        Link("Использование ChatGPT", destination: URL(string: "https://chatgpt.com/settings/usage")!)
+                        Link(L("Использование ChatGPT"), destination: URL(string: "https://chatgpt.com/settings/usage")!)
                             .font(AppTypography.caption)
                         if jobs.pausedChatGPTFailures.count == 1, let failed = jobs.pausedChatGPTFailures.first {
-                            Button("Продолжить очередь") { jobs.retry(failed, resumingPausedAccount: true) }.buttonStyle(.borderless)
-                                .help("Повторить неудавшийся запрос после подтверждения и продолжить очередь этого аккаунта.")
+                            Button(L("Продолжить очередь")) { jobs.retry(failed, resumingPausedAccount: true) }.buttonStyle(.borderless)
+                                .help(L("Повторить неудавшийся запрос после подтверждения и продолжить очередь этого аккаунта."))
                         } else if !jobs.pausedChatGPTFailures.isEmpty {
-                            Menu("Продолжить очередь") {
+                            Menu(L("Продолжить очередь")) {
                                 ForEach(jobs.pausedChatGPTFailures) { failed in
-                                    Button("Повторить: " + failed.title) { jobs.retry(failed, resumingPausedAccount: true) }
+                                    Button(L("Повторить: ") + BackgroundJobPresentation.title(failed)) { jobs.retry(failed, resumingPausedAccount: true) }
                                 }
                             }.menuStyle(.borderlessButton)
                         }
@@ -524,21 +551,21 @@ struct BackgroundJobsView: View {
                         let historical = !latest.contains(job.id)
                         VStack(alignment: .leading, spacing: 7) {
                             HStack(alignment: .top) {
-                                Text(job.title).font(AppTypography.controlStrong)
+                                Text(BackgroundJobPresentation.title(job)).font(AppTypography.controlStrong)
                                 Spacer()
                                 if job.active || job.state == "blocked" {
-                                    Button { jobs.cancel(job.id) } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain).accessibilityLabel("Отменить \(job.title)")
+                                    Button { jobs.cancel(job.id) } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain).accessibilityLabel(LF("Отменить {0}", arguments: [BackgroundJobPresentation.title(job)]))
                                 } else if !historical && job.kind != "dictate" && ["failed", "interrupted", "cancelled"].contains(job.state) {
-                                    Button(job.canReopenVoiceCommand ? "Открыть поручение…" : "Повторить") { jobs.retry(job) }
+                                    Button(job.retryTitle) { jobs.retry(job) }
                                         .buttonStyle(.borderless).fixedSize(horizontal: true, vertical: false)
                                         .accessibilityIdentifier("jobs.retry." + job.id)
-                                        .help(job.canReopenVoiceCommand ? "Открыть исходный текст в помощнике. Новый запуск использует текущие настройки и требует нажатия «Выполнить»." : "Повторить с сохранёнными настройками этой операции.")
+                                        .help(job.retryHelp)
                                 }
                             }
                             let metadata = BackgroundJobPresentation.metadata(job, historical: historical)
                             Text(metadata).font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                                 .lineLimit(1).truncationMode(.middle).help(metadata)
-                            Text(jobs.isPaused(job) ? "Ожидает: лимит подписки ChatGPT" : job.stateLabel).font(AppTypography.caption).foregroundStyle(job.state == "failed" && !historical ? Ink.warning : Ink.secondaryText).textSelection(.enabled)
+                            Text(jobs.isPaused(job) ? L("Ожидает: лимит подписки ChatGPT") : job.stateLabel).font(AppTypography.caption).foregroundStyle(job.state == "failed" && !historical ? Ink.warning : Ink.secondaryText).textSelection(.enabled)
                             if job.state == "running" { if let fraction = job.progress, fraction >= 0 { ProgressView(value: fraction) } else { ProgressView().controlSize(.small) } }
                         }
                     }

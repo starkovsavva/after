@@ -12,6 +12,7 @@ enum BugReportNativeChecks {
         let root = URL(fileURLWithPath: path).resolvingSymlinksInPath()
         try expect(["/private/tmp", "/tmp"].contains(root.deletingLastPathComponent().path) && root.lastPathComponent.hasPrefix("posle-native-check-"), "Disposable report root required")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try installationMetadata(root: root)
         let canary = "AUTOMATIC-SECRET-CANARY-/Users/fixture/account@example.test/sk-secret"
         var settings = AppSettings(); settings.mode = "cloud"; settings.cloudProvider = "chatgpt"
         settings.chatGPTAccountID = canary; settings.cloudEndpoint = canary; settings.cloudModel = canary
@@ -154,6 +155,49 @@ enum BugReportNativeChecks {
         try await wait(window) { controller.window == nil && controller.session == nil }
         try expect(!UnsavedEditorRegistry.hasUnsaved, "Closing a shared report must clean up its draft guard")
         print("5 native bug report checks passed")
+    }
+    private static func installationMetadata(root: URL) throws {
+        let bundle = root.appendingPathComponent("private-account-canary.app")
+        let revision = String(repeating: "a", count: 40)
+        let info: [String: Any] = ["CFBundleShortVersionString": "0.17.6", "CFBundleVersion": "30", "PosleSourceRevision": revision]
+        var hotfix = info; hotfix["PosleProductVersion"] = "0.17.6.1"
+        try expect(AppVersion.display(info: hotfix) == "0.17.6.1" && AppVersion.display(info: info) == "0.17.6",
+                   "Hotfix UI must show the product version while preserving legacy bundle metadata")
+        for invalid in ["0.17.5.1", "0.17.6.0", "0.17.6.01", "0.17.6.1.1", "private-account-canary"] {
+            hotfix["PosleProductVersion"] = invalid
+            try expect(AppVersion.display(info: hotfix) == "0.17.6", "Invalid product metadata escaped the numeric version boundary")
+        }
+        func save(_ object: [String: Any], _ url: URL) throws {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try PropertyListSerialization.data(fromPropertyList: object, format: .xml, options: 0).write(to: url)
+        }
+        try save(info, bundle.appendingPathComponent("Contents/Info.plist"))
+        let helpers = ["После Обработка", "После Распознавание"].map {
+            bundle.appendingPathComponent("Contents/Helpers/" + $0 + ".app/Contents/Info.plist")
+        }
+        // Production build.sh helpers carry version/build, while provenance is
+        // stamped on the outer app. Match that producer contract exactly.
+        let helperInfo = info.filter { $0.key != "PosleSourceRevision" }
+        for helper in helpers { try save(helperInfo, helper) }
+        let matching = BugReportDiagnostics.Installation(bundleURL: bundle)
+        try expect(matching.sourceRevision == revision && matching.helperVersions == "match"
+                   && matching.location == "other" && matching.captureAuthorization == "system_picker",
+                   "Installation diagnostics failed to identify an internally consistent capture build")
+        var stale = helperInfo; stale["CFBundleVersion"] = "29"
+        try save(stale, helpers[0])
+        try expect(BugReportDiagnostics.Installation(bundleURL: bundle).helperVersions == "mismatch",
+                   "A mixed helper update was hidden by installation diagnostics")
+        try FileManager.default.removeItem(at: helpers[0])
+        try expect(BugReportDiagnostics.Installation(bundleURL: bundle).helperVersions == "missing",
+                   "A missing helper was hidden by installation diagnostics")
+        var poisoned = info; poisoned["PosleSourceRevision"] = "private-account-canary/sk-secret"
+        try save(poisoned, bundle.appendingPathComponent("Contents/Info.plist"))
+        let unknown = BugReportDiagnostics.Installation(bundleURL: bundle)
+        let encoded = String(decoding: try JSONEncoder().encode(unknown), as: UTF8.self)
+        try expect(unknown.sourceRevision == "unknown" && !encoded.contains("private-account-canary")
+                   && !encoded.contains("sk-secret") && !encoded.contains(root.path),
+                   "Installation metadata leaked paths or unvalidated source values")
+        print("PASS: static installation diagnostics detect mixed/missing helpers without exposing paths or arbitrary metadata")
     }
     private static func expect(_ value: @autoclosure () throws -> Bool, _ message: String) throws { if try !value() { throw AppError.message(message) } }
     private static func roots(_ window: NSWindow) -> [NSView] { [window.contentView, window.attachedSheet?.contentView].compactMap { $0 } }

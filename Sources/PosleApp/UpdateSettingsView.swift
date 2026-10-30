@@ -7,32 +7,32 @@ struct UpdateSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Обновления", systemImage: "arrow.triangle.2.circlepath")
+            Label(L("Обновления"), systemImage: "arrow.triangle.2.circlepath")
                 .font(AppTypography.heading).accessibilityAddTraits(.isHeader)
-            LabeledContent("Версия", value: updates.currentVersion)
+            LabeledContent(L("Версия"), value: updates.currentVersion)
             if let version = updates.availableVersion {
                 HStack {
-                    Label("Доступна версия \(version)", systemImage: "arrow.down.circle")
+                    Label(LF("Доступна версия {0}", arguments: [String(describing: (version))]), systemImage: "arrow.down.circle")
                     Spacer()
-                    Button("Обновить…") { updates.checkForUpdates() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    Button(L("Обновить…")) { updates.checkForUpdates() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
                         .disabled(!updates.canCheck).accessibilityIdentifier("updates.install")
                 }
             }
-            Toggle("Проверять автоматически", isOn: Binding(
+            Toggle(L("Проверять автоматически"), isOn: Binding(
                 get: { updates.automaticallyChecks },
                 set: { updates.setAutomaticChecks($0) }
             )).disabled(!updates.isAvailable).accessibilityIdentifier("updates.automatic")
-            Button("Проверить обновления…") { updates.checkForUpdates() }
+            Button(L("Проверить обновления…")) { updates.checkForUpdates() }
                 .buttonStyle(.bordered).disabled(!updates.isAvailable || !updates.canCheck)
                 .accessibilityIdentifier("updates.check")
             if let checked = updates.lastChecked {
-                LabeledContent("Последняя проверка") {
+                LabeledContent(L("Последняя проверка")) {
                     Text(checked.formatted(.dateTime.day().month(.abbreviated).hour().minute()
-                        .locale(Locale(identifier: "ru_RU"))))
+                        .locale(UILocale())))
                 }.font(AppTypography.caption).foregroundStyle(.secondary)
             }
             if updates.waitingForWork {
-                Text("Проверка и установка обновлений доступны после завершения записи и обработки.")
+                Text(L("Проверка и установка обновлений доступны после завершения записи и обработки."))
                     .font(AppTypography.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("updates.waiting")
@@ -42,10 +42,10 @@ struct UpdateSettingsView: View {
                     .accessibilityIdentifier("updates.status")
             }
             if updates.settingsSaveFailed {
-                Button("Повторить установку") { updates.retryInstallation() }
+                Button(L("Повторить установку")) { updates.retryInstallation() }
                     .buttonStyle(.bordered).disabled(updates.waitingForWork).accessibilityIdentifier("updates.retryInstall")
             }
-            Link("История версий", destination: URL(string: "https://github.com/starkovsavva/posle/releases")!)
+            Link(L("История версий"), destination: URL(string: "https://github.com/starkovsavva/posle/releases")!)
                 .font(AppTypography.caption)
         }.frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 20).overlay(alignment: .bottom) { Rectangle().fill(Ink.line).frame(height: 1) }
@@ -59,18 +59,18 @@ struct UpdateAvailabilityButton: View {
     var body: some View {
         if updates.showsUpdateAnnouncement, let version = updates.availableVersion {
             Button { presented.toggle() } label: {
-                Label("Версия \(version)", systemImage: "arrow.down.circle")
+                Label(LF("Версия {0}", arguments: [String(describing: (version))]), systemImage: "arrow.down.circle")
                     .font(AppTypography.caption).lineLimit(1).padding(.horizontal, 9).frame(height: 28)
                     .background(Ink.soft, in: RoundedRectangle(cornerRadius: 6))
-            }.buttonStyle(.plain).help("Доступно обновление «После»")
-                .accessibilityLabel("Доступна версия \(version)").accessibilityIdentifier("updates.announcement")
+            }.buttonStyle(.plain).help(L("Доступно обновление «После»"))
+                .accessibilityLabel(LF("Доступна версия {0}", arguments: [String(describing: (version))])).accessibilityIdentifier("updates.announcement")
                 .popover(isPresented: $presented, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Доступна версия \(version)").font(AppTypography.heading)
+                        Text(LF("Доступна версия {0}", arguments: [String(describing: (version))])).font(AppTypography.heading)
                         HStack(spacing: 12) {
-                            Button("Обновить…") { presented = false; updates.checkForUpdates() }
+                            Button(L("Обновить…")) { presented = false; updates.checkForUpdates() }
                                 .buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(!updates.canCheck)
-                            Button("Позже") { presented = false; updates.dismissUpdateAnnouncement() }.buttonStyle(.bordered)
+                            Button(L("Позже")) { presented = false; updates.dismissUpdateAnnouncement() }.buttonStyle(.bordered)
                         }
                     }.padding(20).appControlDefaults().frame(minWidth: 280)
                 }

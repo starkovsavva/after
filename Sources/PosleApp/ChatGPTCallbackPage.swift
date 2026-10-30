@@ -11,17 +11,17 @@ enum ChatGPTCallbackPage {
     }
 
     static func body(received: Bool) -> Data {
-        let title = received ? "Возвращаемся в «После»" : "Вернитесь в «После»"
+        let title = received ? L("Возвращаемся в «После»") : L("Вернитесь в «После»")
         let message = received
-            ? "Результат входа появится в приложении."
-            : "Не удалось продолжить вход. Начните подключение заново в приложении."
+            ? L("Результат входа появится в приложении.")
+            : L("Не удалось продолжить вход. Начните подключение заново в приложении.")
         let guidance = received
-            ? "Если окно не появилось, откройте «После» из Dock."
-            : "Откройте «После» из Dock, чтобы попробовать ещё раз."
-        let favicon = Data(replica.utf8).base64EncodedString()
+            ? L("Если окно не появилось, откройте «После» из Dock.")
+            : L("Откройте «После» из Dock, чтобы попробовать ещё раз.")
+        let favicon = Data(logo.utf8).base64EncodedString()
         return Data("""
         <!doctype html>
-        <html lang="ru">
+        <html lang="\(UILocale().language.languageCode?.identifier ?? "en")">
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -33,12 +33,12 @@ enum ChatGPTCallbackPage {
         </head>
         <body>
           <main aria-labelledby="title">
-            <div class="mark" aria-hidden="true">\(replica)</div>
+            <div class="mark" aria-hidden="true">\(logo)</div>
             <h1 id="title">\(title)</h1>
             <p class="message">\(message)</p>
             <div class="guidance">
               <p>\(guidance)</p>
-              <p>Эту вкладку можно закрыть.</p>
+              <p>\(L("Эту вкладку можно закрыть."))</p>
             </div>
           </main>
         </body>
@@ -46,16 +46,7 @@ enum ChatGPTCallbackPage {
         """.utf8)
     }
 
-    // Keep the existing «Реплика» geometry and palette from packaging/Logo.svg.
-    private static let replica = #"""
-    <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" focusable="false">
-      <rect x="8" y="8" width="496" height="496" rx="110" fill="#292B2E"/>
-      <g fill="#F5F5F1">
-        <path d="M132 206 C132 158 170 120 218 120 L350 120 L350 180 L222 180 C205 180 192 193 192 210 L192 264 L132 264 Z"/>
-        <path d="M380 306 C380 354 342 392 294 392 L162 392 L162 332 L290 332 C307 332 320 319 320 302 L320 248 L380 248 Z"/>
-      </g>
-    </svg>
-    """#
+    private static let logo = BrandArtwork.svg
 
     private static let styles = #"""
     :root {

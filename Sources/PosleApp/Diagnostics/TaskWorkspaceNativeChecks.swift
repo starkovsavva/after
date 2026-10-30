@@ -154,14 +154,17 @@ enum TaskWorkspaceNativeChecks {
         try expect(visibleHistory.contains { $0.identifier?.hasPrefix("tasks.history.snapshot.") == true } && visibleHistory.contains { $0.identifier?.hasPrefix("tasks.history.artifact.") == true }, "Native history must expose snapshot and artifact actions")
         try press(host, identifier: "tasks.tab.materials"); try await settle(host, window)
         try capture(host, at: root.appendingPathComponent("task-workspace-light.png"))
-        let boardControl = nodes(host).first { ($0.label == "Доска" || $0.value == "Доска") && ["AXRadioButton", "AXButton"].contains($0.role ?? "") }
-        if let boardControl, boardControl.press() { try await settle(host, window) }
+        try press(host, identifier: "tasks.presentation.board")
+        try await waitForLayout(host, window) {
+            nodes(host).contains { $0.identifier == "tasks.presentation.board" && $0.value == L("Выбрана") }
+                && nodes(host).contains { $0.identifier?.hasPrefix("tasks.board.") == true }
+        }
         app.openTask(id: done.id); try await settle(host, window)
         try expect(notes.selectedTaskID == done.id && nodes(host).contains { $0.identifier == "tasks.row." + done.id && $0.value == "Выбрана" }, "External navigation must open the exact completed task through hidden filters/board")
         window.orderOut(nil)
         try await render(app: app, notes: notes, taskID: first.id, root: root, dark: true, width: 1120, height: 820, name: "task-workspace-dark.png")
         try await render(app: app, notes: notes, taskID: first.id, root: root, dark: false, width: 760, height: 760, name: "task-workspace-narrow.png")
-        let board = NSHostingView(rootView: TaskBoardView(tasks: notes.taskWorkspaces.values.sorted { $0.title < $1.title }, selectedID: first.id, select: { _ in }, changeStatus: { _, _ in }).frame(width: 1120, height: 760).background(Ink.paper).tint(Ink.accent))
+        let board = NSHostingView(rootView: TaskBoardView(tasks: notes.taskWorkspaces.values.sorted { $0.title < $1.title }, selectedID: first.id, select: { _ in }, changeStatus: { _, _ in }).environmentObject(app).frame(width: 1120, height: 760).background(Ink.paper).tint(Ink.accent))
         board.frame = NSRect(x: 0, y: 0, width: 1120, height: 760)
         let boardWindow = NSWindow(contentRect: board.frame, styleMask: [.titled], backing: .buffered, defer: false)
         boardWindow.contentView = board; boardWindow.makeKeyAndOrderFront(nil)
@@ -169,7 +172,8 @@ enum TaskWorkspaceNativeChecks {
         try expect(nodes(board).filter { $0.identifier?.hasPrefix("tasks.board.") == true }.count >= 4, "Board must expose real cards across the four statuses")
         notes.captureDrafts.removeAll(); _ = notes.flushCaptureDrafts()
         print("PASS: real native list/history/materials, exact external navigation, board and light/dark/narrow renders")
-        print("11 native task workspace E2E groups passed")
+        try await BoardDragNativeChecks.run(app: app)
+        print("15 native task workspace E2E groups passed")
     }
 
     private static func nativeArrowSelection(_ host: NSView, window: NSWindow, notes: NotesStore) async throws {

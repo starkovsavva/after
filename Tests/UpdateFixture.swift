@@ -15,7 +15,7 @@ final class FixtureDriver: NSObject, SPUUserDriver {
     }
     func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) { emit("checking", [:]) }
     func showUpdateFound(with appcastItem: SUAppcastItem, state: SPUUserUpdateState, reply: @escaping (SPUUserUpdateChoice) -> Void) {
-        emit("found", ["version": appcastItem.versionString])
+        emit("found", ["version": appcastItem.versionString, "displayVersion": appcastItem.displayVersionString])
         reply(.install)
     }
     func showUpdateReleaseNotes(with downloadData: SPUDownloadData) {}
@@ -79,7 +79,7 @@ final class FixtureApp: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         emit("started", ["bundle": Bundle.main.bundleURL.path])
-        if version == "2" {
+        if version == "2" || version == "30" {
             emit("relaunched")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { NSApp.terminate(nil) }
             return

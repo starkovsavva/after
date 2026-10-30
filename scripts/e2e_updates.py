@@ -31,7 +31,7 @@ from xml.sax.saxutils import escape
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEFERRED_SCENARIOS = ("deferred", "nfc-deferred")
-SUCCESS_SCENARIOS = ("valid", *DEFERRED_SCENARIOS, "late-busy")
+SUCCESS_SCENARIOS = ("valid", "hotfix", *DEFERRED_SCENARIOS, "late-busy")
 REPLAY_SCENARIOS = ("same-build", "downgrade")
 SCENARIOS = (*SUCCESS_SCENARIOS, "bad-archive-signature", "tampered-archive", "bad-feed-signature",
              "truncated-archive", *REPLAY_SCENARIOS)
@@ -110,17 +110,38 @@ def clean_fixture_preferences(identifier):
         raise AssertionError("Fixture preferences cleanup did not finish")
 
 
-def make_app(destination, binary, framework, *, identifier, build, scenario, feed, public):
+def make_components(root):
+    """Real, versioned owned Mach-O code; never loaded by a production app."""
+    root.mkdir()
+    result = {}
+    for build in (1, 2, 3):
+        worker_source = root / f"worker-{build}.c"
+        worker_source.write_text(f'#include <stdio.h>\nint main(void) {{ puts("FixtureWorker {build}"); return 0; }}\n')
+        worker = root / f"worker-{build}"
+        run(["clang", "-target", "arm64-apple-macos15.0", str(worker_source), "-o", str(worker)])
+        core_source = root / f"core-{build}.c"
+        core_source.write_text(f"int fixture_build(void) {{ return {build}; }}\n")
+        core = root / f"core-{build}.dylib"
+        run(["clang", "-target", "arm64-apple-macos15.0", "-dynamiclib", str(core_source),
+             "-install_name", "@rpath/libFixtureCore.dylib", "-o", str(core)])
+        result[build] = (worker, core)
+    return result
+
+
+def make_app(destination, binary, framework, components, *, identifier, build, scenario, feed, public):
     contents = destination / "Contents"
     (contents / "MacOS").mkdir(parents=True)
     (contents / "Frameworks").mkdir()
     (contents / "Resources").mkdir()
     shutil.copy2(binary, contents / "MacOS/UpdateFixture")
     run(["ditto", "--noextattr", "--norsrc", "--noqtn", str(framework), str(contents / "Frameworks/Sparkle.framework")])
+    hotfix = scenario.name == "hotfix"
+    bundle_build = build + 28 if hotfix else build
+    bundle_version = "0.17.6" if hotfix else f"0.0.{build}"
     info = {
         "CFBundleIdentifier": identifier, "CFBundleExecutable": "UpdateFixture",
         "CFBundleName": "UpdateFixture", "CFBundlePackageType": "APPL",
-        "CFBundleVersion": str(build), "CFBundleShortVersionString": f"0.0.{build}",
+        "CFBundleVersion": str(bundle_build), "CFBundleShortVersionString": bundle_version,
         "LSMinimumSystemVersion": "15.0", "LSUIElement": True,
         "NSAppTransportSecurity": {"NSAllowsArbitraryLoads": True},
         "FixtureRoot": str(scenario.parent), "FixtureLog": str(scenario / "events.jsonl"), "FixtureScenario": scenario.name,
@@ -129,14 +150,33 @@ def make_app(destination, binary, framework, *, identifier, build, scenario, fee
         "SUAllowsAutomaticUpdates": False, "SUVerifyUpdateBeforeExtraction": True,
         "SURequireSignedFeed": True, "SUSignedFeedFailureExpirationInterval": 0, "SUShowReleaseNotes": False,
     }
+    if hotfix and build == 2:
+        info["PosleProductVersion"] = "0.17.6.1"
     with (contents / "Info.plist").open("wb") as stream:
         plistlib.dump(info, stream, sort_keys=False)
     (contents / "Resources" / ("obsolete.txt" if build == 1 else "new.txt")).write_text(f"build {build}")
+    worker, core = components[build]
+    cli = contents / "MacOS/FixtureWorker"
+    library = contents / "Frameworks/libFixtureCore.dylib"
+    helper = contents / "Helpers/FixtureWorker.app"
+    (helper / "Contents/MacOS").mkdir(parents=True)
+    (helper / "Contents/Resources").mkdir()
+    shutil.copy2(worker, cli)
+    shutil.copy2(worker, helper / "Contents/MacOS/FixtureWorker")
+    shutil.copy2(core, library)
+    with (helper / "Contents/Info.plist").open("wb") as stream:
+        plistlib.dump({"CFBundleIdentifier": identifier + ".worker", "CFBundleExecutable": "FixtureWorker",
+                      "CFBundleName": "FixtureWorker", "CFBundlePackageType": "APPL",
+                      "CFBundleVersion": str(bundle_build), "CFBundleShortVersionString": bundle_version,
+                      "LSBackgroundOnly": True, "LSMinimumSystemVersion": "15.0"}, stream)
+    (helper / "Contents/Resources" / ("obsolete-helper.txt" if build == 1 else "new-helper.txt")).write_text(f"build {build}")
+    for owned in (cli, library, helper):
+        run(["codesign", "--force", "--sign", "-", str(owned)])
     run(["codesign", "--force", "--sign", "-", str(destination)])
     run(["codesign", "--verify", "--deep", "--strict", str(destination)])
 
 
-def exercise(root, web, framework, binary, sign_update, private, public, port, name, requests):
+def exercise(root, web, framework, binary, components, sign_update, private, public, port, name, requests):
     started = time.monotonic()
     scenario = root / name
     scenario.mkdir()
@@ -155,8 +195,10 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
     feed_url = f"http://127.0.0.1:{port}/{name}/feed.xml"
     installed_build = 3 if name == "downgrade" else 1
     candidate_build = 1 if name == "same-build" else 2
+    candidate_bundle_build = candidate_build + 28 if name == "hotfix" else candidate_build
+    candidate_display_version = "0.17.6.1" if name == "hotfix" else f"0.0.{candidate_build}"
     for build, destination in ((installed_build, old), (candidate_build, new)):
-        make_app(destination, binary, framework, identifier=identifier, build=build,
+        make_app(destination, binary, framework, components, identifier=identifier, build=build,
                  scenario=scenario, feed=feed_url, public=public)
     if name == "nfc-deferred":
         assert "Caf\u00e9" in os.listdir(scenario / "installed"), "The on-disk fixture folder must preserve NFC encoding"
@@ -164,6 +206,7 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
     library.write_text('{"notes":["fixture note"],"models":["fixture model"]}')
     library_digest = hashlib.sha256(library.read_bytes()).digest()
     before = files(old)
+    candidate_files = files(new)
     archive = target / "update.zip"
     run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(new), str(archive)])
     signature = run([str(sign_update), "--ed-key-file", str(private), "-p", str(archive)])
@@ -180,8 +223,8 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
     feed.write_text(f'''<?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
 <channel><title>Fixture updates</title><item><title>Fixture update</title>
-<pubDate>{date}</pubDate><sparkle:version>{candidate_build}</sparkle:version>
-<sparkle:shortVersionString>0.0.{candidate_build}</sparkle:shortVersionString>
+<pubDate>{date}</pubDate><sparkle:version>{candidate_bundle_build}</sparkle:version>
+<sparkle:shortVersionString>{candidate_display_version}</sparkle:shortVersionString>
 <sparkle:minimumSystemVersion>15.0.0</sparkle:minimumSystemVersion>
 <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
 <enclosure url="http://127.0.0.1:{port}/{escape(name)}/update.zip"
@@ -227,11 +270,28 @@ def exercise(root, web, framework, binary, sign_update, private, public, port, n
         with (old / "Contents/Info.plist").open("rb") as stream:
             actual_version = plistlib.load(stream)["CFBundleVersion"]
         if name in SUCCESS_SCENARIOS:
-            assert actual_version == "2", "Sparkle did not replace build 1"
+            assert actual_version == str(candidate_bundle_build), "Sparkle did not replace the installed build"
             assert any(e["event"] == "ready" for e in observed), "Installer was never ready"
-            assert any(e["event"] == "relaunched" and e["build"] == "2" for e in observed), "Build 2 was not actually relaunched"
+            assert any(e["event"] == "relaunched" and e["build"] == str(candidate_bundle_build) for e in observed), "The candidate build was not actually relaunched"
+            if name == "hotfix":
+                with (old / "Contents/Info.plist").open("rb") as stream:
+                    installed_info = plistlib.load(stream)
+                assert installed_info["CFBundleShortVersionString"] == "0.17.6"
+                assert installed_info["PosleProductVersion"] == "0.17.6.1"
+                assert any(e["event"] == "started" and e["build"] == "29" for e in observed)
+                assert any(e["event"] == "found" and e["version"] == "30" and e["displayVersion"] == "0.17.6.1" for e in observed), "Sparkle must present the public hotfix label"
             assert not (old / "Contents/Resources/obsolete.txt").exists(), "Obsolete bundled files survived replacement"
             assert (old / "Contents/Resources/new.txt").read_text() == "build 2"
+            # Verify the complete candidate, not just the outer app's Info.plist.
+            # A stale nested helper, CLI, core, signature or removed resource must
+            # fail even when the outer version and successful relaunch look right.
+            assert files(old) == candidate_files, "Installed bundle differs from the complete signed candidate"
+            helper = old / "Contents/Helpers/FixtureWorker.app"
+            with (helper / "Contents/Info.plist").open("rb") as stream:
+                assert plistlib.load(stream)["CFBundleVersion"] == str(candidate_bundle_build), "A stale helper survived the update"
+            for worker in (old / "Contents/MacOS/FixtureWorker", helper / "Contents/MacOS/FixtureWorker"):
+                assert run([str(worker), "--version"]) == "FixtureWorker 2", "A stale worker executable survived the update"
+            assert not (helper / "Contents/Resources/obsolete-helper.txt").exists(), "Obsolete nested helper files survived replacement"
             run(["codesign", "--verify", "--deep", "--strict", str(old)])
             if name in DEFERRED_SCENARIOS:
                 assert len([e for e in observed if e["event"] == "deferred"]) == 1
@@ -307,6 +367,7 @@ def main():
              "-F", str(framework.parent), "-framework", "Sparkle", "-Xlinker", "-rpath", "-Xlinker",
              "@executable_path/../Frameworks",
              str(PROJECT / "Tests/UpdateFixture.swift"), "-o", str(binary)])
+        components = make_components(root / "components")
         public_file = root / "ephemeral-public.txt"
         run([str(binary), "--generate-key", str(private), str(public_file)],
             env={**os.environ, "DYLD_FRAMEWORK_PATH": str(framework.parent)})
@@ -345,7 +406,7 @@ def main():
         threading.Thread(target=server.serve_forever, daemon=True).start()
         results = []
         for name in SCENARIOS:
-            result = exercise(root, web, framework, binary, sign_update, private, public,
+            result = exercise(root, web, framework, binary, components, sign_update, private, public,
                               server.server_address[1], name, requests)
             results.append(result)
             print("PASS:", name, f"({result['seconds']}s)", flush=True)

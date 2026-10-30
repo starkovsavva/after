@@ -10,23 +10,23 @@ struct TaskSubtasksView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Подзадачи").font(AppTypography.heading)
+            Text(L("Подзадачи")).font(AppTypography.heading)
             ForEach(task.subtasks ?? []) { subtask in
                 HStack(alignment: .top, spacing: 9) {
                     Button {
                         var items = task.subtasks ?? []
                         if let index = items.firstIndex(where: { $0.id == subtask.id }) { items[index].completed.toggle(); save(items) }
                     } label: { Image(systemName: subtask.completed ? "checkmark.circle.fill" : "circle").foregroundStyle(subtask.completed ? Ink.green : Color.secondary).frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).accessibilityLabel((subtask.completed ? "Вернуть подзадачу в работу: " : "Завершить подзадачу: ") + subtask.text)
+                        .buttonStyle(.plain).accessibilityLabel((subtask.completed ? L("Вернуть подзадачу в работу: ") : L("Завершить подзадачу: ")) + subtask.text)
                     Text(subtask.text).font(AppTypography.body).strikethrough(subtask.completed).frame(maxWidth: .infinity, alignment: .leading)
                     Button { save((task.subtasks ?? []).filter { $0.id != subtask.id }) } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Удалить подзадачу: " + subtask.text)
+                        .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel(L("Удалить подзадачу: ") + subtask.text)
                 }
             }
             HStack(spacing: 8) {
-                TextField("Новая подзадача", text: draft).textFieldStyle(.roundedBorder).onSubmit(add)
+                TextField(L("Новая подзадача"), text: draft).textFieldStyle(.roundedBorder).onSubmit(add)
                 Button(action: add) { Image(systemName: "plus").frame(width: 24, height: 24) }
-                    .buttonStyle(.plain).disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityLabel("Добавить подзадачу")
+                    .buttonStyle(.plain).disabled(draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityLabel(L("Добавить подзадачу"))
             }
         }.padding(.top, 12)
     }

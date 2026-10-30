@@ -55,7 +55,7 @@ final class TrackerSyncCoordinator: ObservableObject {
     private func key(_ id: String) -> String { "tracker.connection.\(id)" }
     private func credentials(_ config: TrackerSyncConfiguration) throws -> Credentials {
         let text = try Keychain.readChecked(account: key(config.id))
-        guard !text.isEmpty, let data = text.data(using: .utf8) else { throw AppError.message("Добавьте токен подключения в настройках.") }
+        guard !text.isEmpty, let data = text.data(using: .utf8) else { throw AppError.message(L("Добавьте токен подключения в настройках.")) }
         return try JSONDecoder().decode(Credentials.self, from: data)
     }
     private func saveCredentials(_ credentials: Credentials, for id: String) throws {
@@ -69,7 +69,7 @@ final class TrackerSyncCoordinator: ObservableObject {
         var credentials = try credentials(config)
         guard config.provider == "google", (config.expiresAt ?? 0) < Date().timeIntervalSince1970 + 90 else { return (config, credentials) }
         guard !credentials.refreshToken.isEmpty, !credentials.clientID.isEmpty else {
-            throw AppError.message("Срок токена Google истёк. Обновите его в настройках или добавьте refresh token своего OAuth-клиента.")
+            throw AppError.message(L("Срок токена Google истёк. Обновите его в настройках или добавьте refresh token своего OAuth-клиента."))
         }
         var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
         request.httpMethod = "POST"; request.timeoutInterval = 25
@@ -85,7 +85,7 @@ final class TrackerSyncCoordinator: ObservableObject {
               let value = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let token = value["access_token"] as? String, !token.isEmpty,
               let seconds = value["expires_in"] as? Double, seconds > 0 else {
-            throw AppError.message("Google не обновил доступ. Проверьте OAuth-клиент и refresh token в настройках подключения.")
+            throw AppError.message(L("Google не обновил доступ. Проверьте OAuth-клиент и refresh token в настройках подключения."))
         }
         credentials.accessToken = token
         if let next = value["refresh_token"] as? String, !next.isEmpty { credentials.refreshToken = next }
@@ -113,7 +113,7 @@ final class TrackerSyncCoordinator: ObservableObject {
                 clientID: clientID.isEmpty ? previous?.clientID ?? "" : clientID,
                 clientSecret: clientSecret.isEmpty ? previous?.clientSecret ?? "" : clientSecret)
             guard !secrets.accessToken.isEmpty || (!secrets.refreshToken.isEmpty && !secrets.clientID.isEmpty) else {
-                throw AppError.message("Добавьте токен доступа или refresh token своего OAuth-клиента.")
+                throw AppError.message(L("Добавьте токен доступа или refresh token своего OAuth-клиента."))
             }
             // Validate/save metadata first. If Keychain fails, do not leave an
             // enabled connector pointing at absent credentials.
@@ -121,11 +121,11 @@ final class TrackerSyncCoordinator: ObservableObject {
             let data = try RustBridge.shared.get().request(root: root, command: "tracker-configure", arguments: ["configuration": object(config), "expectedRevision": config.revision])
             state = try JSONDecoder().decode(TrackerSyncState.self, from: data)
             try saveCredentials(secrets, for: config.id)
-            guard var saved = state.configurations.first(where: { $0.id == config.id }) else { throw AppError.message("Подключение не сохранилось.") }
+            guard var saved = state.configurations.first(where: { $0.id == config.id }) else { throw AppError.message(L("Подключение не сохранилось.")) }
             saved.enabled = active
             let final = try RustBridge.shared.get().request(root: root, command: "tracker-configure", arguments: ["configuration": object(saved), "expectedRevision": saved.revision])
             state = try JSONDecoder().decode(TrackerSyncState.self, from: final)
-            error = nil; notice = "Подключение сохранено"; return true
+            error = nil; notice = L("Подключение сохранено"); return true
         } catch { reload(); self.error = error.localizedDescription; return false }
     }
     func scopes(_ config: TrackerSyncConfiguration) async -> [TrackerSyncScope] {
@@ -158,7 +158,7 @@ final class TrackerSyncCoordinator: ObservableObject {
             }.value
             guard currentGeneration == generation else { return }
             state = try JSONDecoder().decode(TrackerSyncState.self, from: data); error = nil
-            notice = "Задачи синхронизированы"; changed()
+            notice = L("Задачи синхронизированы"); changed()
         } catch is CancellationError {}
         catch {
             guard featureEnabled, currentGeneration == generation else { return }
@@ -170,7 +170,7 @@ final class TrackerSyncCoordinator: ObservableObject {
         do {
             let data = try RustBridge.shared.get().request(root: root, command: "tracker-disconnect", arguments: ["connectionID": config.id, "expectedRevision": config.revision])
             state = try JSONDecoder().decode(TrackerSyncState.self, from: data)
-            try Keychain.save("", account: key(config.id)); error = nil; notice = "Подключение отключено. Локальные задачи сохранены."
+            try Keychain.save("", account: key(config.id)); error = nil; notice = L("Подключение отключено. Локальные задачи сохранены.")
         } catch { self.error = error.localizedDescription }
     }
     func resolve(_ conflict: TrackerSyncConflict, resolution: String) async {
@@ -196,7 +196,7 @@ final class TrackerSyncCoordinator: ObservableObject {
         guard featureEnabled, !busy else { return }
         do {
             let data = try RustBridge.shared.get().request(root: root, command: "tracker-export", arguments: ["connectionID": connection.id, "taskID": taskID, "scope": scope])
-            state = try JSONDecoder().decode(TrackerSyncState.self, from: data); error = nil; notice = "Задача добавлена в очередь отправки"
+            state = try JSONDecoder().decode(TrackerSyncState.self, from: data); error = nil; notice = L("Задача добавлена в очередь отправки")
         } catch { self.error = error.localizedDescription }
     }
     private func tick() async {

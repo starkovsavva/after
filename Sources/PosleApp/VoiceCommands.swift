@@ -69,9 +69,9 @@ final class VoiceCapture: NSObject, AVAudioRecorderDelegate {
     var limitReached: (() -> Void)?
     var failed: ((String) -> Void)?
     func start(root: URL) async throws {
-        guard recorder == nil else { throw AppError.message("Диктовка уже идёт.") }
+        guard recorder == nil else { throw AppError.message(L("Диктовка уже идёт.")) }
         let allowed = await AVCaptureDevice.requestAccess(for: .audio)
-        guard allowed else { throw AppError.message("Разрешите доступ к микрофону в настройках macOS.") }
+        guard allowed else { throw AppError.message(L("Разрешите доступ к микрофону в настройках macOS.")) }
         try Task.checkCancellation()
         let base = root.appendingPathComponent("voice-inputs", isDirectory: true)
         try Self.validateDirectory(base, create: true)
@@ -85,7 +85,7 @@ final class VoiceCapture: NSObject, AVAudioRecorderDelegate {
                 AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
             ])
             audio.delegate = self
-            guard audio.prepareToRecord(), audio.record() else { throw AppError.message("Не удалось включить микрофон.") }
+            guard audio.prepareToRecord(), audio.record() else { throw AppError.message(L("Не удалось включить микрофон.")) }
             recorder = audio
             timer = Timer.scheduledTimer(withTimeInterval: 175, repeats: false) { [weak self] _ in
                 Task { @MainActor in
@@ -95,7 +95,7 @@ final class VoiceCapture: NSObject, AVAudioRecorderDelegate {
         } catch { discard(); throw error }
     }
     func stop() throws -> URL {
-        guard let recorder else { throw AppError.message("Диктовка не начата.") }
+        guard let recorder else { throw AppError.message(L("Диктовка не начата.")) }
         timer?.invalidate(); timer = nil
         recorder.stop(); self.recorder = nil
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: recorder.url.path)
@@ -112,11 +112,11 @@ final class VoiceCapture: NSObject, AVAudioRecorderDelegate {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         }
         let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-        guard values.isDirectory == true, values.isSymbolicLink != true else { throw AppError.message("Папка диктовки недоступна.") }
+        guard values.isDirectory == true, values.isSymbolicLink != true else { throw AppError.message(L("Папка диктовки недоступна.")) }
     }
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
         Task { @MainActor in
-            guard self.recorder === recorder else { return }; self.failed?("Не удалось сохранить диктовку. Повторите запись.")
+            guard self.recorder === recorder else { return }; self.failed?(L("Не удалось сохранить диктовку. Повторите запись."))
         }
     }
 }
@@ -138,7 +138,7 @@ final class VoiceCommandController: ObservableObject {
     @Published private(set) var knowledgeOpeningID: String?
     @Published var selectedTargetIDs: Set<String> = [] { didSet { if !restoringDraft { _ = flushDraft() } } }
     @Published var reviewText = "" { didSet { if !restoringDraft { scheduleDraftSave() } } }
-    @Published private(set) var contextLabel = "Библиотека"
+    @Published private(set) var contextLabel = L("Библиотека")
     private weak var store: AppStore?
     private let capture = VoiceCapture()
     private var task: Task<Void, Never>?
@@ -185,7 +185,7 @@ final class VoiceCommandController: ObservableObject {
                     if let result = inspection.result {
                         if result.undone == true {
                             text = ""; self.plan = nil; interruptedPlanID = nil; interruptedOperationID = nil
-                            message = "Изменение уже отменено."; phase = .editing
+                            message = L("Изменение уже отменено."); phase = .editing
                         } else { self.result = result; phase = .result; isPresented = true }
                     }
                     else if let plan = inspection.plan {
@@ -198,10 +198,10 @@ final class VoiceCommandController: ObservableObject {
                             }
                             if let edited = draft.reviewText { reviewText = edited }
                         }
-                        message = plan.reviewRequired == true ? "Поручение прервалось. Проверьте изменения перед продолжением." : "Поручение прервалось. Нажмите «Выполнить», чтобы продолжить."
+                        message = plan.reviewRequired == true ? L("Поручение прервалось. Проверьте изменения перед продолжением.") : L("Поручение прервалось. Нажмите «Выполнить», чтобы продолжить.")
                     }
                 } catch {
-                    message = "Не удалось проверить результат прерванного поручения. Проверьте библиотеку перед повтором."
+                    message = L("Не удалось проверить результат прерванного поручения. Проверьте библиотеку перед повтором.")
                 }
             }
         }
@@ -214,7 +214,7 @@ final class VoiceCommandController: ObservableObject {
             previousQuestions = []; restartOfJobID = nil
             text = ""; plan = nil; result = nil; phase = .editing; message = nil; context = [:]
             if let folderID = store.folderSelection { context["folderID"] = folderID }
-            if let taskID { context["taskID"] = taskID; contextLabel = title ?? "Задача" }
+            if let taskID { context["taskID"] = taskID; contextLabel = title ?? L("Задача") }
             else if store.librarySection == "cards", let id = store.assistantCardMeetingID, let meeting = store.meetings.first(where: { $0.id == id }) {
                 context["meetingID"] = id; contextLabel = meeting.title
             } else if store.librarySection == "meetings", let meeting = store.selected {
@@ -222,10 +222,10 @@ final class VoiceCommandController: ObservableObject {
             } else if store.librarySection == "inbox", let id = store.notes.selectedNoteID,
                       let note = store.notes.notes.first(where: { $0.id == id }) {
                 context["noteID"] = id; contextLabel = note.displayTitle
-            } else { contextLabel = "Библиотека" }
+            } else { contextLabel = L("Библиотека") }
             if let project = projectID ?? store.activeTaskProjectID {
                 context["projectID"] = project
-                if contextLabel == "Библиотека" { contextLabel = "Проект: \(project)" }
+                if contextLabel == L("Библиотека") { contextLabel = LF("Проект: {0}", arguments: [String(describing: project)]) }
             }
         }
         isPresented = true
@@ -243,9 +243,9 @@ final class VoiceCommandController: ObservableObject {
         }
         if let folder = input["folderID"] { restored["folderID"] = folder }
         isPresented = true; NSApp.activate(ignoringOtherApps: true)
-        guard !isWorking else { message = "Дождитесь завершения текущего поручения."; return }
+        guard !isWorking else { message = L("Дождитесь завершения текущего поручения."); return }
         guard !hasDraft || (phase == .editing && text == command && NSDictionary(dictionary: context).isEqual(to: restored)) else {
-            message = "Сначала завершите текущее поручение или нажмите «Новое поручение», затем откройте нужное из фоновых задач."
+            message = L("Сначала завершите текущее поручение или нажмите «Новое поручение», затем откройте нужное из фоновых задач.")
             return
         }
         restored["folderID"] = restored["folderID"] ?? job.config.folderID.map { $0 as Any } ?? NSNull()
@@ -255,12 +255,12 @@ final class VoiceCommandController: ObservableObject {
         text = command; plan = nil; result = nil; knowledgeAnswer = nil; knowledgeOpeningID = nil
         interruptedPlanID = nil; interruptedOperationID = nil; selectedTargetIDs = []; reviewText = ""
         restartOfJobID = job.id; phase = .editing
-        if let id = restored["meetingID"] as? String { contextLabel = store.meetings.first { $0.id == id }?.title ?? "Встреча" }
-        else if let id = restored["noteID"] as? String { contextLabel = store.notes.notes.first { $0.id == id }?.displayTitle ?? "Заметка" }
-        else if restored["taskID"] is String { contextLabel = "Задача" }
-        else if let id = restored["folderID"] as? String { contextLabel = store.notes.workspace.folders.first { $0.id == id }?.name ?? "Папка" }
-        else { contextLabel = "Библиотека" }
-        message = "Поручение открыто с текущими настройками модели. Проверьте текст и нажмите «Выполнить» для нового запуска."
+        if let id = restored["meetingID"] as? String { contextLabel = store.meetings.first { $0.id == id }?.title ?? L("Встреча") }
+        else if let id = restored["noteID"] as? String { contextLabel = store.notes.notes.first { $0.id == id }?.displayTitle ?? L("Заметка") }
+        else if restored["taskID"] is String { contextLabel = L("Задача") }
+        else if let id = restored["folderID"] as? String { contextLabel = store.notes.workspace.folders.first { $0.id == id }?.name ?? L("Папка") }
+        else { contextLabel = L("Библиотека") }
+        message = L("Поручение открыто с текущими настройками модели. Проверьте текст и нажмите «Выполнить» для нового запуска.")
         restoringDraft = false; _ = flushDraft()
     }
     func dismiss() {
@@ -291,7 +291,7 @@ final class VoiceCommandController: ObservableObject {
         let folder = context["folderID"]
         context = [:]
         if let folder { context["folderID"] = folder }
-        contextLabel = "Продолжение разговора"
+        contextLabel = L("Продолжение разговора")
         knowledgeAnswer = nil; knowledgeOpeningID = nil; result = nil; plan = nil
         interruptedPlanID = nil; interruptedOperationID = nil
         phase = .editing; text = ""; message = nil; _ = flushDraft()
@@ -302,7 +302,7 @@ final class VoiceCommandController: ObservableObject {
         case "cards" where plan?.action == "createCards":
             let id = result.target.meetingID ?? result.target.id
             context = ["meetingID": id]
-            contextLabel = store?.meetings.first(where: { $0.id == id })?.title ?? "Созданные карточки"
+            contextLabel = store?.meetings.first(where: { $0.id == id })?.title ?? L("Созданные карточки")
         case "task": context = ["taskID": result.target.id]; contextLabel = result.title
         case "note": context = ["noteID": result.target.id]; contextLabel = result.title
         case "meeting": context = ["meetingID": result.target.meetingID ?? result.target.id]
@@ -333,16 +333,16 @@ final class VoiceCommandController: ObservableObject {
     func startDictation() {
         guard let store, !isWorking else { return }
         guard store.isFeatureEnabled(.assistant) else { store.openSettings("features"); return }
-        guard !store.isTerminating else { message = "Приложение завершает работу."; return }
+        guard !store.isTerminating else { message = L("Приложение завершает работу."); return }
         guard !store.startingRecording, !store.isRecording, !store.stoppingRecording else {
-            message = "Во время записи встречи введите поручение текстом. Микрофон занят записью."; return
+            message = L("Во время записи встречи введите поручение текстом. Микрофон занят записью."); return
         }
-        guard !store.busy else { message = "Дождитесь текущей обработки."; return }
-        guard !store.isPreview else { message = "В режиме просмотра введите поручение текстом."; return }
-        guard store.runtimeReady else { message = "Подготовьте распознавание в настройках."; return }
+        guard !store.busy else { message = L("Дождитесь текущей обработки."); return }
+        guard !store.isPreview else { message = L("В режиме просмотра введите поручение текстом."); return }
+        guard store.runtimeReady else { message = L("Подготовьте распознавание в настройках."); return }
         if store.settings.speechMode == "cloud", !store.confirmVoiceUpload() { return }
         generation = UUID(); let current = generation
-        store.beginJob(id: nil); store.progressText = "Диктовка…"
+        store.beginJob(id: nil); store.progressText = L("Диктовка…")
         phase = .authorizing; message = nil; plan = nil; result = nil; knowledgeAnswer = nil; knowledgeOpeningID = nil
         task = Task {
             do {
@@ -363,27 +363,27 @@ final class VoiceCommandController: ObservableObject {
             if let failure = dictationStopFailureForChecks { dictationStopFailureForChecks = nil; throw failure }
             #endif
             let audio = try capture.stop()
-            phase = .transcribing; store.progressText = "Распознаю поручение…"
+            phase = .transcribing; store.progressText = L("Распознаю поручение…")
             task = Task {
                 defer { capture.discard() }
                 do {
                     store.endJob()
                     guard let value = try await store.worker("dictate", extra: ["--audio", audio.path])?.dictation else {
-                        throw AppError.message("Распознавание не вернуло текст поручения.")
+                        throw AppError.message(L("Распознавание не вернуло текст поручения."))
                     }
                     guard current == generation, !Task.isCancelled else { return }
                     let addition = value.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if addition.isEmpty { message = "Речь не найдена. Повторите диктовку или введите текст." }
+                    if addition.isEmpty { message = L("Речь не найдена. Повторите диктовку или введите текст.") }
                     else { text += (text.isEmpty ? "" : " ") + addition; message = value.warnings.first }
                     phase = .editing
                 } catch {
                     guard current == generation else { return }
-                    phase = .editing; message = error is CancellationError ? "Диктовка остановлена." : error.localizedDescription
+                    phase = .editing; message = error is CancellationError ? L("Диктовка остановлена.") : error.localizedDescription
                 }
             }
         } catch {
             capture.discard(); phase = .editing
-            message = error is CancellationError ? "Диктовка остановлена." : error.localizedDescription
+            message = error is CancellationError ? L("Диктовка остановлена.") : error.localizedDescription
             store.endJob()
         }
     }
@@ -413,9 +413,9 @@ final class VoiceCommandController: ObservableObject {
             guard try captureFolderScope(store) else { store.openSettings("features"); return }
         } catch { message = error.localizedDescription; return }
         let command = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !command.isEmpty, command.utf8.count <= 8_000 else { message = "Сократите поручение или разделите его на несколько."; return }
+        guard !command.isEmpty, command.utf8.count <= 8_000 else { message = L("Сократите поручение или разделите его на несколько."); return }
         if interruptedPlanID != nil && plan == nil {
-            message = "Сначала проверьте результат прерванного поручения в библиотеке. Чтобы создать новое, измените текст или нажмите «Новое поручение»."; return
+            message = L("Сначала проверьте результат прерванного поручения в библиотеке. Чтобы создать новое, измените текст или нажмите «Новое поручение»."); return
         }
         if let plan, plan.status == "ready", plan.reviewRequired == true {
             prepareReview(plan)
@@ -424,7 +424,7 @@ final class VoiceCommandController: ObservableObject {
         if let plan, plan.status == "ready" {
             generation = UUID(); let current = generation
             phase = .applying; store.beginJob(id: nil); store.canCancelJob = false
-            store.progressText = "Продолжаю поручение…"
+            store.progressText = L("Продолжаю поручение…")
             task = Task {
                 defer { if current == generation { store.endJob() } }
                 do { try await apply(plan, generation: current) }
@@ -443,7 +443,7 @@ final class VoiceCommandController: ObservableObject {
             do {
                 let data = try JSONSerialization.data(withJSONObject: input, options: [.sortedKeys])
                 guard var planned = try await store.worker("voice-plan", input: data)?.voicePlan else {
-                    throw AppError.message("Не удалось разобрать поручение.")
+                    throw AppError.message(L("Не удалось разобрать поручение."))
                 }
                 guard current == generation, !Task.isCancelled else { return }
                 var calendarQuestion = command
@@ -451,7 +451,7 @@ final class VoiceCommandController: ObservableObject {
                     // Classification may take minutes. Capture permission and
                     // visible events now, immediately before the read-only
                     // synthesis job; selected context never enters this input.
-                    guard let query = planned.query else { throw AppError.message("Не удалось подготовить вопрос по библиотеке.") }
+                    guard let query = planned.query else { throw AppError.message(L("Не удалось подготовить вопрос по библиотеке.")) }
                     let clock = Date()
                     calendarQuestion = command + "\n" + query
                     let snapshot = store.calendar.knowledgeSnapshot(question: calendarQuestion, now: clock)
@@ -461,13 +461,13 @@ final class VoiceCommandController: ObservableObject {
                     if let folderID = context["folderID"] { question["folderID"] = folderID }
                     let questionData = try JSONSerialization.data(withJSONObject: question, options: [.sortedKeys])
                     guard let answered = try await store.worker("voice-plan", input: questionData)?.voicePlan,
-                          answered.status == "answered" else { throw AppError.message("Не удалось получить ответ по библиотеке.") }
+                          answered.status == "answered" else { throw AppError.message(L("Не удалось получить ответ по библиотеке.")) }
                     guard current == generation, !Task.isCancelled else { return }
                     planned = answered
                 }
                 plan = planned
                 if planned.status == "answered" {
-                    guard let answer = planned.knowledgeAnswer else { throw AppError.message("Не удалось прочитать ответ по библиотеке.") }
+                    guard let answer = planned.knowledgeAnswer else { throw AppError.message(L("Не удалось прочитать ответ по библиотеке.")) }
                     let checked = try await validateCalendarAnswer(answer, question: calendarQuestion)
                     guard current == generation, !Task.isCancelled else { return }
                     knowledgeAnswer = checked; result = nil; plan = nil
@@ -479,14 +479,14 @@ final class VoiceCommandController: ObservableObject {
                 else { phase = .editing; message = planned.detail }
             } catch {
                 guard current == generation else { return }
-                phase = .editing; message = error is CancellationError ? "Поручение остановлено." : error.localizedDescription
+                phase = .editing; message = error is CancellationError ? L("Поручение остановлено.") : error.localizedDescription
             }
         }
     }
     func choose(_ candidate: VoiceCandidate) {
         guard let store, phase == .choosing, let planID = plan?.planID, !store.busy else { return }
         generation = UUID(); let current = generation; phase = .applying
-        store.beginJob(id: nil); store.canCancelJob = false; store.progressText = "Сохраняю…"
+        store.beginJob(id: nil); store.canCancelJob = false; store.progressText = L("Сохраняю…")
         task = Task {
             defer { if current == generation { store.endJob() } }
             do {
@@ -525,7 +525,7 @@ final class VoiceCommandController: ObservableObject {
         guard store.isFeatureEnabled(.assistant) else { store.openSettings("features"); return }
         generation = UUID(); let current = generation
         phase = .applying; store.beginJob(id: nil); store.canCancelJob = false
-        store.progressText = "Сохраняю поручение…"
+        store.progressText = L("Сохраняю поручение…")
         task = Task {
             defer { if current == generation { store.endJob() } }
             do { try await apply(plan, generation: current, confirmed: true) }
@@ -536,14 +536,14 @@ final class VoiceCommandController: ObservableObject {
         }
     }
     private func apply(_ plan: VoicePlan, generation current: UUID, confirmed: Bool = false) async throws {
-        guard let store, let id = plan.planID, let operation = plan.operationID else { throw AppError.message("Поручение не готово к выполнению.") }
-        guard store.isFeatureEnabled(.assistant) else { throw AppError.message("Включите помощника в настройках → Возможности.") }
+        guard let store, let id = plan.planID, let operation = plan.operationID else { throw AppError.message(L("Поручение не готово к выполнению.")) }
+        guard store.isFeatureEnabled(.assistant) else { throw AppError.message(L("Включите помощника в настройках → Возможности.")) }
         phase = .applying; store.canCancelJob = false
-        guard flushDraft() else { throw AppError.message("Не удалось сохранить состояние поручения. Повторите попытку.") }
+        guard flushDraft() else { throw AppError.message(L("Не удалось сохранить состояние поручения. Повторите попытку.")) }
         let root = store.root
         var arguments: [String: Any] = ["planID": id, "operationID": operation]
         if plan.reviewRequired == true {
-            guard confirmed else { throw AppError.message("Сначала проверьте изменения и подтвердите их.") }
+            guard confirmed else { throw AppError.message(L("Сначала проверьте изменения и подтвердите их.")) }
             arguments["confirmed"] = true
             arguments["selectedTargetIDs"] = selectedTargetIDs.sorted()
             arguments["text"] = reviewText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -560,7 +560,7 @@ final class VoiceCommandController: ObservableObject {
     func undo() {
         guard let store, let result, result.canUndo, !store.busy else { return }
         phase = .applying; store.beginJob(id: nil); store.canCancelJob = false
-        store.progressText = "Отменяю изменение…"
+        store.progressText = L("Отменяю изменение…")
         let root = store.root
         task = Task {
             defer { store.endJob() }
@@ -569,7 +569,7 @@ final class VoiceCommandController: ObservableObject {
                     try RustBridge.shared.get().request(root: root, command: "voice-undo", arguments: ["operationID": result.operationID])
                 }.value
                 self.result = nil; plan = nil; interruptedPlanID = nil; interruptedOperationID = nil
-                phase = .editing; message = "Изменение отменено."; refresh()
+                phase = .editing; message = L("Изменение отменено."); refresh()
             } catch { phase = .result; message = error.localizedDescription }
         }
     }
@@ -602,7 +602,7 @@ final class VoiceCommandController: ObservableObject {
                 }.value
                 guard current == generation, isPresented else { return }
                 knowledgeOpeningID = nil
-                guard valid else { throw AppError.message("Источник изменился. Повторите поиск.") }
+                guard valid else { throw AppError.message(L("Источник изменился. Повторите поиск.")) }
                 try store.revealKnowledgeSource(source, calendar: nil)
                 dismiss()
             } catch {
@@ -643,11 +643,11 @@ final class VoiceCommandController: ObservableObject {
         checked.paragraphs.removeAll { !$0.sourceIDs.allSatisfy { !invalid.contains($0) } }
         let remaining = Set(checked.paragraphs.flatMap(\.sourceIDs))
         checked.sources.removeAll { !remaining.contains($0.id) }
-        let warning = "События календаря изменились во время ответа. Устаревшие утверждения убраны; задайте вопрос ещё раз."
+        let warning = L("События календаря изменились во время ответа. Устаревшие утверждения убраны; задайте вопрос ещё раз.")
         if !checked.warnings.contains(warning) { checked.warnings.append(warning) }
         if checked.paragraphs.isEmpty {
-            checked.title = "Источники изменились"
-            checked.paragraphs = [KnowledgeParagraph(text: "Не удалось подтвердить ответ по актуальным событиям календаря.")]
+            checked.title = L("Источники изменились")
+            checked.paragraphs = [KnowledgeParagraph(text: L("Не удалось подтвердить ответ по актуальным событиям календаря."))]
         }
         return checked
     }
@@ -672,7 +672,7 @@ final class VoiceCommandController: ObservableObject {
                 }.value
                 guard current == generation, isPresented, knowledgeAnswer?.sources.contains(source) == true else { return }
                 knowledgeOpeningID = nil
-                guard valid else { message = "Источник изменился или больше недоступен. Задайте вопрос ещё раз."; return }
+                guard valid else { message = L("Источник изменился или больше недоступен. Задайте вопрос ещё раз."); return }
                 try store.revealKnowledgeSource(source, calendar: calendar)
                 dismiss()
             } catch {
@@ -694,7 +694,7 @@ final class VoiceCommandController: ObservableObject {
         generation = UUID(); task?.cancel(); phase = .editing; knowledgeAnswer = nil; knowledgeOpeningID = nil
         if [.authorizing, .capturing].contains(previousPhase) { store.cancelJob() }
         if previousPhase == .capturing { capture.discard() }
-        message = "Остановлено. Текст поручения сохранён."
+        message = L("Остановлено. Текст поручения сохранён.")
         // Keep the global reservation until the underlying service exits.
         let pending = task
         task = Task {
@@ -720,7 +720,7 @@ final class VoiceCommandController: ObservableObject {
             previousQuestions: previousQuestions.isEmpty ? nil : previousQuestions,
             restartOfJobID: phase == .result ? nil : restartOfJobID)
         do { try store.write(value, store.root.appendingPathComponent("voice-draft.json")); return true }
-        catch { message = "Не удалось сохранить поручение. Оставьте панель открытой и повторите сохранение."; return false }
+        catch { message = L("Не удалось сохранить поручение. Оставьте панель открытой и повторите сохранение."); return false }
     }
     #if DEBUG
     var selectedContextForChecks: [String: String] { context.compactMapValues { $0 as? String } }
@@ -758,9 +758,9 @@ extension AppStore {
     func presentVoice() { voice.present() }
     func confirmVoiceUpload() -> Bool {
         guard !isPreview else { return false }
-        let alert = NSAlert(); alert.messageText = "Распознать диктовку в облаке?"
-        alert.informativeText = "Аудио поручения будет отправлено на \(settings.resolvedSpeechEndpoint)\nМодель: \(settings.speechCloudModel)"
-        alert.addButton(withTitle: "Продолжить"); alert.addButton(withTitle: "Отмена")
+        let alert = NSAlert(); alert.messageText = L("Распознать диктовку в облаке?")
+        alert.informativeText = LF("Аудио поручения будет отправлено на {0}\nМодель: {1}", arguments: [String(describing: settings.resolvedSpeechEndpoint), String(describing: settings.speechCloudModel)])
+        alert.addButton(withTitle: L("Продолжить")); alert.addButton(withTitle: L("Отмена"))
         return alert.runModal() == .alertFirstButtonReturn
     }
 }

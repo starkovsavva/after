@@ -36,11 +36,11 @@ fn data_path(root: &Path, relative: &str) -> Result<PathBuf> {
     if relative.components().any(|p| !matches!(p, Component::Normal(_))) {
         bail!("Недопустимый путь библиотеки");
     }
-    let allowed = ["settings.json", "overview-drafts.json", "voice-draft.json", "capture-drafts.json", "meta.json", "transcript.json", "summary.json", "examples.json", "review-state.json"];
+    let allowed = ["settings.json", "sidebar-state.json", "language-state.json", "overview-drafts.json", "voice-draft.json", "capture-drafts.json", "meta.json", "transcript.json", "summary.json", "examples.json", "review-state.json"];
     let name = relative.file_name().and_then(|s| s.to_str()).context("Нет имени файла")?;
     if !allowed.contains(&name) { bail!("Этот файл не относится к библиотеке"); }
     let components: Vec<_> = relative.components().collect();
-    if ["settings.json", "overview-drafts.json", "voice-draft.json", "capture-drafts.json"].contains(&name) {
+    if ["settings.json", "sidebar-state.json", "language-state.json", "overview-drafts.json", "voice-draft.json", "capture-drafts.json"].contains(&name) {
         if components.len() != 1 { bail!("Недопустимый путь настроек"); }
     } else {
         if components.len() != 3 || components[0].as_os_str() != "meetings" { bail!("Недопустимый путь встречи"); }
@@ -128,6 +128,26 @@ pub unsafe extern "C" fn posle_free_string(value: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sidebar_layout_state_is_private_and_root_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = json!({"foldersExpanded": false});
+        request(&json!({"root":directory.path(),"command":"write","path":"sidebar-state.json","value":state})).unwrap();
+        assert_eq!(request(&json!({"root":directory.path(),"command":"read","path":"sidebar-state.json"})).unwrap(), state);
+        assert!(request(&json!({"root":directory.path(),"command":"write","path":"meetings/demo/sidebar-state.json","value":state})).is_err());
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(directory.path().join("sidebar-state.json")).unwrap().permissions().mode() & 0o777, 0o600);
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::remove_file(directory.path().join("sidebar-state.json")).unwrap();
+        let target = outside.path().join("outside.json");
+        std::fs::write(&target, b"unchanged").unwrap();
+        std::os::unix::fs::symlink(&target, directory.path().join("sidebar-state.json")).unwrap();
+        assert!(request(&json!({"root":directory.path(),"command":"read","path":"sidebar-state.json"})).is_err());
+        request(&json!({"root":directory.path(),"command":"write","path":"sidebar-state.json","value":state})).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"unchanged");
+        assert!(!std::fs::symlink_metadata(directory.path().join("sidebar-state.json")).unwrap().file_type().is_symlink());
+    }
+
     #[test]
     fn overview_drafts_are_private_root_files() {
         let directory = tempfile::tempdir().unwrap();

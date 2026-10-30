@@ -74,7 +74,7 @@ final class NotesStore: ObservableObject {
                 value: Drafts(texts: captureDrafts, kinds: captureKinds))
             return true
         } catch {
-            self.error = "Не удалось сохранить черновик. Ваш текст остался в редакторе."; return false
+            self.error = L("Не удалось сохранить черновик. Ваш текст остался в редакторе."); return false
         }
     }
     var notes: [CapturedNote] { sortedNotes }
@@ -103,7 +103,7 @@ final class NotesStore: ObservableObject {
         var note = CapturedNote(text: text)
         note.kind = kind; note.meetingID = meetingID; note.timestamp = timestamp; note.sourceURL = sourceURL; note.folderID = folderID
         guard let saved = save(note) else { return nil }
-        notice = kind == "important" ? "Момент отмечен" : "Заметка сохранена"
+        notice = kind == "important" ? L("Момент отмечен") : L("Заметка сохранена")
         return saved
     }
     func delete(_ note: CapturedNote) {
@@ -152,11 +152,11 @@ final class NotesStore: ObservableObject {
     }
     func chooseAttachments(for note: CapturedNote) {
         let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
-        panel.message = "Добавить файлы к заметке"
+        panel.message = L("Добавить файлы к заметке")
         if panel.runModal() == .OK { attach(panel.urls, to: note.id) }
     }
     func attach(_ urls: [URL], to noteID: String) {
-        guard !attachmentBusy else { error = "Дождитесь добавления текущего файла."; return }
+        guard !attachmentBusy else { error = L("Дождитесь добавления текущего файла."); return }
         attachmentBusy = true
         Task {
             defer { attachmentBusy = false }
@@ -198,7 +198,7 @@ final class NotesStore: ObservableObject {
                     guard let current = workspace.notes.first(where: { $0.id == note.id }) else { return }
                     let data = try RustBridge.shared.get().request(root: root, command: "attachment-text", arguments: ["noteID": current.id, "attachmentID": attachment.id, "revision": current.revision, "text": text])
                     accept(try JSONDecoder().decode(CapturedNote.self, from: data))
-                    notice = text.isEmpty ? "Текст на изображении не найден" : "Текст распознан на Mac"
+                    notice = text.isEmpty ? L("Текст на изображении не найден") : L("Текст распознан на Mac")
                 } catch { self.error = error.localizedDescription }
             }
         } catch { self.error = error.localizedDescription }

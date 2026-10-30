@@ -13,7 +13,7 @@ struct TrashEntry: Decodable, Identifiable {
     var trashID: String?
     var key: String { kind + ":" + (meetingID ?? "") + ":" + id }
     var label: String {
-        switch kind { case "meeting": "Встреча"; case "task": "Задача"; case "card": "Карточка"; default: "Заметка" }
+        switch kind { case "meeting": L("Встреча"); case "task": L("Задача"); case "card": L("Карточка"); default: L("Заметка") }
     }
     var symbol: String {
         switch kind { case "meeting": "waveform"; case "task": "checklist"; case "card": "rectangle.on.rectangle"; default: "note.text" }
@@ -34,20 +34,20 @@ struct TrashView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Корзина").font(AppTypography.pageTitle)
+                Text(L("Корзина")).font(AppTypography.pageTitle)
                 Spacer()
-                TextField("Найти в Корзине", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 240)
+                TextField(L("Найти в Корзине"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 240)
             }.padding(24)
             Divider()
             if loading { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
             else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Удалённые объекты хранятся 30 дней.").font(AppTypography.caption).foregroundStyle(.secondary)
+                        Text(L("Удалённые объекты хранятся 30 дней.")).font(AppTypography.caption).foregroundStyle(.secondary)
                         if let error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).textSelection(.enabled) }
                         if let warning { Text(warning).font(AppTypography.caption).foregroundStyle(.secondary) }
                         if matching.isEmpty {
-                            ContentUnavailableView(query.isEmpty ? "Корзина пуста" : "Ничего не найдено", systemImage: "trash")
+                            ContentUnavailableView(query.isEmpty ? L("Корзина пуста") : L("Ничего не найдено"), systemImage: "trash")
                                 .frame(maxWidth: .infinity).padding(.top, 42)
                         }
                         ForEach(matching, id: \.key) { entry in
@@ -56,14 +56,14 @@ struct TrashView: View {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(entry.title).font(AppTypography.controlStrong).lineLimit(2)
                                     if !entry.detail.isEmpty && entry.detail != entry.title { Text(entry.detail).font(AppTypography.control).foregroundStyle(.secondary).lineLimit(2) }
-                                    Text("\(entry.label) · Хранится до \(Date(timeIntervalSince1970: entry.expiresAt).formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "ru_RU"))))")
+                                    Text(LF("{0} · Хранится до {1}", arguments: [String(describing: (entry.label)), String(describing: (Date(timeIntervalSince1970: entry.expiresAt).formatted(.dateTime.day().month(.abbreviated).locale(UILocale()))))]))
                                         .font(AppTypography.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer(minLength: 12)
                                 if restoring == entry.key { ProgressView().controlSize(.small) }
-                                Button("Восстановить") { Task { await restore(entry) } }
+                                Button(L("Восстановить")) { Task { await restore(entry) } }
                                     .buttonStyle(.bordered).disabled(restoring != nil || app.busy)
-                                    .accessibilityLabel("Восстановить: \(entry.title)")
+                                    .accessibilityLabel(LF("Восстановить: {0}", arguments: [String(describing: (entry.title))]))
                             }.padding(.vertical, 10)
                             Divider()
                         }
@@ -86,7 +86,7 @@ struct TrashView: View {
             struct Response: Decodable { var entries: [TrashEntry]; var errors: [AnyTrashError] }
             let response = try JSONDecoder().decode(Response.self, from: data)
             entries = response.entries
-            warning = response.errors.isEmpty ? nil : "Не удалось прочитать часть Корзины. Исходные данные сохранены."
+            warning = response.errors.isEmpty ? nil : L("Не удалось прочитать часть Корзины. Исходные данные сохранены.")
             error = nil
         } catch { self.error = error.localizedDescription }
         loading = false
@@ -106,7 +106,7 @@ struct TrashView: View {
             }.value
             app.notes.reload(); app.notes.loadTasks(); app.reloadLibrary()
             if let id = app.selection { app.refreshResults(id) }
-            app.notice = "\(entry.label) восстановлена"
+            app.notice = LF("{0} восстановлена", arguments: [String(describing: (entry.label))])
             await reload()
         } catch { self.error = error.localizedDescription }
     }

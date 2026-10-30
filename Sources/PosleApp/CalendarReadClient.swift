@@ -86,7 +86,7 @@ private actor CalendarReadWorker {
             events = store.events(matching: predicate).compactMap { event in
                 guard let id = event.eventIdentifier, let start = event.startDate, let end = event.endDate,
                       let calendar = event.calendar else { return nil }
-                return CalendarReadSnapshot.Event(id: id, title: event.title ?? "Без названия", start: start, end: end,
+                return CalendarReadSnapshot.Event(id: id, title: event.title ?? L("Без названия"), start: start, end: end,
                     allDay: event.isAllDay, calendarID: calendar.calendarIdentifier,
                     writable: calendar.allowsContentModifications && !event.hasRecurrenceRules, marker: event.url)
             }
@@ -98,5 +98,5 @@ private actor CalendarReadWorker {
 
 enum CalendarReadError: LocalizedError {
     case permissionRequired
-    var errorDescription: String? { "Разрешите «После» полный доступ к календарям в настройках macOS." }
+    var errorDescription: String? { L("Разрешите «После» полный доступ к календарям в настройках macOS.") }
 }

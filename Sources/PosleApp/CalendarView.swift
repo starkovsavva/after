@@ -20,9 +20,9 @@ struct CalendarWorkspace: View {
         Group {
             if calendar.connected {
                 VStack(alignment: .leading, spacing: 16) {
-                    AppWorkspaceHeader(title: "Календарь") {
+                    AppWorkspaceHeader(title: L("Календарь")) {
                         Button { showingCalendars.toggle() } label: {
-                            Label("Календари", systemImage: "line.3.horizontal.decrease")
+                            Label(L("Календари"), systemImage: "line.3.horizontal.decrease")
                         }.buttonStyle(.bordered).accessibilityIdentifier("calendar.sources")
                             .popover(isPresented: $showingCalendars, arrowEdge: .bottom) { sources }
                         Button { calendar.refresh() } label: {
@@ -30,9 +30,9 @@ struct CalendarWorkspace: View {
                                 Image(systemName: "arrow.clockwise").opacity(calendar.refreshing ? 0 : 1)
                                 if calendar.refreshing { ProgressView().controlSize(.small) }
                             }.frame(width: 24, height: 24)
-                        }.buttonStyle(.plain).help(refreshHelp).accessibilityLabel(calendar.refreshing ? "Обновляю календарь" : "Обновить календарь")
+                        }.buttonStyle(.plain).help(refreshHelp).accessibilityLabel(calendar.refreshing ? L("Обновляю календарь") : L("Обновить календарь"))
                             .disabled(calendar.refreshing).accessibilityIdentifier("calendar.refresh")
-                        Button { createDefault() } label: { Label("Событие", systemImage: "plus") }
+                        Button { createDefault() } label: { Label(L("Событие"), systemImage: "plus") }
                             .buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(!canCreate)
                             .accessibilityIdentifier("calendar.add")
                     }
@@ -42,15 +42,15 @@ struct CalendarWorkspace: View {
                     }
                     if !calendar.calendars.isEmpty && calendar.calendars.allSatisfy({ !(calendar.visibleCalendarIDs?.contains($0.id) ?? true) }) {
                         HStack {
-                            Label("Календари скрыты", systemImage: "eye.slash").foregroundStyle(Ink.secondaryText)
-                            Button("Выбрать календари") { showingCalendars = true }.buttonStyle(.borderless)
+                            Label(L("Календари скрыты"), systemImage: "eye.slash").foregroundStyle(Ink.secondaryText)
+                            Button(L("Выбрать календари")) { showingCalendars = true }.buttonStyle(.borderless)
                         }.font(AppTypography.control).accessibilityIdentifier("calendar.hiddenSources")
                     }
                     if calendar.calendars.isEmpty && !calendar.refreshing && calendar.error == nil {
                         HStack(spacing: 12) {
-                            Label("В macOS пока нет календарей", systemImage: "calendar.badge.exclamationmark")
+                            Label(L("В macOS пока нет календарей"), systemImage: "calendar.badge.exclamationmark")
                                 .foregroundStyle(Ink.secondaryText)
-                            Button("Добавить аккаунт") { CalendarStore.openAccounts() }.buttonStyle(.borderless)
+                            Button(L("Добавить аккаунт")) { CalendarStore.openAccounts() }.buttonStyle(.borderless)
                         }.font(AppTypography.control).accessibilityIdentifier("calendar.noSources")
                     }
                     CalendarScheduleView(calendar: calendar, canCreate: canCreate,
@@ -65,7 +65,7 @@ struct CalendarWorkspace: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
-                        AppPageHeader(title: "Календарь")
+                        AppPageHeader(title: L("Календарь"))
                         CalendarConnection(calendar: calendar)
                         if let message = calendar.error { Text(message).foregroundStyle(Ink.warning).textSelection(.enabled) }
                     }.appContentLayout()
@@ -77,38 +77,37 @@ struct CalendarWorkspace: View {
                 CalendarEventEditor(calendar: calendar, initialStart: draft.start).environmentObject(app)
             }
             .sheet(item: $editing) { item in CalendarEventEditor(calendar: calendar, event: item).environmentObject(app) }
-            .confirmationDialog("Отключить календарь от «После»?", isPresented: $disconnecting, titleVisibility: .visible) {
-                Button("Отключить") { calendar.disconnect() }
-                Button("Отмена", role: .cancel) { }
-            } message: { Text("События сохранятся. Синхронизация продолжится после подключения.") }
+            .confirmationDialog(L("Отключить календарь от «После»?"), isPresented: $disconnecting, titleVisibility: .visible) {
+                Button(L("Отключить")) { calendar.disconnect() }
+                Button(L("Отмена"), role: .cancel) { }
+            } message: { Text(L("События сохранятся. Синхронизация продолжится после подключения.")) }
     }
     private var navigation: some View {
         HStack(spacing: 10) {
-            Button("Сегодня") { calendar.selectedDate = Date() }.buttonStyle(.bordered)
+            Button(L("Сегодня")) { calendar.selectedDate = Date() }.buttonStyle(.bordered)
                 .accessibilityIdentifier("calendar.today")
             HStack(spacing: 2) {
                 Button { move(-1) } label: { Image(systemName: "chevron.left").frame(width: 24, height: 24) }
-                    .help("Предыдущий период").accessibilityLabel("Предыдущий период").accessibilityIdentifier("calendar.previous")
+                    .help(L("Предыдущий период")).accessibilityLabel(L("Предыдущий период")).accessibilityIdentifier("calendar.previous")
                 Button { move(1) } label: { Image(systemName: "chevron.right").frame(width: 24, height: 24) }
-                    .help("Следующий период").accessibilityLabel("Следующий период").accessibilityIdentifier("calendar.next")
+                    .help(L("Следующий период")).accessibilityLabel(L("Следующий период")).accessibilityIdentifier("calendar.next")
             }.buttonStyle(.plain)
             Text(periodTitle).font(AppTypography.heading).lineLimit(1)
                 .accessibilityAddTraits(.isHeader).accessibilityIdentifier("calendar.period")
         }.fixedSize(horizontal: true, vertical: false)
     }
     private var viewPicker: some View {
-        Picker("Вид календаря", selection: $calendar.displayMode) {
-            ForEach(CalendarDisplayMode.allCases) { Text($0.title).tag($0) }
-        }.pickerStyle(.segmented).labelsHidden().frame(width: 300)
-            .accessibilityLabel("Вид календаря").accessibilityIdentifier("calendar.mode")
+        AppTabBar(label: L("Вид календаря"), selection: $calendar.displayMode,
+                  tabs: CalendarDisplayMode.allCases.map { AppTab(L($0.title), value: $0) },
+                  identifier: "calendar.mode")
     }
     private var sources: some View {
         VStack(alignment: .leading, spacing: 16) {
-            DatePicker("Перейти к дате", selection: $calendar.selectedDate, displayedComponents: .date)
+            DatePicker(L("Перейти к дате"), selection: $calendar.selectedDate, displayedComponents: .date)
                 .datePickerStyle(.graphical).labelsHidden().tint(Ink.actionFill)
-                .environment(\.locale, Locale(identifier: "ru_RU"))
+                .environment(\.locale, UILocale())
             Divider()
-            Text("Календари").font(AppTypography.controlStrong)
+            Text(L("Календари")).font(AppTypography.controlStrong)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     ForEach(calendar.calendars) { item in
@@ -124,20 +123,20 @@ struct CalendarWorkspace: View {
                                 if !item.writable { Image(systemName: "lock").font(AppTypography.caption).foregroundStyle(Ink.secondaryText) }
                             }.contentShape(Rectangle())
                         }.buttonStyle(.plain).help(item.label)
-                            .accessibilityLabel("\(item.label), \(calendar.visibleCalendarIDs?.contains(item.id) ?? true ? "показан" : "скрыт")")
+                            .accessibilityLabel("\(item.label), \(calendar.visibleCalendarIDs?.contains(item.id) ?? true ? L("показан") : L("скрыт"))")
                     }
                 }
             }.frame(maxHeight: 240)
             CalendarAccountHelp()
-            Button("Отключить") { showingCalendars = false; disconnecting = true }
+            Button(L("Отключить")) { showingCalendars = false; disconnecting = true }
                 .buttonStyle(.borderless).foregroundStyle(Ink.secondaryText)
         }.padding(20).frame(width: 280).appControlDefaults()
     }
     private var refreshHelp: String {
-        calendar.lastRefreshed.map { "Обновлено в \($0.formatted(date: .omitted, time: .shortened))" } ?? "Обновить календарь"
+        calendar.lastRefreshed.map { LF("Обновлено в {0}", arguments: [String(describing: ($0.formatted(date: .omitted, time: .shortened)))]) } ?? L("Обновить календарь")
     }
     private var periodTitle: String {
-        let locale = Locale(identifier: "ru_RU")
+        let locale = UILocale()
         let style = Date.FormatStyle.dateTime.locale(locale)
         if calendar.displayMode == .month {
             let title = calendar.selectedDate.formatted(style.month(.wide).year())
@@ -176,17 +175,17 @@ private struct CalendarConnection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Image(systemName: "calendar").font(.system(size: 32, weight: .light)).foregroundStyle(Ink.accent)
-            Text(app.isFeatureEnabled(.tasks) ? "Встречи и время для задач" : "Ваши встречи и события").font(AppTypography.sectionTitle)
+            Text(app.isFeatureEnabled(.tasks) ? L("Встречи и время для задач") : L("Ваши встречи и события")).font(AppTypography.sectionTitle)
             Text(calendar.permissionDenied
-                 ? "Разрешите полный доступ в macOS. После возвращения сюда подключение продолжится."
-                 : "Подключите календари macOS один раз для всех папок. Google и Яндекс появятся после добавления аккаунтов.")
+                 ? L("Разрешите полный доступ в macOS. После возвращения сюда подключение продолжится.")
+                 : L("Подключите календари macOS один раз для всех папок. Google и Яндекс появятся после добавления аккаунтов."))
                 .font(AppTypography.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
-                Button(calendar.requesting ? "Проверяю доступ…" : calendar.permissionDenied ? "Проверить доступ" : "Подключить календарь") { Task { await calendar.connect() } }
+                Button(calendar.requesting ? L("Проверяю доступ…") : calendar.permissionDenied ? L("Проверить доступ") : L("Подключить календарь")) { Task { await calendar.connect() } }
                     .buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(calendar.requesting || !calendar.canConnect)
                     .accessibilityIdentifier("calendar.connect")
                 if calendar.permissionDenied {
-                    Button("Разрешить в macOS") { CalendarStore.openPermissions() }.buttonStyle(.bordered)
+                    Button(L("Разрешить в macOS")) { CalendarStore.openPermissions() }.buttonStyle(.bordered)
                         .accessibilityIdentifier("calendar.permissions")
                 }
             }
@@ -198,16 +197,16 @@ private struct CalendarConnection: View {
 private struct CalendarAccountHelp: View {
     @State private var expanded = false
     var body: some View {
-        DisclosureGroup("Google и Яндекс", isExpanded: $expanded) {
+        DisclosureGroup(L("Google и Яндекс"), isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Google: добавьте аккаунт в macOS и включите «Календари». Яндекс: добавьте учётную запись CalDAV в системном Календаре с паролем приложения.")
+                Text(L("Google: добавьте аккаунт в macOS и включите «Календари». Яндекс: добавьте учётную запись CalDAV в системном Календаре с паролем приложения."))
                     .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button("Аккаунты macOS") { CalendarStore.openAccounts() }.buttonStyle(.borderless)
+                Button(L("Аккаунты macOS")) { CalendarStore.openAccounts() }.buttonStyle(.borderless)
                 HStack(spacing: 14) {
                     Link("Google", destination: URL(string: "https://support.google.com/calendar/answer/99358?hl=ru")!)
-                    Link("Яндекс", destination: URL(string: "https://yandex.ru/support/yandex-360/customers/calendar/web/ru/data-exchange/synchronization/sync-desktop")!)
+                    Link(L("Яндекс"), destination: URL(string: "https://yandex.ru/support/yandex-360/customers/calendar/web/ru/data-exchange/synchronization/sync-desktop")!)
                 }.font(AppTypography.caption)
-                Text("Синхронизацией с сервисами управляет macOS. Изменения отправятся при подключении к сети.")
+                Text(L("Синхронизацией с сервисами управляет macOS. Изменения отправятся при подключении к сети."))
                     .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(.top, 8)
         }.font(AppTypography.control)
@@ -227,7 +226,7 @@ private struct TaskCalendarSummaryContent: View {
     let task: LibraryTask
     var body: some View {
         if let link = calendar.link(for: task) {
-            Label(link.missing ? "Событие недоступно" : link.conflict ? "Конфликт календаря" : link.start.formatted(date: .abbreviated, time: .shortened),
+            Label(link.missing ? L("Событие недоступно") : link.conflict ? L("Конфликт календаря") : link.start.formatted(date: .abbreviated, time: .shortened),
                   systemImage: link.missing || link.conflict ? "calendar.badge.exclamationmark" : "calendar")
                 .font(AppTypography.caption).foregroundStyle(link.missing || link.conflict ? Ink.warning : Ink.accent)
                 .lineLimit(1).help(link.title)
@@ -255,8 +254,8 @@ private struct TaskCalendarAction: View {
                 .foregroundStyle(link == nil ? Color.secondary : link?.conflict == true || link?.missing == true ? Ink.warning : Ink.accent)
                 .frame(width: 24, height: 24)
         }.buttonStyle(.plain)
-            .help(link.map { $0.missing ? "Связанное событие недоступно" : "\($0.start.formatted(date: .abbreviated, time: .shortened)) · \($0.title)" } ?? "Запланировать задачу")
-            .accessibilityLabel(link == nil ? "Запланировать задачу в календаре" : "Изменить время задачи в календаре")
+            .help(link.map { $0.missing ? L("Связанное событие недоступно") : "\($0.start.formatted(date: .abbreviated, time: .shortened)) · \($0.title)" } ?? L("Запланировать задачу"))
+            .accessibilityLabel(link == nil ? L("Запланировать задачу в календаре") : L("Изменить время задачи в календаре"))
             .sheet(isPresented: $showing) { CalendarEventEditor(calendar: calendar, task: task).environmentObject(app) }
     }
 }
@@ -295,75 +294,75 @@ struct CalendarEventEditor: View {
         OptionalFeatureGate(feature: feature).frame(width: 520, height: 320)
             .overlay(alignment: .topTrailing) {
                 Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
-                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Закрыть").padding(18)
+                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel(L("Закрыть")).padding(18)
             }
     }
     private var editorContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Text(currentTask != nil ? "Задача в календаре" : event == nil ? "Новое событие" : "Событие").font(AppTypography.modalTitle)
+                Text(currentTask != nil ? L("Задача в календаре") : event == nil ? L("Новое событие") : L("Событие")).font(AppTypography.modalTitle)
                 Spacer()
                 Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 24, height: 24) }
-                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Закрыть")
+                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel(L("Закрыть"))
             }
             if !calendar.connected {
                 CalendarConnection(calendar: calendar)
             } else {
-                TextField("Название", text: $title).textFieldStyle(.roundedBorder).accessibilityIdentifier("calendar.editor.title").disabled(event?.writable == false)
+                TextField(L("Название"), text: $title).textFieldStyle(.roundedBorder).accessibilityIdentifier("calendar.editor.title").disabled(event?.writable == false)
                 VStack(alignment: .leading, spacing: 12) {
-                    DatePicker("Начало", selection: $start, displayedComponents: event?.allDay == true ? .date : [.date, .hourAndMinute]).accessibilityIdentifier("calendar.editor.start")
-                    DatePicker("Окончание", selection: $end, displayedComponents: event?.allDay == true ? .date : [.date, .hourAndMinute]).accessibilityIdentifier("calendar.editor.end")
+                    DatePicker(L("Начало"), selection: $start, displayedComponents: event?.allDay == true ? .date : [.date, .hourAndMinute]).accessibilityIdentifier("calendar.editor.start")
+                    DatePicker(L("Окончание"), selection: $end, displayedComponents: event?.allDay == true ? .date : [.date, .hourAndMinute]).accessibilityIdentifier("calendar.editor.end")
                     if let event, !event.writable {
-                        LabeledContent("Календарь", value: event.calendarTitle)
+                        LabeledContent(L("Календарь"), value: event.calendarTitle)
                     } else {
-                        Picker("Календарь", selection: $calendarID) {
-                            if calendarID.isEmpty { Text("Выберите календарь").tag("") }
+                        Picker(L("Календарь"), selection: $calendarID) {
+                            if calendarID.isEmpty { Text(L("Выберите календарь")).tag("") }
                             ForEach(calendar.calendars.filter(\.writable)) { Text($0.label).tag($0.id) }
                         }
                     }
                 }.disabled(event?.writable == false)
                 if let link {
                     if link.missing {
-                        Text("Событие удалено или календарь недоступен. Связь сохранена: обновите календарь или отвяжите событие.")
+                        Text(L("Событие удалено или календарь недоступен. Связь сохранена: обновите календарь или отвяжите событие."))
                             .font(AppTypography.control).foregroundStyle(Ink.warning)
                     } else if link.sourceChanged, let currentTask {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("После обновления конспекта на этом месте другая задача. Событие сохранено без изменений: отвяжите его или свяжите с новой задачей.")
+                            Text(L("После обновления конспекта на этом месте другая задача. Событие сохранено без изменений: отвяжите его или свяжите с новой задачей."))
                                 .font(AppTypography.control).foregroundStyle(Ink.warning)
-                            Button("Связать с этой задачей") { calendar.resolve(task: currentTask, useTask: true); load() }.buttonStyle(.bordered)
+                            Button(L("Связать с этой задачей")) { calendar.resolve(task: currentTask, useTask: true); load() }.buttonStyle(.bordered)
                         }
                     } else if link.conflict, let currentTask {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Задача и событие изменились одновременно. Выберите название и статус; время календаря сохранится.")
+                            Text(L("Задача и событие изменились одновременно. Выберите название и статус; время календаря сохранится."))
                                 .font(AppTypography.control).foregroundStyle(Ink.warning)
                             HStack {
-                                Button("Из задачи") { calendar.resolve(task: currentTask, useTask: true); load() }
-                                Button("Из календаря") { calendar.resolve(task: currentTask, useTask: false); load() }
+                                Button(L("Из задачи")) { calendar.resolve(task: currentTask, useTask: true); load() }
+                                Button(L("Из календаря")) { calendar.resolve(task: currentTask, useTask: false); load() }
                             }.buttonStyle(.bordered)
                         }
                     }
-                    DisclosureGroup("Как связаны задача и событие") {
-                        Text("Время и название события видны в «После» и вашем календаре. Изменение текста задачи обновляет название блока. Отметки ○ и ✓ в начале названия синхронизируют завершение задачи. Переименование блока в календаре сохраняется отдельно от текста заметки.")
+                    DisclosureGroup(L("Как связаны задача и событие")) {
+                        Text(L("Время и название события видны в «После» и вашем календаре. Изменение текста задачи обновляет название блока. Отметки ○ и ✓ в начале названия синхронизируют завершение задачи. Переименование блока в календаре сохраняется отдельно от текста заметки."))
                             .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
                     }.font(AppTypography.control)
                 } else if currentTask != nil {
-                    Text("Создаст блок времени в выбранном календаре. Статус задачи будет синхронизироваться по отметкам ○ и ✓.")
+                    Text(L("Создаст блок времени в выбранном календаре. Статус задачи будет синхронизироваться по отметкам ○ и ✓."))
                         .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 if let event, !event.writable {
-                    Text("Этот календарь доступен только для чтения или событие повторяется. Откройте его в системном Календаре.")
+                    Text(L("Этот календарь доступен только для чтения или событие повторяется. Откройте его в системном Календаре."))
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }
                 HStack {
                     if link != nil {
-                        Button("Отвязать") { unlinking = true }.buttonStyle(.borderless)
+                        Button(L("Отвязать")) { unlinking = true }.buttonStyle(.borderless)
                     }
                     if event != nil || link != nil {
-                        Button("Открыть Календарь") { CalendarStore.openSystemCalendar() }.buttonStyle(.borderless)
+                        Button(L("Открыть Календарь")) { CalendarStore.openSystemCalendar() }.buttonStyle(.borderless)
                     }
                     Spacer()
-                    Button("Отмена") { dismiss() }.buttonStyle(.bordered)
-                    Button(event == nil && link == nil ? "Добавить" : "Сохранить", action: save)
+                    Button(L("Отмена")) { dismiss() }.buttonStyle(.bordered)
+                    Button(event == nil && link == nil ? L("Добавить") : L("Сохранить"), action: save)
                         .buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.defaultAction).disabled(!canSave)
                 }
             }
@@ -373,10 +372,10 @@ struct CalendarEventEditor: View {
             .onChange(of: calendar.connected) { _, connected in if connected { load() } }
             .onChange(of: calendar.selectedCalendarID) { _, id in if calendarID.isEmpty { calendarID = id } }
             .onChange(of: start) { old, new in if end <= new { end = new.addingTimeInterval(max(900, end.timeIntervalSince(old))) } }
-            .confirmationDialog("Отвязать событие от задачи?", isPresented: $unlinking, titleVisibility: .visible) {
-                Button("Отвязать") { if let currentTask { calendar.unlink(taskID: currentTask.id); dismiss() } }
-                Button("Отмена", role: .cancel) { }
-            } message: { Text("Событие останется в календаре. Изменения задачи больше не будут в него передаваться.") }
+            .confirmationDialog(L("Отвязать событие от задачи?"), isPresented: $unlinking, titleVisibility: .visible) {
+                Button(L("Отвязать")) { if let currentTask { calendar.unlink(taskID: currentTask.id); dismiss() } }
+                Button(L("Отмена"), role: .cancel) { }
+            } message: { Text(L("Событие останется в календаре. Изменения задачи больше не будут в него передаваться.")) }
     }
     private func load() {
         baselineLink = link

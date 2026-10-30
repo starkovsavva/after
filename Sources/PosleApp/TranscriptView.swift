@@ -17,13 +17,13 @@ struct TranscriptView: View {
             HStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Поиск по словам встречи", text: $store.transcriptSearch).textFieldStyle(.plain)
-                    Text("Реплик: \(segments.count)").foregroundStyle(.secondary).monospacedDigit()
+                    TextField(L("Поиск по словам встречи"), text: $store.transcriptSearch).textFieldStyle(.plain)
+                    Text(LF("Реплик: {0}", arguments: [String(describing: (segments.count))])).foregroundStyle(.secondary).monospacedDigit()
                 }.padding(10).background(Ink.soft, in: RoundedRectangle(cornerRadius: AppLayout.controlRadius))
                 Button { showingSpeakers = true } label: {
-                    Label("Собеседники: \(Set((store.transcript?.segments ?? []).map(\.speaker).filter { $0 != "unknown" }).count)", systemImage: "person.2")
+                    Label(LF("Собеседники: {0}", arguments: [String(describing: (Set((store.transcript?.segments ?? []).map(\.speaker).filter { $0 != "unknown" }).count))]), systemImage: "person.2")
                 }.buttonStyle(.bordered).disabled(store.busy || store.isRecording)
-                    .help("Указать точное число участников и пересчитать голоса без повторного распознавания")
+                    .help(L("Указать точное число участников и пересчитать голоса без повторного распознавания"))
                 Button {
                     if store.copyTranscriptMarkdown() { transcriptCopied = true }
                 } label: {
@@ -32,9 +32,9 @@ struct TranscriptView: View {
                         .foregroundStyle(transcriptCopied ? Ink.green : .secondary)
                 }.buttonStyle(.bordered)
                     .disabled(store.transcript?.segments.isEmpty ?? true)
-                    .help(transcriptCopied ? "Транскрипт скопирован" : "Скопировать весь транскрипт в Markdown")
-                    .accessibilityLabel("Скопировать транскрипт в Markdown")
-                    .accessibilityValue(transcriptCopied ? "Скопировано" : "")
+                    .help(transcriptCopied ? L("Транскрипт скопирован") : L("Скопировать весь транскрипт в Markdown"))
+                    .accessibilityLabel(L("Скопировать транскрипт в Markdown"))
+                    .accessibilityValue(transcriptCopied ? L("Скопировано") : "")
                     .accessibilityIdentifier("transcript.copy-markdown")
             }.font(AppTypography.control)
                 .padding(.horizontal, AppLayout.contentInset).padding(.top, 16).padding(.bottom, 8)
@@ -58,19 +58,19 @@ struct TranscriptView: View {
                                                 Text(store.selected?.speakerName(segment.speaker) ?? segment.speaker).font(AppTypography.controlStrong)
                                                 Image(systemName: "pencil").font(.system(size: 9)).foregroundStyle(.secondary)
                                             }
-                                        }.buttonStyle(.plain).help("Переименовать собеседника").disabled(store.busy || store.isRecording)
-                                        if segment.overlap { Text("Голоса пересекаются").font(AppTypography.caption).foregroundStyle(Ink.warning) }
+                                        }.buttonStyle(.plain).help(L("Переименовать собеседника")).disabled(store.busy || store.isRecording)
+                                        if segment.overlap { Text(L("Голоса пересекаются")).font(AppTypography.caption).foregroundStyle(Ink.warning) }
                                     }
                                     Text(segment.text).font(AppTypography.body).lineSpacing(6).textSelection(.enabled)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                                 Button {
                                     if let id = store.selection { editingSegment = SegmentEditTarget(meetingID: id, segmentID: segment.id) }
                                 } label: { Image(systemName: "pencil").frame(width: 24, height: 24) }
-                                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Изменить текст и собеседника").accessibilityLabel("Изменить реплику")
+                                    .buttonStyle(.plain).foregroundStyle(.secondary).help(L("Изменить текст и собеседника")).accessibilityLabel(L("Изменить реплику"))
                             }.padding(14).background(active(segment) ? Ink.accent.opacity(0.06) : .clear,
                                                      in: RoundedRectangle(cornerRadius: 9)).id(segment.id)
                         }
-                        if segments.isEmpty { Text("Ничего не найдено").foregroundStyle(.secondary).padding(30) }
+                        if segments.isEmpty { Text(L("Ничего не найдено")).foregroundStyle(.secondary).padding(30) }
                     }.padding(.horizontal, 18).padding(.vertical, 10)
                 }.onAppear { scrollToTarget(proxy) }
                 .onChange(of: store.navigationTarget?.id) { _, _ in scrollToTarget(proxy) }
@@ -90,11 +90,11 @@ struct TranscriptView: View {
         }
         .sheet(isPresented: $showingSpeakers) {
             if let id = store.selection { SpeakerReviewView(meetingID: id).environmentObject(store) }
-        }.alert("Имя собеседника", isPresented: Binding(get: { speaker != nil }, set: { if !$0 { speaker = nil } })) {
-            TextField("Имя", text: $name)
-            Button("Сохранить") { if let speaker { store.renameSpeaker(speaker, name: name) }; speaker = nil }
-            Button("Отмена", role: .cancel) { speaker = nil }
-        } message: { Text("Имя изменится во всех репликах этого собеседника. Метки голосов определены автоматически и могут ошибаться.") }
+        }.alert(L("Имя собеседника"), isPresented: Binding(get: { speaker != nil }, set: { if !$0 { speaker = nil } })) {
+            TextField(L("Имя"), text: $name)
+            Button(L("Сохранить")) { if let speaker { store.renameSpeaker(speaker, name: name) }; speaker = nil }
+            Button(L("Отмена"), role: .cancel) { speaker = nil }
+        } message: { Text(L("Имя изменится во всех репликах этого собеседника. Метки голосов определены автоматически и могут ошибаться.")) }
     }
     private func scrollToTarget(_ proxy: ScrollViewProxy) {
         guard let target = store.navigationTarget, target.meetingID == store.selection, target.kind == "transcript", let id = target.segmentID else { return }

@@ -46,6 +46,13 @@ enum CaptureWriterNativeChecks {
             try JSONSerialization.data(withJSONObject: expected).write(to: fixture.appendingPathComponent("capture-expected.json"))
         }
         print("PASS: actual capture writer preserves static and changed frames for full, short and fractional audio timelines")
+        try copierPixelContract(format: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, width: 322, height: 202)
+        try copierPixelContract(format: kCVPixelFormatType_32BGRA, width: 326, height: 198)
+        print("PASS: padded NV12/BGRA copies preserve active rows, color attachment modes, sample timing and matching owned format without sharing pixels")
+        try copierPoolContract()
+        print("PASS: eight retained owned frames bound the copy pool; saturation releases the producer surface and copying recovers after owned frames release")
+        try await sourcePoolReuse(directory: directory)
+        try await animatedSourcePool(directory: directory)
 
         for status in [SCFrameStatus.blank, .suspended] {
             let blankURL = directory.appendingPathComponent("unavailable-\(status.rawValue).mov")
@@ -79,7 +86,7 @@ enum CaptureWriterNativeChecks {
         print("PASS: capture without video frames fails explicitly while finalizing recoverable original audio")
 
         for (code, expected, forbidden) in [
-            (-3801, "Разрешите доступ", "не нашла доступный экран"),
+            (-3801, "подтвердите выбор", "не нашла доступный экран"),
             (-3814, "не нашла доступный экран", "Разрешите доступ"),
             (-3806, "потеряла подключение", "Разрешите доступ"),
             (-3811, "получить доступные экраны", "Разрешите доступ")
@@ -91,7 +98,253 @@ enum CaptureWriterNativeChecks {
                        && message.contains("код \(code)") && !message.contains("private-window-title"),
                        "ScreenCaptureKit error classification discarded the code or exposed raw diagnostics")
         }
-        print("PASS: recording permission, display, application-context and internal errors keep distinct safe diagnostics")
+        let userStopped = MeetingRecorder.captureFailure(NSError(domain: SCStreamErrorDomain,
+            code: SCStreamError.Code.userStopped.rawValue, userInfo: [NSLocalizedDescriptionKey: "private-window-title"]),
+            sessionID: "synthetic-session")
+        let denied = MeetingRecorder.captureFailure(NSError(domain: SCStreamErrorDomain,
+            code: SCStreamError.Code.userDeclined.rawValue), sessionID: "synthetic-session")
+        try expect(userStopped.userInitiated && !denied.userInitiated &&
+                   userStopped.sessionID == "synthetic-session" && !userStopped.message.contains("private-window-title"),
+                   "macOS user Stop must preserve session identity and be distinct from permission failure")
+        print("PASS: recording permission, display, application-context and internal errors keep distinct safe diagnostics; macOS Stop is user-initiated")
+    }
+
+    private static func copierPixelContract(format: OSType, width: Int, height: Int) throws {
+        var source: CVPixelBuffer?
+        let result = CVPixelBufferCreate(kCFAllocatorDefault, width, height, format,
+            [kCVPixelBufferBytesPerRowAlignmentKey as String: 256,
+             kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary, &source)
+        guard result == kCVReturnSuccess, let source else { throw AppError.message("Cannot create padded source image") }
+        try writePixelPattern(source)
+        let expected = try activePixelBytes(source)
+        CVBufferSetAttachment(source, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, .shouldPropagate)
+        CVBufferSetAttachment(source, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2, .shouldPropagate)
+        CVBufferSetAttachment(source, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldNotPropagate)
+        let original = try screen(1000, pixel: source, status: .complete)
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1001, timescale: 30000),
+            presentationTimeStamp: CMTime(value: 60000001, timescale: 60000),
+            decodeTimeStamp: CMTime(value: 59997999, timescale: 60000))
+        var timed: CMSampleBuffer?
+        guard CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: original,
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleBufferOut: &timed) == noErr, let timed,
+              let copied = try CaptureVideoFrameCopier().copy(timed),
+              let image = CMSampleBufferGetImageBuffer(copied), let description = CMSampleBufferGetFormatDescription(copied) else {
+            throw AppError.message("Cannot copy padded generated sample")
+        }
+        let sourceStride = CVPixelBufferIsPlanar(source) ? CVPixelBufferGetBytesPerRowOfPlane(source, 0) : CVPixelBufferGetBytesPerRow(source)
+        let ownedStride = CVPixelBufferIsPlanar(image) ? CVPixelBufferGetBytesPerRowOfPlane(image, 0) : CVPixelBufferGetBytesPerRow(image)
+        try expect(sourceStride != ownedStride, "Padded source must exercise different source/destination row strides")
+        try expect(try activePixelBytes(image) == expected, "A padded copy shifted rows or changed active NV12/BGRA pixels")
+        try expect(CMVideoFormatDescriptionMatchesImageBuffer(description, imageBuffer: image),
+            "Copied image still uses a format description bound to the source layout")
+        var copiedTiming = CMSampleTimingInfo()
+        try expect(CMSampleBufferGetSampleTimingInfo(copied, at: 0, timingInfoOut: &copiedTiming) == noErr
+            && CMTimeCompare(copiedTiming.presentationTimeStamp, timing.presentationTimeStamp) == 0
+            && CMTimeCompare(copiedTiming.decodeTimeStamp, timing.decodeTimeStamp) == 0
+            && CMTimeCompare(copiedTiming.duration, timing.duration) == 0,
+            "Copying pixels changed PTS, DTS or sample duration")
+        for (key, expectedValue, expectedMode) in [
+            (kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, CVAttachmentMode.shouldPropagate),
+            (kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2, .shouldPropagate),
+            (kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2, .shouldNotPropagate)
+        ] {
+            var mode = CVAttachmentMode.shouldPropagate
+            let value = CVBufferGetAttachment(image, key, &mode)?.takeUnretainedValue()
+            try expect(value.map { CFEqual($0, expectedValue) } == true && mode == expectedMode,
+                "A copied frame lost a color attachment or its propagation mode")
+        }
+        try overwritePixelBytes(image, byte: 0xA5)
+        try expect(try activePixelBytes(source) == expected, "Mutating an owned frame changed the producer's original pixels")
+        try overwritePixelBytes(source, byte: 0x17)
+        try expect(try activePixelBytes(image).allSatisfy { $0 == 0xA5 }, "Mutating the producer's returned surface changed the owned pixels")
+    }
+
+    private static func copierPoolContract() throws {
+        let copier = CaptureVideoFrameCopier(), pool = try sourcePool(capacity: 1)
+        var held: [CMSampleBuffer] = []
+        for index in 0..<8 {
+            try autoreleasepool {
+                let source = try pooledPixel(pool, capacity: 1)
+                try fill(source, luma: UInt8(60 + index))
+                let sample = try screen(1000 + Double(index) / 30, pixel: source, status: .complete)
+                guard let owned = try copier.copy(sample) else { throw AppError.message("Owned frame budget exhausted before eight frames") }
+                held.append(owned)
+            }
+        }
+        try autoreleasepool {
+            let source = try pooledPixel(pool, capacity: 1)
+            let sample = try screen(1001, pixel: source, status: .complete)
+            if let _ = try copier.copy(sample) { throw AppError.message("A saturated copier allocated beyond its eight-frame budget") }
+        }
+        try autoreleasepool {
+            // A nil result must not stash a borrowed frame for a later retry.
+            _ = try pooledPixel(pool, capacity: 1)
+        }
+        held.removeAll()
+        try autoreleasepool {
+            let source = try pooledPixel(pool, capacity: 1)
+            try fill(source, luma: 120)
+            let sample = try screen(1002, pixel: source, status: .complete)
+            guard let recovered = try copier.copy(sample), let image = CMSampleBufferGetImageBuffer(recovered) else {
+                throw AppError.message("Owned frame pool did not recover after its retained samples were released")
+            }
+            try expect(try activePixelBytes(image) == activePixelBytes(source), "A recovered copier slot contained stale pixels")
+        }
+    }
+
+    nonisolated private static func pixelRows(_ image: CVPixelBuffer, flags: CVPixelBufferLockFlags,
+                                            _ body: (UnsafeMutablePointer<UInt8>, Int, Int, Int) -> Void) throws {
+        guard CVPixelBufferLockBaseAddress(image, flags) == kCVReturnSuccess else { throw AppError.message("Cannot inspect generated image rows") }
+        defer { CVPixelBufferUnlockBaseAddress(image, flags) }
+        let planes = CVPixelBufferGetPlaneCount(image)
+        for plane in 0..<max(planes, 1) {
+            let base = planes == 0 ? CVPixelBufferGetBaseAddress(image) : CVPixelBufferGetBaseAddressOfPlane(image, plane)
+            let stride = planes == 0 ? CVPixelBufferGetBytesPerRow(image) : CVPixelBufferGetBytesPerRowOfPlane(image, plane)
+            let rows = planes == 0 ? CVPixelBufferGetHeight(image) : CVPixelBufferGetHeightOfPlane(image, plane)
+            let width = planes == 0 ? CVPixelBufferGetWidth(image) : CVPixelBufferGetWidthOfPlane(image, plane)
+            let activeBytes = width * (planes == 0 ? 4 : plane == 0 ? 1 : 2)
+            guard let base, activeBytes <= stride else { throw AppError.message("Invalid generated image plane layout") }
+            for row in 0..<rows { body(base.advanced(by: row * stride).assumingMemoryBound(to: UInt8.self), activeBytes, row, plane) }
+        }
+    }
+
+    nonisolated private static func writePixelPattern(_ image: CVPixelBuffer) throws {
+        try pixelRows(image, flags: []) { row, activeBytes, index, plane in
+            for column in 0..<activeBytes { row[column] = UInt8(truncatingIfNeeded: index * 17 + column * 13 + plane * 71) }
+        }
+    }
+
+    nonisolated private static func activePixelBytes(_ image: CVPixelBuffer) throws -> [UInt8] {
+        var bytes: [UInt8] = []
+        try pixelRows(image, flags: .readOnly) { row, activeBytes, _, _ in
+            bytes.append(contentsOf: UnsafeBufferPointer(start: row, count: activeBytes))
+        }
+        return bytes
+    }
+
+    nonisolated private static func overwritePixelBytes(_ image: CVPixelBuffer, byte: UInt8) throws {
+        try pixelRows(image, flags: []) { row, activeBytes, _, _ in _ = memset(row, Int32(byte), activeBytes) }
+    }
+
+    private static func sourcePoolReuse(directory: URL) async throws {
+        let source = directory.appendingPathComponent("source-pool-reuse.mov")
+        let sink = try CaptureSink(url: source, systemAudio: false, videoSize: .init(width: 320, height: 200))
+        let pool = try sourcePool(capacity: 1)
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                sink.queue.async {
+                    do {
+                        sink.consume(try audio(1000), type: .microphone)
+                        try deliverPooledScreen(sink, pool: pool, capacity: 1, time: 1000, luma: 80)
+                        continuation.resume()
+                    } catch { continuation.resume(throwing: error) }
+                }
+            }
+            // A separate FIFO block starts only after all producer locals and
+            // autoreleased callback objects from delivery have been destroyed.
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                sink.queue.async {
+                    do {
+                        try autoreleasepool {
+                            let recycled = try pooledPixel(pool, capacity: 1)
+                            // A capture producer can overwrite its returned surface
+                            // before another callback. The saved image must own its pixels.
+                            try fill(recycled, luma: 210)
+                        }
+                        continuation.resume()
+                    } catch { continuation.resume(throwing: error) }
+                }
+            }
+            for index in 1..<100 {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    sink.queue.async {
+                        do {
+                            sink.consume(try audio(1000 + Double(index) * 0.01), type: .microphone)
+                            continuation.resume()
+                        } catch { continuation.resume(throwing: error) }
+                    }
+                }
+                try await Task.sleep(for: .milliseconds(3))
+            }
+            try await sink.finish()
+        } catch { await sink.cancel(); throw error }
+        let asset = AVURLAsset(url: source)
+        let video = try await requiredTrack(asset, .video)
+        let range = try await video.load(.timeRange)
+        let lumas = try decodedLumas(asset: asset, track: video)
+        try expect(abs(CMTimeGetSeconds(range.end) - 1) < 0.003 && !lumas.isEmpty
+            && lumas.allSatisfy { abs($0 - 80) <= 8 },
+            "Recycling the capture producer's surface changed the writer-owned first or final image")
+        print("PASS: one-surface source pool is reusable immediately after callback; later producer writes cannot alter saved static pixels")
+    }
+
+    private static func animatedSourcePool(directory: URL) async throws {
+        let source = directory.appendingPathComponent("source-pool-animation.mov")
+        let sink = try CaptureSink(url: source, systemAudio: false, videoSize: .init(width: 320, height: 200))
+        let pool = try sourcePool(capacity: 3)
+        let levels: [UInt8] = [60, 100, 140, 180, 210]
+        do {
+            for index in 0..<160 {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    sink.queue.async {
+                        do {
+                            let time = 1000 + Double(index) * 0.01
+                            sink.consume(try audio(time), type: .microphone)
+                            if index.isMultiple(of: 4) {
+                                try deliverPooledScreen(sink, pool: pool, capacity: 3, time: time, luma: levels[index / 32])
+                            }
+                            continuation.resume()
+                        } catch { continuation.resume(throwing: error) }
+                    }
+                }
+                try await Task.sleep(for: .milliseconds(3))
+            }
+            try await sink.finish()
+        } catch { await sink.cancel(); throw error }
+        let asset = AVURLAsset(url: source)
+        let video = try await requiredTrack(asset, .video), audioTrack = try await requiredTrack(asset, .audio)
+        let videoRange = try await video.load(.timeRange), audioRange = try await audioTrack.load(.timeRange)
+        let lumas = try decodedLumas(asset: asset, track: video)
+        try expect(lumas.count >= 20,
+            "A bounded three-surface source pool stalled animated capture or lost most delivered frames")
+        try expect(abs(CMTimeGetSeconds(videoRange.end) - 1.6) < 0.003
+            && abs(CMTimeGetSeconds(audioRange.end) - 1.6) < 0.003,
+            "Animated pooled capture lost the full shared video/audio timeline")
+        let stages = lumas.map { value in levels.indices.min { abs(value - Int(levels[$0])) < abs(value - Int(levels[$1])) }! }
+        try expect(Set(stages) == Set(levels.indices) && stages == stages.sorted()
+            && lumas.allSatisfy { value in levels.contains { abs(value - Int($0)) <= 8 } },
+            "Animated pooled capture froze or reordered generated screen changes while audio continued")
+        print("PASS: bounded three-surface source pool preserves five changing screen images, frame progression and full video/audio duration")
+    }
+
+    nonisolated private static func sourcePool(capacity: Int) throws -> CVPixelBufferPool {
+        var pool: CVPixelBufferPool?
+        let result = CVPixelBufferPoolCreate(kCFAllocatorDefault,
+            [kCVPixelBufferPoolMinimumBufferCountKey as String: capacity] as CFDictionary,
+            [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+             kCVPixelBufferWidthKey as String: 320, kCVPixelBufferHeightKey as String: 200,
+             kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary, &pool)
+        guard result == kCVReturnSuccess, let pool else { throw AppError.message("Cannot create bounded generated capture source pool") }
+        return pool
+    }
+
+    nonisolated private static func pooledPixel(_ pool: CVPixelBufferPool, capacity: Int) throws -> CVPixelBuffer {
+        var pixel: CVPixelBuffer?
+        let result = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(kCFAllocatorDefault, pool,
+            [kCVPixelBufferPoolAllocationThresholdKey as String: capacity] as CFDictionary, &pixel)
+        guard result == kCVReturnSuccess, let pixel else {
+            throw AppError.message("Capture retained a source surface after its callback: pool capacity \(capacity), allocation status \(result)")
+        }
+        return pixel
+    }
+
+    nonisolated private static func deliverPooledScreen(_ sink: CaptureSink, pool: CVPixelBufferPool, capacity: Int,
+                                                       time: Double, luma: UInt8) throws {
+        try autoreleasepool {
+            let pixel = try pooledPixel(pool, capacity: capacity)
+            try fill(pixel, luma: luma)
+            sink.consume(try screen(time, pixel: pixel, status: .complete), type: .screen)
+        }
     }
 
     private static func feed(_ sink: CaptureSink, frameChanges: [Int: UInt8], inactiveStatus: SCFrameStatus, audioBuffers: Int = 100) async throws {
@@ -122,12 +375,20 @@ enum CaptureWriterNativeChecks {
             kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
             [kCVPixelBufferIOSurfacePropertiesKey as String: [:]] as CFDictionary, &pixel)
         guard result == kCVReturnSuccess, let pixel else { throw AppError.message("Cannot create generated NV12 frame") }
-        CVPixelBufferLockBaseAddress(pixel, [])
+        try fill(pixel, luma: luma)
+        return try screen(time, pixel: pixel, status: status)
+    }
+
+    nonisolated private static func fill(_ pixel: CVPixelBuffer, luma: UInt8) throws {
+        guard CVPixelBufferLockBaseAddress(pixel, []) == kCVReturnSuccess else { throw AppError.message("Cannot fill generated NV12 source surface") }
+        defer { CVPixelBufferUnlockBaseAddress(pixel, []) }
         for plane in 0..<2 {
             memset(CVPixelBufferGetBaseAddressOfPlane(pixel, plane), plane == 0 ? Int32(luma) : 128,
                    CVPixelBufferGetBytesPerRowOfPlane(pixel, plane) * CVPixelBufferGetHeightOfPlane(pixel, plane))
         }
-        CVPixelBufferUnlockBaseAddress(pixel, [])
+    }
+
+    nonisolated private static func screen(_ time: Double, pixel: CVPixelBuffer, status: SCFrameStatus) throws -> CMSampleBuffer {
         var format: CMVideoFormatDescription?
         guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault,
             imageBuffer: pixel, formatDescriptionOut: &format) == noErr, let format else {
@@ -188,23 +449,27 @@ enum CaptureWriterNativeChecks {
     }
 
     private static func decodedLastLuma(asset: AVAsset, track: AVAssetTrack) throws -> Int {
+        try decodedLumas(asset: asset, track: track).last ?? 0
+    }
+
+    private static func decodedLumas(asset: AVAsset, track: AVAssetTrack) throws -> [Int] {
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track,
             outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
         reader.add(output)
         guard reader.startReading() else { throw AppError.message("Cannot decode generated capture") }
-        var last = 0
+        var frames: [(time: CMTime, luma: Int)] = []
         while let sample = output.copyNextSampleBuffer() {
             if let image = CMSampleBufferGetImageBuffer(sample) {
                 CVPixelBufferLockBaseAddress(image, .readOnly)
                 if let base = CVPixelBufferGetBaseAddressOfPlane(image, 0) {
-                    last = Int(base.load(as: UInt8.self))
+                    frames.append((CMSampleBufferGetPresentationTimeStamp(sample), Int(base.load(as: UInt8.self))))
                 }
                 CVPixelBufferUnlockBaseAddress(image, .readOnly)
             }
         }
         guard reader.status == .completed else { throw reader.error ?? AppError.message("Generated capture decode failed") }
-        return last
+        return frames.sorted { CMTimeCompare($0.time, $1.time) < 0 }.map(\.luma)
     }
 
     private static func expect(_ value: Bool, _ message: String) throws {

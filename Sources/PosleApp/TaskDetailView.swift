@@ -36,31 +36,31 @@ struct TaskDetailView: View {
             .sheet(item: $editing) { selected in TaskCreationSheet(notes: notes, task: selected) { _ in } }
             .sheet(isPresented: $access) { TaskAgentAccessSheet(notes: notes, taskID: task.id) }
             .sheet(isPresented: $exporting) { TrackerSyncExportSheet(coordinator: app.trackerSync, taskID: task.id, taskTitle: task.title) }
-            .sheet(item: $context) { TaskSnapshotSheet(snapshot: $0.snapshot, title: "Контекст для агента") }
+            .sheet(item: $context) { TaskSnapshotSheet(snapshot: $0.snapshot, title: L("Контекст для агента")) }
     }
     private var heading: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 8) {
-                Label(task.source.title, systemImage: task.source.symbol).font(AppTypography.caption).foregroundStyle(.secondary)
+                Label(L(task.source.title), systemImage: task.source.symbol).font(AppTypography.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 if let url = TaskWorkspaceURL.external(task.externalURL) {
                     Button { NSWorkspace.shared.open(url) } label: { Image(systemName: "arrow.up.right.square").frame(width: 24, height: 24) }
-                        .buttonStyle(.plain).help("Открыть оригинал задачи").accessibilityLabel("Открыть оригинал задачи")
+                        .buttonStyle(.plain).help(L("Открыть оригинал задачи")).accessibilityLabel(L("Открыть оригинал задачи"))
                 }
                 Menu {
-                    Button("Изменить задачу…") { editing = task }
+                    Button(L("Изменить задачу…")) { editing = task }
                     Divider()
-                    Button("Доступ агентам…") { access = true }
-                    Button("Что увидит агент…") {
+                    Button(L("Доступ агентам…")) { access = true }
+                    Button(L("Что увидит агент…")) {
                         if let snapshot = notes.taskContext(task) { context = TaskSnapshotPresentation(snapshot: snapshot) }
                     }.disabled(!task.agentAccess.enabled)
                     Divider()
-                    Button("Отправить в трекер…") { exporting = true }
+                    Button(L("Отправить в трекер…")) { exporting = true }
                         .disabled(app.trackerSync.busy)
-                    Button("Дополнить голосом…") { app.voice.present(taskID: task.id, title: task.title) }
+                    Button(L("Дополнить голосом…")) { app.voice.present(taskID: task.id, title: task.title) }
                 } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
-                    .menuStyle(.borderlessButton).fixedSize().help("Действия с задачей")
-                    .accessibilityLabel("Действия с задачей").accessibilityIdentifier("tasks.more")
+                    .menuStyle(.borderlessButton).fixedSize().help(L("Действия с задачей"))
+                    .accessibilityLabel(L("Действия с задачей")).accessibilityIdentifier("tasks.more")
             }
             Text(task.title).font(AppTypography.pageTitle).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("tasks.detail-title")
@@ -78,10 +78,10 @@ struct TaskDetailView: View {
         }
     }
     private var status: some View {
-        Picker("В «После»", selection: Binding(get: { task.status }, set: { value in
+        Picker(L("В «После»"), selection: Binding(get: { task.status }, set: { value in
             if notes.updateTaskWorkspace(task, patch: ["status": value.rawValue]) != nil { app.reloadLibrary() }
         })) {
-            ForEach(TaskWorkspaceStatus.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
+            ForEach(TaskWorkspaceStatus.allCases) { Label(L($0.title), systemImage: $0.symbol).tag($0) }
         }.fixedSize().accessibilityIdentifier("tasks.detail-status")
     }
     @ViewBuilder private var metadata: some View {
@@ -94,23 +94,10 @@ struct TaskDetailView: View {
         if let legacy = notes.legacyTask(for: task) { TaskCalendarButton(task: legacy) }
     }
     private var tabs: some View {
-        HStack(spacing: 22) {
-            tabButton("Материалы", value: "materials", count: task.materialCount ?? task.materials.count)
-            tabButton("История", value: "history", count: nil)
-            Spacer(minLength: 0)
-        }.overlay(alignment: .bottom) { Rectangle().fill(Ink.line).frame(height: 1) }
-    }
-    private func tabButton(_ title: String, value: String, count: Int?) -> some View {
-        Button { tab = value } label: {
-            HStack(spacing: 6) {
-                Text(title)
-                if let count { Text("\(count)").foregroundStyle(.secondary).monospacedDigit() }
-            }.font(tab == value ? AppTypography.controlStrong : AppTypography.control)
-                .foregroundStyle(tab == value ? Color.primary : .secondary).padding(.vertical, 12)
-                .overlay(alignment: .bottom) { if tab == value { Rectangle().fill(Ink.accent).frame(height: 2) } }
-        }.buttonStyle(.plain).accessibilityAddTraits(tab == value ? .isSelected : [])
-            .accessibilityValue(tab == value ? "Выбрана" : "")
-            .accessibilityIdentifier("tasks.tab." + value)
+        AppTabBar(label: L("Задача"), selection: $tab, tabs: [
+            AppTab(L("Материалы") + " · " + String(task.materialCount ?? task.materials.count), value: "materials"),
+            AppTab(L("История"), value: "history")
+        ], identifier: "tasks.tab", fillsWidth: true)
     }
     private var description: String {
         TaskWorkspaceDescription.body(title: task.title, text: task.text)

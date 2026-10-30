@@ -147,7 +147,8 @@ def main():
         swift.write_text("import Foundation\nimport Darwin\n" + app_error + environment + source[start:] + SERVICE_CHECKS)
         checker = directory / "check"
         subprocess.run(["swiftc", "-module-cache-path", str(directory / "module-cache"), "-parse-as-library",
-                        *sorted((PROJECT / "Sources/PosleCore").glob("*.swift")), str(swift), "-o", str(checker)], check=True)
+                        *sorted((PROJECT / "Sources/PosleCore").glob("*.swift")),
+                        str(PROJECT / "scripts/fixtures/CanonicalLocalization.swift"), str(swift), "-o", str(checker)], check=True)
         subprocess.run([str(checker), "--service", str(directory / "service")], check=True)
 
         def prepare(root, succeeds=True):

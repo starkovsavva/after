@@ -27,31 +27,31 @@ struct TranscriptSegmentEditor: View {
     private var speakers: [String] { Array(Set(snapshot?.transcript?.segments.map(\.speaker) ?? [])).sorted() }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            AppPageHeader(title: "Изменить реплику", modal: true)
+            AppPageHeader(title: L("Изменить реплику"), modal: true)
             if snapshot != nil {
-                Picker("Собеседник", selection: $speaker) {
+                Picker(L("Собеседник"), selection: $speaker) {
                     ForEach(speakers, id: \.self) { value in Text(app.meetings.first(where: { $0.id == meetingID })?.speakerName(value) ?? value).tag(value) }
-                }
+                }.accessibilityIdentifier("transcript.edit.speaker")
                 TextEditor(text: $text).font(AppTypography.body).frame(minHeight: 180).padding(8)
-                    .background(Ink.field, in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel("Текст реплики").accessibilityIdentifier("transcript.edit.text")
-                Text("Таймкод и исходная запись сохранятся. Конспект можно обновить после исправлений.")
+                    .background(Ink.field, in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel(L("Текст реплики")).accessibilityIdentifier("transcript.edit.text")
+                Text(L("Таймкод и исходная запись сохранятся. Конспект можно обновить после исправлений."))
                     .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
             } else if error == nil { ProgressView() }
             if let error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).textSelection(.enabled).accessibilityIdentifier("transcript.edit.error") }
             HStack {
-                Button("Отмена", role: .cancel) { if dirty { confirmingDiscard = true } else { dismiss() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("transcript.edit.cancel")
+                Button(L("Отмена"), role: .cancel) { if dirty { confirmingDiscard = true } else { dismiss() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("transcript.edit.cancel")
                 Spacer()
-                Button("Сохранить") { save() }.buttonStyle(.borderedProminent)
+                Button(L("Сохранить")) { save() }.buttonStyle(.borderedProminent)
                     .disabled(snapshot == nil || saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .keyboardShortcut(.defaultAction).accessibilityIdentifier("transcript.edit.save")
             }
         }.padding(24).frame(width: 580).appControlDefaults().tint(Ink.accent).disabled(saving).task { await load() }
             .interactiveDismissDisabled(dirty || saving)
-            .onChange(of: dirty) { _, value in UnsavedEditorRegistry.set(id: editorID, title: "Правка реплики", dirty: value) }
+            .onChange(of: dirty) { _, value in UnsavedEditorRegistry.set(id: editorID, title: L("Правка реплики"), dirty: value) }
             .onDisappear { UnsavedEditorRegistry.remove(id: editorID) }
-            .confirmationDialog("Отменить правки реплики?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-                Button("Продолжить редактирование", role: .cancel) {}
-                Button("Отменить правки", role: .destructive) { UnsavedEditorRegistry.remove(id: editorID); dismiss() }.accessibilityIdentifier("transcript.edit.discard")
+            .confirmationDialog(L("Отменить правки реплики?"), isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button(L("Продолжить редактирование"), role: .cancel) {}
+                Button(L("Отменить правки"), role: .destructive) { UnsavedEditorRegistry.remove(id: editorID); dismiss() }.accessibilityIdentifier("transcript.edit.discard")
             }
     }
     private func load() async {
@@ -61,7 +61,7 @@ struct TranscriptSegmentEditor: View {
                 let data = try RustBridge.shared.get().request(root: root, command: "meeting-content-snapshot", arguments: ["meetingID": meetingID])
                 return try JSONDecoder().decode(MeetingContentSnapshot.self, from: data)
             }.value
-            guard let segment = value.transcript?.segments.first(where: { $0.id == segmentID }) else { throw AppError.message("Реплика изменилась или удалена. Откройте транскрипт заново.") }
+            guard let segment = value.transcript?.segments.first(where: { $0.id == segmentID }) else { throw AppError.message(L("Реплика изменилась или удалена. Откройте транскрипт заново.")) }
             snapshot = value; text = segment.text; speaker = segment.speaker
         } catch { self.error = error.localizedDescription }
     }
@@ -79,7 +79,7 @@ struct TranscriptSegmentEditor: View {
                     ])
                 }.value
                 app.refreshResults(meetingID); app.notes.reload(); app.notes.loadTasks()
-                app.notice = "Реплика сохранена. Проверьте связанные выводы конспекта."
+                app.notice = L("Реплика сохранена. Проверьте связанные выводы конспекта.")
                 UnsavedEditorRegistry.remove(id: editorID); dismiss()
             } catch { self.error = error.localizedDescription }
         }
@@ -112,36 +112,36 @@ struct SummaryInsightEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            AppPageHeader(title: "Изменить пункт конспекта", modal: true)
+            AppPageHeader(title: L("Изменить пункт конспекта"), modal: true)
             if snapshot != nil {
-                TextEditor(text: $text).font(AppTypography.body).frame(minHeight: 130).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel("Текст пункта").accessibilityIdentifier("summary.edit.text")
+                TextEditor(text: $text).font(AppTypography.body).frame(minHeight: 130).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel(L("Текст пункта")).accessibilityIdentifier("summary.edit.text")
                 if originalItem?.kind == "action" {
-                    TextField("Ответственный", text: $owner).textFieldStyle(.roundedBorder)
+                    TextField(L("Ответственный"), text: $owner).textFieldStyle(.roundedBorder)
                     HStack {
-                        if !due.isEmpty { DatePicker("Срок", selection: selectedDate, displayedComponents: .date).environment(\.locale, Locale(identifier: "ru_RU")) }
-                        else { Text("Без срока").foregroundStyle(.secondary) }
+                        if !due.isEmpty { DatePicker(L("Срок"), selection: selectedDate, displayedComponents: .date).environment(\.locale, UILocale()) }
+                        else { Text(L("Без срока")).foregroundStyle(.secondary) }
                         Spacer()
-                        Button("Сегодня") { due = TaskDueDate.storage(Date()) }
-                        Button("Завтра") { due = TaskDueDate.storage(Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()) }
-                        Button("Без срока") { due = "" }
+                        Button(L("Сегодня")) { due = TaskDueDate.storage(Date()) }
+                        Button(L("Завтра")) { due = TaskDueDate.storage(Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()) }
+                        Button(L("Без срока")) { due = "" }
                     }.font(AppTypography.control)
                 }
-                Text("Связь с исходными репликами сохранится.").font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                Text(L("Связь с исходными репликами сохранится.")).font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
             } else if error == nil { ProgressView() }
             if let error { Text(error).foregroundStyle(Ink.warning).textSelection(.enabled).accessibilityIdentifier("summary.edit.error") }
             HStack {
-                Button("Отмена", role: .cancel) { if dirty { confirmingDiscard = true } else { dismiss() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("summary.edit.cancel")
+                Button(L("Отмена"), role: .cancel) { if dirty { confirmingDiscard = true } else { dismiss() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("summary.edit.cancel")
                 Spacer()
-                Button("Сохранить") { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button(L("Сохранить")) { save() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                     .disabled(snapshot == nil || saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).accessibilityIdentifier("summary.edit.save")
             }
         }.padding(24).frame(width: 560).appControlDefaults().tint(Ink.accent).disabled(saving).task { await load() }
             .interactiveDismissDisabled(dirty || saving)
-            .onChange(of: dirty) { _, value in UnsavedEditorRegistry.set(id: editorID, title: "Правка пункта конспекта", dirty: value) }
+            .onChange(of: dirty) { _, value in UnsavedEditorRegistry.set(id: editorID, title: L("Правка пункта конспекта"), dirty: value) }
             .onDisappear { UnsavedEditorRegistry.remove(id: editorID) }
-            .confirmationDialog("Отменить правки пункта?", isPresented: $confirmingDiscard, titleVisibility: .visible) {
-                Button("Продолжить редактирование", role: .cancel) {}
-                Button("Отменить правки", role: .destructive) { UnsavedEditorRegistry.remove(id: editorID); dismiss() }.accessibilityIdentifier("summary.edit.discard")
+            .confirmationDialog(L("Отменить правки пункта?"), isPresented: $confirmingDiscard, titleVisibility: .visible) {
+                Button(L("Продолжить редактирование"), role: .cancel) {}
+                Button(L("Отменить правки"), role: .destructive) { UnsavedEditorRegistry.remove(id: editorID); dismiss() }.accessibilityIdentifier("summary.edit.discard")
             }
     }
     private func load() async {
@@ -151,7 +151,7 @@ struct SummaryInsightEditor: View {
                 let data = try RustBridge.shared.get().request(root: root, command: "meeting-content-snapshot", arguments: ["meetingID": meetingID])
                 return try JSONDecoder().decode(MeetingContentSnapshot.self, from: data)
             }.value
-            guard let summary = value.summary, summary.items.indices.contains(itemIndex) else { throw AppError.message("Пункт изменился. Откройте конспект заново.") }
+            guard let summary = value.summary, summary.items.indices.contains(itemIndex) else { throw AppError.message(L("Пункт изменился. Откройте конспект заново.")) }
             let item = summary.items[itemIndex]; text = item.text; owner = item.owner; due = item.due; snapshot = value
         } catch { self.error = error.localizedDescription }
     }

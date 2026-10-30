@@ -8,15 +8,10 @@ struct IntegrationSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            Picker("Вид интеграции", selection: $section) {
-                Text("Трекеры").tag("trackers")
-                Text("Агенты").tag("agents")
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 280)
-            .tint(Ink.actionFill)
-            .accessibilityIdentifier("integrations.section")
+            AppTabBar(label: L("Вид интеграции"), selection: $section, tabs: [
+                AppTab(L("Трекеры"), value: "trackers"),
+                AppTab(L("Агенты"), value: "agents")
+            ], identifier: "integrations.section", fillsWidth: true)
 
             if section == "trackers" {
                 TrackerSyncSettingsView(coordinator: store.trackerSync)
