@@ -26,7 +26,7 @@ pub fn manifest() -> Value {
         "portability":{
             "macos":"development",
             "linux":"not_verified",
-            "windows":"requires_filesystem_and_process_adapters"
+            "windows":"library_preview"
         }
     })
 }
@@ -42,7 +42,7 @@ mod tests {
         assert_eq!(engine_executable("other"), None);
         assert_eq!(
             manifest()["portability"]["windows"],
-            "requires_filesystem_and_process_adapters"
+            "library_preview"
         );
         assert_eq!(manifest()["nativeAdapters"]["recording"], "not_connected");
     }

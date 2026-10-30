@@ -108,7 +108,11 @@ pub fn pin_directory(path: &Path) -> Result<DirectoryGuard> {
     for component in path.components() {
         current.push(component.as_os_str());
         if matches!(component,Component::RootDir | Component::Normal(_)) {
-            handles.push(raw_open(&current,FILE_READ_ATTRIBUTES|READ_CONTROL,OPEN_EXISTING,true,false,None)?);
+            // Attribute/control-only handles do not enforce Windows sharing
+            // restrictions. Request directory data-read access as well, so
+            // withholding FILE_SHARE_DELETE really prevents rename/removal.
+            // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew
+            handles.push(raw_open(&current,FILE_LIST_DIRECTORY|FILE_READ_ATTRIBUTES|READ_CONTROL,OPEN_EXISTING,true,false,None)?);
         }
     }
     ensure!(!handles.is_empty(),"Invalid private library directory");
@@ -262,7 +266,12 @@ mod tests {
         let root=private_fixture();let directory=root.path().join("pinned");
         create_private_directory(&directory).unwrap();
         let pin=pin_directory(&directory).unwrap();
-        assert!(fs::rename(&directory,root.path().join("moved")).is_err());
+        let moved=root.path().join("moved");
+        let from=wide(directory.as_os_str());let to=wide(moved.as_os_str());
+        assert_eq!(unsafe { MoveFileExW(from.as_ptr(),to.as_ptr(),MOVEFILE_WRITE_THROUGH) },0,"Native rename must be blocked by a live directory pin");
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(),Some(windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION as i32));
+        assert!(fs::rename(&directory,&moved).is_err(),"The Rust rename path must also respect the pin");
+        assert!(directory.is_dir() && !moved.exists());
         let first=open_private(&directory.join("workspace.lock"),false).unwrap();
         let second=open_private(&directory.join("workspace.lock"),false).unwrap();
         first.lock().unwrap();

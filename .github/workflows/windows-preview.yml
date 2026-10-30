@@ -36,6 +36,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-on-failure: true
           workspaces: |
             rust-core -> ../.build/rust
             desktop/src-tauri -> ../../.build/tauri
