@@ -175,10 +175,24 @@ mod ipc_tests {
             .build(application_context())
             .unwrap()
     }
-    fn window(app: &tauri::App<MockRuntime>, label: &str) -> tauri::WebviewWindow<MockRuntime> {
-        tauri::WebviewWindowBuilder::new(app, label, Default::default())
+    fn window(
+        app: &tauri::App<MockRuntime>,
+        label: &str,
+        fixture_root: &std::path::Path,
+    ) -> tauri::WebviewWindow<MockRuntime> {
+        // Tauri prepares this directory before dispatching to the runtime,
+        // even for MockRuntime. Without an explicit location, Windows/Linux
+        // tests create the actual appLocalDataDir instead of staying isolated.
+        let webview_data = fixture_root.join("webviews").join(label);
+        let window = tauri::WebviewWindowBuilder::new(app, label, Default::default())
+            .data_directory(webview_data.clone())
             .build()
-            .unwrap()
+            .unwrap();
+        assert!(
+            webview_data.is_dir(),
+            "The mock webview must use its owned fixture directory"
+        );
+        window
     }
 
     #[test]
@@ -188,8 +202,8 @@ mod ipc_tests {
         std::fs::write(&engine, b"").unwrap();
         let bridge = LibraryBridge::for_development(engine, fixture.path().join("data")).unwrap();
         let app = application(bridge);
-        let main = window(&app, "main");
-        let untrusted = window(&app, "untrusted");
+        let main = window(&app, "main", fixture.path());
+        let untrusted = window(&app, "untrusted", fixture.path());
         // Authorized calls reach our typed boundary, whose unavailable-engine error
         // is distinct from the permission failure returned for every other case.
         let allowed = request(&main, "get_workspace", json!({}), local_origin()).unwrap_err();
@@ -220,7 +234,7 @@ mod ipc_tests {
         let fixture = tempfile::tempdir().unwrap();
         let bridge = LibraryBridge::for_development(engine, fixture.path().join("data")).unwrap();
         let app = application(bridge);
-        let main = window(&app, "main");
+        let main = window(&app, "main", fixture.path());
         let initial = request(&main, "get_workspace", json!({}), local_origin()).unwrap();
         assert_eq!(initial["notes"], json!([]));
         let folder = request(
