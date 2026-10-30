@@ -1,32 +1,42 @@
 <?xml version='1.0' encoding='utf-8'?>
 <rss xmlns:posle="https://posle.app/xml-namespaces/release" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
-    <title>После</title>
-    <link>https://github.com/starkovsavva/posle/releases</link>
-    <description>Обновления После для macOS</description>
+    <title>After</title>
+    <link>https://github.com/starkovsavva/after/releases</link>
+    <description>Обновления After для macOS</description>
     <language>ru</language>
     <item>
-      <title>После 0.17.6.4</title>
-      <sparkle:version>33</sparkle:version>
-      <sparkle:shortVersionString>0.17.6.4</sparkle:shortVersionString>
+      <title>After 0.17.6.5</title>
+      <sparkle:version>34</sparkle:version>
+      <sparkle:shortVersionString>0.17.6.5</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Thu, 29 Oct 2026 15:40:09 GMT</pubDate>
-      <description sparkle:format="markdown">- **Исправлено зависание видео при продолжающейся записи звука.** Кодировщик H.264 больше не удерживает исходные поверхности ScreenCaptureKit: кадры копируются в собственный ограниченный пул. Это устраняет исчерпание буфера захвата, при котором видео могло оставаться на одном изображении. Сохраняются цвета, точные временные отметки и полная длительность видео со звуком, в том числе при неподвижном экране.
-- Системный выбор экрана передаётся в захват без изменения его политики строки меню. Добавлены локализованные описания использования записи экрана.
-- Для отказа macOS `-3801` уточнено восстановление доступа, когда разрешение уже включено: завершите «После», удалите его старую запись кнопкой «−» в разделе «Запись экрана и системного звука», затем снова откройте установленную копию и подтвердите доступ. Текущая ad-hoc подпись не гарантирует сохранение разрешений после обновлений; этот релиз не заменяет её сертификатом Apple.
+      <pubDate>Fri, 30 Oct 2026 21:30:22 GMT</pubDate>
+      <description sparkle:format="markdown"># After 0.17.6.5
 
-Новый знак After и остальные исправления 0.17.6.3 сохранены. Синтетические проверки воспроизводят зависание старого кодировщика и проверяют исправление, смену кадров, экспорт MP4, звук и отмену запуска. Реальный захват на macOS 26.5.2 отдельно не проверялся.
+Обновление интерфейса и исправления записи, воспроизведения и сохранения данных.
+
+- **After на всех языках.** Единое название в интерфейсе, Dock, настройках macOS, окне входа и новых установщиках. Русский и английский интерфейсы сохранены; библиотека, настройки подключений и прежние технические идентификаторы остаются совместимыми.
+- **Что нового после обновления.** Отдельное окно показывает изменения по возможностям, выделяет новые и используемые функции, запоминает прочитанные пункты и открывает нужные настройки. Отключённые возможности не включаются без вашего выбора. При записи, обработке и несохранённых изменениях автоматический показ откладывается.
+- **Поддержка проекта.** В Справке — окно со ссылкой на GitHub и подготовкой обратной связи. Финансовая поддержка пока не подключена.
+- **Переключение микрофона.** При смене системного входа запись пытается подключить новый микрофон. Экран и звук Mac продолжают записываться отдельно. Пока микрофон недоступен, его дорожка содержит тишину; состояние подключения видно в приложении. Исправлены потеря конца звука, сдвиги и сокращение дорожки при смене частоты, числа каналов и паузах.
+- **Источники конспекта.** Ускорено открытие на длинных встречах: приложение читает нужные реплики, цитаты отображаются по мере просмотра. Исправлены гонки при повторном открытии, обновлении транскрипта, переименовании участников и переходе к воспроизведению.
+- **Календарь.** Несохранённый черновик защищает от перезапуска для обновления. Повторное подключение календаря не перезаписывает изменения; ошибка сохранения оставляет черновик доступным.
+- **Корзина.** Повтор уже завершённой операции использует сохранённый результат, в том числе после очистки короткого журнала. Восстановленные данные не удаляются повторно.
+- **Импорт медиа.** Прослушивание готовится из исходной аудиодорожки отдельно от облегчённой копии для распознавания. Неудачная или отменённая подготовка не заменяет предыдущий готовый файл.
+- **Компоненты обработки.** Восстанавливается повреждённая приватная копия FFmpeg, даже если размер файла не изменился. Поздние события старого проигрывателя не меняют состояние новой записи.
+
+Переподключение устройств проверяется на синтетических маршрутах с настоящим кодированием аудио. Поведение конкретных Bluetooth/USB-устройств и задержки macOS требуют отдельной проверки на оборудовании; непрерывный звук во время недоступности микрофона не гарантируется.
 </description>
-      <posle:sourceRevision>61b7dee44367e80e1e101ccd2524b7f3e5fabaf6</posle:sourceRevision>
-      <posle:archiveSHA256>c16616fb490e8a4d7ba97eec6e3d6ac751218256fcc3df423b0051009ffdd23c</posle:archiveSHA256>
-      <posle:sourceSHA256>cbe592bb630e39154f4cda067e0b165c50bf08f5a99a8373369686c744cc63f3</posle:sourceSHA256>
-      <posle:packageSHA256>39c7b6587814ae8cc4f86ee3ba16562bd24f1ce3df999146b9dec4ab1c33bac7</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/posle/releases/download/v0.17.6.4/Posle-Mac-AppleSilicon.zip" sparkle:edSignature="MSipDLtQ9QRCUNhVUjG5Ye4kFfu0EPfrLskvjFTScUV2Qc4LBQUZqbGdltRPXxpKFSfuSydueQNw1tEAdmApDw==" length="25111638" type="application/octet-stream" />
+      <posle:sourceRevision>741baeaa6d3fd7e6497c8c03cfaca7c4498c1ce2</posle:sourceRevision>
+      <posle:archiveSHA256>851291fd8778d6cae66082ed7b04af0878fabc6866a482d15adb154151feea83</posle:archiveSHA256>
+      <posle:sourceSHA256>e7a34c415eb8f3985bff2af52d13ea40b6ff392661a388e4795918860bdaaee9</posle:sourceSHA256>
+      <posle:packageSHA256>6a8879121cc0a23d13c7d9f6c4358087cd8fe5762aae0e72d54f3796ca9ff60e</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/after/releases/download/v0.17.6.5/After-Mac-AppleSilicon.zip" sparkle:edSignature="Tas//DEKSZt1nfohkmXyHJwmCgzqpYdKF+xNXWYBQ2Lb1uCRMWbFbvWsN2tED9z4mOOdhHjj3+oZhU8ja9jfDw==" length="25392834" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: gniMxQCwtF4Zf1KZaILS4KM+PRa/vQdKOZANRBAK8WhUaZzYfMjmysaEEzoFJA5SI6DTzTgayuUa8Fy+5vNNBw==
-length: 3704
+edSignature: VoL/QdzowAKTE3YxMHzgZPPeXhqImnLe+zywTZ6bsccWvGdnHAguck+7/Q41NSL+ZcVpuxmN1o4hTpLly7dwBw==
+length: 5974
 -->
