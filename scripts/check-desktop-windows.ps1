@@ -251,8 +251,8 @@ try {
         Assert-Smoke $ready 'The release WebView did not expose its New note control and create SQLite through native IPC.'
         $receipt.nativeApp = $true
         $passes.Add('installed-release-webview-to-native-ipc-and-bundled-sqlite')
-        [void]$appProcess.CloseMainWindow()
-        if (-not $appProcess.WaitForExit(10000)) { $appProcess.Kill($true); [void]$appProcess.WaitForExit(5000) }
+        Assert-Smoke ($appProcess.CloseMainWindow()) 'The installed app did not accept a normal window-close request.'
+        Assert-Smoke ($appProcess.WaitForExit(10000)) 'The clean installed app could not close normally; force termination must not hide a window-permission failure.'
         $appProcess.Dispose(); $appProcess = $null
         $nativeWorkspace = Expect-Result (Invoke-Engine 'get_workspace' @{} $applicationData)
         Assert-Smoke (@($nativeWorkspace.notes).Count -eq 0 -and @($nativeWorkspace.folders).Count -eq 0) 'The installed UI did not initialize a clean canonical library.'
