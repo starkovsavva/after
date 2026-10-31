@@ -6,36 +6,43 @@
     <description>Обновления After для macOS</description>
     <language>ru</language>
     <item>
-      <title>After 0.18.0</title>
-      <sparkle:version>37</sparkle:version>
-      <sparkle:shortVersionString>0.18.0</sparkle:shortVersionString>
+      <title>After 0.18.1</title>
+      <sparkle:version>38</sparkle:version>
+      <sparkle:shortVersionString>0.18.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Sat, 31 Oct 2026 15:32:45 GMT</pubDate>
-      <description sparkle:format="markdown"># After 0.18.0
+      <pubDate>Sat, 31 Oct 2026 20:25:20 GMT</pubDate>
+      <description sparkle:format="markdown"># After 0.18.1
 
-База знаний, локальный смысловой поиск и работа агента с выбранными материалами.
+## Русский
 
-- **Встречи и заметки по темам.** Открывайте связанные материалы, сохраняйте подборки и добавляйте свои связи. Предложения не меняют исходные записи. База знаний включается в **Настройки → Возможности**.
-- **Смысловой поиск внутри After.** Встроенная модель работает на Mac без отдельного сервера и API-ключа. Подготовка в **Настройки → Смысловой поиск** загружает около 810 МБ. Поиск показывает состояние модели; подготовка продолжается при закрытых настройках.
-- **Помощник по библиотеке.** Можно попросить найти материал, открыть заметку или встречу, показать последние задачи. Ответы содержат переходы к источникам.
-- **Выбранные материалы для агента.** Из меню задачи передайте через MCP точную копию задачи и заметок на 24 часа. Перед подтверждением виден весь текст. В истории появятся отчёты, источники и артефакты с привязкой к снимку. Новую копию нужно подтвердить отдельно; доступ можно отозвать.
-- **Аудио до распознавания.** Готовую запись можно прослушать и экспортировать, даже если транскрипта ещё нет. При переключении встреч статус записи относится к нужной встрече.
-- **Исправления интерфейса.** Подборки доступны в небольшом окне, смена языка обновляет подписи и даты без потери черновиков, настройки агентов открываются в нужном разделе. Процессы приложения называются After.
+Исправления обработки и более понятная база знаний.
 
-Новые возможности включаются по вашему выбору. Переданный снимок не обновляется при редактировании оригинала; отзыв останавливает дальнейший доступ, но не удаляет данные, уже полученные агентом. Автоматические связи — предложения: их качество зависит от содержимого библиотеки.
+- **Материалы под рукой.** Заметки и встречи видны без готовых связей. Даты различают одинаковые названия, а пустая библиотека предлагает создать заметку или записать встречу.
+- **Переходы и история.** Запоздалый ответ не открывает источник после смены папки, запроса или ухода со страницы. История показывает актуальный результат после применения и отмены изменений.
+- **Отмена обработки.** Исправлены гонки при отмене и повторном запуске: завершение отменённой задачи не затрагивает новый запуск.
+- **Подключения и настройки папок.** Обработка использует подключение и настройки, выбранные для операции. Ошибка доступа к сохранённому ключу показывается до запроса к провайдеру.
+- **Сохранение распознавания.** При ошибке сохранения повторного распознавания прежние транскрипт и конспект сохраняются. Устаревший конспект не показывается рядом с новым транскриптом.
 
-Подпись обновления Sparkle проверяется. Сборка по-прежнему без нотариализации Apple. Реальное переключение Bluetooth/USB-наушников не проверялось в этой версии; непрерывный звук во время переподключения не гарантируется.
+## English
+
+Processing fixes and a clearer knowledge base.
+
+- **Materials within reach.** Notes and meetings appear before they have related items. Dates distinguish matching titles, and an empty library offers actions to create a note or record a meeting.
+- **Navigation and history.** A delayed response no longer opens a source after you change folders, edit the query, or leave the page. History shows the current result after applying and undoing changes.
+- **Cancelling processing.** Fixed timing issues when cancelling and restarting: a cancelled task finishing no longer affects the new run.
+- **Connections and folder settings.** Processing uses the connection and settings selected for the operation. An error accessing a saved key is shown before a request reaches the provider.
+- **Saving transcriptions.** If saving a new transcription fails, the previous transcript and summary are preserved. An outdated summary is not shown alongside a new transcript.
 </description>
-      <posle:sourceRevision>c05d8c1dc24476ed3eca0ec4bae8e2894569286d</posle:sourceRevision>
-      <posle:archiveSHA256>4a13dc8e562733a17462a07bade2b92e968d53280ae1111bc20866dd6189ce89</posle:archiveSHA256>
-      <posle:sourceSHA256>8866b64d35c384551039653562d705b53c029458903c8a7f641928fbafcecef2</posle:sourceSHA256>
-      <posle:packageSHA256>10fe9cce0516da42efe93e887baccb7c6d85bebf579bd36543ab03fd021de235</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/after/releases/download/v0.18.0/After-Mac-AppleSilicon.zip" sparkle:edSignature="Aw3wCh40ZNF9Soq96LZ0UsW8dI7qJeAGnjS3XexcQOuvcP+OtPUMzyQfh56oqgWCEX3srppQqoXmn74TI9cCBg==" length="28298107" type="application/octet-stream" />
+      <posle:sourceRevision>03bd0818227b388ea66f6bd2cfb1979564a5b631</posle:sourceRevision>
+      <posle:archiveSHA256>3204861d462f38224cb3059471f1f51e000af64018c620ad2c4eea3d528d090a</posle:archiveSHA256>
+      <posle:sourceSHA256>cbfbfc07bd43d3198ac954168cfaa4e73986a52f586daf66e11ca40185589ffa</posle:sourceSHA256>
+      <posle:packageSHA256>b95185f137e899179a91c1441a6f8684d51922239fc51b9efeb7d251bd416f9d</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/after/releases/download/v0.18.1/After-Mac-AppleSilicon.zip" sparkle:edSignature="iDe5ohJFZ6bf6KQSEhvL7SkygR158V5Si9sQz19doZ/01dFCMaBDUb7oeS6TlydspSmHb+M3MoHM6YfUKBEKBA==" length="29180761" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: bPE7Ro/mpSpqayUMiNVRGlM/ZHJXJ/cQubtIyZ7TP1GWu4djvixE+T6vDsaW+i0Gh5CJAwm3wTQs0nZLpzyoBg==
-length: 4941
+edSignature: FCIZqqxDWu7/xpbfKBiMghaTTKRBowg34uj0RZzXD6GHuT2bIo5Wz9gtnNPYeIqjQQ4hAMr53VYn7DGOKvY0AQ==
+length: 4222
 -->
