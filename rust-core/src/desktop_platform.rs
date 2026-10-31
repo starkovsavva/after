@@ -17,12 +17,7 @@ pub fn manifest() -> Value {
         "arch":std::env::consts::ARCH,
         "engineExecutable":engine_executable(std::env::consts::OS),
         "libraryBackend":"existing-rust-core",
-        "nativeAdapters":{
-            "recording":"not_connected",
-            "calendar":"not_connected",
-            "credentials":"not_connected",
-            "speech":"not_connected"
-        },
+
         "portability":{
             "macos":"development",
             "linux":"not_verified",
@@ -44,6 +39,6 @@ mod tests {
             manifest()["portability"]["windows"],
             "library_preview"
         );
-        assert_eq!(manifest()["nativeAdapters"]["recording"], "not_connected");
+        assert!(manifest().get("nativeAdapters").is_none(), "Native adapters belong to the host, not the engine");
     }
 }

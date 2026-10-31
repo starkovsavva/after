@@ -58,6 +58,8 @@ pub struct Recorder {
     session: Mutex<Option<Session>>,
 }
 impl Recorder {
+    pub(crate) fn available() -> bool { cfg!(windows) }
+
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
@@ -79,7 +81,7 @@ impl Recorder {
         status
     }
     pub fn start(&self, mode: String) -> Result<RecordingStatus, String> {
-        if !cfg!(windows) {
+        if !Self::available() {
             return Err("Recording is currently available only on Windows.".into());
         }
         if mode != "microphone" && mode != "microphone_and_system" {

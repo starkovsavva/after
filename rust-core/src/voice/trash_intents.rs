@@ -51,7 +51,7 @@ fn targets(root: &Path, input: &Value, proposal: &Proposal) -> Result<Vec<Value>
             .map(|n| crate::trash::snapshot(root, object_kind, &n.id, false))
             .collect::<Result<Vec<_>>>()?
     };
-    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let profiles=crate::ai_config::FeatureResolver::new(root)?;
     all.retain(|target| {
         let id=target["id"].as_str().unwrap_or("");
         let source=if object_kind=="meeting" {json!({"meetingID":id})}else{json!({"noteID":id})};

@@ -33,7 +33,7 @@ pub(super) fn valid_card(card: &Value) -> bool {
 }
 fn library(root: &Path, input: &Value) -> Result<Value> {
     let mut entries = Vec::new(); let mut errors = Vec::new();
-    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let profiles=crate::ai_config::FeatureResolver::new(root)?;
     for meeting in crate::storage::list_meetings(root)? {
         let id = text(&meeting,"id")?;
         let source=json!({"meetingID":id});

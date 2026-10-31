@@ -1,7 +1,6 @@
+pub mod domain;
 pub mod platform_fs;
 mod ai_config;
-#[cfg(windows)]
-pub mod ai { pub use crate::ai_config::*; }
 pub mod desktop;
 mod desktop_import;
 mod desktop_media;

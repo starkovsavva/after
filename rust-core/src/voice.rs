@@ -196,7 +196,7 @@ fn check_action_features(root: &Path, action: &str) -> Result<()> {
     ensure!(features.assistant, "Включите «Помощник» в настройках → Возможности.");
     check_action_modules(&features, action)
 }
-fn check_action_modules(features: &crate::ai::AppFeatures, action: &str) -> Result<()> {
+fn check_action_modules(features: &crate::domain::config::AppFeatures, action: &str) -> Result<()> {
     if action.ends_with("Cards") || action == "openCard" {
         ensure!(features.cards, "Включите «Карточки» в настройках → Возможности.");
     }
@@ -217,7 +217,7 @@ fn bind_plan_profile(root:&Path,input:&Value,plan:&mut Value)->Result<()> {
     if plan["meetingID"].is_null() { plan["meetingID"]=input["meetingID"].clone(); }
     Ok(())
 }
-fn enabled_schema(features: &crate::ai::AppFeatures) -> Value {
+fn enabled_schema(features: &crate::domain::config::AppFeatures) -> Value {
     let mut value = schema();
     value["properties"]["action"]["enum"].as_array_mut().unwrap().retain(|action| {
         check_action_modules(features, action.as_str().unwrap_or("")).is_ok()
@@ -233,7 +233,7 @@ fn check_saved_plan_features(root: &Path, input: &Value) -> Result<()> {
     if let Some(plan)=plan {
         check_scoped_action_features(root,plan,plan["proposal"]["action"].as_str().or_else(||plan["action"].as_str()).unwrap_or(""))?;
         if let Some(fingerprint)=plan["profileFingerprint"].as_str() { crate::ai::require_profile_current(root,plan,fingerprint)?; }
-        let profiles=crate::ai::FeatureResolver::new(root)?;
+        let profiles=crate::ai_config::FeatureResolver::new(root)?;
         let action=plan["proposal"]["action"].as_str().or_else(||plan["action"].as_str()).unwrap_or("");
         for target in plan["candidates"].as_array().into_iter().flatten().chain(std::iter::once(&plan["target"])) {
             if target.is_object() { check_action_modules(&profiles.features_for(target)?,action)?; }
@@ -266,7 +266,7 @@ fn snapshot_targets(root: &Path, workspace: &NotesWorkspace) -> Result<Vec<Value
     Ok(targets)
 }
 fn scope_task_targets(root: &Path, input: &Value, targets: &mut Vec<Value>) -> Result<()> {
-    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let profiles=crate::ai_config::FeatureResolver::new(root)?;
     let scoped=profiles.features_for(input)?;
     targets.retain(|target|profiles.in_scope(target,input) && (target["kind"]!="task" || (scoped.tasks && profiles.features_for(target).is_ok_and(|f|f.tasks))));
     if !scoped.tasks { return Ok(()); }

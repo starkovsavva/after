@@ -105,4 +105,4 @@ After доступен на русском и английском; назван
 выбранному провайдеру. API оплачивается отдельно; ChatGPT использует лимиты подписки.
 Ключи и сессии хранятся в Связке ключей macOS.
 
-[Сборка и проверки](docs/development.md) · [Архитектура](docs/architecture.md) · [MIT](LICENSE) · [Сторонние компоненты](THIRD_PARTY.md)
+[Сборка и проверки](docs/development.md) · [Разработка Linux-клиента](docs/linux.md) · [Архитектура](docs/architecture.md) · [MIT](LICENSE) · [Сторонние компоненты](THIRD_PARTY.md)

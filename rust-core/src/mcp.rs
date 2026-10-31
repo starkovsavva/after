@@ -156,7 +156,7 @@ fn call(root: &Path, name: &str, args: Map<String, Value>) -> Result<Value> {
     ensure!(task_tools_enabled(root), "Включите «Задачи» в настройках → Возможности. Доступ агента настраивается отдельно.");
     let mut request = input(root, name, args)?;
     if request["command"]=="task-list" {
-        let profiles=crate::ai::FeatureResolver::new(root)?;
+        let profiles=crate::ai_config::FeatureResolver::new(root)?;
         let requested_offset=request["offset"].as_u64().unwrap_or(0) as usize;
         let limit=request["limit"].as_u64().unwrap_or(200).clamp(1,500) as usize;
         let mut tasks=Vec::new(); let mut offset=0usize; let mut result=json!({});

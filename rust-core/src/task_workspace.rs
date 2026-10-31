@@ -1620,7 +1620,7 @@ fn agent_result(workspace: &NotesWorkspace, mut v: Value) -> Value {
 /// available while a module is hidden; this flag never comes from tool args.
 fn require_task_feature(root: &Path, input: &Value) -> Result<()> {
     if input["requireTaskFeature"] == true {
-        let resolver = crate::ai::FeatureResolver::new(root)?;
+        let resolver = crate::ai_config::FeatureResolver::new(root)?;
         ensure!(resolver.features_for(input)?.tasks,
             "Задачи выключены в профиле этой папки. Изменения не сохранены.");
         if let Some(expected) = input.get("expectedTaskFolderID") {

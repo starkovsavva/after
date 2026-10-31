@@ -52,7 +52,7 @@ fn selected_cards(root: &Path, input: &Value, proposal: &Proposal) -> Result<Vec
     } else {
         input["meetingID"].clone()
     };
-    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let profiles=crate::ai_config::FeatureResolver::new(root)?;
     if proposal.action == "restoreCards" {
         let found = domain(root, "card-trash-list", json!({"meetingID":scope}))?;
         let query = normalized(&proposal.query);

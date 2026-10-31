@@ -233,7 +233,7 @@ fn snapshot(root: &Path, args: WorkspaceArguments) -> Result<Value> {
         .collect::<Vec<_>>();
     Ok(
         json!({"folders":workspace.folders.iter().map(folder_dto).collect::<Vec<_>>(),"meetings":meetings,"notes":captured,
-        "capabilities":{"library":true,"recording":false,"calendar":false,"assistant":false,"cards":false,"tasks":false},
+        "capabilities":{"library":true,"recording":false,"calendar":false,"assistant":false,"cards":true,"tasks":true},
         "platform":crate::desktop_platform::manifest(),"truncated":false}),
     )
 }

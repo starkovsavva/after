@@ -94,7 +94,7 @@ fn shortlist(root: &Path, input: &Value, proposal: &Proposal) -> Result<Vec<Valu
         .map(crate::search::QueryMatcher::new)
         .collect::<Result<_>>()?;
     let selected = input["taskID"].as_str();
-    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let profiles=crate::ai_config::FeatureResolver::new(root)?;
     let mut ranked: Vec<_> = tasks
         .iter()
         .filter(|task| {

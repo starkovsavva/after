@@ -13,6 +13,7 @@ import tempfile
 
 PROJECT = Path(__file__).resolve().parents[1]
 PROFILES = {
+    "desktop": "Portable Rust core, frontend, host and real-engine IPC checks (no Swift)",
     "quick": "Swift build/core tests, Python contracts and Rust unit tests",
     "integration": "Rust CLI/FFI/HTTP, generated media, search and runtime migration",
     "native": "Sequential SwiftUI/NSApplication scenarios in disposable libraries",
@@ -80,6 +81,23 @@ class Verification:
             # cargo test does not rebuild the top-level CLI/CDylib artifacts.
             self.run("Rust debug CLI and C ABI", self.cargo_command("build"))
             self.built_rust = True
+
+    def desktop(self):
+        if sys.platform.startswith("linux"):
+            probe = subprocess.run(["pkg-config", "--exists", "webkit2gtk-4.1", "gtk+-3.0"], check=False)
+            if probe.returncode:
+                raise RuntimeError("Linux host requires WebKitGTK 4.1 and GTK3 development libraries. On Arch: sudo pacman -S --needed webkit2gtk-4.1")
+        self.run("Rust domain contracts", self.cargo_command("test"))
+        self.build_rust()
+        frontend = ["npm.cmd" if os.name == "nt" else "npm", "--prefix", PROJECT / "desktop"]
+        self.run("Frontend production build", [*frontend, "run", "build"])
+        self.run("Frontend contracts", [*frontend, "test"])
+        host = [self.cargo, "test", "--manifest-path", PROJECT / "desktop/src-tauri/Cargo.toml", "--locked", "--target-dir", PROJECT / ".build/tauri"]
+        self.run("Typed host contracts", host)
+        engine = self.rust / "debug" / ("posle-engine.exe" if os.name == "nt" else "posle-engine")
+        fixture_env = self.env | {"AFTER_TEST_ENGINE_PATH": str(engine)}
+        self.run("Host to actual canonical engine", [*host, "--test", "real_engine", "--", "--ignored"], env=fixture_env)
+        self.run("Real engine through Tauri IPC and ACL", [*host, "--lib", "--", "--ignored"], env=fixture_env)
 
     def quick(self):
         self.build_swift()

@@ -21,6 +21,8 @@ fn canonical_engine_persists_scoped_notes_and_rejects_stale_edits() {
     let initial = bridge.workspace().unwrap();
     assert!(initial.notes.is_empty() && initial.folders.is_empty() && initial.meetings.is_empty());
     assert!(initial.capabilities.library);
+    assert!(initial.capabilities.import);
+    assert!(initial.capabilities.tasks && initial.capabilities.cards);
     assert_eq!(initial.capabilities.recording, cfg!(windows));
     assert!(!initial.capabilities.assistant);
     let folder = bridge

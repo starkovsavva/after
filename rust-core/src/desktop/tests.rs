@@ -61,6 +61,8 @@ fn snapshot_and_detail_use_real_sqlite_and_do_not_expose_profiles_paths_or_cards
     assert_eq!(workspace["notes"][0]["folderId"], "english");
     assert_eq!(workspace["capabilities"]["recording"], false);
     assert_eq!(workspace["capabilities"]["library"], true);
+    assert_eq!(workspace["capabilities"]["tasks"], true);
+    assert_eq!(workspace["capabilities"]["cards"], true);
     let serialized = workspace.to_string();
     for hidden in [
         "native-model",

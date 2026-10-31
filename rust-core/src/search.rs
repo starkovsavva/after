@@ -404,8 +404,8 @@ fn search_batch_scoped(root: &Path, requests: &[(String, String, usize)], folder
     Ok(results)
 }
 
-fn profile_visibility(connection:&Connection,root:&Path)->Result<crate::ai::FeatureResolver> {
-    let profiles=crate::ai::FeatureResolver::new(root)?;
+fn profile_visibility(connection:&Connection,root:&Path)->Result<crate::ai_config::FeatureResolver> {
+    let profiles=crate::ai_config::FeatureResolver::new(root)?;
     let ids=connection.prepare("SELECT meeting_id FROM sources")?.query_map([],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
     connection.execute_batch("CREATE TEMP TABLE IF NOT EXISTS profile_visibility(meeting_id TEXT PRIMARY KEY,cards INTEGER NOT NULL,semantic INTEGER NOT NULL,folder_id TEXT); DELETE FROM profile_visibility;")?;
     for id in ids {
@@ -488,7 +488,7 @@ pub fn validate(root: &Path, id: &str, fingerprint: &str) -> Result<Value> {
     let directory = root.join("meetings").join(id);
     let Some(meta) = snapshot(&directory.join("meta.json"), MAX_META).ok().flatten() else { return Ok(json!({"valid":false})); };
     if meta["id"].as_str() != Some(id) { return Ok(json!({"valid":false})); }
-    if !crate::ai::live_features_for(root,Some(id),None)?.cards && meta["libraryKind"] == "cards" { return Ok(json!({"valid":false})); }
+    if !crate::ai_config::live_features_for(root,Some(id),None)?.cards && meta["libraryKind"] == "cards" { return Ok(json!({"valid":false})); }
     let current = format!("{:x}", Sha256::digest(source_stamp(&directory).as_bytes()));
     Ok(json!({"valid":current == fingerprint}))
 }

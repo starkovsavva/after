@@ -33,7 +33,7 @@ pub struct ProfileSnapshot {
     pub overrides: Value,
     pub generate_cards: bool,
     #[serde(default)]
-    pub features: crate::ai::AppFeatures,
+    pub features: crate::domain::config::AppFeatures,
 }
 fn valid_id(value: &str) -> bool {
     !value.is_empty()
@@ -457,7 +457,7 @@ pub fn resolve(
     apply_overrides(&mut effective, &overrides)?;
     // Normalize absent fields through the same defaults used by inference.
     // First saving unrelated UI preferences must not invalidate a queued job.
-    let effective: crate::ai::Settings = serde_json::from_value(effective)?;
+    let effective: crate::domain::config::Settings = serde_json::from_value(effective)?;
     let features = effective.features.clone();
     let effective = serde_json::to_value(effective)?;
     let fingerprint = format!(
@@ -518,14 +518,14 @@ pub fn profile_settings(
     )?;
     Ok(settings)
 }
-pub fn available_features(root: &Path) -> Result<crate::ai::AppFeatures> {
+pub fn available_features(root: &Path) -> Result<crate::domain::config::AppFeatures> {
     let path = root.join("settings.json");
     let settings = if path.exists() {
         crate::storage::regular_json(&path)?
     } else {
         json!({})
     };
-    let mut enabled: crate::ai::AppFeatures = serde_json::from_value(
+    let mut enabled: crate::domain::config::AppFeatures = serde_json::from_value(
         settings
             .get("features")
             .cloned()
@@ -534,7 +534,7 @@ pub fn available_features(root: &Path) -> Result<crate::ai::AppFeatures> {
     for folder in workspace_snapshot(root)?.folders {
         let mut candidate = settings.clone();
         apply_overrides(&mut candidate, &folder.overrides)?;
-        let f: crate::ai::AppFeatures = serde_json::from_value(
+        let f: crate::domain::config::AppFeatures = serde_json::from_value(
             candidate
                 .get("features")
                 .cloned()
@@ -812,7 +812,7 @@ mod tests {
     fn omitted_defaults_and_explicit_defaults_have_the_same_fingerprint() {
         let root = tempfile::tempdir().unwrap();
         let first = resolve(root.path(), None, None).unwrap().fingerprint;
-        let mut settings = serde_json::to_value(crate::ai::Settings::default()).unwrap();
+        let mut settings = serde_json::to_value(crate::domain::config::Settings::default()).unwrap();
         settings["theme"] = json!("dark");
         crate::storage::atomic_json(&root.path().join("settings.json"), &settings).unwrap();
         assert_eq!(resolve(root.path(), None, None).unwrap().fingerprint, first);

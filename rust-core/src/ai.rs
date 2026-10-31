@@ -90,7 +90,9 @@ trivial conversational phrases. Copy the supporting source id numbers into segme
 Do not number facts or cards and use those new numbers as evidence IDs."#;
 
 pub use crate::ai_config::{AppFeatures, Settings};
-pub(crate) use crate::ai_config::{settings, snapshot_settings, live_features, FeatureResolver, live_features_for, live_features_for_input, profile_for_input, settings_for_input, require_profile_current, check_captured_profile};
+#[cfg(test)]
+use crate::ai_config::snapshot_settings;
+pub(crate) use crate::ai_config::{settings, live_features, live_features_for, live_features_for_input, profile_for_input, settings_for_input, require_profile_current, check_captured_profile};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Segment { pub id:u64, pub start:f64, pub end:f64, pub speaker:String, pub text:String, #[serde(default)] pub overlap:bool }

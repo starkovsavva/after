@@ -75,11 +75,12 @@ impl LibraryBridge {
     }
 
     pub fn workspace(&self) -> Result<Workspace, HostError> {
-        let mut workspace: Workspace = self.call("get_workspace", json!({}))?;
-        workspace.capabilities.import = cfg!(windows);
-        workspace.capabilities.recording = cfg!(windows);
-        workspace.capabilities.tasks = cfg!(windows);
-        workspace.capabilities.cards = cfg!(windows);
+        let mut workspace: Workspace = self.call("get_workspace", json!({})).map_err(|error| {
+            crate::platform::report_error(&error);
+            error
+        })?;
+        workspace.capabilities.import = true;
+        workspace.capabilities.recording = crate::capture::Recorder::available();
         Ok(workspace)
     }
     pub fn meeting(&self, id: String) -> Result<MeetingDetail, HostError> {

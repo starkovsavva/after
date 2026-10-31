@@ -28,6 +28,29 @@ class VerifyIsolationTests(unittest.TestCase):
         controller.assert_not_called()
         self.assertIn('release:', output.getvalue())
 
+    def test_desktop_checks_real_engine_without_swift_or_personal_library(self):
+        controller = self.controller()
+        calls = []
+        controller.run = lambda label, command, **kwargs: calls.append((label, list(map(str, command)), kwargs))
+        with mock.patch.object(verify.subprocess, 'run', return_value=mock.Mock(returncode=0)):
+            controller.desktop()
+        commands = [command for _, command, _ in calls]
+        self.assertFalse(any('swift' in Path(command[0]).name for command in commands))
+        integrations = [(command, kwargs) for _, command, kwargs in calls if '--ignored' in command]
+        self.assertEqual(len(integrations), 2)
+        for command, kwargs in integrations:
+            self.assertIn('AFTER_TEST_ENGINE_PATH', kwargs['env'])
+            self.assertNotIn('POSLE_DATA_DIR', kwargs['env'])
+        self.assertTrue(any('--test' in command and 'real_engine' in command for command in commands))
+
+    @unittest.skipUnless(verify.sys.platform.startswith('linux'), 'Linux dependency preflight')
+    def test_desktop_missing_webkit_fails_before_any_build(self):
+        controller = self.controller()
+        with mock.patch.object(verify.subprocess, 'run', return_value=mock.Mock(returncode=1)), mock.patch.object(controller, 'run') as run:
+            with self.assertRaisesRegex(RuntimeError, 'webkit2gtk-4.1'):
+                controller.desktop()
+        run.assert_not_called()
+
     def test_child_environment_does_not_inherit_real_data_root_or_provider_keys(self):
         with mock.patch.dict(os.environ, {'POSLE_DATA_DIR': '/fixture/private-library', 'OPENAI_API_KEY': 'not-a-real-key', 'PROVIDER_SECRET': 'not-a-real-secret', 'POSLE_JOB_SETTINGS': '{"mode":"cloud"}', 'PYTHONPATH': '/fixture/foreign-modules', 'PYTHONHOME': '/fixture/foreign-home', 'POSLE_RUST_LIBRARY': '/fixture/foreign.dylib', 'POSLE_RUST_ENGINE': '/fixture/foreign-engine', 'POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS': '1'}):
             controller = self.controller()

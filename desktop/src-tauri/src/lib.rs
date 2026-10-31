@@ -1,6 +1,7 @@
 pub mod bridge;
 mod capture;
 mod media;
+mod platform;
 pub mod models;
 
 use bridge::LibraryBridge;
@@ -70,29 +71,9 @@ async fn choose_and_import(
 ) -> Result<Option<Meeting>, HostError> {
     let bridge = state.inner().clone();
     background(move || {
-        #[cfg(windows)]
-        {
-            let selected = rfd::FileDialog::new()
-                .add_filter(
-                    "Audio and video",
-                    &[
-                        "mp4", "mov", "m4a", "mp3", "wav", "aiff", "aif", "caf", "flac", "ogg",
-                        "webm", "mkv", "aac",
-                    ],
-                )
-                .pick_file();
-            selected
-                .map(|path| bridge.import_meeting(&path, None))
-                .transpose()
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = bridge;
-            Err(HostError::new(
-                "unsupported_platform",
-                "Import is not available on this platform.",
-            ))
-        }
+        platform::choose_media_file()
+            .map(|path| bridge.import_meeting(&path, None))
+            .transpose()
     })
     .await
 }
@@ -270,7 +251,7 @@ fn application_context<R: tauri::Runtime>() -> tauri::Context<R> {
 pub fn run() {
     library_commands(tauri::Builder::default())
         .setup(|app| {
-            let resource_dir = app.path().resource_dir()?;
+            let resource_dir = platform::resource_dir(app.path().resource_dir()?);
             let data_dir = app.path().app_local_data_dir()?;
             let bridge = LibraryBridge::bundled(&resource_dir, &data_dir)?;
             app.manage(std::sync::Arc::new(capture::Recorder::new(
@@ -278,7 +259,7 @@ pub fn run() {
             )));
             app.manage(Arc::new(RecordingGate(AtomicBool::new(false))));
             app.manage(bridge);
-            tauri::WebviewWindowBuilder::new(
+            let window = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
@@ -289,6 +270,7 @@ pub fn run() {
             .on_navigation(local_navigation)
             .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
             .build()?;
+            platform::configure_diagnostics(&window);
             Ok(())
         })
         .on_window_event(|window, event| {

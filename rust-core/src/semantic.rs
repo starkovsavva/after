@@ -436,12 +436,12 @@ pub(crate) fn chunk_source(
     }
     docs
 }
-fn enabled_features(root: &Path) -> Result<crate::ai::AppFeatures> {
+fn enabled_features(root: &Path) -> Result<crate::domain::config::AppFeatures> {
     let features = crate::ai::live_features(root)?;
     ensure!(features.semantic_search, "Включите «Смысловой поиск» в настройках → Возможности.");
     Ok(features)
 }
-fn unchanged_features(root: &Path, expected: &crate::ai::AppFeatures) -> Result<()> {
+fn unchanged_features(root: &Path, expected: &crate::domain::config::AppFeatures) -> Result<()> {
     let current = enabled_features(root)?;
     ensure!(current.cards == expected.cards && current.tasks == expected.tasks, "Настройки возможностей изменились: обновление индекса остановлено.");
     Ok(())

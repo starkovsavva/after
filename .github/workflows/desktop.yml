@@ -1,13 +1,15 @@
 name: Cross-platform desktop preview
 on:
   push:
-    branches: [codex/cross-platform]
+    branches: [main, codex/cross-platform, codex/after-windows-preview, feat/increase-multiplatform-support]
   pull_request:
     paths:
       - 'desktop/**'
       - 'rust-core/**'
       - 'scripts/*desktop*'
       - '.github/workflows/desktop.yml'
+      - 'scripts/verify.py'
+      - 'scripts/test_verify.py'
 permissions:
   contents: read
 concurrency:
@@ -57,23 +59,42 @@ jobs:
         working-directory: desktop
       - name: Test typed host and transport
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri
-      - name: Canonical core regression and engine (macOS)
-        if: runner.os == 'macOS'
+      - name: Canonical core regression and engine (Unix)
+        if: runner.os != 'Windows'
         run: |
           cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust
           cargo build --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust
           python3 scripts/stage-desktop-engine.py
-      - name: Host to actual canonical engine (macOS)
-        if: runner.os == 'macOS'
+      - name: Host to actual canonical engine (Unix)
+        if: runner.os != 'Windows'
         env:
           AFTER_TEST_ENGINE_PATH: ${{ github.workspace }}/.build/rust/debug/posle-engine
         run: |
           cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --test real_engine -- --ignored
           cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --lib -- --ignored
-      - name: Browser to actual canonical engine (macOS)
-        if: runner.os == 'macOS'
+      - name: Browser to actual canonical engine (Unix)
+        if: runner.os != 'Windows'
         run: |
           cd desktop
-          npx playwright install chromium
+          npx playwright install --with-deps chromium
           cd ..
           node scripts/check-desktop-browser.mjs
+
+  arch:
+    name: Arch Linux core and desktop IPC
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    timeout-minutes: 45
+    steps:
+      - name: Install Arch build dependencies
+        run: pacman -Syu --needed --noconfirm git python rust nodejs npm pkgconf openssl webkit2gtk-4.1
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust-core -> ../.build/rust
+            desktop/src-tauri -> ../../.build/tauri
+      - run: npm ci --ignore-scripts
+        working-directory: desktop
+      - name: Portable checks with actual engine and Tauri IPC
+        run: python3 scripts/verify.py desktop

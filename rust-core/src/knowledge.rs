@@ -756,7 +756,7 @@ fn select_calendar(
 fn retrieve(root: &Path, input: &Value) -> Result<Retrieval> {
     retrieve_for(root, input, false)
 }
-fn kind_enabled(features: &crate::ai::AppFeatures, kind: &str) -> bool {
+fn kind_enabled(features: &crate::domain::config::AppFeatures, kind: &str) -> bool {
     match kind {
         "card" => features.cards,
         "task" | "code" => features.tasks,
@@ -765,7 +765,7 @@ fn kind_enabled(features: &crate::ai::AppFeatures, kind: &str) -> bool {
     }
 }
 fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieval> {
-    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let profiles=crate::ai_config::FeatureResolver::new(root)?;
     let features = if input["folderID"].is_string() { profiles.features_for(input)? } else { crate::ai::live_features(root)? };
     ensure!(root.is_absolute(), "Нужен абсолютный путь библиотеки");
     let question = input["text"]
@@ -1309,7 +1309,7 @@ pub(crate) fn embedding_documents(
 ) -> Result<(Vec<crate::semantic::EmbeddingDocument>, Vec<String>)> {
     let features = crate::ai::live_features(root)?;
     if !features.semantic_search { return Ok((vec![], vec![])); }
-    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let profiles=crate::ai_config::FeatureResolver::new(root)?;
     let mut docs = Vec::new();
     let mut warnings = Vec::new();
     let mut derived_cache = HashMap::new();
@@ -1485,8 +1485,8 @@ fn answer_with(
     mut generate: impl FnMut(&Value) -> Result<Value>,
 ) -> Result<Value> {
     ensure!(crate::ai::live_features_for_input(root,input)?.assistant, "Включите «Помощник» в профиле папки или настройках → Возможности.");
-    let mut model_settings=crate::ai::FeatureResolver::new(root)?.settings_for(input)?;
-    model_settings.features=crate::ai::AppFeatures::default();
+    let mut model_settings=crate::ai_config::FeatureResolver::new(root)?.settings_for(input)?;
+    model_settings.features=crate::domain::config::AppFeatures::default();
     let mut retrieval = retrieve(root, input)?;
     // Retrieval may await an embedding provider. Recheck before sending any
     // evidence to the generative model, including newly revoked cloud grants.
@@ -1505,8 +1505,8 @@ fn answer_with(
     }
     ensure!(crate::ai::live_features_for_input(root,input)?.assistant, "Включите «Помощник» в профиле папки или настройках → Возможности.");
     let generated = generate(&prompt)?;
-    let mut current_settings=crate::ai::FeatureResolver::new(root)?.settings_for(input)?;
-    current_settings.features=crate::ai::AppFeatures::default();
+    let mut current_settings=crate::ai_config::FeatureResolver::new(root)?.settings_for(input)?;
+    current_settings.features=crate::domain::config::AppFeatures::default();
     ensure!(serde_json::to_value(&current_settings)?==serde_json::to_value(&model_settings)?,"Профиль модели изменился во время ответа. Повторите вопрос.");
     ensure!(crate::ai::live_features_for_input(root,input)?.assistant, "Помощник выключен. Ответ не опубликован.");
     let draft: Draft = serde_json::from_value(generated)
@@ -1586,7 +1586,7 @@ pub fn validate_source(root: &Path, input: &Value) -> Result<Value> {
     Ok(json!({"valid":result}))
 }
 fn current(root: &Path, s: &Source, input: &Value) -> Result<bool> {
-    let profiles=crate::ai::FeatureResolver::new(root)?;
+    let profiles=crate::ai_config::FeatureResolver::new(root)?;
     let raw=serde_json::to_value(s)?;
     let features = profiles.features_for(&raw)?;
     if !profiles.in_scope(&raw,input) || !kind_enabled(&features, &s.kind) { return Ok(false); }
