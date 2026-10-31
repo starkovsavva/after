@@ -16,5 +16,32 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test dependencies
         run: python3 -m pip install numpy==2.2.6 imageio-ffmpeg==0.6.0
+      - name: Platform boundaries
+        run: python3 scripts/check_platform_boundaries.py
       - name: Swift build and isolated unit checks
         run: python3 scripts/verify.py quick
+
+  portable-swift:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require the runner's installed Swift 6 toolchain
+        run: |
+          python3 - <<'PYTOOLCHAIN'
+          import re
+          import subprocess
+          version = subprocess.check_output(["swift", "--version"], text=True)
+          print(version, end="")
+          if not re.search(r"\bSwift version 6\.", version):
+              raise SystemExit("This portable check requires the runner's installed Swift 6 toolchain")
+          PYTOOLCHAIN
+      - name: Check source and portable package boundaries
+        run: |
+          python3 -m unittest discover -s scripts -p test_platform_boundaries.py -v
+          python3 scripts/check_platform_boundaries.py
+      - name: Build Foundation targets and run portable tests
+        run: |
+          swift build --target AfterCore --disable-automatic-resolution
+          swift build --target AfterPlatform --disable-automatic-resolution
+          swift test --disable-automatic-resolution

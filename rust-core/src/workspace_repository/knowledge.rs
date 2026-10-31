@@ -186,7 +186,7 @@ fn lock_jobs(root: &Path) -> Result<Option<Connection>> {
     }
     Ok(Some(connection))
 }
-fn migrate(connection: &mut Connection, directory: &Path, snapshot: &WorkspaceSnapshot) -> Result<()> {
+pub(super) fn migrate(connection: &mut Connection, directory: &Path, snapshot: &WorkspaceSnapshot) -> Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(version == WORKSPACE_VERSION, "Неподдерживаемая версия базы знаний");
     if has_extension(connection)? {
@@ -264,7 +264,7 @@ fn note<'a>(workspace: &'a crate::notes::NotesWorkspace, id: &str, require_live:
     ensure!(!require_live || note.trashed_at.is_none(), "Заметка находится в корзине");
     Ok(note)
 }
-fn state(connection: &Connection) -> Result<(String, u64, String)> {
+pub(super) fn state(connection: &Connection) -> Result<(String, u64, String)> {
     connection.query_row("SELECT library_id,revision,fingerprint FROM kb_state WHERE singleton=1", [], |row|
         Ok((row.get(0)?, row.get::<_,i64>(1)? as u64, row.get(2)?))).map_err(Into::into)
 }
@@ -282,7 +282,7 @@ fn feedback_row(connection: &Connection, first: &str, second: &str) -> Result<Op
         params![first,second],|r| Ok(json!({"firstID":first,"secondID":second,"blocked":r.get::<_,i64>(0)? != 0,
             "revision":r.get::<_,i64>(1)?,"updatedAt":r.get::<_,f64>(2)?}))).optional().map_err(Into::into)
 }
-fn list_links(connection: &Connection) -> Result<Vec<Value>> {
+pub(super) fn list_links(connection: &Connection) -> Result<Vec<Value>> {
     let mut stmt=connection.prepare("SELECT id,from_id,to_id,reason,revision,deleted,created_at,updated_at FROM kb_links ORDER BY id")?;
     let rows=stmt.query_map([],|r| Ok(json!({"id":r.get::<_,String>(0)?,"fromID":r.get::<_,String>(1)?,
         "toID":r.get::<_,String>(2)?,"relation":"manual_link","reason":r.get::<_,String>(3)?,
@@ -290,7 +290,7 @@ fn list_links(connection: &Connection) -> Result<Vec<Value>> {
         "createdAt":r.get::<_,f64>(6)?,"updatedAt":r.get::<_,f64>(7)?})))?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
-fn list_collections(connection: &Connection) -> Result<Vec<Value>> {
+pub(super) fn list_collections(connection: &Connection) -> Result<Vec<Value>> {
     let mut stmt=connection.prepare("SELECT id,name,members,pinned,hidden,revision,created_at,updated_at FROM kb_collections ORDER BY pinned DESC,updated_at DESC,id")?;
     let rows=stmt.query_map([],|r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,
         r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,f64>(6)?,r.get::<_,f64>(7)?)))?;
@@ -331,7 +331,7 @@ fn redact_meeting_operation(mut result:Value)->Value {
     }
     result
 }
-fn list_meeting_links(connection:&Connection,note_id:Option<&str>)->Result<Vec<Value>> {
+pub(super) fn list_meeting_links(connection:&Connection,note_id:Option<&str>)->Result<Vec<Value>> {
     let mut statement=connection.prepare("SELECT id,note_id,source_key,source_ref,revision,deleted,created_at,updated_at FROM kb_meeting_links WHERE (?1 IS NULL OR note_id=?1) ORDER BY id")?;
     let rows=statement.query_map([note_id],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,i64>(4)?,row.get::<_,i64>(5)?,row.get::<_,f64>(6)?,row.get::<_,f64>(7)?)))?;
     let mut result=Vec::new();
@@ -347,7 +347,7 @@ fn list_meeting_links(connection:&Connection,note_id:Option<&str>)->Result<Vec<V
     }
     Ok(result)
 }
-fn fingerprint(connection: &Connection) -> Result<String> {
+pub(super) fn fingerprint(connection: &Connection) -> Result<String> {
     let links=list_links(connection)?;
     let mut query=connection.prepare("SELECT first_id,second_id,blocked,revision FROM kb_feedback ORDER BY first_id,second_id")?;
     let feedback=query.query_map([],|r| Ok(json!({"firstID":r.get::<_,String>(0)?,"secondID":r.get::<_,String>(1)?,
@@ -374,7 +374,7 @@ pub(super) fn prune_removed(transaction:&Transaction<'_>,removed:&BTreeSet<Strin
     if removed.is_empty() || !has_extension(transaction)? {return Ok(false);}
     transaction.execute_batch("CREATE TABLE IF NOT EXISTS kb_collections(id TEXT PRIMARY KEY,name TEXT NOT NULL,members TEXT NOT NULL,pinned INTEGER NOT NULL,hidden INTEGER NOT NULL,revision INTEGER NOT NULL,created_at REAL NOT NULL,updated_at REAL NOT NULL)")?;
     transaction.execute_batch(MEETING_LINKS_TABLE)?;
-    let mut changed=false;
+    let mut changed=super::knowledge_rebuild::prune_removed(transaction,removed)?;
     for id in removed {
         changed |= transaction.execute("DELETE FROM kb_links WHERE from_id=?1 OR to_id=?1",[id])? > 0;
         changed |= transaction.execute("DELETE FROM kb_feedback WHERE first_id=?1 OR second_id=?1",[id])? > 0;

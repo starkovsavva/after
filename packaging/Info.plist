@@ -8,9 +8,9 @@
   <key>CFBundleExecutable</key><string>After</string>
   <key>CFBundleIdentifier</key><string>app.posle.meetings</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.18.0</string>
-  <key>PosleProductVersion</key><string>0.18.0</string>
-  <key>CFBundleVersion</key><string>37</string>
+  <key>CFBundleShortVersionString</key><string>0.18.1</string>
+  <key>PosleProductVersion</key><string>0.18.1</string>
+  <key>CFBundleVersion</key><string>38</string>
   <key>SUFeedURL</key><string>https://raw.githubusercontent.com/starkovsavva/after/updates/appcast.xml</string>
   <key>SUPublicEDKey</key><string>M0KZyIhcEoO1zC6FcDJZTmBhxEdeCv6CXhdqavL9Pk0=</string>
   <key>SUEnableAutomaticChecks</key><true/>

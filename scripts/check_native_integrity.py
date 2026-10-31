@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 
 import signing
+from standalone_swift import source as standalone_source
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -57,11 +58,13 @@ def main() -> None:
                               'let f=unsafeBitCast(p,to:(@convention(c)()->Int32).self);print(f());'
                               '}catch{print(error.localizedDescription);exit(2)}}}')
         binary = macos / "Fixture"
+        integrity = root / "NativeLibraryIntegrity.swift"
+        integrity.write_text(standalone_source(PROJECT / "Sources/AfterPlatformMacOS/NativeRust/NativeLibraryIntegrity.swift"))
 
         def build(section: bytes | None) -> None:
             binary.unlink(missing_ok=True)
             arguments = ["swiftc", "-parse-as-library", "-module-cache-path", str(root / "module-cache"),
-                         str(PROJECT / "Sources/PosleApp/NativeLibraryIntegrity.swift"),
+                         str(integrity),
                          str(PROJECT / "scripts/fixtures/CanonicalLocalization.swift"), str(swift_main), "-o", str(binary)]
             if section is not None:
                 digest_file = root / "core.sha256"; digest_file.write_bytes(section)

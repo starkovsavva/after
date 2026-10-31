@@ -1,4 +1,7 @@
-pub mod python_runtime;
+mod platform;
+// Keep the established crate paths while selecting the real native adapters.
+#[cfg(target_os = "macos")]
+pub use platform::{embedded_speech, python_runtime};
 pub mod media;
 pub mod ai;
 pub mod chatgpt;
@@ -18,10 +21,11 @@ pub mod semantic;
 pub mod managed_embeddings;
 // Verified Unix-socket transport used by the built-in embedding lifecycle.
 #[cfg(target_os = "macos")]
-mod managed_embedding_transport;
+use platform::managed_embedding_transport;
 pub mod code_index;
 pub mod tracker_sync;
 pub mod knowledge;
+pub mod knowledge_rebuild_ai;
 pub mod worker;
 pub mod jobs;
 pub mod corrections;
@@ -85,6 +89,7 @@ pub fn request(value: &Value) -> Result<Value> {
         "meeting-content-snapshot" | "transcript-segment-save" | "summary-item-save" => corrections::dispatch(&root, value),
         "source-snapshot" => source_snapshot::snapshot(&root, value),
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),
+        "kb-rebuild-generate" => knowledge_rebuild_ai::generate(&root,value),
         command if command.starts_with("kb-") => workspace_repository::knowledge_dispatch(&root, value),
         "assistant-find" | "assistant-find-validate" | "assistant-find-validate-list" => assistant_find::dispatch(&root, value),
         "assistant-note-find" | "assistant-note-validate" => assistant_note_find::dispatch(&root, value),
@@ -223,5 +228,3 @@ mod tests {
         }
     }
 }
-
-pub mod embedded_speech;

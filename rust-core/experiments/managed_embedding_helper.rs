@@ -9,7 +9,7 @@
 //! load, resource lease and cancellation also remain unsolved. Do not ship.
 
 #[cfg(target_os = "macos")]
-#[path = "../src/managed_embedding_transport.rs"]
+#[path = "../src/platform/macos/managed_embedding_transport.rs"]
 mod managed_embedding_transport;
 
 #[cfg(target_os = "macos")]

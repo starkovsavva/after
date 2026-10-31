@@ -139,15 +139,18 @@ private enum RuntimeChecks {
 def main():
     with tempfile.TemporaryDirectory(prefix="posle-managed-identity-") as temporary:
         directory = Path(temporary).resolve()
-        source = (PROJECT / "Sources/PosleApp/Services.swift").read_text()
-        start = source.index("enum ManagedModelRuntime {")
+        from standalone_swift import source as standalone_source
+        runtime = PROJECT / "Sources/AfterPlatformMacOS/Runtime"
+        contracts = standalone_source(PROJECT / "Sources/AfterPlatform/WorkerContracts.swift")
         swift = directory / "check.swift"
-        app_error = source[source.index("enum AppError:"):source.index("struct InstalledLocalModel:")]
-        environment = source[source.index("enum ProcessEnvironment {"):source.index("enum Keychain {")]
-        swift.write_text("import Foundation\nimport Darwin\n" + app_error + environment + source[start:] + SERVICE_CHECKS)
+        app_error = contracts[contracts.index("enum AppError:"):contracts.index("struct InstalledLocalModel:")]
+        swift.write_text("import Foundation\nimport Darwin\n" + app_error
+            + standalone_source(runtime / "ProcessEnvironment.swift")
+            + standalone_source(runtime / "ManagedModelRuntime.swift")
+            + standalone_source(runtime / "LocalModelService.swift") + SERVICE_CHECKS)
         checker = directory / "check"
         subprocess.run(["swiftc", "-module-cache-path", str(directory / "module-cache"), "-parse-as-library",
-                        *sorted((PROJECT / "Sources/PosleCore").glob("*.swift")),
+                        *sorted((PROJECT / "Sources/AfterCore").glob("*.swift")),
                         str(PROJECT / "scripts/fixtures/CanonicalLocalization.swift"), str(swift), "-o", str(checker)], check=True)
         subprocess.run([str(checker), "--service", str(directory / "service")], check=True)
 

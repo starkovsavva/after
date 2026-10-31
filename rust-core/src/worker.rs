@@ -179,9 +179,22 @@ fn setup_spec(root: &Path, backend: &Path) -> Result<WorkerSpec> {
     })
 }
 
-/// A missing, malformed, oversized or linked settings file never authorizes a
-/// secret. Read a bounded regular file, without following a replacement symlink.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpeechSelection {
+    speech_mode: Option<String>,
+}
+
+/// Match the worker's explicit job snapshot before consulting global settings.
+/// A supplied invalid snapshot must not gain authority from a different disk
+/// selection. Legacy calls without a snapshot use only a bounded regular file,
+/// without following a replacement symlink.
 fn cloud_speech_selected(root: &Path) -> bool {
+    if let Some(snapshot) = std::env::var_os("POSLE_JOB_SETTINGS") {
+        return snapshot.to_str()
+            .and_then(|raw| crate::ai::snapshot_settings::<SpeechSelection>(raw).ok())
+            .is_some_and(|settings| settings.speech_mode.as_deref() == Some("cloud"));
+    }
     let Ok(file) = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(root.join("settings.json")) else { return false; };
     let Ok(metadata) = file.metadata() else { return false; };
@@ -578,6 +591,61 @@ mod tests {
         std::fs::write(&target, r#"{"speechMode":"cloud"}"#).unwrap();
         std::os::unix::fs::symlink(&target, root.path().join("settings.json")).unwrap();
         assert!(!cloud_speech_selected(root.path()));
+    }
+
+    #[test]
+    fn queued_speech_credentials_follow_the_validated_snapshot_in_isolated_children() {
+        use std::os::unix::ffi::OsStringExt;
+        const CHILD_ROOT: &str = "POSLE_TEST_WORKER_SNAPSHOT_ROOT";
+        const EXPECT_KEY: &str = "POSLE_TEST_WORKER_EXPECT_SPEECH_KEY";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = Path::new(&root);
+            let expected = std::env::var(EXPECT_KEY).unwrap() == "true";
+            for name in ["prepare", "transcribe", "diarize", "finalize", "install-local"] {
+                let spec = worker_spec(root, Path::new("/tmp/backend"), name, Some(Path::new("/tmp/meeting")), 0, true).unwrap();
+                let authorized = name == "transcribe" && expected;
+                assert_eq!(spec.accepts_speech_key, authorized, "{name}");
+                let variables: Vec<(OsString, OsString)> = [
+                    ("POSLE_SPEECH_API_KEY", "synthetic-speech-key"),
+                    ("POSLE_API_KEY", "synthetic-text-key"),
+                    ("OPENAI_API_KEY", "synthetic-other-key"),
+                ].into_iter().map(|(key,value)| (key.into(),value.into())).collect();
+                let mut child = Command::new("/usr/bin/env");
+                child.env_clear().envs(variables.clone());
+                sanitize_environment(&mut child, spec.accepts_speech_key, variables);
+                let output = child.output().unwrap();
+                assert!(output.status.success());
+                let text = String::from_utf8(output.stdout).unwrap();
+                assert_eq!(text.contains("POSLE_SPEECH_API_KEY=synthetic-speech-key"), authorized);
+                assert!(!text.contains("POSLE_API_KEY="));
+                assert!(!text.contains("OPENAI_API_KEY="));
+                assert!(!strings(&spec).iter().any(|arg| arg.contains("synthetic-speech-key") || arg.contains("speechMode")));
+            }
+            assert!(!setup_spec(root, Path::new("/tmp/backend")).unwrap().accepts_speech_key);
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let mut cases = vec![
+            (Some(OsString::from(r#"{"speechMode":"cloud"}"#)), "local", true),
+            (Some(OsString::from(r#"{"speechMode":"local"}"#)), "cloud", false),
+            (None, "cloud", true),
+            (None, "local", false),
+        ];
+        for raw in ["", "broken", "null", "[]", r#"["cloud"]"#, "{}", r#"{"mode":"cloud"}"#,
+                    r#"{"speechMode":true}"#, r#"{"speechMode":null}"#] {
+            cases.push((Some(raw.into()), "cloud", false));
+        }
+        cases.push((Some(format!(r#"{{"speechMode":"cloud","focus":"{}"}}"#, "x".repeat(256 * 1024)).into()), "cloud", false));
+        cases.push((Some(OsString::from_vec(vec![0xff])), "cloud", false));
+        for (index, (snapshot, disk_mode, expected)) in cases.into_iter().enumerate() {
+            std::fs::write(root.path().join("settings.json"), json!({"speechMode":disk_mode}).to_string()).unwrap();
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "worker::tests::queued_speech_credentials_follow_the_validated_snapshot_in_isolated_children", "--nocapture"])
+                .env(CHILD_ROOT, root.path()).env(EXPECT_KEY, expected.to_string()).env_remove("POSLE_JOB_SETTINGS");
+            if let Some(snapshot) = snapshot { child.env("POSLE_JOB_SETTINGS", snapshot); }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "isolated case {index}: {}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        }
     }
 
     #[test]

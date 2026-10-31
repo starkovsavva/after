@@ -668,8 +668,20 @@ pub(crate) fn read_committed(root: &Path) -> Result<Value> {
 
 #[path = "workspace_repository/knowledge.rs"]
 mod knowledge;
+mod knowledge_rebuild;
 pub fn knowledge_dispatch(root: &Path, input: &Value) -> Result<Value> {
+    if input["command"].as_str().is_some_and(|command| command.starts_with("kb-rebuild-")) {
+        return knowledge_rebuild_dispatch(root, input);
+    }
     knowledge::dispatch(root, input)
+}
+pub fn knowledge_rebuild_dispatch(root: &Path, input: &Value) -> Result<Value> {
+    knowledge_rebuild::dispatch(root, input)
+}
+/// Re-read the server-owned, current source snapshot before invoking a provider.
+/// UI-provided source text and revisions are never authoritative.
+pub(crate) fn knowledge_rebuild_context(root: &Path, draft_id: &str) -> Result<Value> {
+    knowledge_rebuild::context(root, draft_id)
 }
 
 /// Stable snapshot for integrations. All existing corrections are recovered first.

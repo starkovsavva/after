@@ -4,7 +4,8 @@ umask 022
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${POSLE_BUILD_DIR:-$PROJECT/.build}"
 cd "$PROJECT"
-# A caller must explicitly select a valid Apple certificate before any build work.
+# Validate a requested Apple identity before building. An unset identity keeps
+# the existing ad-hoc development signature.
 python3 "$PROJECT/scripts/signing.py" --check
 SOURCE_REVISION="$(git rev-parse --verify HEAD)"
 SOURCE_STATUS="$(git status --porcelain)"
@@ -112,8 +113,16 @@ codesign --verify --deep --strict "$SPARKLE"
 ditto --noextattr --norsrc --noqtn "$SPARKLE" "$APP/Contents/Frameworks/Sparkle.framework"
 codesign --verify --deep --strict "$APP/Contents/Frameworks/Sparkle.framework"
 cp "$PROJECT/backend/engine.py" "$PROJECT/backend/models.py" "$PROJECT/backend/media_runtime.py" "$PROJECT/backend/cloud_speech.py" "$PROJECT/backend/embedded_bridge.py" "$PROJECT/backend/short_speech.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$PROJECT/backend/python-runtime.json" "$APP/Contents/Resources/backend/"
+# SwiftPM owns the shared translation catalog. Keep its resource bundle beside
+# the executable's resources so Bundle.module also resolves after distribution.
+LOCALIZATION_BUNDLE="$SWIFT_BIN/After_AfterLocalization.bundle"
+if [[ ! -d "$LOCALIZATION_BUNDLE" ]]; then
+    echo "Missing AfterLocalization resource bundle: $LOCALIZATION_BUNDLE" >&2
+    exit 1
+fi
+ditto --noextattr --norsrc --noqtn "$LOCALIZATION_BUNDLE" "$APP/Contents/Resources/After_AfterLocalization.bundle"
 mkdir -p "$APP/Contents/Resources/Localization"
-cp "$PROJECT/Sources/PosleApp/Resources/Localization/en.json" "$APP/Contents/Resources/Localization/en.json"
+cp "$PROJECT/Sources/AfterLocalization/Resources/en.json" "$APP/Contents/Resources/Localization/en.json"
 cp -R "$PROJECT/packaging/en.lproj" "$PROJECT/packaging/ru.lproj" "$APP/Contents/Resources/"
 cp "$PROJECT/THIRD_PARTY.md" "$APP/Contents/Resources/THIRD_PARTY.md"
 cp "$PROJECT/LICENSE" "$APP/Contents/Resources/LICENSE"

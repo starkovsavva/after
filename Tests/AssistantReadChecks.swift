@@ -1,7 +1,7 @@
 import Foundation
 #if SWIFT_PACKAGE
 import XCTest
-@testable import PosleCore
+@testable import AfterCore
 #endif
 #if !SWIFT_PACKAGE
 @main

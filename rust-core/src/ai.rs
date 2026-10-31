@@ -144,7 +144,7 @@ struct Example { example:String, translation:String, explanation:String }
 fn read(path:&Path) -> Result<Value> {
     serde_json::from_slice(&fs::read(path).context("Не удалось открыть данные встречи")?).context("Не удалось прочитать данные встречи")
 }
-fn snapshot_settings(snapshot: &str) -> Result<Settings> {
+pub(crate) fn snapshot_settings<T: serde::de::DeserializeOwned>(snapshot: &str) -> Result<T> {
     if snapshot.len() > 256 * 1024 { bail!("Сохранённые настройки операции слишком большие"); }
     let value: Value = serde_json::from_str(snapshot).context("Не удалось прочитать настройки фоновой операции")?;
     if !value.is_object() { bail!("Настройки фоновой операции должны быть объектом"); }
@@ -1303,14 +1303,7 @@ fn verify_blob(path:&Path,hash:&str,size:u64) -> Result<()> {
     let (actual,_)=hash_model(&mut file,"Проверяю подключённый файл модели",0.45,0.75)?;
     if actual!=hash {bail!("Существующий файл модели «After» повреждён: SHA-256 не совпадает. Исходный GGUF сохранён.");} Ok(())
 }
-#[cfg(target_os="macos")]
-fn clone_model(source:&Path,destination:&Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let (Ok(source),Ok(destination))=(std::ffi::CString::new(source.as_os_str().as_bytes()),std::ffi::CString::new(destination.as_os_str().as_bytes())) else {return false;};
-    unsafe {libc::clonefile(source.as_ptr(),destination.as_ptr(),0)==0}
-}
-#[cfg(not(target_os="macos"))]
-fn clone_model(_source:&Path,_destination:&Path) -> bool {false}
+use crate::platform::clone_model;
 
 fn lock_gguf_install(directory:&Path) -> Result<fs::File> {
     let lock=fs::OpenOptions::new().read(true).write(true).create(true).mode(0o600)
@@ -1480,10 +1473,10 @@ mod tests {
 
     #[test]
     fn queued_settings_are_bounded_objects_and_keep_the_captured_provider() {
-        let captured = snapshot_settings(r#"{"mode":"cloud","cloudProvider":"openrouter","cloudEndpoint":"https://openrouter.ai/api/v1","cloudModel":"saved-model","cloudAPI":"chat"}"#).unwrap();
+        let captured: Settings = snapshot_settings(r#"{"mode":"cloud","cloudProvider":"openrouter","cloudEndpoint":"https://openrouter.ai/api/v1","cloudModel":"saved-model","cloudAPI":"chat"}"#).unwrap();
         assert_eq!(captured.mode,"cloud"); assert_eq!(captured.cloud_provider,"openrouter"); assert_eq!(captured.cloud_model,"saved-model"); assert_eq!(captured.cloud_api,"chat");
-        for invalid in ["null", "[]", "broken", "\"local\""] { assert!(snapshot_settings(invalid).is_err()); }
-        assert!(snapshot_settings(&format!("{{\"focus\":\"{}\"}}", "x".repeat(256*1024))).is_err());
+        for invalid in ["null", "[]", "broken", "\"local\""] { assert!(snapshot_settings::<Settings>(invalid).is_err()); }
+        assert!(snapshot_settings::<Settings>(&format!("{{\"focus\":\"{}\"}}", "x".repeat(256*1024))).is_err());
     }
     #[test]
     fn live_features_read_current_disk_flags_even_with_a_frozen_job_snapshot() {
