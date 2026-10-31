@@ -20,6 +20,21 @@ enum ReleaseNotesNativeChecks {
         func preferences(_ root: URL) throws -> [String: Any] {
             try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("guidance.json"))) as! [String: Any]
         }
+        let knowledgeRoot = try fixture("knowledge-upgrade", ["introSeen": true, "knownVersion": "0.17.6.5", "lastLaunchedVersion": "0.17.6.5"])
+        let knowledge = GuidanceController(version: "0.18.0")
+        knowledge.configure(root: knowledgeRoot, preview: false)
+        knowledge.updateFeatures(AppFeatures())
+        knowledge.considerStartup(hasMeetings: true)
+        let latestUpdates = knowledge.featureGroups.flatMap(\.updates)
+        try expect(knowledge.presentation == .whatsNew && knowledge.previousVersion == "0.17.6.5", "Knowledge release preserves the previous installed version")
+        try expect(Set(latestUpdates.map(\.id)).isSuperset(of: ["knowledgeBase", "semanticSearch", "tasks", "assistant", "recording"]), "The release explains each shipped workflow")
+        try expect(knowledge.featureGroups.contains { $0.group == .disabled && $0.updates.contains { $0.id == "knowledgeBase" } }, "Announcing a new optional feature does not enable it")
+        try expect(!latestUpdates.flatMap(\.changes).contains { $0.id == "recording.microphone-route" }, "Already installed release changes must not appear as new")
+        knowledge.complete()
+        let knowledgeReopen = GuidanceController(version: "0.18.0")
+        knowledgeReopen.configure(root: knowledgeRoot, preview: false)
+        knowledgeReopen.considerStartup(hasMeetings: true)
+        try expect(knowledgeReopen.presentation == nil, "This release is announced once after completion")
         let root = try fixture("upgrade", ["introSeen": true, "knownVersion": "0.17.6.4", "lastLaunchedVersion": "0.17.6.4"])
         for (name, history) in [("empty-prior-guide", ["knownVersion": "0.17.6.4"]),
                                 ("empty-prior-launch", ["lastLaunchedVersion": "0.17.6.4"])] {

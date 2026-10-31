@@ -822,3 +822,30 @@ fn folder_search_and_embeddings_respect_each_sources_effective_profile() {
     let(docs,_)=embedding_documents(root.path()).unwrap();assert!(!docs.is_empty());assert!(docs.iter().all(|d|d.source["noteID"]=="allowed"));
     let global=answer_with(root.path(),&input("пилот"),|_|panic!("global assistant must remain disabled"));assert!(global.is_err());
 }
+
+
+#[test]
+fn lookup_exposes_semantic_outcome_independently_of_lexical_results() {
+    let root = enabled_root();
+    note(root.path(), "semantic-status-note", "Пилот запускается в пятницу.");
+    let matching = json!({"text":"пилот", "query":"пилот", "kinds":["note"]});
+    let empty = json!({"text":"zxqvabsence", "query":"zxqvabsence", "kinds":["transcript"]});
+    let found = lookup(root.path(), &matching).unwrap();
+    assert_eq!(found["semanticStatus"], "disabled");
+    assert!(!found["sources"].as_array().unwrap().is_empty());
+    let absent = lookup(root.path(), &empty).unwrap();
+    assert_eq!(absent["semanticStatus"], "disabled");
+    assert!(absent["sources"].as_array().unwrap().is_empty());
+    let mut config = crate::semantic::Config::default();
+    config.enabled = true;
+    crate::semantic::dispatch(root.path(), &json!({"command":"semantic-config", "config":config})).unwrap();
+    let preparing = lookup(root.path(), &matching).unwrap();
+    assert_eq!(preparing["semanticStatus"], "needsRefresh");
+    assert!(!preparing["sources"].as_array().unwrap().is_empty());
+    // A broken enabled configuration is a failure, never a successful semantic
+    // query inferred from the fact that lexical hits remain available.
+    fs::write(root.path().join("semantic-settings.json"), b"invalid JSON").unwrap();
+    let unavailable = lookup(root.path(), &matching).unwrap();
+    assert_eq!(unavailable["semanticStatus"], "unavailable");
+    assert!(!unavailable["sources"].as_array().unwrap().is_empty());
+}

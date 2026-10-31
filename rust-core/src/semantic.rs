@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -29,7 +29,7 @@ pub struct Config {
 }
 impl Default for Config {
     fn default() -> Self {
-        Self{enabled:false,provider:"ollama".into(),endpoint:"http://127.0.0.1:11434".into(),model:"qwen3-embedding:0.6b".into(),model_revision:String::new(),dimensions:1024,query_prefix:"Instruct: Given a search query, retrieve relevant passages from personal notes, tasks, meetings and code.\nQuery: ".into(),document_prefix:String::new(),allow_cloud:false}
+        Self{enabled:false,provider:"managed".into(),endpoint:String::new(),model:"qwen3-embedding:0.6b".into(),model_revision:String::new(),dimensions:1024,query_prefix:"Instruct: Given a search query, retrieve relevant passages from personal notes, tasks, meetings and code.\nQuery: ".into(),document_prefix:String::new(),allow_cloud:false}
     }
 }
 #[derive(Clone, Debug)]
@@ -137,6 +137,9 @@ pub fn config(root: &Path) -> Result<Config> {
     Ok(c)
 }
 fn endpoint(c: &Config) -> Result<Url> {
+    if c.provider == "managed" {
+        return Ok(Url::parse("http://127.0.0.1/").unwrap());
+    }
     let url = Url::parse(c.endpoint.trim()).context("Неверный адрес модели поиска")?;
     ensure!(
         !url.cannot_be_a_base()
@@ -165,9 +168,20 @@ fn is_local(url: &Url) -> bool {
     )
 }
 fn validate(c: &Config) -> Result<()> {
+    if c.provider == "managed" {
+        ensure!(
+            c.endpoint.is_empty()
+                && !c.allow_cloud
+                && c.model == crate::managed_embeddings::MODEL
+                && c.dimensions == 1024
+                && (c.model_revision.is_empty()
+                    || c.model_revision == crate::managed_embeddings::REVISION),
+            "Неверные настройки встроенной модели поиска"
+        );
+    }
     endpoint(c)?;
     ensure!(
-        ["ollama", "openai"].contains(&c.provider.as_str()),
+        ["managed", "ollama", "openai"].contains(&c.provider.as_str()),
         "Неизвестный API embeddings"
     );
     ensure!(
@@ -303,10 +317,17 @@ fn normalize(values: &Value, dimensions: usize) -> Result<Vec<f32>> {
     }
     Ok(v)
 }
-fn embed(c: &Config, texts: &[String], query: bool, key: &str) -> Result<Vec<Vec<f32>>> {
-    embed_request(c, texts, query, key, false)
+fn embed(
+    root: &Path,
+    c: &Config,
+    texts: &[String],
+    query: bool,
+    key: &str,
+) -> Result<Vec<Vec<f32>>> {
+    embed_request(root, c, texts, query, key, false)
 }
 fn embed_request(
+    root: &Path,
     c: &Config,
     texts: &[String],
     query: bool,
@@ -340,21 +361,39 @@ fn embed_request(
         )
     } else {
         (
-            api_url(c, "embeddings")?,
+            if c.provider == "managed" {
+                String::new()
+            } else {
+                api_url(c, "embeddings")?
+            },
             json!({"model":c.model,"input":inputs,"encoding_format":"float","dimensions":c.dimensions}),
         )
     };
     if discover_dimensions {
         body.as_object_mut().unwrap().remove("dimensions");
     }
-    let data = response(
-        authenticated(
-            client(if query { 15 } else { 45 })?.post(url).json(&body),
-            key,
+    let data = if c.provider == "managed" {
+        ensure!(key.is_empty(), "Встроенная модель не использует API-ключ");
+        ensure!(
+            c.model_revision == crate::managed_embeddings::REVISION,
+            "Проверьте встроенную модель перед поиском"
+        );
+        crate::managed_embeddings::embed(root, &inputs, || {
+            !crate::ai::live_features(root).is_ok_and(|f| f.semantic_search)
+                || (!discover_dimensions
+                    && !config(root)
+                        .is_ok_and(|saved| saved.enabled && manifest(&saved) == manifest(c)))
+        })?
+    } else {
+        response(
+            authenticated(
+                client(if query { 15 } else { 45 })?.post(url).json(&body),
+                key,
+            )?
+            .send()
+            .context("Embedding-модель недоступна; текстовый поиск продолжает работать")?,
         )?
-        .send()
-        .context("Embedding-модель недоступна; текстовый поиск продолжает работать")?,
-    )?;
+    };
     let vectors = if c.provider == "ollama" {
         data["embeddings"]
             .as_array()
@@ -438,12 +477,18 @@ pub(crate) fn chunk_source(
 }
 fn enabled_features(root: &Path) -> Result<crate::ai::AppFeatures> {
     let features = crate::ai::live_features(root)?;
-    ensure!(features.semantic_search, "Включите «Смысловой поиск» в настройках → Возможности.");
+    ensure!(
+        features.semantic_search,
+        "Включите «Смысловой поиск» в настройках → Возможности."
+    );
     Ok(features)
 }
 fn unchanged_features(root: &Path, expected: &crate::ai::AppFeatures) -> Result<()> {
     let current = enabled_features(root)?;
-    ensure!(current.cards == expected.cards && current.tasks == expected.tasks, "Настройки возможностей изменились: обновление индекса остановлено.");
+    ensure!(
+        current.cards == expected.cards && current.tasks == expected.tasks,
+        "Настройки возможностей изменились: обновление индекса остановлено."
+    );
     Ok(())
 }
 fn corpus(root: &Path, c: &Config) -> Result<(Vec<EmbeddingDocument>, Vec<String>)> {
@@ -466,7 +511,9 @@ fn corpus(root: &Path, c: &Config) -> Result<(Vec<EmbeddingDocument>, Vec<String
     Ok((docs, warnings))
 }
 fn current(root: &Path, s: &Value) -> bool {
-    if !crate::ai::live_features_for_input(root,s).is_ok_and(|features| features.semantic_search) { return false; }
+    if !crate::ai::live_features_for_input(root, s).is_ok_and(|features| features.semantic_search) {
+        return false;
+    }
     if s["kind"] == "code" {
         crate::code_index::source_current(root, s).unwrap_or(false)
     } else {
@@ -482,6 +529,333 @@ fn generation(c: &Config, docs: &[EmbeddingDocument]) -> String {
             .collect::<Vec<_>>()
     ]))
 }
+
+/// Reuse only an already published index. This path never generates embeddings,
+/// contacts a provider or expands the caller's explicitly permitted note set.
+/// Source fingerprints fence old vectors; the caller also rechecks workspace
+/// and policy revisions after ranking. Four chunks per note bound CPU and RAM.
+fn cached_note_vectors(
+    root: &Path,
+    allowed: &BTreeMap<String, String>,
+) -> Result<Option<(BTreeMap<String, Vec<Vec<f32>>>, String)>> {
+    if !crate::ai::live_features(root)?.semantic_search {
+        return Ok(None);
+    }
+    let c = config(root)?;
+    if !c.enabled || allowed.is_empty() {
+        return Ok(None);
+    }
+    let cache = root.join("cache");
+    let directory = cache.join("semantic");
+    for path in [&cache, &directory] {
+        match fs::symlink_metadata(path) {
+            Ok(meta) => ensure!(
+                meta.is_dir() && !meta.file_type().is_symlink(),
+                "Некорректный индекс поиска"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let path = directory.join("index.sqlite");
+    match fs::symlink_metadata(&path) {
+        Ok(meta) => ensure!(
+            meta.is_file() && !meta.file_type().is_symlink(),
+            "Некорректный индекс поиска"
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+    for suffix in ["-journal", "-wal", "-shm"] {
+        match fs::symlink_metadata(directory.join(format!("index.sqlite{suffix}"))) {
+            Ok(meta) => ensure!(
+                meta.is_file() && !meta.file_type().is_symlink(),
+                "Некорректные файлы индекса поиска"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let db = Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    db.busy_timeout(Duration::from_secs(2))?;
+    let active: Option<(String,String)> = db.query_row("SELECT g.id,g.manifest FROM generations g JOIN state s ON s.value=g.id WHERE s.key='active' AND g.complete=1", [], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let Some((generation, expected_manifest)) = active else {
+        return Ok(None);
+    };
+    if expected_manifest != manifest(&c) {
+        return Ok(None);
+    }
+    let mut statement =
+        db.prepare("SELECT source,vector FROM vectors WHERE generation=?1 ORDER BY id LIMIT ?2")?;
+    let rows = statement.query_map(params![generation, MAX_DOCS as i64], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+    })?;
+    let mut vectors: BTreeMap<String, Vec<Vec<f32>>> = BTreeMap::new();
+    for row in rows {
+        let (source, bytes) = row?;
+        let s: Value = serde_json::from_str(&source)?;
+        if s["kind"] != "note" {
+            continue;
+        }
+        let Some(id) = s["noteID"].as_str() else {
+            continue;
+        };
+        if allowed.get(id).map(String::as_str) != s["sourceFingerprint"].as_str() {
+            continue;
+        }
+        let chunks = vectors.entry(id.to_owned()).or_default();
+        if chunks.len() < 4 {
+            chunks.push(decode(&bytes, c.dimensions)?);
+        }
+    }
+    let latest = config(root)?;
+    ensure!(
+        latest.enabled
+            && manifest(&latest) == expected_manifest
+            && crate::ai::live_features(root)?.semantic_search,
+        "Настройки смыслового поиска изменились. Обновите подсказки."
+    );
+    Ok(Some((vectors, expected_manifest)))
+}
+
+/// Cached, fresh vectors for the caller's permitted library snapshot. Typed
+/// keys distinguish notes from meetings; title-only vectors are never included.
+/// One normalized centroid is retained per source, bounded to four note chunks
+/// and sixteen transcript/summary chunks. No inference or download occurs here.
+pub(crate) fn cached_library_centroids(
+    root: &Path,
+    allowed_notes: &BTreeMap<String, String>,
+    allowed_meetings: &BTreeSet<String>,
+) -> Result<Option<(BTreeMap<String, Vec<f32>>, String)>> {
+    if !crate::ai::live_features(root)?.semantic_search {
+        return Ok(None);
+    }
+    let c = config(root)?;
+    if !c.enabled || (allowed_notes.is_empty() && allowed_meetings.is_empty()) {
+        return Ok(None);
+    }
+    ensure!(
+        allowed_notes.len() + allowed_meetings.len() <= 10_000,
+        "Слишком много источников для построения тем"
+    );
+    let cache = root.join("cache");
+    let directory = cache.join("semantic");
+    for path in [&cache, &directory] {
+        match fs::symlink_metadata(path) {
+            Ok(meta) => ensure!(
+                meta.is_dir() && !meta.file_type().is_symlink(),
+                "Некорректный индекс поиска"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let path = directory.join("index.sqlite");
+    match fs::symlink_metadata(&path) {
+        Ok(meta) => ensure!(
+            meta.is_file() && !meta.file_type().is_symlink(),
+            "Некорректный индекс поиска"
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+    for suffix in ["-journal", "-wal", "-shm"] {
+        match fs::symlink_metadata(directory.join(format!("index.sqlite{suffix}"))) {
+            Ok(meta) => ensure!(
+                meta.is_file() && !meta.file_type().is_symlink(),
+                "Некорректные файлы индекса поиска"
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let db = Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    db.busy_timeout(Duration::from_secs(2))?;
+    let active: Option<(String,String)> = db.query_row("SELECT g.id,g.manifest FROM generations g JOIN state s ON s.value=g.id WHERE s.key='active' AND g.complete=1", [], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let Some((generation, expected_manifest)) = active else {
+        return Ok(None);
+    };
+    if expected_manifest != manifest(&c) {
+        return Ok(None);
+    }
+    let mut statement =
+        db.prepare("SELECT source,vector FROM vectors WHERE generation=?1 ORDER BY id LIMIT ?2")?;
+    let rows = statement.query_map(params![generation, MAX_DOCS as i64], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+    })?;
+    let mut sums: BTreeMap<String, (usize, Vec<f64>)> = BTreeMap::new();
+    let mut freshness: BTreeMap<String, bool> = BTreeMap::new();
+    for row in rows {
+        let (source, bytes) = row?;
+        let s: Value = serde_json::from_str(&source)?;
+        let (key, maximum) = if s["kind"] == "note" {
+            let Some(id) = s["noteID"].as_str() else {
+                continue;
+            };
+            if allowed_notes.get(id).map(String::as_str) != s["sourceFingerprint"].as_str() {
+                continue;
+            }
+            (format!("note:{id}"), 4)
+        } else if ["transcript", "summary"].contains(&s["kind"].as_str().unwrap_or("")) {
+            let Some(id) = s["meetingID"].as_str() else {
+                continue;
+            };
+            if !allowed_meetings.contains(id) {
+                continue;
+            }
+            let source_key = format!("{id}:{}:{}", s["kind"], s["sourceFingerprint"]);
+            if !*freshness
+                .entry(source_key)
+                .or_insert_with(|| current(root, &s))
+            {
+                continue;
+            }
+            (format!("meeting:{id}"), 16)
+        } else {
+            continue;
+        };
+        let (count, sum) = sums
+            .entry(key)
+            .or_insert_with(|| (0, vec![0.0; c.dimensions]));
+        if *count >= maximum {
+            continue;
+        }
+        let vector = decode(&bytes, c.dimensions)?;
+        for (total, value) in sum.iter_mut().zip(vector) {
+            *total += value as f64;
+        }
+        *count += 1;
+    }
+    ensure!(
+        cached_manifest_is_current(root, &expected_manifest),
+        "Настройки смыслового поиска изменились. Обновите подсказки."
+    );
+    let mut result = BTreeMap::new();
+    for (id, (_, sum)) in sums {
+        let norm = sum.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if norm.is_finite() && norm > 1e-12 {
+            result.insert(id, sum.into_iter().map(|v| (v / norm) as f32).collect());
+        }
+    }
+    if result.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((result, expected_manifest)))
+}
+
+pub(crate) fn cached_note_similarities(
+    root: &Path,
+    source_id: &str,
+    allowed: &BTreeMap<String, String>,
+) -> Result<Option<(BTreeMap<String, f64>, String)>> {
+    if !allowed.contains_key(source_id) {
+        return Ok(None);
+    }
+    let Some((vectors, expected_manifest)) = cached_note_vectors(root, allowed)? else {
+        return Ok(None);
+    };
+    let Some(source_vectors) = vectors.get(source_id) else {
+        return Ok(None);
+    };
+    let mut scores = BTreeMap::new();
+    for (id, chunks) in &vectors {
+        if id == source_id {
+            continue;
+        }
+        let score = source_vectors
+            .iter()
+            .flat_map(|a| {
+                chunks.iter().map(move |b| {
+                    a.iter()
+                        .zip(b)
+                        .map(|(x, y)| *x as f64 * *y as f64)
+                        .sum::<f64>()
+                })
+            })
+            .fold(-1.0f64, f64::max);
+        if score.is_finite() {
+            scores.insert(id.clone(), score.clamp(-1.0, 1.0));
+        }
+    }
+    Ok(Some((scores, expected_manifest)))
+}
+
+/// Load the permitted, fresh cached vectors once and form one normalized
+/// centroid per note. At most 1000 × 4 × 4096 inputs are retained. Topic
+/// grouping never downloads a model, indexes documents or calls a provider.
+pub(crate) fn cached_topic_vectors(
+    root: &Path,
+    allowed: &BTreeMap<String, String>,
+) -> Result<Option<(BTreeMap<String, Vec<f32>>, String)>> {
+    ensure!(
+        allowed.len() <= 1000,
+        "Слишком много заметок для построения тем"
+    );
+    let Some((vectors, manifest)) = cached_note_vectors(root, allowed)? else {
+        return Ok(None);
+    };
+    let mut result = BTreeMap::new();
+    for (id, chunks) in vectors {
+        let Some(first) = chunks.first() else {
+            continue;
+        };
+        let mut centroid = vec![0.0f64; first.len()];
+        for chunk in &chunks {
+            for (v, x) in centroid.iter_mut().zip(chunk) {
+                *v += *x as f64;
+            }
+        }
+        let norm = centroid.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if norm.is_finite() && norm > 1e-12 {
+            result.insert(
+                id,
+                centroid.into_iter().map(|x| (x / norm) as f32).collect(),
+            );
+        }
+    }
+    if result.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((result, manifest)))
+}
+pub(crate) fn cached_manifest_is_current(root: &Path, expected: &str) -> bool {
+    crate::ai::live_features(root).is_ok_and(|f| f.semantic_search)
+        && config(root).is_ok_and(|c| c.enabled && manifest(&c) == expected)
+}
+
+/// Model-specific cut-off used only for suggestions explicitly confirmed by
+/// the user. The exact digest and input format were evaluated on separate
+/// small synthetic calibration/holdout fixtures; these are not a quality
+/// guarantee for user data. Automatic topic edges must not use this cut-off.
+pub(crate) fn manual_suggestion_threshold(root: &Path, expected_manifest: &str) -> f64 {
+    const EVALUATED_QWEN_DIGEST: &str =
+        "ac6da0dfba84a81fdbfbaf330198c33cd77c4cdfc53e8bc50eb581914a15621d";
+    let Ok(current) = config(root) else {
+        return 0.82;
+    };
+    let evaluated_model = (current.provider == "ollama"
+        && current.model_revision == EVALUATED_QWEN_DIGEST)
+        || (current.provider == "managed"
+            && current.model_revision == crate::managed_embeddings::REVISION);
+    if current.enabled
+        && evaluated_model
+        && current.model == "qwen3-embedding:0.6b"
+        && current.dimensions == 1024
+        && current.document_prefix.is_empty()
+        && manifest(&current) == expected_manifest
+    {
+        0.43
+    } else {
+        0.82
+    }
+}
+
 fn refresh(root: &Path, input: &Value) -> Result<Value> {
     let feature_snapshot = enabled_features(root)?;
     let c = config(root)?;
@@ -553,7 +927,7 @@ fn refresh(root: &Path, input: &Value) -> Result<Value> {
         }
         let texts = batch.iter().map(|d| d.text.clone()).collect::<Vec<_>>();
         unchanged_features(root, &feature_snapshot)?;
-        let vectors = embed(&c, &texts, false, key)?;
+        let vectors = embed(root, &c, &texts, false, key)?;
         unchanged_features(root, &feature_snapshot)?;
         ensure!(
             manifest(&config(root)?) == m && config(root)?.enabled,
@@ -611,7 +985,9 @@ pub fn search(
     key: &str,
     binding: Option<&str>,
 ) -> Result<Value> {
-    if !crate::ai::live_features(root)?.semantic_search { return Ok(json!({"hits":[],"enabled":false})); }
+    if !crate::ai::live_features(root)?.semantic_search {
+        return Ok(json!({"hits":[],"enabled":false}));
+    }
     let c = config(root)?;
     if !c.enabled {
         return Ok(json!({"hits":[],"enabled":false}));
@@ -630,7 +1006,7 @@ pub fn search(
         return Ok(json!({"hits":[],"enabled":true,"needsRefresh":true}));
     }
     enabled_features(root)?;
-    let q = embed(&c, &[query.into()], true, key)?.remove(0);
+    let q = embed(root, &c, &[query.into()], true, key)?.remove(0);
     enabled_features(root)?;
     ensure!(
         config(root)?.enabled && manifest(&config(root)?) == m,
@@ -672,7 +1048,11 @@ pub fn search(
     Ok(json!({"hits":hits,"enabled":true,"generation":g,"model":c.model}))
 }
 pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
-    if ["semantic-check", "semantic-models", "semantic-pull"].contains(&input["command"].as_str().unwrap_or("")) { enabled_features(root)?; }
+    if ["semantic-check", "semantic-models", "semantic-pull"]
+        .contains(&input["command"].as_str().unwrap_or(""))
+    {
+        enabled_features(root)?;
+    }
     ensure!(root.is_absolute(), "Нужен абсолютный путь библиотеки");
     match input["command"].as_str().unwrap_or("") {
         "semantic-config" => {
@@ -688,6 +1068,14 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                 }
             }
         }
+        "semantic-runtime-activity" => {
+            let active = input["recording"]
+                .as_bool()
+                .context("Нужно состояние записи")?;
+            crate::managed_embeddings::set_recording(root, active)?;
+            Ok(json!({"recording":active}))
+        }
+        "semantic-runtime-status" => crate::managed_embeddings::status(root),
         "semantic-status" => {
             let c = config(root)?;
             let db = connection(root)?;
@@ -721,7 +1109,9 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                 key,
                 supplied_binding(input, input.get("config").is_some(), &binding),
             )?;
-            if c.provider == "ollama" {
+            if c.provider == "managed" {
+                c.model_revision = crate::managed_embeddings::REVISION.into();
+            } else if c.provider == "ollama" {
                 enabled_features(root)?;
                 c.model_revision = ollama_revision(&c, key)?;
             } else if c.model_revision.is_empty() || c.model_revision.starts_with("confirmed-") {
@@ -729,6 +1119,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
             }
             enabled_features(root)?;
             let probe = embed_request(
+                root,
                 &c,
                 &["Connection test / Проверка подключения".into()],
                 false,
@@ -753,6 +1144,12 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                 key,
                 supplied_binding(input, input.get("config").is_some(), &binding),
             )?;
+            if c.provider == "managed" {
+                let state = crate::managed_embeddings::status(root)?;
+                return Ok(
+                    json!({"models":if state["ready"]==true {json!([{"id":crate::managed_embeddings::MODEL}])} else {json!([])},"runtime":state}),
+                );
+            }
             let url = api_url(
                 &c,
                 if c.provider == "ollama" {
@@ -775,6 +1172,9 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
                 config(root)?
             };
             validate(&c)?;
+            if c.provider == "managed" {
+                return crate::managed_embeddings::prepare(root);
+            }
             ensure!(
                 c.provider == "ollama" && is_local(&endpoint(&c)?),
                 "Скачивание доступно в локальной Ollama"

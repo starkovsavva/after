@@ -9,6 +9,7 @@ struct MainView: View {
     @ObservedObject private var guide = GuidanceController.shared
     @State private var dropping = false
     @State private var confirmDelete = false
+    @State private var pendingDeleteMeeting: Meeting?
     @State private var filteringMeetings = false
     @State private var folderEditor: FolderEditorTarget?
     @State private var showingFeatureDefaults = false
@@ -31,6 +32,7 @@ struct MainView: View {
                         Group {
                             if let feature = unavailableFeature { OptionalFeatureGate(feature: feature) }
                             else if store.librarySection == "inbox" { NotesLibraryView(notes: store.notes) }
+                            else if store.librarySection == "knowledge" { KnowledgeBaseView() }
                             else if store.librarySection == "tasks" { NotesTasksView(notes: store.notes) }
                             else if store.librarySection == "calendar" { CalendarView() }
                             else if store.librarySection == "contexts" { NotesContextsView(notes: store.notes) }
@@ -44,7 +46,7 @@ struct MainView: View {
                             if let notice = store.notice { message(notice, error: false) }
                         }.frame(maxWidth: 520).padding(16)
                     }
-                    if store.librarySection == "meetings", store.transcript != nil { player.appLayoutAnchor("status") }
+                    if showsPlayer { player.appLayoutAnchor("status") }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -62,7 +64,7 @@ struct MainView: View {
             Task { @MainActor in considerGuidanceStartup() }
         }
         .onChange(of: store.librarySection) { _, section in
-            let featureID = section == "contexts" ? "tasks" : section
+            let featureID = section == "contexts" ? "tasks" : section == "knowledge" ? "knowledgeBase" : section
             guide.recordUsage(featureID, root: store.root)
         }
         .onChange(of: store.tab) { _, tab in
@@ -129,7 +131,7 @@ struct MainView: View {
             if store.isFeatureEnabled(.assistant) {
                 VoiceCommandOverlay(controller: store.voice).environmentObject(store)
                     .padding(.trailing, 20)
-                    .padding(.bottom, store.librarySection == "meetings" && store.transcript != nil ? 64 : 20)
+                    .padding(.bottom, showsPlayer ? 64 : 20)
             }
         }
         .sheet(isPresented: $store.showingCaptureDrafts) {
@@ -161,11 +163,16 @@ struct MainView: View {
         .sheet(isPresented: $store.showingSettings) { SettingsView(section: store.settingsSection).environmentObject(store) }
         .sheet(isPresented: $store.showingRecord) { RecordView().environmentObject(store) }
         .sheet(isPresented: $store.showingSearch) { SearchView().environmentObject(store) }
-        .alert(L("Переместить встречу в Корзину?"), isPresented: $confirmDelete) {
+        .alert(L("Переместить встречу в Корзину?"), isPresented: $confirmDelete, presenting: pendingDeleteMeeting) { meeting in
             Button(L("Отмена"), role: .cancel) {}
-            Button(L("В Корзину"), role: .destructive) { store.trashSelected() }
-        } message: { Text(L("Встречу и все её материалы можно будет восстановить в Корзине приложения в течение 30 дней.")) }
+            Button(L("В Корзину"), role: .destructive) { store.trashMeeting(meeting.id) }
+        } message: { _ in Text(L("Встречу и все её материалы можно будет восстановить в Корзине приложения в течение 30 дней.")) }
     }
+
+    private var showsPlayer: Bool {
+        store.librarySection == "meetings" && store.selection.flatMap { store.playbackURL(for: $0) } != nil
+    }
+    private func confirmTrash(_ meeting: Meeting) { pendingDeleteMeeting = meeting; confirmDelete = true }
 
     private func considerGuidanceStartup() {
         guide.considerStartup(hasMeetings: !store.meetings.isEmpty, canPresent: store.canPresentGuidance)
@@ -177,6 +184,7 @@ struct MainView: View {
         case "tasks", "contexts": feature = .tasks
         case "cards": feature = .cards
         case "calendar": feature = .calendar
+        case "knowledge": feature = .knowledgeBase
         default: feature = nil
         }
         return feature.flatMap { store.isFeatureEnabled($0) ? nil : $0 }
@@ -199,6 +207,7 @@ struct MainView: View {
             VStack(spacing: 2) {
                 libraryButton("meetings", L("Встречи"), "waveform")
                 libraryButton("inbox", L("Заметки"), "note.text")
+                if store.isFeatureEnabled(.knowledgeBase) { libraryButton("knowledge", L("База знаний"), "books.vertical") }
                 if store.isFeatureEnabled(.tasks) { libraryButton("tasks", L("Задачи"), "checklist") }
                 if store.isFeatureEnabled(.cards) { libraryButton("cards", L("Карточки"), "rectangle.on.rectangle") }
                 if store.isFeatureEnabled(.calendar) { libraryButton("calendar", L("Календарь"), "calendar") }
@@ -378,7 +387,7 @@ struct MainView: View {
                                     HStack {
                                         Text(Date(timeIntervalSince1970: meeting.createdAt).formatted(.dateTime.day().month(.abbreviated).locale(UILocale())))
                                         Spacer()
-                                        Text(meeting.status == "recording" ? L("Запись") : meeting.duration > 0 ? Exporter.timestamp(meeting.duration) : L("Добавлена"))
+                                        Text(store.isMeetingSaving(meeting.id) ? L("Сохраняю запись") : store.captureMeetingID == meeting.id ? L("Запись") : meeting.duration > 0 ? Exporter.timestamp(meeting.duration) : L("Добавлена"))
                                     }.font(AppTypography.caption).foregroundStyle(.secondary)
                                 }.padding(11).background(store.selection == meeting.id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
                                     .contentShape(Rectangle())
@@ -386,12 +395,14 @@ struct MainView: View {
                                 .accessibilityIdentifier("meeting.select." + meeting.id)
                                 .contextMenu {
                                     Button(L("Переместить в папку…")) { meetingFolderTarget = MeetingFolderTarget(meeting: meeting) }
-                                        .disabled(store.captureMeetingID == meeting.id || store.isTerminating)
+                                        .disabled(store.isMeetingMediaProtected(meeting.id) || store.isTerminating)
                                     Button(L("Переименовать…")) {
                                         let currentTab = store.selection == meeting.id ? store.tab : "summary"
                                         store.openMeeting(meeting.id, tab: currentTab); store.meetingTitleEdits.begin(meeting)
                                     }
-                                        .disabled(store.captureMeetingID == meeting.id || store.isTerminating)
+                                        .disabled(store.isMeetingMediaProtected(meeting.id) || store.isTerminating)
+                                    Divider()
+                                    MeetingFileActions(meeting: meeting) { confirmTrash(meeting) }
                                 }
                                 .accessibilityValue(store.selection == meeting.id ? L("Выбрана") : "")
                                 .accessibilityAddTraits(store.selection == meeting.id ? .isSelected : [])
@@ -493,24 +504,13 @@ struct MainView: View {
             Button { store.togglePlayback() } label: {
                 Image(systemName: store.isPlaying ? "pause.fill" : "play.fill").frame(width: 22, height: 22)
             }.buttonStyle(.bordered).accessibilityLabel(store.isPlaying ? L("Приостановить") : L("Воспроизвести"))
+                .accessibilityIdentifier("meeting.playback.toggle")
             Text(Exporter.timestamp(store.playbackTime)).monospacedDigit().frame(width: 52)
             Slider(value: Binding(get: { store.playbackTime }, set: { store.seek($0) }), in: 0...max(1, store.playbackDuration))
                 .accessibilityLabel(L("Позиция в записи"))
             Text(Exporter.timestamp(store.playbackDuration)).monospacedDigit().foregroundStyle(.secondary).frame(width: 52)
             Menu {
-                Button(L("Конспект и транскрипция (.md)")) { store.export(false) }
-                Button(L("Аудиозапись (.mp3)")) { store.exportAudio() }
-                if store.selected?.hasVideo == true {
-                    Button(L("Открыть видео (.mp4)")) {
-                        if let directory = store.selectedDirectory { NSWorkspace.shared.open(directory.appendingPathComponent("video.mp4")) }
-                    }
-                }
-                if store.isFeatureEnabled(.cards) {
-                    Button(L("Карточки для Anki (.tsv)")) { store.export(true) }.disabled(store.summary?.cards.isEmpty ?? true)
-                }
-                Divider()
-                Button(L("Показать файлы встречи")) { if let directory = store.selectedDirectory { NSWorkspace.shared.open(directory) } }
-                Button(L("Переместить в Корзину"), role: .destructive) { confirmDelete = true }.disabled(store.busy || store.isRecording)
+                if let meeting = store.selected { MeetingFileActions(meeting: meeting) { confirmTrash(meeting) } }
             } label: { Image(systemName: "square.and.arrow.up").frame(width: 25) }.menuStyle(.borderlessButton).frame(width: 35)
                 .accessibilityLabel(L("Экспорт встречи"))
         }.font(AppTypography.control).padding(.horizontal, AppLayout.contentInset)

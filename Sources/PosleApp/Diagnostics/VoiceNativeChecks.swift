@@ -636,7 +636,9 @@ enum VoiceNativeChecks {
         let rankStarted = root.appendingPathComponent("fixture-reranking-started.json")
         try? FileManager.default.removeItem(at: rankStarted)
         store.librarySection = "tasks"
-        prepare("Найди заметку про доступ к стенду")
+        // This compound command intentionally exercises the model-backed
+        // reranker; the simple “найди заметку” form now uses local lookup.
+        prepare("Найди и открой заметку про доступ к стенду")
         voice.perform()
         try await waitUntil { FileManager.default.fileExists(atPath: rankStarted.path) }
         var changedDuringRanking = try required(store.notes.notes.first { $0.id == noteID }, "Ranking fixture note")

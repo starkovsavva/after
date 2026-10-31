@@ -111,6 +111,12 @@ enum UIConsistencyChecks {
         guard let meeting = store.meetings.first(where: { $0.id.hasPrefix("demo-") }) else {
             throw AppError.message("Generate the disposable demo fixture with scripts/preview.py before checking UI consistency")
         }
+        // The footer is media-driven. This layout fixture needs an actual local
+        // asset even though no playback is started during geometry checks.
+        let playback = store.meetingDirectory(meeting.id).appendingPathComponent("playback.mp3")
+        if !FileManager.default.fileExists(atPath: playback.path) {
+            try SourcePlaybackNativeChecks.silentWAV().write(to: playback)
+        }
         store.selection = meeting.id; store.loadSelection(); store.tab = "summary"; store.librarySection = "meetings"
         store.error = nil; store.notice = nil; store.notes.error = nil; store.notes.notice = nil
         let originalMeetings = store.meetings

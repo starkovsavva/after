@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "Posle",
     platforms: [.macOS("15.0")],
-    products: [.executable(name: "Posle", targets: ["PosleApp"])],
+    products: [.executable(name: "After", targets: ["PosleApp"])],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1")
     ],
@@ -24,7 +24,7 @@ let package = Package(
             dependencies: ["PosleCore"],
             path: "Tests",
             exclude: ["UpdateFixture.swift"],
-            sources: ["CoreChecks.swift", "CalendarLayoutChecks.swift", "TaskDueDateChecks.swift"]
+            sources: ["CoreChecks.swift", "CalendarLayoutChecks.swift", "TaskDueDateChecks.swift", "AssistantReadChecks.swift"]
         )
     ]
 )

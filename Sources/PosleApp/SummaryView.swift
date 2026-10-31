@@ -28,7 +28,9 @@ struct SummaryView: View {
                         Button(L("Общие настройки моделей…")) { store.openSettings("ai") }
                     } label: {
                         Label(profileSettings.mode == "cloud" ? L("Облако") : L("На Mac"), systemImage: profileSettings.mode == "cloud" ? "cloud" : "laptopcomputer")
-                    }.menuStyle(.borderlessButton).frame(width: 110).disabled(overviewLocked || overviewEditing)
+                    }.menuStyle(.borderlessButton).fixedSize(horizontal: true, vertical: false)
+                        .frame(minWidth: 110, alignment: .leading).disabled(overviewLocked || overviewEditing)
+                        .accessibilityIdentifier("summary.processingMode")
                     Button { showingFocus = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 24, height: 24) }
                         .buttonStyle(.plain).foregroundStyle(.secondary).disabled(overviewLocked || overviewEditing).accessibilityLabel(L("Контекст встречи"))
                         .help(L("Цель встречи и что важно выписать"))

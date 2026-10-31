@@ -21,6 +21,7 @@ PROFILES = {
 NATIVE = (
     "folders", "localization", "folder-jobs", "meeting-rename", "responsiveness", "contexts", "feature-ui", "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-start", "recording-sessions", "corrections", "tasks", "task-workspace", "integrations", "trash", "themes", "typography", "guidance", "voice", "bug-report", "copy-transcript", "updates",
     "release-notes", "calendar", "calendar-workspace", "notes", "overview", "jobs", "navigation", "cards", "queue", "source-playback", "source-popover",
+    "assistant-read", "knowledge-links", "knowledge-topics", "agent-snapshot",
 )
 
 
@@ -98,7 +99,7 @@ class Verification:
         with tempfile.TemporaryDirectory(prefix="posle-core-check-", dir="/private/tmp") as temporary:
             root = Path(temporary)
             sources = sorted((PROJECT / "Sources/PosleCore").glob("*.swift"))
-            for name in ("CoreChecks", "CalendarLayoutChecks", "TaskDueDateChecks"):
+            for name in ("CoreChecks", "CalendarLayoutChecks", "TaskDueDateChecks", "AssistantReadChecks"):
                 output = root / name
                 self.run("Standalone " + name, ["swiftc", "-module-cache-path", root / "module-cache",
                     "-parse-as-library", *sources, PROJECT / "Tests" / (name + ".swift"), "-o", output])
@@ -116,6 +117,7 @@ class Verification:
         self.build_rust()
         self.run("CLI, C ABI and localhost HTTP", [self.python, "scripts/e2e.py", "--engine", self.engine, "--library", self.library])
         self.run("MCP task lifecycle over stdio", [self.python, "scripts/check_mcp.py", "--engine", self.engine, "--library", self.library])
+        self.run("Approved snapshots over real MCP", [self.python, "scripts/check_snapshot_agent.py", "--engine", self.engine, "--library", self.library])
         self.run("Recording through native worker", [self.python, "scripts/e2e_media.py", "--python", self.python, "--engine", self.engine],
                  env=self.env | {"POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"})
         self.run("Long, delayed and idle recording tracks", [self.python, "scripts/check_media.py"],
@@ -128,7 +130,7 @@ class Verification:
     def native(self):
         self.build_swift()
         self.build_rust()
-        binary = self.swift / "debug/Posle"
+        binary = self.swift / "debug/After"
         for scenario in NATIVE:
             with tempfile.TemporaryDirectory(prefix="posle-native-check-", dir="/private/tmp") as fixture:
                 if scenario not in ("folders", "folder-jobs", "meeting-rename", "responsiveness", "contexts", "feature-ui", "recording"):

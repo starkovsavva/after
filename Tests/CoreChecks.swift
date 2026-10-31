@@ -119,10 +119,15 @@ struct CoreChecks {
         expect(minimal.features == AppFeatures() && settings.features == AppFeatures(), "base-only defaults also apply to legacy settings")
         let partialFeatures = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"features":{"cards":true},"localModel":"keep-model"}"#.utf8))
         expect(partialFeatures.features.cards && !partialFeatures.features.assistant && !partialFeatures.features.tasks, "partial opt-in never enables unrelated features")
+        expect(!partialFeatures.features.knowledgeBase, "legacy settings do not enable the knowledge foundation")
         var chosenFeatures = partialFeatures
         chosenFeatures.features.tasks = true
         let featureCopy = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(chosenFeatures))
         expect(featureCopy.features == chosenFeatures.features && featureCopy.localModel == "keep-model", "feature choices round trip without changing models")
+        var futureFeatures = chosenFeatures
+        futureFeatures.features.knowledgeBase = true
+        let futureCopy = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(futureFeatures))
+        expect(futureCopy.features.knowledgeBase && AppFeatures.allEnabled.knowledgeBase, "knowledge opt-in survives settings serialization")
         expect(!minimal.allowsSection("cards") && !minimal.allowsSection("contexts") && minimal.allowsSection("inbox"), "section policy keeps notes and hides optional projects")
         expect(copy.generateCards == true && legacyMeeting.generateCards == true, "explicit per-meeting cards opt-in survives metadata changes")
         legacyMeetingObject.removeValue(forKey: "generateCards")
@@ -134,6 +139,9 @@ struct CoreChecks {
         var globalProfile = AppSettings(); globalProfile.features.tasks = true
         let appliedProfile = overrides.apply(to: globalProfile)
         expect(appliedProfile.features.cards && !appliedProfile.features.tasks && !appliedProfile.features.assistant, "sparse folder feature overrides distinguish inheritance from explicit false")
+        let knowledgeOverrides = try JSONDecoder().decode(FolderOverrides.self, from: Data(#"{"features":{"knowledgeBase":true}}"#.utf8))
+        expect(knowledgeOverrides.apply(to: globalProfile).features.knowledgeBase && !globalProfile.features.knowledgeBase,
+               "knowledge folder override is inherited without changing the global choice")
         expect(!globalProfile.features.cards && globalProfile.features.tasks && globalProfile.mode == "local", "folder selection leaves global defaults unchanged")
         expect(appliedProfile.cloudProvider == "custom" && appliedProfile.cloudModel == "folder-model" && appliedProfile.cloudEndpoint == "https://example.invalid/v1", "folder model stays bound to its exact provider and endpoint")
         let sparseFolder = String(decoding: try JSONEncoder().encode(overrides), as: UTF8.self)

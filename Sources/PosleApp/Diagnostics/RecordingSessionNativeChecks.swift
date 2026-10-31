@@ -54,6 +54,9 @@ enum RecordingSessionNativeChecks {
         store.busy = false; store.processAfterRecording = false
         let savingWithoutModels = Task { await store.stopRecording() }
         try await wait { await gate.started(first) }
+        try expect(store.captureMeetingID == nil && store.isMeetingSaving(first) && store.isMeetingMediaProtected(first)
+                   && !store.canTrashMeeting(first) && store.sourceMediaURL(for: first) == nil,
+                   "Finalizing must retain the saved meeting identity and protect its source after the hardware capture ends")
         await gate.release(first); await savingWithoutModels.value
         try expect(!store.isRecording && store.captureMeetingID == nil && store.recordingAssertion == 0, "Raw capture did not release its lifecycle/power lease")
         try expect(FileManager.default.fileExists(atPath: store.meetingDirectory(first).appendingPathComponent("recording.m4a").path), "Recording without models did not preserve its source")
@@ -82,6 +85,11 @@ enum RecordingSessionNativeChecks {
                        "A new recording failed to inherit its selected work folder independently")
             store.processAfterRecording = false
             try expect(oldID != newID, "Two captures reused one meeting identity")
+            store.selection = first; store.loadSelection()
+            try expect(!store.isMeetingSaving(first) && !store.isMeetingMediaProtected(first) && store.canTrashMeeting(first)
+                       && store.sourceMediaURL(for: first) != nil && store.isMeetingSaving(oldID)
+                       && store.isMeetingMediaProtected(newID) && !store.isMeetingSaving(newID),
+                       "Selecting saved B during capture C/finalization A must preserve B's media actions and its own saved status")
             fake.failed?(RecordingFailure(sessionID: oldID, message: "late writer callback"))
             try await Task.sleep(for: .milliseconds(30))
             try expect(store.isRecording && store.captureMeetingID == newID && fake.active && store.error == nil,

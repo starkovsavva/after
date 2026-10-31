@@ -28,7 +28,8 @@ struct AgentMCPConfiguration {
     }
     var executable: String
     var root: String
-    var arguments: [String] { ["mcp", "--root", root] }
+    var sharedMaterialSearch = false
+    var arguments: [String] { ["mcp", "--root", root] + (sharedMaterialSearch ? ["--shared-material-search"] : []) }
 
     func text(for client: Client) -> String {
         if client == .codex {
@@ -68,19 +69,23 @@ struct AgentIntegrationSettings: View {
     @State private var message: String?
     @State private var failed = false
     @State private var client: AgentMCPConfiguration.Client = .codex
+    @State private var sharedMaterialSearch = false
 
     private struct Access: Decodable { var enabled: Bool; var revision: Int }
     private var configuration: String {
-        AgentMCPConfiguration(
-            executable: Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/posle-engine").path,
-            root: app.root.path
+        let current = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/After Engine")
+        let legacy = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/posle-engine")
+        return AgentMCPConfiguration(
+            executable: FileManager.default.isExecutableFile(atPath: current.path) ? current.path : legacy.path,
+            root: app.root.path,
+            sharedMaterialSearch: sharedMaterialSearch
         ).text(for: client)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             Text(L("Внешние агенты")).font(AppTypography.sectionTitle)
             VStack(alignment: .leading, spacing: 10) {
-                Toggle(L("Разрешить подключение через MCP"), isOn: Binding(get: { enabled }, set: save))
+                Toggle(L("MCP для задач: разрешить подключение"), isOn: Binding(get: { enabled }, set: save))
                     .disabled(loading).accessibilityIdentifier("integrations.mcp.enabled")
                 Text(L("Подходит любой агент с поддержкой локальных MCP-серверов (stdio). Выберите доступные задачи и материалы в меню «… → Доступ агентам» у задачи."))
                     .font(AppTypography.caption).foregroundStyle(.secondary)
@@ -94,6 +99,9 @@ struct AgentIntegrationSettings: View {
                     }
                     .frame(maxWidth: 280, alignment: .leading)
                     .accessibilityIdentifier("integrations.mcp.client")
+                    Toggle(L("Поиск в материалах задачи"), isOn: $sharedMaterialSearch)
+                    Text(L("Агент сможет искать только в материалах, которые вы явно открыли ему в закреплённой задаче. Поиск по всей базе знаний не включается."))
+                        .font(AppTypography.caption).foregroundStyle(.secondary)
                     Text(client.instructions)
                         .font(AppTypography.control).foregroundStyle(.secondary)
                     Text(configuration).font(.system(.caption, design: .monospaced))
@@ -111,6 +119,8 @@ struct AgentIntegrationSettings: View {
                 }
                 .onChange(of: client) { _, _ in message = nil; failed = false }
             }
+            Divider()
+            SnapshotAgentSettings(root: app.root).environmentObject(app)
             if let message {
                 Label(message, systemImage: failed ? "exclamationmark.triangle" : "checkmark.circle")
                     .font(AppTypography.caption).foregroundStyle(failed ? Ink.warning : .secondary)
@@ -133,7 +143,7 @@ struct AgentIntegrationSettings: View {
             ])
             let value = try JSONDecoder().decode(Access.self, from: data)
             enabled = value.enabled; revision = value.revision; failed = false
-            message = next ? L("MCP включён для разрешённых задач") : L("MCP выключен")
+            message = next ? L("MCP для разрешённых задач включён") : L("MCP для задач выключен")
         } catch { load(); failed = true; message = error.localizedDescription }
     }
 }

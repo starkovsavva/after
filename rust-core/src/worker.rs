@@ -157,7 +157,15 @@ pub fn application_contents(executable: &Path) -> Option<&Path> {
 /// ordinary engine binary supports the same private entry point for developers.
 fn native_host_path(engine: &Path) -> PathBuf {
     application_contents(engine)
-        .map(|contents| contents.join("Helpers/После Распознавание.app/Contents/MacOS/После Речь"))
+        .map(|contents| {
+            let directory = contents.join("Helpers/После Распознавание.app/Contents/MacOS");
+            let current = directory.join("After Speech");
+            let legacy = directory.join("После Речь");
+            // A process from an earlier version may still see the old bundle
+            // while an update is being applied. Never prefer the legacy file
+            // when the current helper is present.
+            if !current.is_file() && legacy.is_file() { legacy } else { current }
+        })
         .unwrap_or_else(|| engine.to_owned())
 }
 
@@ -488,11 +496,21 @@ mod tests {
 
     #[test]
     fn production_selects_branded_helper_and_development_keeps_native_engine() {
-        let bundled = Path::new("/Applications/После.app/Contents/MacOS/posle-engine");
-        assert_eq!(native_host_path(bundled), Path::new("/Applications/После.app/Contents/Helpers/После Распознавание.app/Contents/MacOS/После Речь"));
-        let processing = Path::new("/Applications/После.app/Contents/Helpers/После Обработка.app/Contents/MacOS/После Обработка");
-        assert_eq!(native_host_path(processing), native_host_path(bundled));
-        assert_eq!(application_contents(processing), Some(Path::new("/Applications/После.app/Contents")));
+        let fixture = tempfile::tempdir().unwrap();
+        let contents = fixture.path().join("After.app/Contents");
+        let bundled = contents.join("MacOS/posle-engine");
+        let directory = contents.join("Helpers/После Распознавание.app/Contents/MacOS");
+        let current = directory.join("After Speech");
+        let legacy = directory.join("После Речь");
+        std::fs::create_dir_all(&directory).unwrap();
+        assert_eq!(native_host_path(&bundled), current);
+        std::fs::write(&legacy, b"legacy").unwrap();
+        assert_eq!(native_host_path(&bundled), legacy);
+        std::fs::write(&current, b"current").unwrap();
+        assert_eq!(native_host_path(&bundled), current);
+        let processing = contents.join("Helpers/После Обработка.app/Contents/MacOS/After Processing");
+        assert_eq!(native_host_path(&processing), current);
+        assert_eq!(application_contents(&processing), Some(contents.as_path()));
         let development = Path::new("/tmp/build/debug/posle-engine");
         assert_eq!(native_host_path(development), development);
         assert!(application_contents(development).is_none());

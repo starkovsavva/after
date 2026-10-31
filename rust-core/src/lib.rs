@@ -12,8 +12,13 @@ pub mod trash;
 pub mod voice;
 pub mod task_workspace;
 pub mod mcp;
+pub mod scoped_share;
 pub mod search;
 pub mod semantic;
+pub mod managed_embeddings;
+// Verified Unix-socket transport used by the built-in embedding lifecycle.
+#[cfg(target_os = "macos")]
+mod managed_embedding_transport;
 pub mod code_index;
 pub mod tracker_sync;
 pub mod knowledge;
@@ -21,6 +26,20 @@ pub mod worker;
 pub mod jobs;
 pub mod corrections;
 pub mod source_snapshot;
+pub mod knowledge_contract;
+pub(crate) mod knowledge_meetings;
+// Closed experiment. It is not a filesystem identity oracle and is never
+// consulted by the product while legacy writers can bypass its transitions.
+#[cfg(test)]
+mod meeting_incarnation;
+// Internal, unexposed foundation for indexing meeting sources in mixed topics.
+#[allow(dead_code)]
+mod knowledge_mixed_inventory;
+pub mod assistant_find;
+pub mod assistant_note_find;
+// Internal foundation only; no FFI/CLI/MCP route exposes these capabilities.
+#[allow(dead_code)]
+mod scoped_agent;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -55,6 +74,7 @@ pub fn request(value: &Value) -> Result<Value> {
         command if command.starts_with("folder-") || command == "profile-resolve" => folders::dispatch(&root,value),
         command if command.starts_with("trash-") => trash::dispatch(&root,value),
         command if command.starts_with("tracker-") => tracker_sync::request(&root,command,value),
+        command if command.starts_with("agent-share-") => scoped_share::dispatch(&root,value),
         command if command.starts_with("semantic-") => semantic::dispatch(&root,value),
         command if command.starts_with("code-index-") => code_index::dispatch(&root,value),
         command if ["notes-list", "note-save", "note-delete", "note-trash", "note-restore", "context-save", "template-save", "template-delete", "note-attach", "attachment-path", "attachment-remove", "attachment-text", "notes-search", "notes-tasks", "notes-task-complete", "notes-brief", "note-search-validate", "note-expansion-validate", "note-expansion-valid"].contains(&command) => notes::dispatch(&root, value),
@@ -65,6 +85,11 @@ pub fn request(value: &Value) -> Result<Value> {
         "meeting-content-snapshot" | "transcript-segment-save" | "summary-item-save" => corrections::dispatch(&root, value),
         "source-snapshot" => source_snapshot::snapshot(&root, value),
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),
+        command if command.starts_with("kb-") => workspace_repository::knowledge_dispatch(&root, value),
+        "assistant-find" | "assistant-find-validate" | "assistant-find-validate-list" => assistant_find::dispatch(&root, value),
+        "assistant-note-find" | "assistant-note-validate" => assistant_note_find::dispatch(&root, value),
+        "knowledge-meeting-suggestions" => knowledge_meetings::suggestions(&root, value),
+        "knowledge-meeting-validate" => knowledge_meetings::validate_for_note(&root, value),
         "knowledge-search" => knowledge::lookup(&root, value),
         "knowledge-validate-source" => knowledge::validate_source(&root, value),
         "search-validate" => search::validate(&root, value["meetingID"].as_str().context("Нет ID встречи")?, value["sourceFingerprint"].as_str().unwrap_or("")),

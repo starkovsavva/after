@@ -86,8 +86,8 @@ class SigningCommandsTests(unittest.TestCase):
             helpers = app / 'Contents/Helpers'
             self.assertEqual({path.name for path in helpers.iterdir()}, {'После Распознавание.app', 'После Обработка.app'})
             for name, executable, identifier, display in (
-                ('После Распознавание', 'После Речь', 'app.posle.meetings.speech', 'After Speech'),
-                ('После Обработка', 'После Обработка', 'app.posle.meetings.processing', 'After Processing'),
+                ('После Распознавание', 'After Speech', 'app.posle.meetings.speech', 'After Speech'),
+                ('После Обработка', 'After Processing', 'app.posle.meetings.processing', 'After Processing'),
             ):
                 contents = helpers / (name + '.app') / 'Contents'
                 metadata = plistlib.loads((contents / 'Info.plist').read_bytes())
@@ -100,7 +100,7 @@ class SigningCommandsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='posle-sign-commands-', dir='/private/tmp') as temporary:
             root = Path(temporary)
             app = root / 'After.app'
-            relative = ('Contents/Frameworks/libposle_core.dylib', 'Contents/MacOS/posle-engine', 'Contents/Helpers/После Распознавание.app', 'Contents/Helpers/После Обработка.app')
+            relative = ('Contents/Frameworks/libposle_core.dylib', 'Contents/MacOS/After Engine', 'Contents/MacOS/posle-engine', 'Contents/Helpers/После Распознавание.app', 'Contents/Helpers/После Обработка.app')
             for name in relative:
                 path = app / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,10 +112,10 @@ class SigningCommandsTests(unittest.TestCase):
                     signing.sign_application(app, entitlements, identity)
                     all_commands = [call.args[0] for call in run.call_args_list]
                     if identity.fingerprint == '-':
-                        self.assertEqual(len(all_commands), 5)
+                        self.assertEqual(len(all_commands), 6)
                         commands = all_commands
                     else:
-                        self.assertEqual(len(all_commands), 10)
+                        self.assertEqual(len(all_commands), 12)
                         commands = all_commands[::2]
                         self.assertEqual(all_commands[1::2], [['/usr/bin/codesign', '--verify', '--strict', '-R', '=anchor apple generic', str(app / name)] for name in relative] + [['/usr/bin/codesign', '--verify', '--strict', '-R', '=anchor apple generic', str(app)]])
                     self.assertEqual([command[-1] for command in commands], [str(app / name) for name in relative] + [str(app)])
@@ -131,7 +131,7 @@ class SigningCommandsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='posle-sign-chain-', dir='/private/tmp') as temporary:
             root = Path(temporary)
             app = root / 'After.app'
-            components = ('Contents/Frameworks/libposle_core.dylib', 'Contents/MacOS/posle-engine', 'Contents/Helpers/После Распознавание.app', 'Contents/Helpers/После Обработка.app')
+            components = ('Contents/Frameworks/libposle_core.dylib', 'Contents/MacOS/After Engine', 'Contents/MacOS/posle-engine', 'Contents/Helpers/После Распознавание.app', 'Contents/Helpers/После Обработка.app')
             for name in components:
                 path = app / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,7 +183,7 @@ class SigningCommandsTests(unittest.TestCase):
 class CoreIntegritySigningTests(unittest.TestCase):
     def fixture(self, root):
         app = root / 'After.app'
-        for name in ('Contents/Frameworks/libposle_core.dylib', 'Contents/MacOS/posle-engine', 'Contents/Helpers/После Распознавание.app', 'Contents/Helpers/После Обработка.app'):
+        for name in ('Contents/Frameworks/libposle_core.dylib', 'Contents/MacOS/After Engine', 'Contents/MacOS/posle-engine', 'Contents/Helpers/После Распознавание.app', 'Contents/Helpers/После Обработка.app'):
             path = app / name; path.parent.mkdir(parents=True, exist_ok=True)
             path.mkdir() if name.endswith('.app') else path.write_bytes(b'fixture')
         entitlement = root / 'entitlements.plist'; entitlement.write_text('fixture')
@@ -211,7 +211,7 @@ class CoreIntegritySigningTests(unittest.TestCase):
             self.assertEqual(commands[0], ['/usr/bin/codesign', '--verify', '--strict', str(library)])
             self.assertEqual(commands[-1], commands[0])
             self.assertTrue(all(command[-1] != str(library) for command in commands if '--force' in command))
-            self.assertEqual(len([command for command in commands if '--force' in command]), 4)
+            self.assertEqual(len([command for command in commands if '--force' in command]), 5)
             self.assertEqual(signing.core_digest(library), expected)
 
     def test_bad_pinned_digest_fails_before_any_signing(self):

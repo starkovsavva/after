@@ -8,6 +8,7 @@ struct SearchView: View {
     @State private var selectedID: String?
     @State private var byMeaning = false
     @StateObject private var knowledge = KnowledgeSearchController()
+    @ObservedObject private var preparation = SemanticPreparationController.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,6 +54,7 @@ struct SearchView: View {
                     Button(L("Повторить")) { updateSearch(immediate: true) }.buttonStyle(.borderless)
                 }.padding(14).background(Ink.warning.opacity(0.07))
             }
+            if byMeaning { meaningStatus }
             Group { if byMeaning { meaningContent } else { content } }.frame(maxWidth: .infinity, maxHeight: .infinity)
             Rectangle().fill(Ink.line).frame(height: 1)
             HStack {
@@ -80,6 +82,7 @@ struct SearchView: View {
             .onChange(of: store.searchScope) { _, _ in updateSearch() }
             .onChange(of: byMeaning) { _, _ in updateSearch(immediate: true) }
             .onChange(of: store.visibleFeatures) { _, _ in updateSearch(immediate: true) }
+            .onChange(of: preparation.revision) { _, _ in if byMeaning { updateSearch(immediate: true) } }
             .onChange(of: store.folderSelection) { _, _ in updateSearch(immediate: true) }
             .onChange(of: knowledge.sources) { _, hits in selectedID = hits.first?.id }
             .onChange(of: store.searchHits) { _, _ in selectedID = visibleSearchHits.first?.id }
@@ -113,13 +116,43 @@ struct SearchView: View {
         if byMeaning { store.cancelSearch(); knowledge.update(store: store, query: store.searchQuery, scope: store.searchScope, immediate: immediate) }
         else { knowledge.cancel(); store.updateSearch(immediate: immediate) }
     }
+    private var meaningStatusText: String {
+        if preparation.isPreparing(store.root) && knowledge.semanticStatus != .ready {
+            return preparation.activationCancelled
+                ? L("Включение отменено. Показаны результаты по словам.")
+                : L("Модель готовится. Пока показаны результаты по словам.")
+        }
+        switch knowledge.semanticStatus {
+        case .disabled: return L("Поиск по смыслу выключен. Показаны результаты по словам.")
+        case .needsRefresh: return L("Поиск по смыслу ещё готовится. Показаны результаты по словам.")
+        case .unavailable: return L("Модель поиска недоступна. Показаны результаты по словам.")
+        case .ready: return L("Поиск по смыслу работает. Результаты дополнены совпадениями по словам.")
+        case .checking: return store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? L("Доступность модели будет проверена при поиске.") : L("Проверяем поиск по смыслу…")
+        }
+    }
+    private var meaningStatus: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 10) {
+                Text(meaningStatusText).frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("search.semantic-status." + knowledge.semanticStatus.rawValue)
+                Button(L("Настроить…")) {
+                    store.showingSearch = false
+                    store.openSettings("semantic")
+                }.buttonStyle(.borderless).accessibilityIdentifier("search.semantic-settings")
+            }
+            ForEach(knowledge.warnings, id: \.self) { Text($0).foregroundStyle(Ink.warning) }
+        }.font(AppTypography.caption).foregroundStyle(.secondary)
+            .padding(.horizontal, 22).padding(.vertical, 12)
+            .background(Ink.soft)
+    }
     @ViewBuilder private var meaningContent: some View {
         if store.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             placeholder(L("Найдите по смыслу"), L("Опишите, что помните: например, выражение о возвращении к вопросу."), icon: "sparkle.magnifyingglass")
         } else if knowledge.searching && knowledge.sources.isEmpty {
             ProgressView(L("Ищу в библиотеке…")).font(AppTypography.control)
         } else if knowledge.sources.isEmpty && knowledge.error == nil {
-            placeholder(L("Ничего не найдено"), L("Уточните тему или проверьте, обновлён ли смысловой индекс."), icon: "magnifyingglass")
+            placeholder(L("Ничего не найдено"), L("Попробуйте другое слово или сократите запрос."), icon: "magnifyingglass")
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -138,7 +171,6 @@ struct SearchView: View {
                                 }.padding(13).background(selectedID == source.id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 8)).contentShape(Rectangle())
                             }.buttonStyle(.plain).id(source.id).disabled(knowledge.openingID != nil).accessibilityAddTraits(selectedID == source.id ? .isSelected : [])
                         }
-                        ForEach(knowledge.warnings, id: \.self) { Text($0).font(AppTypography.caption).foregroundStyle(Ink.warning).padding(10) }
                     }.padding(12)
                 }.onChange(of: selectedID) { _, id in if let id { proxy.scrollTo(id, anchor: .center) } }
             }

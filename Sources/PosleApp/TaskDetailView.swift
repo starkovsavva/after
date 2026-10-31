@@ -10,6 +10,7 @@ struct TaskDetailView: View {
     @State private var tab = "materials"
     @State private var editing: TaskWorkspace?
     @State private var access = false
+    @State private var snapshotShare = false
     @State private var exporting = false
     @State private var context: TaskSnapshotPresentation?
     var body: some View {
@@ -33,10 +34,16 @@ struct TaskDetailView: View {
                     .frame(maxWidth: .infinity).background(Ink.paper)
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .onAppear { showRequestedHistory() }
+            .onChange(of: app.taskHistoryRoute) { _, _ in showRequestedHistory() }
             .sheet(item: $editing) { selected in TaskCreationSheet(notes: notes, task: selected) { _ in } }
             .sheet(isPresented: $access) { TaskAgentAccessSheet(notes: notes, taskID: task.id) }
+            .sheet(isPresented: $snapshotShare) { TaskSnapshotShareSheet(root: app.root, notes: notes, taskID: task.id).environmentObject(app) }
             .sheet(isPresented: $exporting) { TrackerSyncExportSheet(coordinator: app.trackerSync, taskID: task.id, taskTitle: task.title) }
-            .sheet(item: $context) { TaskSnapshotSheet(snapshot: $0.snapshot, title: L("Контекст для агента")) }
+            .sheet(item: $context) { TaskSnapshotSheet(snapshot: $0.snapshot, title: L("Контекст MCP задач")) }
+    }
+    private func showRequestedHistory() {
+        if app.taskHistoryRoute?.taskID == task.id { tab = "history" }
     }
     private var heading: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -50,10 +57,13 @@ struct TaskDetailView: View {
                 Menu {
                     Button(L("Изменить задачу…")) { editing = task }
                     Divider()
-                    Button(L("Доступ агентам…")) { access = true }
-                    Button(L("Что увидит агент…")) {
+                    Button(L("Доступ к задаче через MCP…")) { access = true }
+                    Button(L("Контекст MCP задач…")) {
                         if let snapshot = notes.taskContext(task) { context = TaskSnapshotPresentation(snapshot: snapshot) }
                     }.disabled(!task.agentAccess.enabled)
+                    Divider()
+                    Button(L("Предоставить снимок агенту…")) { snapshotShare = true }
+                    Button(L("Предоставленные снимки…")) { tab = "history" }
                     Divider()
                     Button(L("Отправить в трекер…")) { exporting = true }
                         .disabled(app.trackerSync.busy)

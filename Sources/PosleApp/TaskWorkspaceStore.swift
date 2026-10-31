@@ -157,6 +157,7 @@ extension NotesStore {
         return mutateTaskWorkspace(task, command: "task-material-link", arguments: ["material": ["id": id, "shared": shared]])
     }
 
+
     func unlinkTaskMaterial(_ material: TaskMaterial, from task: TaskWorkspace) {
         guard let id = material.id else { return }
         _ = mutateTaskWorkspace(task, command: "task-material-unlink", arguments: ["materialID": id])

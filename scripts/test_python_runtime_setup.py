@@ -39,6 +39,10 @@ class PythonRuntimeSetupTests(unittest.TestCase):
         self.base = self.root / "runtime/python" / DIRECTORY
         self.venv = self.root / "runtime/venv"
         self.archive = self.work / "fixture.tar.gz"
+        # Kernel shebang parsing cannot quote an interpreter under e.g.
+        # Application Support. Fixtures only need its stdlib, via a safe alias.
+        self.interpreter = self.work / "fixture-python"
+        self.interpreter.symlink_to(sys.executable)
         self._create_fixture()
 
     def tearDown(self):
@@ -48,11 +52,11 @@ class PythonRuntimeSetupTests(unittest.TestCase):
 
     def executable(self, path, body):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"#!{sys.executable} -I\n" + body)
+        path.write_text(f"#!{self.interpreter} -I\n" + body)
         path.chmod(0o700)
 
     def _create_fixture(self):
-        self.payload = (f"#!{sys.executable} -I\n" + f'''
+        self.payload = (f"#!{self.interpreter} -I\n" + f'''
 import json, os, pathlib, sys
 root = pathlib.Path({str(self.root)!r})
 trace = pathlib.Path({str(self.trace)!r})

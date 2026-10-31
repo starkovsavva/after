@@ -87,6 +87,7 @@ def main() -> None:
         # Exercise the real inside-out app signer: the library's final signed
         # bytes must stay identical after the executable embeds their digest.
         engine_source = root / "engine.c"; engine_source.write_text("int main(void){return 0;}")
+        command("clang", engine_source, "-o", macos / "After Engine")
         command("clang", engine_source, "-o", macos / "posle-engine")
         for name in ("После Распознавание.app", "После Обработка.app"):
             contents = app / "Contents/Helpers" / name / "Contents"

@@ -19,12 +19,12 @@ enum FeatureUINativeChecks {
         defer { NSApp.accessibilitySetValue(previousAccessibilityMode, forAttribute: accessibilityMode) }
         let app = AppStore(preview: true)
         app.settings.features = AppFeatures()
-        let features: [AppFeature] = [.cards, .tasks, .calendar, .assistant, .semanticSearch]
+        let features: [AppFeature] = [.cards, .tasks, .calendar, .assistant, .semanticSearch, .knowledgeBase]
         let main = Host(AnyView(MainView().environmentObject(app)), width: 1260, height: 820)
         defer { main.close() }
         try await settle(main) { ids(main).contains("library.meetings") }
         try expect(ids(main).contains("library.inbox") && ids(main).contains("library.trash"), "Base notes and trash remain available")
-        for identifier in ["library.cards", "library.tasks", "library.calendar", "library.contexts", "voice.open"] {
+        for identifier in ["library.cards", "library.tasks", "library.calendar", "library.contexts", "library.knowledge", "voice.open"] {
             try expect(!ids(main).contains(identifier), "Disabled optional control leaked: " + identifier)
         }
         print("PASS: default native sidebar shows meetings and notes without optional workflows")
@@ -46,9 +46,10 @@ enum FeatureUINativeChecks {
             try await settle(settings) { app.settings.isEnabled(feature) }
         }
         try await settle(main) { ids(main).contains("library.cards") && ids(main).contains("library.tasks") && ids(main).contains("voice.open") }
-        try expect(ids(main).contains("library.calendar") && ids(main).contains("library.contexts"), "Enabled modules appear in native navigation")
+        try expect(ids(main).contains("library.calendar") && ids(main).contains("library.contexts") &&
+                   ids(main).contains("library.knowledge"), "Enabled modules appear in native navigation")
         try await settle(settings) { ids(settings).contains("settings.semantic") && ids(settings).contains("settings.integrations") }
-        print("PASS: all five real native switches reveal their navigation and settings independently")
+        print("PASS: all six real native switches reveal their navigation and settings independently")
 
         let dirtyEditor = UUID()
         let beforeDirtyChange = app.settings.features
@@ -61,7 +62,8 @@ enum FeatureUINativeChecks {
 
         for feature in features { try press(settings, "features." + FeaturePresentation.identifier(feature)) }
         try await settle(main) { !ids(main).contains("library.cards") && !ids(main).contains("library.tasks") && !ids(main).contains("voice.open") }
-        try await settle(settings) { !ids(settings).contains("settings.semantic") && !ids(settings).contains("settings.integrations") }
+        // Snapshot revocation stays reachable independently of Tasks.
+        try await settle(settings) { !ids(settings).contains("settings.semantic") && ids(settings).contains("settings.integrations") }
         let persisted: AppSettings? = app.read(root.appendingPathComponent("settings.json"))
         try expect(persisted.map { settings in features.allSatisfy { !settings.isEnabled($0) } } == true, "Switches persist after returning to base mode")
         let meeting = Meeting(title: "Синк с руководителем", source: "source.mp3")

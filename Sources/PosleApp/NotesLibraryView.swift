@@ -120,6 +120,7 @@ struct NotesLibraryView: View {
     @State private var showFolder = false
     @State private var folderNoteID: String?
     @State private var advanced: CapturedNote?
+    @State private var linkingNote: CapturedNote?
     @State private var deleting: CapturedNote?
     @State private var confirmReload = false
     init(notes: NotesStore) {
@@ -190,6 +191,9 @@ struct NotesLibraryView: View {
             }
             .sheet(item: $advanced, onDismiss: { notes.reload(); document.receive(persisted) }) { note in
                 NoteEditorView(notes: notes, note: note).environmentObject(app)
+            }
+            .sheet(item: $linkingNote, onDismiss: { notes.reload(); document.receive(persisted) }) { note in
+                KnowledgeLinksSheet(notes: notes, source: note).environmentObject(app)
             }
             .alert(L("Новая папка"), isPresented: $showFolder) {
                 TextField(L("Название папки"), text: $newFolder)
@@ -307,6 +311,16 @@ struct NotesLibraryView: View {
                         guard document.flush(), let note = persisted else { return }
                         advanced = note
                     } label: { Image(systemName: "paperclip") }.help(L("Вложения, источник и свойства заметки"))
+                    if draft.kind == "note" && app.effectiveSettings(for: draft.folderID == nil ? draft.meetingID : nil,
+                                                                    folderID: draft.folderID).features.knowledgeBase {
+                        Button {
+                            guard document.flush(), let note = persisted else { return }
+                            linkingNote = note
+                        } label: { Image(systemName: "link") }
+                            .help(L("Связи заметки"))
+                            .accessibilityLabel(L("Связи заметки"))
+                            .accessibilityIdentifier("knowledge.links.open")
+                    }
                     Spacer()
                     Text(!document.saveError.isEmpty ? L("Не сохранено") : document.dirty ? L("Сохраняю…") : L("Сохранено")).font(AppTypography.caption).foregroundStyle(.secondary)
                     Menu {

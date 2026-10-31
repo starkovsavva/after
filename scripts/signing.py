@@ -87,6 +87,7 @@ def sign_application(app: Path, entitlements: Path, identity: Identity, *, presi
     # deliberately absent. Apple identities use codesign's normal stable DR.
     owned = (
         app / "Contents/Frameworks/libposle_core.dylib",
+        app / "Contents/MacOS/After Engine",
         app / "Contents/MacOS/posle-engine",
         app / "Contents/Helpers/После Распознавание.app",
         app / "Contents/Helpers/После Обработка.app",

@@ -53,7 +53,9 @@ struct SettingsView: View {
         ]
         if store.isFeatureEnabled(.semanticSearch) { result.append(("semantic", L("Смысловой поиск"), "sparkle.magnifyingglass")) }
         result += [("notes", L("Заметки и шаблоны"), "square.and.pencil"), ("keys", L("Горячие клавиши"), "keyboard")]
-        if store.isFeatureEnabled(.tasks) { result.append(("integrations", L("Интеграции"), "point.3.connected.trianglepath.dotted")) }
+        // Snapshot grants have their own lifecycle. Their revoke control must
+        // remain reachable even after the user disables the Tasks feature.
+        result.append(("integrations", L("Интеграции"), "point.3.connected.trianglepath.dotted"))
         result += [("data", L("Данные и экспорт"), "externaldrive"), ("updates", L("Обновления"), "arrow.triangle.2.circlepath")]
         return result
     }
@@ -166,7 +168,7 @@ struct SettingsView: View {
             else { OptionalFeatureGate(feature: .semanticSearch) }
         case "integrations":
             if store.isFeatureEnabled(.tasks) { IntegrationSettingsView() }
-            else { OptionalFeatureGate(feature: .tasks) }
+            else { SnapshotAgentSettings(root: store.root) }
         case "data": dataSettings
         case "updates": UpdateSettingsView(updates: store.updates)
         default: generalSettings
@@ -446,7 +448,7 @@ struct RecordView: View {
                             .accessibilityIdentifier("record.profile.model")
                     }
                     Spacer()
-                    Text(L("Настроить…")).font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
+                    Text(L("Стиль и карточки…")).font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityLabel(L("Настройки конспекта новой встречи")).accessibilityValue(processingSummary)
                 .accessibilityIdentifier("record.processing").disabled(startLocked)

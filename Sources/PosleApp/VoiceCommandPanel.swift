@@ -29,8 +29,121 @@ struct VoiceCommandPanel: View {
                     .buttonStyle(.plain).help(L("Закрыть поручение")).accessibilityLabel(L("Закрыть поручение"))
                     .disabled(controller.phase == .applying)
             }
-            Text(controller.knowledgeAnswer == nil ? controller.contextLabel : controller.text).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2)
-            if let answer = controller.knowledgeAnswer {
+            Text(controller.knowledgeAnswer == nil && controller.assistantRead == nil && controller.assistantNotes == nil ? controller.contextLabel : controller.text).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2)
+            if let read = controller.assistantRead {
+                Text(read.state == .notFound ? L("Задачи не найдены.") :
+                     read.state == .clarify ? L("Выберите подходящую задачу.") :
+                     read.plan.intent == .inspect ? L("Последняя задача") : L("Найденные задачи"))
+                    .font(AppTypography.heading)
+                Text(L(read.selectionExplanation)).font(AppTypography.caption).foregroundStyle(.secondary)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(read.targets) { target in
+                            Button { controller.openAssistantTarget(target) } label: {
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(target.title).font(AppTypography.body).lineLimit(2)
+                                        if !target.detail.isEmpty {
+                                            Text(target.detail).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2)
+                                        }
+                                        if let due = target.due, !due.isEmpty {
+                                            Text(due).font(AppTypography.caption).foregroundStyle(.secondary)
+                                        }
+                                        if let report = target.latestReport {
+                                            Text(L("Последний отчёт агента")).font(AppTypography.caption.weight(.semibold))
+                                            if let actor = report.actor, !actor.isEmpty {
+                                                Text(actor).font(AppTypography.caption).foregroundStyle(.secondary)
+                                            }
+                                            if !report.text.isEmpty {
+                                                Text(report.text + (report.textTruncated ? "…" : ""))
+                                                    .font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(5)
+                                            }
+                                            if report.artifactsTruncated {
+                                                Text(L("Другие артефакты — в истории задачи."))
+                                                    .font(AppTypography.caption).foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        if let history = target.recentHistory, !history.isEmpty {
+                                            Text(L("Последние события")).font(AppTypography.caption.weight(.semibold))
+                                            ForEach(Array(history.enumerated()), id: \.offset) { _, event in
+                                                Text(event).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(2)
+                                            }
+                                        }
+                                    }
+                                    Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary)
+                                }.padding(.vertical, 9).contentShape(Rectangle())
+                            }.buttonStyle(.plain).disabled(controller.isWorking)
+                                .accessibilityIdentifier("assistant-read-target-\(target.taskID)")
+                            if let report = target.latestReport, let eventID = report.eventID {
+                                ForEach(report.artifacts) { artifact in
+                                    Button { controller.openAssistantTarget(target, eventID: eventID, artifactID: artifact.id) } label: {
+                                        Label(artifact.title, systemImage: "doc.text")
+                                    }.buttonStyle(.borderless).font(AppTypography.caption)
+                                        .disabled(controller.isWorking)
+                                        .accessibilityIdentifier("assistant-read-artifact-\(artifact.id)")
+                                }
+                            }
+                        }
+                    }
+                }.frame(maxHeight: 220)
+                ForEach(read.warnings, id: \.self) { warning in
+                    Text(L(warning)).font(AppTypography.caption).foregroundStyle(.secondary)
+                }
+                if read.truncated {
+                    Text(L("Показаны не все результаты. Уточните запрос."))
+                        .font(AppTypography.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    if controller.isWorking {
+                        ProgressView().controlSize(.small)
+                        Button(L("Остановить")) { controller.cancelWork() }.buttonStyle(.borderless)
+                    }
+                    Spacer()
+                    if !read.targets.isEmpty {
+                        Button(L("Уточнить")) { controller.continueAssistantRead(); commandFocused = true }
+                            .buttonStyle(.borderless).disabled(controller.isWorking)
+                            .accessibilityIdentifier("assistant-read-followup")
+                    }
+                    Button(L("Новый вопрос")) { controller.reset(); commandFocused = true }
+                        .buttonStyle(.borderless).disabled(controller.isWorking)
+                }
+            } else if let notes = controller.assistantNotes {
+                Text(notes.targets.isEmpty ? L("Заметки не найдены.") : L("Найденные заметки"))
+                    .font(AppTypography.heading)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(notes.targets) { target in
+                            Button { controller.openAssistantNote(target) } label: {
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(target.title).font(AppTypography.body).lineLimit(2)
+                                        if !target.excerpt.isEmpty {
+                                            Text(target.excerpt).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(3)
+                                        }
+                                    }
+                                    Spacer(); Image(systemName: "chevron.right").foregroundStyle(.secondary)
+                                }.padding(.vertical, 9).contentShape(Rectangle())
+                            }.buttonStyle(.plain).disabled(controller.isWorking)
+                                .accessibilityIdentifier("assistant-note-target-\(target.noteID)")
+                        }
+                    }
+                }.frame(maxHeight: 220)
+                if notes.truncated {
+                    Text(L("Показаны не все результаты. Уточните запрос."))
+                        .font(AppTypography.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    if controller.isWorking { ProgressView().controlSize(.small) }
+                    Spacer()
+                    if !notes.targets.isEmpty {
+                        Button(L("Уточнить")) { controller.continueAssistantNotes(); commandFocused = true }
+                            .buttonStyle(.borderless).disabled(controller.isWorking)
+                            .accessibilityIdentifier("assistant-note-followup")
+                    }
+                    Button(L("Новый вопрос")) { controller.reset(); commandFocused = true }
+                        .buttonStyle(.borderless).disabled(controller.isWorking)
+                }
+            } else if let answer = controller.knowledgeAnswer {
                 KnowledgeAnswerView(answer: answer, openingID: controller.knowledgeOpeningID, open: controller.openKnowledgeSource)
                 HStack {
                     Button { KnowledgeAnswerView.copy(answer) } label: { Image(systemName: "doc.on.doc").frame(width: 24, height: 24) }

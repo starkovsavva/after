@@ -119,6 +119,7 @@ enum FeaturePresentation {
         case .calendar: "calendar"
         case .assistant: "mic"
         case .semanticSearch: "sparkle.magnifyingglass"
+        case .knowledgeBase: "link"
         }
     }
     static func detail(_ feature: AppFeature) -> String {
@@ -128,6 +129,7 @@ enum FeaturePresentation {
         case .calendar: L("События и подключение календарей macOS.")
         case .assistant: L("Вопросы по библиотеке и поручения текстом или голосом.")
         case .semanticSearch: L("Поиск по смыслу с отдельной моделью. Поиск по словам доступен всегда.")
+        case .knowledgeBase: L("Связи между заметками и переходы к связанным материалам.")
         }
     }
 }

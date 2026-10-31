@@ -118,6 +118,36 @@ impl Lexicon {
         Ok((expression.join(" AND "), terms.into_iter().collect()))
     }
 }
+/// Bounded terms for local, explainable related-note suggestions. The original
+/// text never leaves the process and the returned words come from the source.
+pub(crate) fn related_terms(title: &str, text: &str) -> BTreeMap<String, (String, u32)> {
+    const STOP: &[&str] = &[
+        "about","after","also","because","before","been","being","between","could","from","have","into","more",
+        "other","should","some","such","than","that","their","them","there","these","they","this","those","through",
+        "using","very","what","when","where","which","while","with","would","your",
+        "были","будет","будут","было","быть","вами","вашей","весь","вместе","вот","всего","всем","всех",
+        "даже","для","если","есть","еще","когда","которая","которые","который","может","можно",
+        "надо","нашей","нужно","очень","пока","после","потому","просто","своей","своих","сейчас","также",
+        "такая","такие","таким","того","только","тому","тоже","чтобы","этого","этой","этом","эту",
+    ];
+    let lexicon=Lexicon::new();
+    let mut result:BTreeMap<String,(String,u32)>=BTreeMap::new();
+    for (part,weight) in [(title.chars().take(500).collect::<String>(),3u32),
+                          (text.chars().take(5000).collect::<String>(),1u32)] {
+        for word in lexicon.tokens(&part).into_iter().take(3000) {
+            if word.chars().count()<4 || word.chars().count()>60 || !word.chars().any(char::is_alphabetic) ||
+                STOP.contains(&word.as_str()) { continue; }
+            let stem=lexicon.stem(&word);
+            if stem.chars().count()<3 { continue; }
+            let entry=result.entry(stem).or_insert_with(||(word,0));
+            entry.1=entry.1.saturating_add(weight).min(20);
+        }
+    }
+    let mut ranked=result.into_iter().collect::<Vec<_>>();
+    ranked.sort_by(|a,b|b.1.1.cmp(&a.1.1).then_with(||a.0.cmp(&b.0)));
+    ranked.truncate(120);
+    ranked.into_iter().collect()
+}
 /// Shared lexical matching for user notes. No network/model/index duplication.
 pub(crate) struct QueryMatcher { lexicon: Lexicon, terms: Vec<String> }
 impl QueryMatcher {
@@ -130,6 +160,7 @@ impl QueryMatcher {
         let tokens=self.lexicon.tokens(text);
         self.terms.iter().all(|term| tokens.iter().any(|word|word.starts_with(term) || self.lexicon.stem(word).starts_with(term)))
     }
+    pub(crate) fn has_terms(&self) -> bool { !self.terms.is_empty() }
 }
 #[derive(Debug)]
 struct Document {

@@ -217,7 +217,13 @@ extension AppStore {
         try validateOptionalJob(config.command, features: effectiveSettings(for: config.profileMeetingID ?? config.meetingID, folderID: config.folderID).features)
         try validateJobRevision(job)
         let snapshot = config.settings
-        let usesLocalRuntime = job.resource == "local-heavy" || ["transcribe", "diarize", "finalize", "dictate"].contains(config.command)
+        var usesLocalRuntime = job.resource == "local-heavy" || ["transcribe", "diarize", "finalize", "dictate"].contains(config.command)
+        if config.command == "voice-plan", !isPreview, availableFeatures.semanticSearch {
+            struct SemanticSettings: Decodable { var config: SemanticSearchConfiguration }
+            let data = try RustBridge.shared.get().request(root: root, command: "semantic-config")
+            let semantic = try JSONDecoder().decode(SemanticSettings.self, from: data).config
+            usesLocalRuntime = usesLocalRuntime || (semantic.enabled && semantic.isLocal)
+        }
         let lease = usesLocalRuntime ? try await localRuntimeLease.acquire { cancellation.isCancelled } : nil
         defer { if let lease { Task { await localRuntimeLease.release(lease) } } }
         guard !cancellation.isCancelled else { throw CancellationError() }

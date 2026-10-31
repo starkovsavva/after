@@ -7,6 +7,15 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class AppStore: ObservableObject {
+    struct TaskHistoryRoute: Equatable {
+        let taskID: String
+        let eventID: String
+        let artifactID: String?
+        let plan: AssistantReadPlan
+        let target: AssistantReadTarget
+        let nonce = UUID()
+    }
+    @Published var taskHistoryRoute: TaskHistoryRoute?
     @Published var meetings: [Meeting] = []
     @Published var folderSelection: String? { didSet { if folderSelection != oldValue, featureLifecycleReady { folderSelectionDidChange() } } }
     struct SidebarPreferences: Codable { var foldersExpanded = true }
@@ -85,6 +94,7 @@ final class AppStore: ObservableObject {
     @Published var showingSupport = false
     var supportFeedbackPending = false
     @Published var settingsSection = "general"
+    @Published var integrationSettingsSection = "trackers"
     @Published var showingRecord = false
     @Published var showingCaptureDrafts = false
     var recoveryCaptureDraftKey = "inbox"
@@ -137,6 +147,7 @@ final class AppStore: ObservableObject {
     private var endpointsByProvider: [String: String] = [:]
     @Published var isRecording = false
     @Published var stoppingRecording = false
+    @Published var finalizingMeetingIDs: Set<String> = []
     var processAfterRecording = true
     var recordingFolderFailures: Set<String> = []
     @Published var recordingDate: Date?
@@ -184,8 +195,14 @@ final class AppStore: ObservableObject {
         // Only isolated developer diagnostics may select another executable.
         if let path = ProcessInfo.processInfo.environment["POSLE_RUST_ENGINE"] { return URL(fileURLWithPath: path) }
         #endif
-        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/После Обработка.app/Contents/MacOS/После Обработка")
-        if FileManager.default.isExecutableFile(atPath: helper.path) { return helper }
+        let helperDirectory = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/После Обработка.app/Contents/MacOS")
+        // Keep a fallback for an older bundle during an interrupted update.
+        for executable in ["After Processing", "После Обработка"] {
+            let helper = helperDirectory.appendingPathComponent(executable)
+            if FileManager.default.isExecutableFile(atPath: helper.path) { return helper }
+        }
+        let current = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/After Engine")
+        if FileManager.default.isExecutableFile(atPath: current.path) { return current }
         return Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/posle-engine")
     }
 
@@ -222,7 +239,7 @@ final class AppStore: ObservableObject {
             // Finish only previously committed, explicitly authorized operations.
             do { _ = try RustBridge.shared.get().request(root: root, command: "voice-recover") }
             catch { self.error = "Не удалось завершить прерванное поручение: \(error.localizedDescription)" }
-            librarySection = ["meetings", "inbox", "tasks", "cards"].contains(settings.startSection) && settings.allowsSection(settings.startSection) ? settings.startSection : "meetings"
+            librarySection = ["meetings", "inbox", "tasks", "cards", "knowledge"].contains(settings.startSection) && settings.allowsSection(settings.startSection) ? settings.startSection : "meetings"
             runtimeReady = FileManager.default.isExecutableFile(atPath: python.path)
                 && FileManager.default.fileExists(atPath: root.appendingPathComponent("runtime/ready-v2").path)
             reloadLibrary()
@@ -354,7 +371,10 @@ final class AppStore: ObservableObject {
     func write<T: Encodable>(_ value: T, _ url: URL) throws {
         try RustBridge.shared.get().write(root: root, url: url, value: value)
     }
-    func openSettings(_ section: String = "general") {
+    func openSettings(_ section: String = "general", integrationSection: String? = nil) {
+        if let integrationSection, ["trackers", "agents"].contains(integrationSection) {
+            integrationSettingsSection = integrationSection
+        }
         settingsSection = section
         showingSettings = true
     }
@@ -432,15 +452,26 @@ final class AppStore: ObservableObject {
         examples = read(directory.appendingPathComponent("examples.json")) ?? [:]
         reviews = read(directory.appendingPathComponent("review-state.json")) ?? [:]
         playbackDuration = max(transcript?.duration ?? selected?.duration ?? 1, 1)
-        let recording = directory.appendingPathComponent("recording.mp3")
-        let playback = FileManager.default.fileExists(atPath: recording.path) ? recording : directory.appendingPathComponent("playback.mp3")
-        if FileManager.default.fileExists(atPath: playback.path) {
-            player = AVPlayer(url: playback)
-            playbackDuration = max(transcript?.duration ?? selected?.duration ?? 1, 1)
-            let updateTime = playbackTimeCallback()
-            playerObserver = player?.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.2, preferredTimescale: 600), queue: .main) { time in
-                _ = updateTime(time)
-            }
+        prepareSelectedPlayback()
+    }
+    /// Reattach newly finalized audio without resetting navigation or editors.
+    func prepareSelectedPlayback() {
+        playbackGeneration = UUID()
+        pause()
+        if let observer = playerObserver { player?.removeTimeObserver(observer) }
+        playerObserver = nil; player = nil
+        guard let id = selection, let playback = playbackURL(for: id) else { return }
+        let generation = playbackGeneration
+        let player = AVPlayer(url: playback)
+        self.player = player
+        let updateTime = playbackTimeCallback()
+        playerObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.2, preferredTimescale: 600), queue: .main) { time in
+            _ = updateTime(time)
+        }
+        Task { [weak self] in
+            guard let duration = try? await AVURLAsset(url: playback).load(.duration), duration.seconds.isFinite, duration.seconds > 0,
+                  let self, self.playbackGeneration == generation, self.selection == id else { return }
+            self.playbackDuration = duration.seconds
         }
     }
     private func playbackTimeCallback() -> @Sendable (CMTime) -> Task<Void, Never> {
@@ -458,6 +489,8 @@ final class AppStore: ObservableObject {
     /// Drives the real callback queue with invented timestamps, without an
     /// audio asset or output device. Awaiting its task makes late delivery deterministic.
     func playbackTimeCallbackForChecks() -> @Sendable (CMTime) -> Task<Void, Never> { playbackTimeCallback() }
+    func muteMeetingPlaybackForChecks() { player?.isMuted = true }
+    var meetingPlayerReadyForChecks: Bool { player?.currentItem?.status == .readyToPlay }
     #endif
     func refreshResults(_ id: String) {
         if selection == id {
@@ -467,6 +500,9 @@ final class AppStore: ObservableObject {
             summary = read(directory.appendingPathComponent("summary.json"))
             examples = read(directory.appendingPathComponent("examples.json")) ?? [:]
             reviews = read(directory.appendingPathComponent("review-state.json")) ?? [:]
+            // A worker can create playable audio before ASR fails or is cancelled.
+            // Attach it on result refresh without resetting the current editor.
+            if player == nil, playbackURL(for: id) != nil { prepareSelectedPlayback() }
         }
     }
     func updateMeeting(_ id: String, _ change: (inout Meeting) -> Void) {
@@ -757,7 +793,7 @@ final class AppStore: ObservableObject {
         else { self.error = error.localizedDescription }
     }
     func processMeeting(_ id: String) async {
-        guard !confirmingCloudSpeech, !jobs.contains(objectID: id, kinds: ["transcribe"]) else { return }
+        guard !isMeetingMediaProtected(id), !confirmingCloudSpeech, !jobs.contains(objectID: id, kinds: ["transcribe"]) else { return }
         guard confirmCloudTranscription(id) else { return }
         updateMeeting(id) { $0.status = "processing"; $0.error = nil }
         do {
@@ -1059,7 +1095,7 @@ final class AppStore: ObservableObject {
         saveSettings()
     }
     func togglePlayback() {
-        guard let player else { error = L("Аудиофайл не найден. Откройте папку данных встречи и проверьте MP3."); return }
+        guard let id = selection, loadedSelectionID == id, playbackURL(for: id) != nil, let player else { error = L("Аудиофайл не найден. Откройте папку данных встречи и проверьте MP3."); return }
         if isPlaying { pause() }
         else {
             if playbackTime >= playbackDuration - 0.2 { seek(0) }
@@ -1286,27 +1322,76 @@ final class AppStore: ObservableObject {
             } catch { self.error = error.localizedDescription }
         }
     }
-    func trashSelected() {
-        guard let meeting = selected, !busy, !isRecording else { return }
+    func isMeetingMediaProtected(_ id: String) -> Bool {
+        captureMeetingID == id || startingRecordingID == id || finalizingMeetingIDs.contains(id)
+            || jobs.contains(objectID: id, kinds: ["finalize"])
+    }
+    func isMeetingSaving(_ id: String) -> Bool {
+        (stoppingRecording && captureMeetingID == id) || finalizingMeetingIDs.contains(id)
+            || jobs.contains(objectID: id, kinds: ["finalize"])
+    }
+    func canTrashMeeting(_ id: String) -> Bool {
+        !isTerminating && !isMeetingMediaProtected(id) && !jobs.contains(objectID: id)
+            && !(busy && processingID == id)
+    }
+    func playbackURL(for id: String) -> URL? {
+        guard !isMeetingMediaProtected(id), !isMeetingSaving(id) else { return nil }
+        return ["recording.mp3", "playback.mp3"].lazy.compactMap {
+            MeetingMediaAccess.fileURL(root: self.root, meetingID: id, name: $0)
+        }.first
+    }
+    func sourceMediaURL(for id: String) -> URL? {
+        guard !isMeetingMediaProtected(id), !isMeetingSaving(id), let meeting = meetings.first(where: { $0.id == id }) else { return nil }
+        guard let type = UTType(filenameExtension: URL(fileURLWithPath: meeting.source).pathExtension),
+              type.conforms(to: .audio) || type.conforms(to: .movie) else { return nil }
+        return MeetingMediaAccess.fileURL(root: root, meetingID: id, name: meeting.source)
+    }
+    func openMeetingSource(_ id: String) {
+        guard let url = sourceMediaURL(for: id) else { error = L("Медиафайл недоступен. Проверьте файлы встречи."); return }
+        NSWorkspace.shared.open(url)
+    }
+    func showMeetingFiles(_ id: String) {
+        guard let directory = MeetingMediaAccess.directoryURL(root: root, meetingID: id) else { return }
+        NSWorkspace.shared.open(directory)
+    }
+    func openMeetingVideo(_ id: String) {
+        guard !isMeetingMediaProtected(id), let url = MeetingMediaAccess.fileURL(root: root, meetingID: id, name: "video.mp4") else { return }
+        NSWorkspace.shared.open(url)
+    }
+    func trashSelected() { if let id = selection { trashMeeting(id) } }
+    func trashMeeting(_ id: String) {
+        guard meetings.contains(where: { $0.id == id }), canTrashMeeting(id) else { return }
         do {
             let bridge = try RustBridge.shared.get()
-            let snapshot = try bridge.request(root: root, command: "trash-snapshot", arguments: ["kind": "meeting", "id": meeting.id, "restore": false])
+            let snapshot = try bridge.request(root: root, command: "trash-snapshot", arguments: ["kind": "meeting", "id": id, "restore": false])
             struct Snapshot: Decodable { var fingerprint: String }
             let expected = try JSONDecoder().decode(Snapshot.self, from: snapshot)
-            _ = try bridge.request(root: root, command: "trash-change", arguments: ["kind": "meeting", "id": meeting.id, "restore": false, "expectedFingerprint": expected.fingerprint, "operationID": UUID().uuidString.lowercased()])
-            reloadLibrary(); selection = meetings.first?.id; loadSelection()
+            _ = try bridge.request(root: root, command: "trash-change", arguments: ["kind": "meeting", "id": id, "restore": false, "expectedFingerprint": expected.fingerprint, "operationID": UUID().uuidString.lowercased()])
+            reloadLibrary()
+            if selection == id { selection = filteredMeetings.first?.id; loadSelection() }
             notice = L("Встреча в Корзине. Её можно восстановить в течение 30 дней.")
         } catch { self.error = error.localizedDescription }
     }
-    func exportAudio() {
-        guard let meeting = selected, let directory = selectedDirectory else { return }
-        let recording = directory.appendingPathComponent("recording.mp3")
-        let source = FileManager.default.fileExists(atPath: recording.path) ? recording : directory.appendingPathComponent("playback.mp3")
-        guard FileManager.default.fileExists(atPath: source.path) else { error = L("Сначала завершите обработку аудио."); return }
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.mp3]; panel.nameFieldStringValue = "\(meeting.title).mp3"
+    func exportAudio() { if let id = selection { exportMeetingAudio(id) } }
+    func exportMeetingAudio(_ id: String, original: Bool = false) {
+        guard let meeting = meetings.first(where: { $0.id == id }),
+              let source = original ? sourceMediaURL(for: id) : playbackURL(for: id) else {
+            error = L("Медиафайл недоступен. Проверьте файлы встречи."); return
+        }
+        let panel = NSSavePanel()
+        if let type = UTType(filenameExtension: source.pathExtension) { panel.allowedContentTypes = [type] }
+        panel.nameFieldStringValue = meeting.title + "." + source.pathExtension
         if panel.runModal() == .OK, let destination = panel.url {
-            do { try Data(contentsOf: source).write(to: destination, options: .atomic); notice = L("Аудиозапись сохранена в MP3.") }
-            catch { self.error = error.localizedDescription }
+            guard !isMeetingMediaProtected(id) else { return }
+            let exportRoot = root, name = source.lastPathComponent
+            Task {
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        try MeetingMediaAccess.copy(root: exportRoot, meetingID: id, name: name, to: destination)
+                    }.value
+                    notice = original ? L("Исходная запись сохранена.") : L("Аудиозапись сохранена в MP3.")
+                } catch { self.error = error.localizedDescription }
+            }
         }
     }
 

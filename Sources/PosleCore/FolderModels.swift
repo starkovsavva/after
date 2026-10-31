@@ -18,15 +18,16 @@ public struct FolderFeatureOverrides: Codable, Hashable, Sendable {
     public var calendar: Bool?
     public var assistant: Bool?
     public var semanticSearch: Bool?
+    public var knowledgeBase: Bool?
     public init() {}
     public subscript(feature: AppFeature) -> Bool? {
         get { switch feature {
         case .cards: cards; case .tasks: tasks; case .calendar: calendar
-        case .assistant: assistant; case .semanticSearch: semanticSearch
+        case .assistant: assistant; case .semanticSearch: semanticSearch; case .knowledgeBase: knowledgeBase
         }}
         set { switch feature {
         case .cards: cards = newValue; case .tasks: tasks = newValue; case .calendar: calendar = newValue
-        case .assistant: assistant = newValue; case .semanticSearch: semanticSearch = newValue
+        case .assistant: assistant = newValue; case .semanticSearch: semanticSearch = newValue; case .knowledgeBase: knowledgeBase = newValue
         }}
     }
     public func apply(to inherited: AppFeatures) -> AppFeatures {

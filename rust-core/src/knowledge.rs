@@ -81,6 +81,7 @@ struct Retrieval {
     warnings: Vec<String>,
     truncated: bool,
     calendar: Value,
+    semantic_status: &'static str,
 }
 
 fn hash(value: &Value) -> String {
@@ -194,7 +195,7 @@ fn score(matchers: &[crate::search::QueryMatcher], title: &str, body: &str) -> u
         .map(|matcher| usize::from(matcher.matches(title)) * 4 + usize::from(matcher.matches(body)))
         .sum()
 }
-fn note_fingerprint(note: &crate::notes::CapturedNote) -> String {
+pub(crate) fn note_fingerprint(note: &crate::notes::CapturedNote) -> String {
     hash(&serde_json::to_value(note).expect("serializable note"))
 }
 fn domain(root: &Path, command: &str, mut args: Value) -> Result<Value> {
@@ -1124,6 +1125,7 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
     }
     // Semantic ranks are ordinal votes, never added to raw BM25 scores. Model
     // outages preserve lexical retrieval and never block access to originals.
+    let mut semantic_status = "disabled";
     if features.semantic_search && !queries.is_empty() {
         let key = input["embeddingAPIKey"].as_str().unwrap_or("");
         match crate::semantic::search(
@@ -1134,6 +1136,9 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
             input["embeddingConfigFingerprint"].as_str(),
         ) {
             Ok(result) => {
+                semantic_status = if result["enabled"] != true { "disabled" }
+                    else if result["needsRefresh"] == true { "needsRefresh" }
+                    else { "ready" };
                 if result["needsRefresh"] == true {
                     warning(&mut warnings,"Смысловой индекс ещё не готов или настройки модели изменились; использован текстовый поиск.");
                 }
@@ -1163,10 +1168,10 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
                     }
                 }
             }
-            Err(_) => warning(
-                &mut warnings,
-                "Модель смыслового поиска недоступна; использован текстовый поиск.",
-            ),
+            Err(_) => {
+                semantic_status = "unavailable";
+                warning(&mut warnings, "Модель смыслового поиска недоступна; использован текстовый поиск.");
+            },
         }
     }
     // Code search also remains useful without an embedding service. No folders
@@ -1256,6 +1261,7 @@ fn retrieve_for(root: &Path, input: &Value, navigation: bool) -> Result<Retrieva
         warnings,
         truncated,
         calendar,
+        semantic_status,
     })
 }
 
@@ -1299,7 +1305,7 @@ pub fn lookup(root: &Path, input: &Value) -> Result<Value> {
         .filter(|c| current(root, &c.source, input).unwrap_or(false))
         .map(|c| c.source)
         .collect::<Vec<_>>();
-    Ok(json!({"sources":sources,"warnings":retrieval.warnings,"truncated":retrieval.truncated}))
+    Ok(json!({"sources":sources,"warnings":retrieval.warnings,"truncated":retrieval.truncated,"semanticStatus":retrieval.semantic_status}))
 }
 
 /// Canonical, dependency-checked projection for background embeddings. Calendar

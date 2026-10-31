@@ -127,7 +127,7 @@ final class VoiceCommandController: ObservableObject {
     @Published var isPresented = false
     @Published var text = "" { didSet {
         guard !restoringDraft else { return }
-        if text != oldValue && phase == .editing { restartOfJobID = nil; knowledgeAnswer = nil; knowledgeOpeningID = nil; plan = nil; interruptedPlanID = nil; interruptedOperationID = nil }
+        if text != oldValue && phase == .editing { restartOfJobID = nil; knowledgeAnswer = nil; knowledgeOpeningID = nil; assistantRead = nil; assistantNotes = nil; plan = nil; interruptedPlanID = nil; interruptedOperationID = nil }
         scheduleDraftSave()
     } }
     @Published private(set) var phase = Phase.editing { didSet { if !restoringDraft { _ = flushDraft() } } }
@@ -136,6 +136,21 @@ final class VoiceCommandController: ObservableObject {
     @Published private(set) var result: VoiceResult?
     @Published private(set) var knowledgeAnswer: KnowledgeAnswer?
     @Published private(set) var knowledgeOpeningID: String?
+    @Published private(set) var assistantRead: AssistantReadResponse?
+    @Published private(set) var assistantNotes: AssistantNoteResponse?
+    private var noteSearchFolderID: String?
+    private var noteSearchSelection: String?
+    private var noteSearchRoot: URL?
+    private var noteSearchQuery: AssistantNoteQuery?
+    private struct NoteConversation {
+        let response: AssistantNoteResponse
+        let query: AssistantNoteQuery
+        let root: URL
+        let folderID: String?
+        let selection: String?
+        let capturedAt: Date
+    }
+    private var noteConversation: NoteConversation?
     @Published var selectedTargetIDs: Set<String> = [] { didSet { if !restoringDraft { _ = flushDraft() } } }
     @Published var reviewText = "" { didSet { if !restoringDraft { scheduleDraftSave() } } }
     @Published private(set) var contextLabel = L("Библиотека")
@@ -149,6 +164,13 @@ final class VoiceCommandController: ObservableObject {
     private var interruptedPlanID: String?
     private var interruptedOperationID: String?
     private var previousQuestions: [String] = []
+    private struct ReadConversation {
+        let response: AssistantReadResponse
+        let root: URL
+        let folderID: String?
+        let capturedAt: Date
+    }
+    private var readConversation: ReadConversation?
     private var restartOfJobID: String?
     private var generation = UUID()
     #if DEBUG
@@ -210,7 +232,8 @@ final class VoiceCommandController: ObservableObject {
         guard let store else { return }
         guard store.isFeatureEnabled(.assistant) else { store.openSettings("features"); return }
         if !hasDraft && !isWorking {
-            generation = UUID(); knowledgeAnswer = nil; knowledgeOpeningID = nil
+            generation = UUID(); knowledgeAnswer = nil; knowledgeOpeningID = nil; assistantRead = nil; assistantNotes = nil
+            readConversation = nil; noteConversation = nil
             previousQuestions = []; restartOfJobID = nil
             text = ""; plan = nil; result = nil; phase = .editing; message = nil; context = [:]
             if let folderID = store.folderSelection { context["folderID"] = folderID }
@@ -266,7 +289,7 @@ final class VoiceCommandController: ObservableObject {
     func dismiss() {
         guard phase != .applying else { return }
         if isWorking { cancelWork() }
-        generation = UUID(); knowledgeAnswer = nil; knowledgeOpeningID = nil
+        generation = UUID(); knowledgeAnswer = nil; knowledgeOpeningID = nil; assistantNotes = nil; readConversation = nil; noteConversation = nil
         _ = flushDraft(); isPresented = false
     }
     func editCommand() {
@@ -274,10 +297,27 @@ final class VoiceCommandController: ObservableObject {
     }
     func reset() {
         guard !isWorking else { return }
-        knowledgeAnswer = nil; knowledgeOpeningID = nil
+        knowledgeAnswer = nil; knowledgeOpeningID = nil; assistantRead = nil; assistantNotes = nil; readConversation = nil; noteConversation = nil
         previousQuestions = []; restartOfJobID = nil
         text = ""; plan = nil; result = nil; interruptedPlanID = nil; interruptedOperationID = nil; phase = .editing; message = nil
         isPresented = false; present()
+    }
+    func continueAssistantRead() {
+        guard !isWorking, let store, let response = assistantRead, !response.targets.isEmpty else { return }
+        readConversation = ReadConversation(response: response, root: store.root,
+                                            folderID: store.folderSelection, capturedAt: Date())
+        noteConversation = nil
+        assistantRead = nil; result = nil; plan = nil; phase = .editing
+        text = ""; message = nil; contextLabel = L("Продолжение разговора")
+    }
+    func continueAssistantNotes() {
+        guard !isWorking, let store, let response = assistantNotes, !response.targets.isEmpty,
+              let query = noteSearchQuery, noteSearchRoot == store.root,
+              noteSearchSelection == store.folderSelection else { return }
+        noteConversation = NoteConversation(response: response, query: query, root: store.root,
+            folderID: noteSearchFolderID, selection: store.folderSelection, capturedAt: Date())
+        readConversation = nil; assistantNotes = nil; result = nil; plan = nil; phase = .editing
+        text = ""; message = nil; contextLabel = L("Продолжение разговора")
     }
     /// Keep only user topics. Answers and old calendar snapshots never become
     /// evidence on the next turn; Rust retrieves and verifies originals again.
@@ -414,8 +454,30 @@ final class VoiceCommandController: ObservableObject {
         } catch { message = error.localizedDescription; return }
         let command = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty, command.utf8.count <= 8_000 else { message = L("Сократите поручение или разделите его на несколько."); return }
+        if let followUp = AssistantReadPlan.parseFollowUp(command), plan == nil {
+            if noteConversation != nil { performNoteFollowUp(followUp, store: store) }
+            else { performReadFollowUp(followUp, store: store) }
+            return
+        }
+        readConversation = nil; noteConversation = nil
         if interruptedPlanID != nil && plan == nil {
             message = L("Сначала проверьте результат прерванного поручения в библиотеке. Чтобы создать новое, измените текст или нажмите «Новое поручение»."); return
+        }
+        if plan == nil, let note = AssistantNoteQuery.parse(command) {
+            guard context["projectID"] == nil else {
+                message = L("Поиск заметок по проекту пока недоступен. Выберите папку или всю библиотеку.")
+                return
+            }
+            performAssistantNoteFind(note, store: store)
+            return
+        }
+        if plan == nil {
+            let scope = AssistantReadPlan.Scope(folderID: context["folderID"] as? String,
+                                                projectID: context["projectID"] as? String)
+            if let read = AssistantReadPlan.parse(command, scope: scope) {
+                performAssistantRead(read, store: store)
+                return
+            }
         }
         if let plan, plan.status == "ready", plan.reviewRequired == true {
             prepareReview(plan)
@@ -480,6 +542,255 @@ final class VoiceCommandController: ObservableObject {
             } catch {
                 guard current == generation else { return }
                 phase = .editing; message = error is CancellationError ? L("Поручение остановлено.") : error.localizedDescription
+            }
+        }
+    }
+    private func noteScope(_ folder: String?) -> [String: Any] {
+        if let folder { return ["mode":"folder", "folderID":folder] }
+        return ["mode":"library"]
+    }
+    private func performAssistantNoteFind(_ query: AssistantNoteQuery, store: AppStore) {
+        generation = UUID(); let current = generation, root = store.root
+        let folder = context["folderID"] as? String, selection = store.folderSelection
+        noteSearchFolderID = folder; noteSearchSelection = selection; noteSearchRoot = root; noteSearchQuery = query
+        phase = .planning; message = nil; result = nil; plan = nil
+        knowledgeAnswer = nil; knowledgeOpeningID = nil; assistantRead = nil; assistantNotes = nil
+        task = Task {
+            do {
+                let data = try JSONSerialization.data(withJSONObject: ["query":query.query, "scope":noteScope(folder), "limit":20])
+                let output = try await Task.detached(priority: .userInitiated) {
+                    guard let input = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        throw AppError.message(L("Не удалось подготовить запрос."))
+                    }
+                    return try RustBridge.shared.get().request(root: root, command: "assistant-note-find", arguments: input)
+                }.value
+                guard current == generation, !Task.isCancelled else { return }
+                guard store.root == root, store.folderSelection == selection else {
+                    phase = .editing; message = L("Область поиска изменилась. Повторите поиск."); return
+                }
+                let response = try JSONDecoder().decode(AssistantNoteResponse.self, from: output)
+                assistantNotes = response; phase = .result
+                if query.open, response.state == "results", response.targets.count == 1, let target = response.targets.first {
+                    openAssistantNote(target)
+                }
+            } catch {
+                guard current == generation else { return }
+                phase = .editing; message = error is CancellationError ? L("Поручение остановлено.") : error.localizedDescription
+            }
+        }
+    }
+    private func performNoteFollowUp(_ followUp: AssistantReadPlan.FollowUp, store: AppStore) {
+        guard let conversation = noteConversation, conversation.root == store.root,
+              conversation.selection == store.folderSelection,
+              Date().timeIntervalSince(conversation.capturedAt) >= 0,
+              Date().timeIntervalSince(conversation.capturedAt) <= 1800 else {
+            noteConversation = nil; message = L("Сначала найдите заметку и выберите результат."); return
+        }
+        let targets = conversation.response.targets
+        let index: Int
+        switch followUp {
+        case .only:
+            guard targets.count == 1, conversation.response.state == "results" else {
+                assistantNotes = conversation.response; phase = .result
+                message = L("Выберите подходящую заметку."); return
+            }
+            index = 0
+        case .index(let selected):
+            guard targets.indices.contains(selected) else {
+                message = L("В показанном списке нет такого результата."); return
+            }
+            index = selected
+        }
+        generation = UUID(); let current = generation, root = store.root
+        phase = .planning; message = nil
+        task = Task {
+            do {
+                let data = try JSONSerialization.data(withJSONObject: ["query":conversation.query.query,
+                    "scope":noteScope(conversation.folderID), "limit":20])
+                let output = try await Task.detached(priority: .userInitiated) {
+                    guard let input = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        throw AppError.message(L("Не удалось подготовить запрос."))
+                    }
+                    return try RustBridge.shared.get().request(root: root, command: "assistant-note-find", arguments: input)
+                }.value
+                let fresh = try JSONDecoder().decode(AssistantNoteResponse.self, from: output)
+                guard current == generation, !Task.isCancelled else { return }
+                let elapsed = Date().timeIntervalSince(conversation.capturedAt)
+                guard store.root == root, store.folderSelection == conversation.selection,
+                      elapsed >= 0, elapsed <= 1800, fresh == conversation.response else {
+                    noteConversation = nil; phase = .editing
+                    message = L("Список заметок изменился. Найдите заметку ещё раз."); return
+                }
+                assistantNotes = conversation.response; phase = .result
+                openAssistantNote(targets[index])
+            } catch {
+                guard current == generation else { return }
+                noteConversation = nil; phase = .editing; message = error.localizedDescription
+            }
+        }
+    }
+    func openAssistantNote(_ target: AssistantNoteTarget) {
+        guard let store, !isWorking, !store.busy, assistantNotes?.targets.contains(target) == true,
+              noteSearchRoot == store.root, noteSearchSelection == store.folderSelection else { return }
+        generation = UUID(); let current = generation, root = store.root
+        let folder = noteSearchFolderID, selection = noteSearchSelection
+        phase = .planning; message = nil
+        task = Task {
+            do {
+                let encoded = try JSONEncoder().encode(target)
+                let input = try JSONSerialization.data(withJSONObject: ["scope":noteScope(folder),
+                    "target":try JSONSerialization.jsonObject(with: encoded)])
+                let output = try await Task.detached(priority: .userInitiated) {
+                    guard let args = try JSONSerialization.jsonObject(with: input) as? [String: Any] else {
+                        throw AppError.message(L("Не удалось подготовить запрос."))
+                    }
+                    return try RustBridge.shared.get().request(root: root, command: "assistant-note-validate", arguments: args)
+                }.value
+                struct Validation: Decodable { let valid: Bool }
+                let valid = try JSONDecoder().decode(Validation.self, from: output).valid
+                guard current == generation, !Task.isCancelled else { return }
+                guard valid, store.root == root, store.folderSelection == selection else {
+                    assistantNotes = nil; phase = .editing
+                    message = L("Заметка изменилась или стала недоступна. Повторите поиск."); return
+                }
+                store.notes.reload()
+                guard let note = store.notes.notes.first(where: { $0.id == target.noteID && $0.revision >= 0 && UInt64($0.revision) == target.revision }) else {
+                    assistantNotes = nil; phase = .editing
+                    message = L("Заметка изменилась или стала недоступна. Повторите поиск."); return
+                }
+                store.openCapturedNote(note); phase = .result; isPresented = false
+            } catch {
+                guard current == generation else { return }
+                phase = .result; message = error.localizedDescription
+            }
+        }
+    }
+    /// Unambiguous read-only task commands are handled locally. They do not
+    /// enqueue a model request or create a durable mutation/operation receipt.
+    private func performAssistantRead(_ read: AssistantReadPlan, store: AppStore) {
+        readConversation = nil
+        generation = UUID(); let current = generation, root = store.root
+        phase = .planning; message = nil; result = nil; plan = nil
+        knowledgeAnswer = nil; knowledgeOpeningID = nil; assistantRead = nil; assistantNotes = nil
+        task = Task {
+            do {
+                let data = try JSONEncoder().encode(read)
+                let output = try await Task.detached(priority: .userInitiated) {
+                    let value = try JSONSerialization.jsonObject(with: data)
+                    return try RustBridge.shared.get().request(root: root, command: "assistant-find",
+                        arguments: ["plan":value, "limit":20])
+                }.value
+                guard current == generation, !Task.isCancelled else { return }
+                let response = try JSONDecoder().decode(AssistantReadResponse.self, from: output)
+                assistantRead = response; phase = .result
+                if read.intent == .open, response.state == .results, response.targets.count == 1,
+                   let target = response.targets.first {
+                    openAssistantTarget(target)
+                }
+            } catch {
+                guard current == generation else { return }
+                phase = .editing
+                message = error is CancellationError ? L("Поручение остановлено.") : error.localizedDescription
+            }
+        }
+    }
+    private func performReadFollowUp(_ followUp: AssistantReadPlan.FollowUp, store: AppStore) {
+        guard let conversation = readConversation, conversation.root == store.root,
+              conversation.folderID == store.folderSelection,
+              Date().timeIntervalSince(conversation.capturedAt) >= 0,
+              Date().timeIntervalSince(conversation.capturedAt) <= 1800 else {
+            readConversation = nil
+            message = L("Сначала найдите задачу и выберите результат.")
+            return
+        }
+        let targets = conversation.response.targets
+        let index: Int
+        switch followUp {
+        case .only:
+            guard targets.count == 1, conversation.response.state == .results else {
+                assistantRead = conversation.response; phase = .result
+                message = L("Выберите подходящую задачу."); return
+            }
+            index = 0
+        case .index(let selected):
+            guard targets.indices.contains(selected) else {
+                message = L("В показанном списке нет такого результата."); return
+            }
+            index = selected
+        }
+        generation = UUID(); let current = generation, root = store.root
+        phase = .planning; message = nil
+        task = Task {
+            do {
+                let planData = try JSONEncoder().encode(conversation.response.plan)
+                let responseData = try JSONEncoder().encode(conversation.response)
+                let output = try await Task.detached(priority: .userInitiated) {
+                    let plan = try JSONSerialization.jsonObject(with: planData)
+                    let response = try JSONSerialization.jsonObject(with: responseData)
+                    return try RustBridge.shared.get().request(root: root, command: "assistant-find-validate-list",
+                        arguments: ["plan":plan, "response":response, "limit":20])
+                }.value
+                struct Validation: Decodable { let valid: Bool }
+                let valid = try JSONDecoder().decode(Validation.self, from: output).valid
+                guard current == generation, !Task.isCancelled else { return }
+                let elapsed = Date().timeIntervalSince(conversation.capturedAt)
+                guard store.root == root, store.folderSelection == conversation.folderID,
+                      elapsed >= 0, elapsed <= 1800 else {
+                    readConversation = nil; phase = .editing
+                    message = L("Сначала найдите задачу и выберите результат."); return
+                }
+                guard valid else {
+                    readConversation = nil; phase = .editing
+                    message = L("Список задач изменился. Найдите задачу ещё раз."); return
+                }
+                assistantRead = conversation.response; phase = .result
+                openAssistantTarget(targets[index])
+            } catch {
+                guard current == generation else { return }
+                readConversation = nil; phase = .editing; message = error.localizedDescription
+            }
+        }
+    }
+    func openAssistantTarget(_ target: AssistantReadTarget, eventID: String? = nil, artifactID: String? = nil) {
+        guard let store, !isWorking, let response = assistantRead,
+              response.targets.contains(target), !store.busy else { return }
+        if let eventID {
+            guard target.latestReport?.eventID == eventID, let artifactID,
+                  target.latestReport?.artifacts.contains(where: { $0.id == artifactID }) == true else { return }
+        } else if artifactID != nil { return }
+        generation = UUID(); let current = generation, root = store.root
+        phase = .planning; message = nil
+        task = Task {
+            do {
+                let planData = try JSONEncoder().encode(response.plan)
+                let targetData = try JSONEncoder().encode(target)
+                let output = try await Task.detached(priority: .userInitiated) {
+                    let plan = try JSONSerialization.jsonObject(with: planData)
+                    let selected = try JSONSerialization.jsonObject(with: targetData)
+                    return try RustBridge.shared.get().request(root: root, command: "assistant-find-validate",
+                        arguments: ["plan":plan, "target":selected, "limit":20])
+                }.value
+                struct Validation: Decodable { let valid: Bool }
+                let valid = try JSONDecoder().decode(Validation.self, from: output).valid
+                guard current == generation, !Task.isCancelled else { return }
+                phase = .result
+                guard valid else {
+                    message = L("Задача изменилась или стала недоступна. Повторите поиск.")
+                    assistantRead = nil; phase = .editing; return
+                }
+                store.openTask(id: target.taskID)
+                let selected = store.notes.selectedTaskID
+                let bareID = target.taskID.hasPrefix("manual:") ? String(target.taskID.dropFirst("manual:".count)) : target.taskID
+                if store.librarySection == "tasks", selected == target.taskID || selected == bareID {
+                    if let eventID, let selected {
+                        store.taskHistoryRoute = .init(taskID: selected, eventID: eventID, artifactID: artifactID,
+                                                       plan: response.plan, target: target)
+                    }
+                    isPresented = false
+                }
+            } catch {
+                guard current == generation else { return }
+                phase = .result; message = error.localizedDescription
             }
         }
     }

@@ -6,6 +6,7 @@ struct MeetingView: View {
     @EnvironmentObject private var store: AppStore
     let meeting: Meeting
     @State private var folderEditor: FolderEditorTarget?
+    @State private var confirmDelete = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -16,7 +17,7 @@ struct MeetingView: View {
                     Menu {
                         Button(L("Переместить в папку…")) {
                             NotificationCenter.default.post(name: Notification.Name("PosleMoveMeeting"), object: meeting.id)
-                        }.disabled(store.captureMeetingID == meeting.id)
+                        }.disabled(store.isMeetingMediaProtected(meeting.id))
                         if let folder = store.notes.folder(for: meeting.id) {
                             Button(L("Настройки папки…")) { folderEditor = FolderEditorTarget(folder: folder) }
                         }
@@ -44,8 +45,10 @@ struct MeetingView: View {
                             }.accessibilityIdentifier("meeting.cardGeneration")
                         }
                         Divider()
-                        Button(L("Переименовать…")) { store.meetingTitleEdits.begin(meeting) }.disabled(store.captureMeetingID == meeting.id)
-                        Button(L("Распознать заново")) { Task { await store.processMeeting(meeting.id) } }.disabled(!store.runtimeReady || store.jobs.contains(objectID: meeting.id, kinds: ["transcribe"]) || meeting.libraryKind == "cards")
+                        Button(L("Переименовать…")) { store.meetingTitleEdits.begin(meeting) }.disabled(store.isMeetingMediaProtected(meeting.id))
+                        Button(L("Распознать заново")) { Task { await store.processMeeting(meeting.id) } }.disabled(!store.runtimeReady || store.isMeetingMediaProtected(meeting.id) || store.jobs.contains(objectID: meeting.id) || meeting.libraryKind == "cards")
+                        Divider()
+                        MeetingFileActions(meeting: meeting) { confirmDelete = true }
                     } label: { Image(systemName: "ellipsis").frame(width: 25, height: 25) }.menuStyle(.borderlessButton).frame(width: 32)
                         .accessibilityLabel(L("Действия со встречей"))
                 }
@@ -59,7 +62,10 @@ struct MeetingView: View {
                     }.buttonStyle(.plain).help(L("Переместить встречу в папку"))
                         .accessibilityLabel(L("Папка встречи: ") + (store.notes.folder(for: meeting.id)?.name ?? L("Без папки")))
                         .accessibilityIdentifier("meeting.folder")
-                        .disabled(store.captureMeetingID == meeting.id)
+                        .disabled(store.isMeetingMediaProtected(meeting.id))
+                    if store.effectiveSettings(for: meeting.id).features.knowledgeBase {
+                        MeetingKnowledgeBacklinks(meetingID:meeting.id)
+                    }
 
                 }.font(AppTypography.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, AppLayout.contentInset).padding(.top, 22).padding(.bottom, 18)
@@ -85,6 +91,10 @@ struct MeetingView: View {
             else { SummaryView() }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .sheet(item: $folderEditor) { target in FolderSettingsView(folder: target.folder).environmentObject(store) }
+            .alert(L("Переместить встречу в Корзину?"), isPresented: $confirmDelete) {
+                Button(L("Отмена"), role: .cancel) {}
+                Button(L("В Корзину"), role: .destructive) { store.trashMeeting(meeting.id) }
+            } message: { Text(L("Встречу и все её материалы можно будет восстановить в Корзине приложения в течение 30 дней.")) }
     }
     private var meetingTabs: [AppTab<String>] {
         var result = [AppTab(L("Заметки"), value: "notes")]
@@ -99,16 +109,69 @@ struct MeetingView: View {
     }
 
     private var unprocessed: some View {
-        VStack(spacing: 16) {
-            Image(systemName: store.stoppingRecording ? "square.and.arrow.down" : store.isRecording ? "waveform" : "waveform.badge.magnifyingglass").font(.system(size: 42)).foregroundStyle(Ink.accent)
-            Text(store.stoppingRecording ? L("Сохраняю запись") : store.isRecording ? L("Идёт запись") : L("Запись сохранена")).font(.title3.weight(.semibold))
-            if !store.isRecording {
-                Button(store.runtimeReady ? (store.settings.speechMode == "cloud" ? L("Распознать в облаке…") : L("Распознать встречу")) : L("Установить модели")) {
-                    if store.runtimeReady { Task { await store.processMeeting(meeting.id) } }
-                    else { store.openSettings("speech") }
-                }.buttonStyle(.borderedProminent).tint(Ink.actionFill).controlSize(.large).disabled(store.jobs.contains(objectID: meeting.id))
+        let saving = store.isMeetingSaving(meeting.id)
+        let recording = store.captureMeetingID == meeting.id
+        let playback = store.playbackURL(for: meeting.id)
+        let source = store.sourceMediaURL(for: meeting.id)
+        return VStack(spacing: 16) {
+            Image(systemName: saving ? "square.and.arrow.down" : recording ? "waveform" : source == nil && playback == nil ? "waveform.slash" : "waveform.badge.magnifyingglass")
+                .font(.system(size: 42)).foregroundStyle(Ink.accent)
+            Text(saving ? L("Сохраняю запись") : recording ? L("Идёт запись") : source == nil && playback == nil ? L("Медиафайл недоступен") : L("Запись сохранена"))
+                .font(.title3.weight(.semibold)).accessibilityIdentifier("meeting.mediaStatus")
+            if !saving && !recording {
+                if playback == nil, source != nil {
+                    Text(L("Исходная запись доступна. Её можно открыть или сохранить до распознавания."))
+                        .font(AppTypography.control).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    HStack(spacing: 12) {
+                        Button(L("Открыть исходную запись")) { store.openMeetingSource(meeting.id) }
+                            .accessibilityIdentifier("meeting.source.open")
+                        Button(L("Сохранить исходную запись…")) { store.exportMeetingAudio(meeting.id, original: true) }
+                            .accessibilityIdentifier("meeting.source.export")
+                    }.buttonStyle(.bordered)
+                } else if playback == nil {
+                    Text(L("Откройте файлы встречи, чтобы проверить исходную запись."))
+                        .font(AppTypography.control).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Button(L("Показать файлы встречи")) { store.showMeetingFiles(meeting.id) }.buttonStyle(.bordered)
+                }
+                if source != nil || playback != nil {
+                    Button(store.runtimeReady ? (store.settings.speechMode == "cloud" ? L("Распознать в облаке…") : L("Распознать встречу")) : L("Установить модели")) {
+                        if store.runtimeReady { Task { await store.processMeeting(meeting.id) } }
+                        else { store.openSettings("speech") }
+                    }.buttonStyle(.borderedProminent).tint(Ink.actionFill).controlSize(.large).disabled(store.jobs.contains(objectID: meeting.id))
+                }
             }
             if let error = meeting.error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(30)
+    }
+}
+
+/// The same file actions remain reachable before transcription, in the meeting
+/// header, sidebar context menu and player. The confirmation captures its ID.
+struct MeetingFileActions: View {
+    @EnvironmentObject private var store: AppStore
+    let meeting: Meeting
+    let trash: () -> Void
+    var body: some View {
+        if store.selection == meeting.id {
+            Button(L("Конспект и транскрипция (.md)")) { store.export(false) }
+                .disabled(store.transcript == nil && store.summary == nil)
+            if store.isFeatureEnabled(.cards) {
+                Button(L("Карточки для Anki (.tsv)")) { store.export(true) }.disabled(store.summary?.cards.isEmpty ?? true)
+            }
+        }
+        Button(L("Аудиозапись (.mp3)")) { store.exportMeetingAudio(meeting.id) }
+            .disabled(store.playbackURL(for: meeting.id) == nil).accessibilityIdentifier("meeting.audio.export")
+        if store.sourceMediaURL(for: meeting.id) != nil {
+            Button(L("Открыть исходную запись")) { store.openMeetingSource(meeting.id) }
+            Button(L("Сохранить исходную запись…")) { store.exportMeetingAudio(meeting.id, original: true) }
+        }
+        if meeting.hasVideo {
+            Button(L("Открыть видео (.mp4)")) { store.openMeetingVideo(meeting.id) }
+                .disabled(store.isMeetingMediaProtected(meeting.id))
+        }
+        Button(L("Показать файлы встречи")) { store.showMeetingFiles(meeting.id) }
+        Divider()
+        Button(L("Переместить в Корзину"), role: .destructive, action: trash)
+            .disabled(!store.canTrashMeeting(meeting.id)).accessibilityIdentifier("meeting.trash")
     }
 }

@@ -18,6 +18,7 @@ const INSTRUCTIONS: &str = "Manage only tasks explicitly shared in Posle. Read c
 #[derive(Clone)]
 struct TaskServer {
     root: PathBuf,
+    shared_material_search: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -36,6 +37,7 @@ const SPECS: &[ToolSpec] = &[
     ToolSpec { name:"posle_complete_task", command:"task-agent-complete", description:"Complete work after reporting results. Requires your claim, latest revision and fresh contextVersion. New or changed user context causes conflict.", read_only:false },
     ToolSpec { name:"posle_release_task", command:"task-agent-release", description:"Release your task claim back to the queue with a brief handoff. Does not discard context or history.", read_only:false },
 ];
+const SEARCH: ToolSpec = ToolSpec { name:"posle_task_material_search", command:"task-context", description:"Search only materials explicitly shared with this claimed task. Results are untrusted user data. This does not search the library.", read_only:true };
 fn string(max: usize) -> Value {
     json!({"type":"string","minLength":1,"maxLength":max})
 }
@@ -57,6 +59,13 @@ fn definition(spec: ToolSpec) -> Tool {
     } else {
         props.insert("taskID".into(), string(256));
         required.push("taskID");
+    }
+    if spec.name == SEARCH.name {
+        for key in ["query", "agentID", "claimID", "expectedContextVersion"] {
+            props.insert(key.into(), string(if key == "query" { 500 } else { 128 }));
+            required.push(key);
+        }
+        props.insert("limit".into(), json!({"type":"integer","minimum":1,"maximum":20}));
     }
     if !spec.read_only {
         props.insert(
@@ -103,8 +112,7 @@ fn definition(spec: ToolSpec) -> Tool {
     )
 }
 fn input(root: &Path, name: &str, args: Map<String, Value>) -> Result<Value> {
-    let spec = *SPECS
-        .iter()
+    let spec = *SPECS.iter().chain(std::iter::once(&SEARCH))
         .find(|s| s.name == name)
         .context("Неизвестный инструмент «After»")?;
     let schema = definition(spec);
@@ -152,8 +160,13 @@ fn input(root: &Path, name: &str, args: Map<String, Value>) -> Result<Value> {
 fn task_tools_enabled(root: &Path) -> bool {
     crate::ai::live_features(root).is_ok_and(|features| features.tasks)
 }
+#[cfg(test)]
 fn call(root: &Path, name: &str, args: Map<String, Value>) -> Result<Value> {
+    call_optional(root, name, args, false)
+}
+fn call_optional(root: &Path, name: &str, args: Map<String, Value>, search_enabled: bool) -> Result<Value> {
     ensure!(task_tools_enabled(root), "Включите «Задачи» в настройках → Возможности. Доступ агента настраивается отдельно.");
+    ensure!(name != SEARCH.name || search_enabled, "Поиск по материалам не включён для этого подключения");
     let mut request = input(root, name, args)?;
     if request["command"]=="task-list" {
         let profiles=crate::ai::FeatureResolver::new(root)?;
@@ -174,8 +187,41 @@ fn call(root: &Path, name: &str, args: Map<String, Value>) -> Result<Value> {
         return Ok(result);
     }
     ensure!(crate::ai::live_features_for_input(root,&request)?.tasks,"Задачи выключены в профиле этой папки.");
+    if name == SEARCH.name {
+        let query = request["query"].as_str().unwrap().to_owned();
+        ensure!(!query.trim().is_empty(), "Введите поисковый запрос");
+        let limit = request["limit"].as_u64().unwrap_or(10);
+        ensure!((1..=20).contains(&limit), "Допустимо от 1 до 20 результатов");
+        let context = crate::request(&request)?;
+        ensure!(context["task"]["claim"]["id"] == request["claimID"] && context["task"]["claim"]["agentId"] == request["agentID"], "Задача не закреплена за этим агентом");
+        ensure!(context["contextVersion"] == request["expectedContextVersion"], "Контекст задачи изменился. Перечитайте его перед поиском.");
+        return search_materials(&context, &query, limit as usize);
+    }
     if request["command"]!="task-context" { request["requireTaskFeature"]=json!(true); }
     crate::request(&request)
+}
+fn search_materials(context: &Value, query: &str, limit: usize) -> Result<Value> {
+    let matcher = crate::search::QueryMatcher::new(query)?;
+    ensure!(matcher.has_terms(), "Добавьте слова или числа в поисковый запрос");
+    let mut results = Vec::new();
+    for material in context["materials"].as_array().into_iter().flatten() {
+        if material["shared"] != true || material["available"] != true { continue; }
+        let Some(text) = material["text"].as_str() else { continue };
+        let title = material["title"].as_str().unwrap_or("");
+        let title_match = matcher.matches(title);
+        if !title_match && !matcher.matches(text) { continue; }
+        let mut end = text.len().min(700);
+        while !text.is_char_boundary(end) { end -= 1; }
+        results.push((title_match, json!({"id":material["id"],"kind":material["kind"],"title":title,"noteID":material["noteID"],"meetingID":material["meetingID"],"noteRevision":material["noteRevision"],"sourceFingerprint":material["sourceFingerprint"],"excerpt":&text[..end],"excerptTruncated":end < text.len()})));
+    }
+    results.sort_by(|a,b| b.0.cmp(&a.0).then_with(|| a.1["id"].as_str().cmp(&b.1["id"].as_str())));
+    let mut truncated = results.len() > limit;
+    let mut hits = Vec::new();
+    for (_, hit) in results.into_iter().take(limit) {
+        hits.push(hit);
+        if serde_json::to_vec(&hits)?.len() > 20_000 { hits.pop(); truncated = true; break; }
+    }
+    Ok(json!({"taskID":context["task"]["id"],"contextVersion":context["contextVersion"],"results":hits,"truncated":truncated,"contextTruncated":context["truncated"],"scope":"sharedTaskMaterials"}))
 }
 impl ServerHandler for TaskServer {
     fn get_info(&self) -> ServerConfig {
@@ -185,8 +231,7 @@ impl ServerHandler for TaskServer {
     }
     fn get_tool(&self, name: &str) -> Option<Tool> {
         if !task_tools_enabled(&self.root) { return None; }
-        SPECS
-            .iter()
+        SPECS.iter().chain(self.shared_material_search.then_some(&SEARCH))
             .find(|s| s.name == name)
             .copied()
             .map(definition)
@@ -197,7 +242,7 @@ impl ServerHandler for TaskServer {
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult::with_all_items(
-            if task_tools_enabled(&self.root) { SPECS.iter().copied().map(definition).collect() } else { vec![] },
+            if task_tools_enabled(&self.root) { SPECS.iter().chain(self.shared_material_search.then_some(&SEARCH)).copied().map(definition).collect() } else { vec![] },
         ))
     }
     async fn call_tool(
@@ -208,7 +253,8 @@ impl ServerHandler for TaskServer {
         let root = self.root.clone();
         let name = request.name.to_string();
         let args = request.arguments.unwrap_or_default();
-        let result = tokio::task::spawn_blocking(move || call(&root, &name, args)).await;
+        let search_enabled = self.shared_material_search;
+        let result = tokio::task::spawn_blocking(move || call_optional(&root, &name, args, search_enabled)).await;
         let result = match result {
             Ok(Ok(value)) => CallToolResult::structured(value),
             Ok(Err(error)) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
@@ -221,14 +267,14 @@ impl ServerHandler for TaskServer {
 }
 /// MCP owns stdout until EOF. Errors and shutdown diagnostics go to stderr.
 /// The caller cannot override root through a tool argument.
-pub fn run_stdio(root: PathBuf) -> Result<()> {
+pub fn run_stdio(root: PathBuf, shared_material_search: bool) -> Result<()> {
     ensure!(root.is_absolute(), "Нужен абсолютный путь библиотеки");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        let service = TaskServer { root }.serve(rmcp::transport::stdio()).await?;
+        let service = TaskServer { root, shared_material_search }.serve(rmcp::transport::stdio()).await?;
         service.waiting().await?;
         Ok(())
     })
@@ -237,9 +283,50 @@ pub fn run_stdio(root: PathBuf) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn opt_in_material_search_respects_sharing_claim_and_context() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        crate::storage::atomic_json(&root.join("settings.json"), &json!({"features":{"tasks":true}})).unwrap();
+        let dispatch = |command: &str, mut value: Value| { value["command"] = json!(command); crate::task_workspace::dispatch(root, &value).unwrap() };
+        dispatch("task-agent-settings", json!({"enabled":true,"expectedRevision":0,"operationID":"enable"}));
+        let task = dispatch("task-create", json!({"title":"Search task","operationID":"create"}));
+        let task = dispatch("task-details-update", json!({"taskID":task["id"],"expectedRevision":task["revision"],"expectedSourceFingerprint":task["sourceFingerprint"],"patch":{"agentAccess":{"enabled":true}},"operationID":"share"}));
+        let task = dispatch("task-material-link", json!({"taskID":task["id"],"expectedRevision":task["revision"],"operationID":"material1","material":{"kind":"note","title":"Shared","text":"neptune launch plan","shared":true}}));
+        let task = dispatch("task-material-link", json!({"taskID":task["id"],"expectedRevision":task["revision"],"operationID":"material2","material":{"kind":"note","title":"Private","text":"neptune secret details","shared":false}}));
+        let context = call(root,"posle_task_context",json!({"taskID":task["id"]}).as_object().unwrap().clone()).unwrap();
+        let claimed = dispatch("task-agent-claim", json!({"taskID":task["id"],"expectedRevision":task["revision"],"expectedContextVersion":context["contextVersion"],"operationID":"claim","agentID":"Codex"}));
+        let context = call(root,"posle_task_context",json!({"taskID":task["id"]}).as_object().unwrap().clone()).unwrap();
+        let mut args = json!({"taskID":task["id"],"query":"neptune","agentID":"Codex","claimID":claimed["claim"]["id"],"expectedContextVersion":context["contextVersion"]}).as_object().unwrap().clone();
+        assert!(call(root, SEARCH.name, args.clone()).is_err());
+        let result = call_optional(root, SEARCH.name, args.clone(), true).unwrap();
+        assert_eq!(result["results"].as_array().unwrap().len(), 1);
+        assert_eq!(result["results"][0]["title"], "Shared");
+        assert!(!result.to_string().contains("secret"));
+        args.insert("claimID".into(), json!("wrong"));
+        assert!(call_optional(root, SEARCH.name, args.clone(), true).is_err());
+        args.insert("claimID".into(), claimed["claim"]["id"].clone());
+        args.insert("expectedContextVersion".into(), json!("stale"));
+        assert!(call_optional(root, SEARCH.name, args.clone(), true).is_err());
+        args.insert("root".into(), json!("/tmp"));
+        assert!(call_optional(root, SEARCH.name, args, true).is_err());
+        let unshared = dispatch("task-material-link", json!({"taskID":task["id"],"expectedRevision":claimed["revision"],"operationID":"unshare","material":{"id":result["results"][0]["id"],"shared":false}}));
+        let revoked = json!({"taskID":task["id"],"query":"neptune","agentID":"Codex","claimID":claimed["claim"]["id"],"expectedContextVersion":context["contextVersion"]}).as_object().unwrap().clone();
+        assert!(call_optional(root, SEARCH.name, revoked.clone(), true).is_err());
+        let updated = call(root,"posle_task_context",json!({"taskID":task["id"]}).as_object().unwrap().clone()).unwrap();
+        let mut refreshed = revoked;
+        refreshed.insert("expectedContextVersion".into(), updated["contextVersion"].clone());
+        assert!(call_optional(root, SEARCH.name, refreshed.clone(), true).unwrap()["results"].as_array().unwrap().is_empty());
+        dispatch("task-details-update", json!({"taskID":task["id"],"expectedRevision":unshared["revision"],"expectedSourceFingerprint":unshared["sourceFingerprint"],"patch":{"agentAccess":{"enabled":false}},"operationID":"revoke"}));
+        assert!(call_optional(root, SEARCH.name, refreshed, true).is_err());
+        let legacy = TaskServer { root: root.into(), shared_material_search: false };
+        let opted_in = TaskServer { root: root.into(), shared_material_search: true };
+        assert!(legacy.get_tool(SEARCH.name).is_none());
+        assert!(opted_in.get_tool(SEARCH.name).is_some());
+    }
+    #[test]
     fn disabled_tasks_hide_and_reject_mcp_without_deleting_local_data() {
         let root = tempfile::tempdir().unwrap();
-        let server = TaskServer { root: root.path().into() };
+        let server = TaskServer { root: root.path().into(), shared_material_search: false };
         assert!(!task_tools_enabled(root.path()));
         assert!(server.get_tool("posle_tasks").is_none());
         assert!(call(root.path(), "posle_tasks", Map::new()).unwrap_err().to_string().contains("Включите «Задачи»"));

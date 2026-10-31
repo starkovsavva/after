@@ -290,6 +290,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             catch { fputs("Native theme check failed: \(error)\n", stderr); exit(1) }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-agent-snapshot") {
+            Task {
+                do { try await SnapshotAgentNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native snapshot check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-knowledge-topics") {
+            Task {
+                do { try await KnowledgeTopicsNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native knowledge topics check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-knowledge-links") {
+            Task {
+                do { try await KnowledgeLinksNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native knowledge links check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--check-assistant-read") {
+            Task {
+                do { try await AssistantReadNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Native assistant read check failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-voice") {
             Task {
                 do { try await VoiceNativeChecks.run(); NSApp.terminate(nil) }

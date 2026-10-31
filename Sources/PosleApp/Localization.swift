@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import Observation
 import PosleCore
 import SwiftUI
 
@@ -17,13 +18,21 @@ enum UILanguage: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// Immutable catalog plus a small synchronized language snapshot for non-UI errors.
+/// Observable reads in L()/UILocale() invalidate each SwiftUI body that uses
+/// localized copy, including cached list rows. Identity and editor state stay intact.
+/// The synchronized snapshot also supports non-UI errors.
 /// Callers translate UI text explicitly; documents, transcripts, model output and
 /// user names must never be passed through a global string replacement hook.
+@Observable
 private final class UILocalizationRuntime: @unchecked Sendable {
     static let shared = UILocalizationRuntime()
     private let lock = NSLock()
-    private var language = "ru"
+    @ObservationIgnored private var storedLanguage = "ru"
+    private var language: String {
+        access(keyPath: \.language)
+        lock.lock(); defer { lock.unlock() }
+        return storedLanguage
+    }
     private let english: [String: String]
     private init() {
         var candidates: [URL] = []
@@ -37,13 +46,18 @@ private final class UILocalizationRuntime: @unchecked Sendable {
             (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode([String: String].self, from: $0) }
         }.first ?? [:]
     }
-    func setLanguage(_ value: String) { lock.lock(); language = value; lock.unlock() }
+    func setLanguage(_ value: String) {
+        guard language != value else { return }
+        withMutation(keyPath: \.language) {
+            lock.lock(); storedLanguage = value; lock.unlock()
+        }
+    }
     var locale: Locale {
-        lock.lock(); let selected = language; lock.unlock()
+        let selected = language
         return Locale(identifier: selected == "ru" ? "ru_RU" : "en_US")
     }
     func translate(_ source: String) -> String {
-        lock.lock(); let selected = language; lock.unlock()
+        let selected = language
         return selected == "en" ? english[source] ?? source : source
     }
 }

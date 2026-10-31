@@ -1035,6 +1035,7 @@ fn link(root: &Path, workspace: &mut NotesWorkspace, input: &Value, unlink: bool
     after["createdNote"] = created;
     remember(workspace, input, result, before, after)
 }
+
 fn agent_action(
     root: &Path,
     workspace: &mut NotesWorkspace,
@@ -1749,6 +1750,7 @@ pub fn dispatch(root: &Path, input: &Value) -> Result<Value> {
         "task-create" => create(root, &mut workspace, input)?,
         "task-details-update" => update(root, &mut workspace, input)?,
         "task-material-link" => link(root, &mut workspace, input, false)?,
+        "task-material-share-notes" => bail!("Выбор области базы временно недоступен до готовности защищённого подключения"),
         "task-material-unlink" => link(root, &mut workspace, input, true)?,
         "task-batch-preview" => preview(root, &mut workspace, input)?,
         "task-batch-apply" => batch_apply(root, &mut workspace, input)?,

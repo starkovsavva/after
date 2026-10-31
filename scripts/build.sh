@@ -58,19 +58,22 @@ python3 "$PROJECT/scripts/signing.py" --library "$CORE_LIBRARY" --digest-file "$
 swift build --scratch-path "$BUILD" -c release --disable-automatic-resolution \
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __posle_core -Xlinker "$CORE_DIGEST"
 SWIFT_BIN="$(swift build --scratch-path "$BUILD" -c release --show-bin-path)"
-cp "$SWIFT_BIN/Posle" "$APP/Contents/MacOS/Posle"
-cp "$RUST_RELEASE/posle-engine" "$APP/Contents/MacOS/posle-engine"
-# Helpers are real native processes. The speech helper embeds the private
-# CPython runtime in-process; it never execs a Python interpreter.
+cp "$SWIFT_BIN/After" "$APP/Contents/MacOS/After"
+cp "$RUST_RELEASE/posle-engine" "$APP/Contents/MacOS/After Engine"
+# Previously copied MCP configurations refer to posle-engine. A signed native
+# shim keeps that path usable and execs the newly named engine without a shell.
+/usr/bin/clang -Os -std=c11 -Wall -Wextra -Werror "$PROJECT/packaging/LegacyEngineShim.c" -o "$APP/Contents/MacOS/posle-engine"
+# Keep helper bundle paths and identifiers stable for existing installations.
+# Their executable names are user-visible in Activity Monitor.
 python3 - "$APP" "$RUST_RELEASE/posle-engine" "$PROJECT/packaging/Info.plist" <<'PYHELPERS'
 import plistlib, shutil, sys
 from pathlib import Path
 app, engine, version_file = map(Path, sys.argv[1:])
 with version_file.open("rb") as stream: version = plistlib.load(stream)
-# Keep helper bundle paths and executable names stable for runtime integrity checks.
+# Keep helper bundle paths and identifiers stable for runtime integrity checks.
 for title, executable, identifier, display in [
-    ("После Распознавание", "После Речь", "app.posle.meetings.speech", "After Speech"),
-    ("После Обработка", "После Обработка", "app.posle.meetings.processing", "After Processing"),
+    ("После Распознавание", "After Speech", "app.posle.meetings.speech", "After Speech"),
+    ("После Обработка", "After Processing", "app.posle.meetings.processing", "After Processing"),
 ]:
     helper = app / "Contents/Helpers" / (title + ".app") / "Contents"
     (helper / "MacOS").mkdir(parents=True, exist_ok=True)

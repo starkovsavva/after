@@ -29,13 +29,13 @@ CLIENTS = (
 
 
 class Client:
-    def __init__(self, core, identity):
+    def __init__(self, core, identity, shared_material_search=False):
         self.identity = identity
         self.actor = identity["name"]
         self.sequence = 0
         self.output = queue.Queue()
         self.errors = []
-        self.process = subprocess.Popen([str(core.engine), "mcp", "--root", str(core.root)],
+        self.process = subprocess.Popen([str(core.engine), "mcp", "--root", str(core.root)] + (["--shared-material-search"] if shared_material_search else []),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=core.environment)
         def read():
             try:
@@ -131,6 +131,16 @@ def lifecycle(engine, library, identity, other_identity):
             retry = first.tool("posle_claim_task", **claim_args)
             require(claimed == retry and claimed["status"] == "doing", "Claim retry duplicated mutation")
             claim_id = claimed["claim"]["id"]
+            scoped = Client(core, identity, shared_material_search=True)
+            try:
+                require(len(scoped.request("tools/list", {})["tools"]) == 8, "Opt-in search missing")
+                search_context = scoped.tool("posle_task_context", taskID=task_id)
+                search = scoped.tool("posle_task_material_search", taskID=task_id, query="сценарий", agentID=first.actor, claimID=claim_id, expectedContextVersion=search_context["contextVersion"])
+                require(len(search["results"]) == 1 and search["results"][0]["title"] == "Публичный контекст", "Shared material search returned wrong results")
+                require("PRIVATE-MATERIAL" not in json.dumps(search), "Search leaked private material")
+                first.tool("posle_task_material_search", taskID=task_id, query="сценарий", agentID=first.actor, claimID=claim_id, expectedContextVersion=search_context["contextVersion"], error=True)
+            finally:
+                scoped.close()
             second = Client(core, other_identity)
             require({tool["name"] for tool in second.request("tools/list", {})["tools"]} == {tool["name"] for tool in tools}, "Client identity changed available tools")
             fresh = second.tool("posle_task_context", taskID=task_id)

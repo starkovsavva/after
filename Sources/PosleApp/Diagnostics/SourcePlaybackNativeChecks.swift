@@ -60,6 +60,8 @@ enum SourcePlaybackNativeChecks {
         try expect(state.error == nil, "Closing a failed source must clear the message before reopening an updated source")
         print("PASS: a stale source snapshot is rejected before playback without navigation")
         try await verifyMeetingPlaybackCallbacks(store: store, first: meeting)
+        try await verifyUnprocessedMedia(store: store)
+        try await verifyFailedTranscriptionMedia(root: root)
     }
     private static func delayedValidation(store: AppStore, meetingID: String, segment: Segment, audioURL: URL) async throws {
         let worker = EvidenceWorkerGate()
@@ -142,7 +144,104 @@ enum SourcePlaybackNativeChecks {
                    "Clearing the selection must not let a pending player callback restore an obsolete position")
         print("PASS: actual queued playback callbacks ignore previous/reloaded/cleared sources while current ticks still update and finish playback")
     }
-    private static func silentWAV() -> Data {
+    private static func verifyUnprocessedMedia(store: AppStore) async throws {
+        let source = Meeting(title: "Исходная запись без распознавания", source: "fixture.wav")
+        let directory = store.meetingDirectory(source.id)
+        try store.write(source, directory.appendingPathComponent("meta.json"))
+        let bytes = silentWAV()
+        try bytes.write(to: directory.appendingPathComponent(source.source))
+        store.reloadLibrary(); store.selection = source.id; store.loadSelection()
+        try expect(store.transcript == nil && store.playbackURL(for: source.id) == nil && store.sourceMediaURL(for: source.id) != nil
+                   && store.canTrashMeeting(source.id), "Source-only meeting must expose its source and trash without a transcript")
+        let exportDirectory = store.root.deletingLastPathComponent().appendingPathComponent("after-media-export-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: exportDirectory) }
+        let export = exportDirectory.appendingPathComponent("source.wav")
+        try MeetingMediaAccess.copy(root: store.root, meetingID: source.id, name: source.source, to: export)
+        try expect(try Data(contentsOf: export) == bytes, "Original media export must preserve exact bytes")
+        do {
+            try MeetingMediaAccess.copy(root: store.root, meetingID: source.id, name: source.source, to: directory.appendingPathComponent("unsafe.wav"))
+            throw AppError.message("Audio export was allowed to overwrite library contents")
+        } catch { try expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("unsafe.wav").path), "Rejected library export wrote a file") }
+        try expect(MeetingMediaAccess.fileURL(root: store.root, meetingID: source.id, name: "../meta.json") == nil,
+                   "Media paths must reject traversal")
+        let linked = directory.appendingPathComponent("linked.wav")
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: export)
+        try expect(MeetingMediaAccess.fileURL(root: store.root, meetingID: source.id, name: "linked.wav") == nil,
+                   "Media paths must reject linked files")
+        let aliasID = "media-alias-" + UUID().uuidString
+        let alias = store.meetingDirectory(aliasID)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
+        defer { try? FileManager.default.removeItem(at: alias) }
+        try expect(MeetingMediaAccess.fileURL(root: store.root, meetingID: aliasID, name: source.source) == nil,
+                   "Media paths must reject linked meeting directories")
+        try FileManager.default.removeItem(at: linked)
+        try FileManager.default.removeItem(at: alias)
+        store.isRecording = true; store.recordingID = source.id
+        try expect(store.sourceMediaURL(for: source.id) == nil && !store.canTrashMeeting(source.id), "An active recording must not be exported or deleted")
+        store.isRecording = false; store.recordingID = nil
+        store.finalizingMeetingIDs.insert(source.id)
+        try expect(store.isMeetingSaving(source.id) && store.sourceMediaURL(for: source.id) == nil && !store.canTrashMeeting(source.id),
+                   "Finalizing media must remain protected after capture stops")
+        store.finalizingMeetingIDs.remove(source.id)
+        store.trashMeeting(source.id)
+        try expect(!store.meetings.contains { $0.id == source.id }, "A source-only meeting must be movable to Trash")
+
+        let playable = Meeting(title: "Готовое аудио без транскрипта", source: "recording.mp3")
+        let playableDirectory = store.meetingDirectory(playable.id)
+        try store.write(playable, playableDirectory.appendingPathComponent("meta.json"))
+        // A supplied synthetic MP3 adds codec coverage; the portable fallback is
+        // generated WAV audio, which AVFoundation detects by its container bytes.
+        let audio: Data
+        if let fixture = ProcessInfo.processInfo.environment["POSLE_NATIVE_AUDIO_FIXTURE"] {
+            audio = try Data(contentsOf: URL(fileURLWithPath: fixture))
+        } else { audio = bytes }
+        try audio.write(to: playableDirectory.appendingPathComponent("recording.mp3"))
+        store.reloadLibrary(); store.selection = playable.id; store.loadSelection(); store.muteMeetingPlaybackForChecks()
+        try await wait { store.meetingPlayerReadyForChecks && store.playbackDuration > 1 }
+        try expect(store.transcript == nil && store.playbackURL(for: playable.id) != nil, "Ready audio must be available before transcription")
+        store.togglePlayback()
+        try await wait { store.isPlaying && store.playbackTime > 0 }
+        store.pause(); store.seek(0.5)
+        try expect(store.playbackTime == 0.5 && !store.isPlaying, "Unprocessed audio must support pause and seek")
+        try MeetingMediaAccess.copy(root: store.root, meetingID: playable.id, name: "recording.mp3", to: exportDirectory.appendingPathComponent("ready.mp3"))
+        try expect(try Data(contentsOf: exportDirectory.appendingPathComponent("ready.mp3")) == audio, "Ready audio export must preserve exact bytes")
+        store.trashMeeting(playable.id)
+        try expect(!store.meetings.contains { $0.id == playable.id }, "Ready audio without transcript must be movable to Trash")
+        try expect(store.playbackURL(for: "missing-meeting") == nil, "Missing media must not expose playback")
+        print("PASS: untranscribed audio plays, seeks, exports and trashes; source-only media exports/trashes; capture/finalization, traversal and links are protected")
+    }
+    private static func verifyFailedTranscriptionMedia(root: URL) async throws {
+        for cancelled in [false, true] {
+            let bytes = silentWAV()
+            let store = AppStore(preview: true) { job, _, _ in
+                guard job.kind == "transcribe" else { throw AppError.message("Unexpected transcription fixture job") }
+                try bytes.write(to: root.appendingPathComponent("meetings/" + job.objectID + "/playback.mp3"))
+                if cancelled { throw CancellationError() }
+                throw AppError.message("Synthetic ASR failure after audio preparation")
+            }
+            store.settings.speechMode = "local"; store.settings.autoSummary = false
+            let meeting = Meeting(title: "Audio survives failed ASR", source: "source.wav")
+            let directory = store.meetingDirectory(meeting.id)
+            try store.write(meeting, directory.appendingPathComponent("meta.json"))
+            try bytes.write(to: directory.appendingPathComponent("source.wav"))
+            store.reloadLibrary(); store.selection = meeting.id; store.loadSelection(); store.tab = "notes"
+            store.notes.captureDrafts[meeting.id] = "Unchanged draft"
+            try expect(store.playbackURL(for: meeting.id) == nil, "ASR fixture must begin without prepared audio")
+            await store.processMeeting(meeting.id)
+            store.muteMeetingPlaybackForChecks()
+            try await wait { store.meetingPlayerReadyForChecks }
+            try expect(store.transcript == nil && store.playbackURL(for: meeting.id) != nil
+                       && store.tab == "notes" && store.notes.captureDrafts[meeting.id] == "Unchanged draft",
+                       "Failed/cancelled transcription must attach its newly prepared audio without resetting the draft")
+            store.togglePlayback()
+            try await wait { store.isPlaying && store.playbackTime > 0 }
+            store.pause()
+            await store.jobs.shutdown()
+        }
+        print("PASS: failed and cancelled ASR retain playable prepared audio and the open draft without reselecting the meeting")
+    }
+    static func silentWAV() -> Data {
         let sampleRate: UInt32 = 16_000
         let sampleBytes: UInt32 = sampleRate * 2 * 2
         var data = Data("RIFF".utf8)

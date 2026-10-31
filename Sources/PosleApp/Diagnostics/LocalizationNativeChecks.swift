@@ -31,7 +31,7 @@ enum LocalizationNativeChecks {
         try app.write(meeting, directory.appendingPathComponent("meta.json"))
         app.reloadLibrary(); app.selection = meeting.id; app.loadSelection(); app.tab = "notes"
         let draft = "Мои мысли: сохранить {0}, English и русский текст."
-        app.notes.captureDrafts["inbox"] = draft; app.voice.text = draft
+        app.notes.captureDrafts["inbox"] = draft; app.notes.captureDrafts[meeting.id] = draft; app.voice.text = draft
         let dirtyID = UUID()
         UnsavedEditorRegistry.set(id: dirtyID, title: "Моя несохранённая заметка", dirty: true)
         defer { UnsavedEditorRegistry.remove(id: dirtyID) }
@@ -40,18 +40,50 @@ enum LocalizationNativeChecks {
         let meetingBefore = try Data(contentsOf: directory.appendingPathComponent("meta.json"))
         let main = Host(AnyView(LocalizedInterfaceRoot(content: MainView().environmentObject(app))), width: 1260, height: 820)
         defer { main.close() }
+        let date = Date(timeIntervalSince1970: meeting.createdAt)
+        let russianDate = date.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "ru_RU")))
+        let englishDate = date.formatted(.dateTime.day().month(.abbreviated).locale(Locale(identifier: "en_US")))
+        try await settle(main) {
+            let row = meetingRowText(main, meetingID: meeting.id)
+            return row.contains("Добавлена") && row.contains(russianDate)
+        }
+        guard let editor = roots(main).flatMap(nodes).compactMap({ $0.object as? PlainNoteTextView }).first else {
+            throw AppError.message("Live meeting draft editor is missing")
+        }
+        main.window.makeFirstResponder(editor)
+        editor.insertText(" / unsaved", replacementRange: NSRange(location: (editor.string as NSString).length, length: 0))
+        let liveDraft = editor.string
+        let selectedRange = NSRange(location: 5, length: 6)
+        editor.setSelectedRange(selectedRange)
+        try expect(app.notes.captureDrafts[meeting.id] == liveDraft && liveDraft != draft, "Native editor did not retain the unsaved fixture")
         let settings = Host(AnyView(LocalizedInterfaceRoot(content: SettingsView().environmentObject(app))), width: 900, height: 690)
         defer { settings.close() }
         try await settle(settings) { ids(settings).contains("settings.language") && NativePickerChecks.contains(identifier: "settings.language", in: roots(settings)) }
         try await chooseLanguage(settings, title: "English")
         try await settle(settings) { localization.language == .en && renderedStrings(settings).contains("Interface language") }
-        try await settle(main) { renderedStrings(main).contains("Meetings") && renderedStrings(main).contains("Notes") }
+        try await settle(main) {
+            let text = renderedStrings(main)
+            let row = meetingRowText(main, meetingID: meeting.id)
+            return text.contains("Meetings") && text.contains("Notes") && row.contains("Added") && row.contains(englishDate)
+                && !row.contains("Добавлена") && !row.contains(russianDate)
+                && NativePickerChecks.value("note.composer.kind", in: roots(main)) == "Note"
+        }
+        try expect(roots(main).flatMap(nodes).contains { $0.object === editor }
+                   && editor.string == liveDraft && editor.selectedRange() == selectedRange
+                   && app.notes.captureDrafts[meeting.id] == liveDraft,
+                   "English must update nested labels and dates without recreating the native draft or losing its selection")
         do {
-            try await settle(main) { menuTitles(NSApp.mainMenu).contains("Import recording…") && menuTitles(NSApp.mainMenu).contains("Meeting") }
+            try await settle(main) { menuTitles(NSApp.mainMenu).contains("Import recording…") && menuTitles(NSApp.mainMenu).contains("Meeting") && NSApp.mainMenu?.items.first?.title == "After" }
         } catch {
             throw AppError.message("Application menu did not localize: " + menuTitles(NSApp.mainMenu).sorted().joined(separator: ", "))
         }
         try expect(L("After") == "After" && UILocale().language.languageCode?.identifier == "en", "English name and date formatting must resolve independently of AI language")
+        try expect(ProcessInfo.processInfo.processName == "After", "Main process must use the After executable name")
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            try expect(Bundle.main.object(forInfoDictionaryKey: "CFBundleExecutable") as? String == "After" &&
+                       NSRunningApplication.current.localizedName == "After",
+                       "The bundled app name and executable must both be After")
+        }
         try expect(LF("Подключить {0} из {1}", arguments: ["{1} Савва", "%@"]) == "Connect {1} Савва from %@",
                    "Interpolation arguments must remain verbatim, including Cyrillic, format markers and placeholder-looking text")
         try expect(app.selected?.title == "Заметки" && renderedStrings(main).contains("Заметки")
@@ -102,7 +134,17 @@ enum LocalizationNativeChecks {
         print("PASS: language preference persists outside model settings; invalid values and failed writes retain the last good preference")
 
         try await chooseLanguage(settings, title: "Русский")
-        try await settle(main) { renderedStrings(main).contains("Встречи") && renderedStrings(main).contains("Заметки") }
+        try await settle(main) {
+            let text = renderedStrings(main)
+            let row = meetingRowText(main, meetingID: meeting.id)
+            return text.contains("Встречи") && text.contains("Заметки") && row.contains("Добавлена") && row.contains(russianDate)
+                && !row.contains("Added") && !row.contains(englishDate)
+                && NativePickerChecks.value("note.composer.kind", in: roots(main)) == "Заметка"
+        }
+        try expect(roots(main).flatMap(nodes).contains { $0.object === editor }
+                   && editor.string == liveDraft && editor.selectedRange() == selectedRange,
+                   "Returning to Russian must preserve the same draft editor and selection")
+        try await settle(main) { _ = menuTitles(NSApp.mainMenu); return NSApp.mainMenu?.items.first?.title == "After" }
         try expect(localization.language == .ru && app.notes.captureDrafts["inbox"] == draft && app.voice.text == draft,
                    "Switching back to Russian must not recreate or clear editor state")
         try await chooseLanguage(settings, title: "Как в системе")
@@ -125,8 +167,18 @@ enum LocalizationNativeChecks {
         try await NativePickerChecks.select(title: title, identifier: "settings.language", in: roots(host))
     }
     private static func renderedStrings(_ host: Host) -> Set<String> {
+        renderedStrings(in: roots(host).flatMap(nodes))
+    }
+    private static func meetingRowText(_ host: Host, meetingID: String) -> String {
+        guard let row = roots(host).flatMap(nodes).first(where: { $0.identifier == "meeting.select." + meetingID }) else { return "" }
+        // SwiftUI combines a sidebar Button's date/status into its AX label;
+        // inspect that exact row, including its children, rather than requiring
+        // each visual Text to appear as a separate accessibility element.
+        return renderedStrings(in: nodes(row.object)).sorted().joined(separator: " ")
+    }
+    private static func renderedStrings(in values: [Node]) -> Set<String> {
         var result = Set<String>()
-        for node in roots(host).flatMap(nodes) {
+        for node in values {
             if let field = node.object as? NSTextField { result.insert(field.stringValue) }
             if let button = node.object as? NSButton { result.insert(button.title) }
             for selectorName in ["accessibilityLabel", "accessibilityValue", "title"] {
@@ -147,7 +199,7 @@ enum LocalizationNativeChecks {
             try await Task.sleep(for: .milliseconds(20))
         }
         try? snapshot(host.view, URL(fileURLWithPath: ProcessInfo.processInfo.environment["POSLE_DATA_DIR"] ?? "/private/tmp").appendingPathComponent("localization-failure.png"))
-        throw AppError.message("Localization UI did not reach expected state at line \(line); attached sheets: \(host.window.sheets.count). IDs: " + ids(host).sorted().joined(separator: ", "))
+        throw AppError.message("Localization UI did not reach expected state at line \(line); attached sheets: \(host.window.sheets.count). IDs: " + ids(host).sorted().joined(separator: ", ") + "; text: " + renderedStrings(host).sorted().joined(separator: " | "))
     }
     private static func roots(_ host: Host) -> [NSView] {
         var result: [NSView] = [host.view]
@@ -245,7 +297,7 @@ enum LocalizationNativeChecks {
             return unsafeBitCast(method, to: Press.self)(object, selector)
         }
     }
-    private static func nodes(_ root: NSView) -> [Node] {
+    private static func nodes(_ root: NSObject) -> [Node] {
         var result: [Node] = []; var seen = Set<ObjectIdentifier>()
         func visit(_ value: Any, depth: Int) {
             guard depth < 80, let object = value as? NSObject, seen.insert(ObjectIdentifier(object)).inserted else { return }

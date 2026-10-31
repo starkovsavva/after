@@ -3,9 +3,11 @@ import PosleCore
 import SwiftUI
 
 struct TaskHistoryView: View {
+    @EnvironmentObject private var app: AppStore
     let task: TaskWorkspace
     @State private var artifact: TaskArtifact?
     @State private var snapshot: TaskSnapshotPresentation?
+    @State private var routeTask: Task<Void, Never>?
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             if task.history.isEmpty { Text(L("История появится после первого изменения задачи.")).font(AppTypography.control).foregroundStyle(.secondary) }
@@ -29,8 +31,54 @@ struct TaskHistoryView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.accessibilityElement(children: .contain).accessibilityIdentifier("tasks.history.event." + event.id)
             }
-        }.sheet(item: $artifact) { TaskArtifactSheet(artifact: $0) }
+            SnapshotShareHistoryView(root: app.root, taskID: task.id)
+        }.onAppear { openRequestedArtifact() }
+            .onChange(of: app.taskHistoryRoute) { _, _ in openRequestedArtifact() }
+            .onDisappear { routeTask?.cancel() }
+            .sheet(item: $artifact) { TaskArtifactSheet(artifact: $0) }
             .sheet(item: $snapshot) { TaskSnapshotSheet(snapshot: $0.snapshot) }
+    }
+    private func openRequestedArtifact() {
+        guard let route = app.taskHistoryRoute, route.taskID == task.id else { return }
+        routeTask?.cancel()
+        let root = app.root
+        routeTask = Task { @MainActor in
+            do {
+                let planData = try JSONEncoder().encode(route.plan)
+                let targetData = try JSONEncoder().encode(route.target)
+                let result = try await Task.detached(priority: .userInitiated) {
+                    let bridge = try RustBridge.shared.get()
+                    let plan = try JSONSerialization.jsonObject(with: planData)
+                    let target = try JSONSerialization.jsonObject(with: targetData)
+                    func valid() throws -> Bool {
+                        let data = try bridge.request(root: root, command: "assistant-find-validate",
+                            arguments: ["plan":plan, "target":target, "limit":20])
+                        struct Validation: Decodable { let valid: Bool }
+                        return try JSONDecoder().decode(Validation.self, from: data).valid
+                    }
+                    guard try valid() else { throw AppError.message(L("Отчёт изменился или стал недоступен. Повторите поиск.")) }
+                    let data = try bridge.request(root: root, command: "task-get", arguments: ["taskID":route.target.taskID])
+                    let fresh = try JSONDecoder().decode(TaskWorkspace.self, from: data)
+                    guard fresh.revision >= 0, UInt64(fresh.revision) == route.target.revision,
+                          fresh.sourceFingerprint == route.target.sourceFingerprint, try valid() else {
+                        throw AppError.message(L("Отчёт изменился или стал недоступен. Повторите поиск."))
+                    }
+                    guard let event = fresh.history.first(where: { $0.id == route.eventID }),
+                          let id = route.artifactID,
+                          let found = event.artifacts.first(where: { $0.id == id }) else {
+                        throw AppError.message(L("Артефакт изменился или стал недоступен. Повторите поиск."))
+                    }
+                    return found
+                }.value
+                guard !Task.isCancelled, app.taskHistoryRoute == route, app.notes.selectedTaskID == route.taskID else { return }
+                app.taskHistoryRoute = nil
+                artifact = result
+            } catch {
+                guard !Task.isCancelled, app.taskHistoryRoute == route else { return }
+                app.taskHistoryRoute = nil
+                app.error = error.localizedDescription
+            }
+        }
     }
 }
 
@@ -40,11 +88,12 @@ struct TaskArtifactSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             AppPageHeader(title: artifact.title, modal: true)
-            ScrollView { Text(artifact.text).font(AppTypography.body).lineSpacing(5).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+            ScrollView { Text(artifact.text).font(AppTypography.body).lineSpacing(5).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("tasks.artifact.contents." + artifact.id) }
             HStack {
                 Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(artifact.text, forType: .string) } label: { Label(L("Скопировать"), systemImage: "doc.on.doc") }
                 if let url = artifact.url.flatMap(TaskWorkspaceURL.external) { Button(L("Открыть ссылку")) { NSWorkspace.shared.open(url) } }
-                Spacer(); Button(L("Готово")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer(); Button(L("Готово")) { dismiss() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("tasks.artifact.close")
             }
         }.padding(24).frame(minWidth: 520, idealWidth: 620, minHeight: 380, idealHeight: 560).appControlDefaults()
     }

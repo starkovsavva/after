@@ -9,7 +9,7 @@ struct TaskAgentAccessSheet: View {
     private var task: TaskWorkspace? { notes.taskWorkspaces[taskID] }
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            AppPageHeader(title: L("Доступ агентам"), modal: true)
+            AppPageHeader(title: L("Доступ к задаче через MCP"), modal: true)
             if let task {
                 Toggle(L("Эта задача"), isOn: Binding(get: { task.agentAccess.enabled }, set: { enabled in
                     if let saved = notes.updateTaskWorkspace(task, patch: ["agentAccess": ["enabled": enabled]]) { taskID = saved.id }
@@ -34,7 +34,8 @@ struct TaskAgentAccessSheet: View {
             } else { Text(L("Задача недоступна")).foregroundStyle(.secondary) }
             if let error = notes.error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning) }
             HStack {
-                Button(L("Настроить агентов…")) { dismiss(); app.openSettings("integrations") }.buttonStyle(.borderless)
+                Button(L("Настроить агентов…")) { dismiss(); app.openSettings("integrations", integrationSection: "agents") }
+                    .buttonStyle(.borderless).accessibilityIdentifier("tasks.agent-settings")
                 Spacer(); Button(L("Готово")) { dismiss() }.keyboardShortcut(.defaultAction)
             }
         }.padding(24).frame(width: 520).frame(minHeight: 360, idealHeight: 520).appControlDefaults()

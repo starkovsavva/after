@@ -58,7 +58,7 @@ class LocalizationTests(unittest.TestCase):
         self.assertEqual(metadata['CFBundleName'], 'After')
         self.assertEqual(metadata['CFBundleDisplayName'], 'After')
         self.assertEqual(metadata['CFBundleIdentifier'], 'app.posle.meetings')
-        self.assertEqual(metadata['CFBundleExecutable'], 'Posle')
+        self.assertEqual(metadata['CFBundleExecutable'], 'After')
         self.assertEqual(metadata['SUFeedURL'], 'https://raw.githubusercontent.com/starkovsavva/after/updates/appcast.xml')
         self.assertIn('aria-label="After — a."', (PROJECT / 'packaging/Logo.svg').read_text())
 

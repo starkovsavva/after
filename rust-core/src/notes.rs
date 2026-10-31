@@ -112,12 +112,23 @@ fn regular(path: &Path, max: u64) -> Result<File> {
     ensure!(file.metadata()?.is_file() && file.metadata()?.len() <= max, "Файл слишком большой");
     Ok(file)
 }
-pub(crate) fn lock(directory: &Path) -> Result<File> {
+fn workspace_lock_file(directory: &Path) -> Result<File> {
     let path = directory.join(".workspace.lock");
     if let Ok(info) = fs::symlink_metadata(&path) { ensure!(info.is_file() && !info.file_type().is_symlink(), "Некорректная блокировка заметок"); }
     let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    Ok(file)
+}
+pub(crate) fn lock(directory: &Path) -> Result<File> {
+    let file=workspace_lock_file(directory)?;
     file.lock().context("Не удалось заблокировать заметки")?;
+    Ok(file)
+}
+/// Best-effort maintenance must never stall a user operation while another
+/// writer is active. Callers retry on a later read instead of waiting here.
+pub(crate) fn try_lock(directory: &Path) -> Result<File> {
+    let file=workspace_lock_file(directory)?;
+    file.try_lock().context("Заметки заняты. Повторите очистку позже.")?;
     Ok(file)
 }
 pub(crate) fn load(directory: &Path) -> Result<NotesWorkspace> {
@@ -257,6 +268,7 @@ pub fn delete_note(root:&Path,id:&str,revision:u64) -> Result<Value> {
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
     let current=expected(&mut data,id,revision)?;
     if is_task_tombstone(current) { return Ok(json!({"deleted":true})); }
+    let cleanup_scoped_sources=current.kind=="note";
     let attachments=current.attachments.clone();
     if let Some(note)=data.notes.iter_mut().find(|note|note.id==id && note.task_origin.is_some()) {
         // Keep only a source tombstone: otherwise the unchanged summary would
@@ -268,8 +280,14 @@ pub fn delete_note(root:&Path,id:&str,revision:u64) -> Result<Value> {
         note.trashed_at=Some(now()-crate::trash::RETENTION_SECONDS-1.0); note.revision=bumped(note.revision)?; note.updated_at=now();
     } else { data.notes.retain(|note|note.id != id); }
     persist(&dir,&data)?;
+    // The scoped store takes its own DB lock before reading the workspace.
+    // Release this lock first to preserve its lock order. If cleanup fails or
+    // the process stops here, scoped history retries reconciliation before
+    // returning any derived information.
+    drop(_lock);
+    let cleanup_pending=cleanup_scoped_sources && crate::scoped_agent::reconcile_deleted_sources(root).is_err();
     for attachment in attachments { let _=remove_owned_attachment(root,&attachment); }
-    Ok(json!({"deleted":true}))
+    Ok(json!({"deleted":true,"cleanupPending":cleanup_pending}))
 }
 pub fn save_context(root:&Path,mut context:MeetingContext) -> Result<MeetingContext> {
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;

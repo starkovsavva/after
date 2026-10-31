@@ -1,7 +1,7 @@
 import Foundation
 
 public enum AppFeature: String, CaseIterable, Codable, Sendable {
-    case cards, tasks, calendar, assistant, semanticSearch
+    case cards, tasks, calendar, assistant, semanticSearch, knowledgeBase
     public var title: String {
         switch self {
         case .cards: "Карточки"
@@ -9,6 +9,7 @@ public enum AppFeature: String, CaseIterable, Codable, Sendable {
         case .calendar: "Календарь"
         case .assistant: "Помощник"
         case .semanticSearch: "Смысловой поиск"
+        case .knowledgeBase: "База знаний"
         }
     }
 }
@@ -20,6 +21,8 @@ public struct AppFeatures: Codable, Equatable, Sendable {
     public var calendar = false
     public var assistant = false
     public var semanticSearch = false
+    /// Opt in independently from semantic search or any model.
+    public var knowledgeBase = false
     public init() {}
     public static var allEnabled: AppFeatures {
         var value = AppFeatures()
@@ -30,17 +33,17 @@ public struct AppFeatures: Codable, Equatable, Sendable {
         get {
             switch feature {
             case .cards: cards; case .tasks: tasks; case .calendar: calendar
-            case .assistant: assistant; case .semanticSearch: semanticSearch
+            case .assistant: assistant; case .semanticSearch: semanticSearch; case .knowledgeBase: knowledgeBase
             }
         }
         set {
             switch feature {
             case .cards: cards = newValue; case .tasks: tasks = newValue; case .calendar: calendar = newValue
-            case .assistant: assistant = newValue; case .semanticSearch: semanticSearch = newValue
+            case .assistant: assistant = newValue; case .semanticSearch: semanticSearch = newValue; case .knowledgeBase: knowledgeBase = newValue
             }
         }
     }
-    private enum CodingKeys: String, CodingKey { case cards, tasks, calendar, assistant, semanticSearch }
+    private enum CodingKeys: String, CodingKey { case cards, tasks, calendar, assistant, semanticSearch, knowledgeBase }
     public init(from decoder: Decoder) throws {
         self.init()
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -49,6 +52,7 @@ public struct AppFeatures: Codable, Equatable, Sendable {
         calendar = try values.decodeIfPresent(Bool.self, forKey: .calendar) ?? false
         assistant = try values.decodeIfPresent(Bool.self, forKey: .assistant) ?? false
         semanticSearch = try values.decodeIfPresent(Bool.self, forKey: .semanticSearch) ?? false
+        knowledgeBase = try values.decodeIfPresent(Bool.self, forKey: .knowledgeBase) ?? false
     }
 }
 
@@ -59,6 +63,7 @@ extension AppSettings {
         case "cards": features.cards
         case "tasks", "contexts": features.tasks
         case "calendar": features.calendar
+        case "knowledge": features.knowledgeBase
         default: true
         }
     }

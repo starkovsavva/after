@@ -157,6 +157,7 @@ private struct NoteComposer: View {
                 Picker(L("Тип заметки"), selection: $kind) {
                     ForEach(app.isFeatureEnabled(.tasks) ? ["note", "important", "question", "task"] : ["note", "important", "question"], id: \.self) { value in Label(noteKindTitle(value), systemImage: noteKindIcon(value)).tag(value) }
                 }.labelsHidden().frame(width: 130).accessibilityLabel(L("Тип заметки"))
+                    .accessibilityIdentifier("note.composer.kind")
                 Button { expanded.toggle(); focused = true } label: {
                     Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").frame(width: 24, height: 24)
                 }.buttonStyle(.plain).foregroundStyle(.secondary)

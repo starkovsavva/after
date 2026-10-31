@@ -113,10 +113,17 @@ fn run(args: Args) -> Result<Value> {
 }
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("mcp-share")) {
+        let args: Vec<_> = std::env::args_os().skip(2).collect();
+        let result = if args.len() == 2 && args[0] == "--root" { posle_core::scoped_share::stdio::run(PathBuf::from(&args[1])) }
+            else { Err(anyhow::anyhow!("Usage: After Engine mcp-share --root /absolute/library/path")) };
+        if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
+        return;
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("mcp")) {
         let args: Vec<_> = std::env::args_os().skip(2).collect();
-        let result = if args.len() == 2 && args[0] == "--root" { posle_core::mcp::run_stdio(PathBuf::from(&args[1])) }
-            else { Err(anyhow::anyhow!("Usage: posle-engine mcp --root /absolute/library/path")) };
+        let result = if (args.len() == 2 || args.len() == 3 && args[2] == "--shared-material-search") && args[0] == "--root" { posle_core::mcp::run_stdio(PathBuf::from(&args[1]), args.len() == 3) }
+            else { Err(anyhow::anyhow!("Usage: posle-engine mcp --root /absolute/library/path [--shared-material-search]")) };
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
         return;
     }

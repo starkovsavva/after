@@ -18,7 +18,12 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+// KB tables are an additive, namespaced extension of the v1 workspace.
+// The released 0.17.6.5 client can keep using its own v1 tables without
+// silently failing on the same library. Trial v2 databases are not migrated
+// or opened automatically; they require an explicit recovery path.
 const VERSION: i64 = 1;
+const WORKSPACE_VERSION: i64 = 1;
 pub(crate) const MAX_WORKSPACE: u64 = 32 * 1_048_576;
 const DATABASE: &str = "core.sqlite";
 const MARKER: &str = ".core-sqlite-migrated";
@@ -133,8 +138,12 @@ fn open(directory: &Path) -> Result<Connection> {
             CREATE TABLE IF NOT EXISTS workspace_outbox_deliveries(\
                 consumer TEXT NOT NULL, event_id TEXT NOT NULL REFERENCES workspace_outbox(event_id),\
                 acknowledged_at REAL NOT NULL, PRIMARY KEY(consumer,event_id));")?;
-        transaction.pragma_update(None, "user_version", VERSION)?;
+        // Knowledge tables are installed separately on first opt-in.
+        transaction.pragma_update(None, "user_version", WORKSPACE_VERSION)?;
         transaction.commit()?;
+    }
+    if version == WORKSPACE_VERSION && knowledge::has_extension(&connection)? {
+        knowledge::recover_migration(&connection, root)?;
     }
     for suffix in ["", "-journal", "-wal", "-shm"] {
         let path = root.join(format!("{DATABASE}{suffix}"));
@@ -507,6 +516,11 @@ fn commit(
         .transpose()?
         .unwrap_or_default();
     let new = entities(&value)?;
+    let removed_notes=old.keys().filter(|key|key.0=="note" && !new.contains_key(*key))
+        .map(|key|key.1.clone()).collect::<BTreeSet<_>>();
+    // KB references and their replay receipts must disappear atomically with
+    // a hard delete, before the same note identifier can ever be reused.
+    knowledge::prune_removed(transaction,&removed_notes)?;
     let mut changes = vec![];
     let keys: BTreeSet<_> = old.keys().chain(new.keys()).collect();
     for key in keys {
@@ -638,6 +652,11 @@ pub(crate) fn read_committed(root: &Path) -> Result<Value> {
     if ordinary(&path)? {
         let connection=Connection::open_with_flags(&path,OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
         connection.busy_timeout(Duration::from_secs(5))?;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        ensure!(version <= VERSION, "База создана более новой версией «After». Обновите приложение.");
+        if version == WORKSPACE_VERSION && knowledge::has_extension(&connection)? {
+            knowledge::assert_migration_ready(&connection, root)?;
+        }
         if let Some(snapshot)=read_snapshot(&connection)? { return Ok(snapshot.value); }
         bail!("В базе отсутствует основное состояние библиотеки");
     }
@@ -645,6 +664,12 @@ pub(crate) fn read_committed(root: &Path) -> Result<Value> {
     let legacy=root.join("notes/workspace.json");
     let value=match read_bytes(&legacy)? { Some(bytes)=>serde_json::from_slice(&bytes).context("Не удалось прочитать библиотеку")?,None=>serde_json::to_value(crate::notes::defaults())? };
     validate(&value)?;Ok(value)
+}
+
+#[path = "workspace_repository/knowledge.rs"]
+mod knowledge;
+pub fn knowledge_dispatch(root: &Path, input: &Value) -> Result<Value> {
+    knowledge::dispatch(root, input)
 }
 
 /// Stable snapshot for integrations. All existing corrections are recovered first.
@@ -774,7 +799,7 @@ pub(crate) fn operation_receipt_locked(
     operation_id: &str,
 ) -> Result<Option<Value>> {
     ensure!(
-        ["voice", "task"].contains(&namespace)
+        ["voice", "task", "knowledge"].contains(&namespace)
             && !operation_id.is_empty()
             && operation_id.len() <= 256,
         "Некорректная операция"

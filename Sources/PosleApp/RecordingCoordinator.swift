@@ -26,7 +26,11 @@ extension AppStore {
             return
         }
         startingRecording = true
-        defer { startingRecording = false; startingRecordingID = nil; recordingStartTask = nil; pendingRecordingFailure = nil }
+        setSemanticRecordingActivity(true)
+        defer {
+            startingRecording = false; startingRecordingID = nil; recordingStartTask = nil; pendingRecordingFailure = nil
+            if !isRecording { setSemanticRecordingActivity(false) }
+        }
         // Snapshot before any permission prompt. Finalization must use this meeting's
         // quality even if the default settings change before an interrupted job resumes.
         let audioQuality = settings.recordAudioQuality
@@ -108,11 +112,16 @@ extension AppStore {
         let folderAssignmentFailed = recordingFolderFailures.remove(id) != nil
         let transcribeAfterSave = processAfterRecording && !folderAssignmentFailed
         stoppingRecording = true
+        finalizingMeetingIDs.insert(id)
+        defer {
+            if finalizingMeetingIDs.remove(id) != nil, selection == id { prepareSelectedPlayback() }
+        }
         var captureError: Error?
         do { try await recorder.stop() } catch { captureError = error }
         // Release this capture exactly once, before any queued work awaits.
         // An older finalization must never clear the next meeting's recorder.
         isRecording = false; recordingID = nil; recordingDate = nil; stoppingRecording = false
+        setSemanticRecordingActivity(false)
         jobs.setRecording(false)
         if recordingAssertion != 0 { IOPMAssertionRelease(recordingAssertion); recordingAssertion = 0 }
         updateMeeting(id) { $0.status = "imported"; $0.duration = duration }
@@ -128,6 +137,8 @@ extension AppStore {
             try await worker("finalize", id: id)
             if let fresh: Meeting = read(meetingDirectory(id).appendingPathComponent("meta.json")),
                let index = meetings.firstIndex(where: { $0.id == id }) { meetings[index] = fresh }
+            finalizingMeetingIDs.remove(id)
+            if selection == id { prepareSelectedPlayback() }
             if transcribeAfterSave && runtimeReady { await processMeeting(id) }
             else { notice = runtimeReady ? L("Встреча записана и сохранена в MP3.") : L("Встреча сохранена в MP3. Для транскрипции подготовьте распознавание в настройках.") }
         } catch is CancellationError {
@@ -135,6 +146,12 @@ extension AppStore {
         } catch {
             self.error = LF("Исходная запись сохранена. Преобразование в MP3: {0}", arguments: [String(describing: error.localizedDescription)])
         }
+    }
+    private func setSemanticRecordingActivity(_ active: Bool) {
+        // A lock held by this app process is released even on a crash. Capture
+        // never waits for model inference; the transport sees the lock and stops.
+        // Unavailable semantic infrastructure must not prevent audio recording.
+        _ = try? RustBridge.shared.get().request(root: root, command: "semantic-runtime-activity", arguments: ["recording": active])
     }
     func prepareForTermination() async {
         guard !isTerminating else { return }

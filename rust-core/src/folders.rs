@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 const MAX_FOLDERS: usize = 1_000;
-const FEATURES: &[&str] = &["cards", "tasks", "calendar", "assistant", "semanticSearch"];
+const FEATURES: &[&str] = &["cards", "tasks", "calendar", "assistant", "semanticSearch", "knowledgeBase"];
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Folder {
@@ -545,6 +545,7 @@ pub fn available_features(root: &Path) -> Result<crate::ai::AppFeatures> {
         enabled.calendar |= f.calendar;
         enabled.assistant |= f.assistant;
         enabled.semantic_search |= f.semantic_search;
+        enabled.knowledge_base |= f.knowledge_base;
     }
     Ok(enabled)
 }

@@ -100,6 +100,7 @@ pub struct AppFeatures {
     pub calendar: bool,
     pub assistant: bool,
     pub semantic_search: bool,
+    pub knowledge_base: bool,
 }
 impl Default for Settings {
     fn default() -> Self { Self { features:AppFeatures::default(), mode:"local".into(), local_model:"qwen3.5:9b-q4_K_M".into(), local_provider:"managed".into(), local_endpoint:String::new(), cloud_model:"gpt-4.1-mini".into(), cloud_provider:"openai".into(), cloud_endpoint:String::new(), cloud_api:"responses".into(), cloud_output:"schema".into(), cloud_reasoning:"none".into(), chat_gpt_account_id:String::new(), language:"ru".into(), focus:"Решения, задачи, ответственные, сроки, точные цифры, требования и риски. ".into(), summary_user_context:String::new() } }
