@@ -10,8 +10,8 @@ API-ключ и установка Ollama не нужны. Новый профи
 совместимого API сохраняются; их можно переключить вручную.
 
 Реализация: `rust-core/src/managed_embeddings.rs`,
-`rust-core/src/managed_embedding_transport.rs`, `rust-core/src/semantic.rs`,
-`Sources/PosleApp/SemanticSearchSettings.swift`.
+`rust-core/src/platform/macos/managed_embedding_transport.rs`, `rust-core/src/semantic.rs`,
+`Sources/AfterApp/SemanticSearchSettings.swift`.
 
 Поддерживается macOS на Apple Silicon. Выбранный arm64 slice `llama-server`
 ссылается только на системные frameworks; отдельные dylib из архива не

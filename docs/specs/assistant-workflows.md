@@ -52,9 +52,9 @@ queryNow фиксируется при завершении пользовате
 | [library_intents.rs](../../rust-core/src/voice/library_intents.rs) | До 20 реальных кандидатов, reranking по supplied IDs, `ready/choose/unsupported`, проверка перед открытием. |
 | [task_intents.rs](../../rust-core/src/voice/task_intents.rs) | До 24 кандидатов задач, выбор и typed navigation. Selected task, relevance и updatedAt влияют на shortlist; это не selector «последняя». |
 | [knowledge.rs](../../rust-core/src/knowledge.rs) | Поиск, текущие поля задачи и ответы с проверяемыми citations. История и артефакты задачи сейчас не являются источниками ответа. |
-| [VoiceCommands.swift](../../Sources/PosleApp/VoiceCommands.swift) | Ответ → открыть источник; повторная проверка и request generation. Follow-up хранит темы пользовательских вопросов, но не точную ссылку для «открой её». |
-| [KnowledgeSourceNavigation.swift](../../Sources/PosleApp/KnowledgeSourceNavigation.swift) | Native маршруты для задачи, заметки, встречи/фрагмента и календарной цитаты; URI не генерируется моделью. |
-| [CalendarStore.swift](../../Sources/PosleApp/CalendarStore.swift) | Снимок уже подключённых/видимых календарей, до 128 событий и 128 KiB; обычно −7/+31 день либо распознанный период. Переход к конкретному occurrence. |
+| [VoiceCommands.swift](../../Sources/AfterApp/VoiceCommands.swift) | Ответ → открыть источник; повторная проверка и request generation. Follow-up хранит темы пользовательских вопросов, но не точную ссылку для «открой её». |
+| [KnowledgeSourceNavigation.swift](../../Sources/AfterApp/KnowledgeSourceNavigation.swift) | Native маршруты для задачи, заметки, встречи/фрагмента и календарной цитаты; URI не генерируется моделью. |
+| [CalendarStore.swift](../../Sources/AfterApp/CalendarStore.swift) | Снимок уже подключённых/видимых календарей, до 128 событий и 128 KiB; обычно −7/+31 день либо распознанный период. Переход к конкретному occurrence. |
 
 Открытие не меняет найденный объект, его статус или доступ агенту. Существующий
 open-путь может сохранять служебный voice plan; это отличается от изменения задачи.

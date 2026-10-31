@@ -94,11 +94,11 @@ Media/native стенды явно допускают другой тестов�
 
 ## Границы кода
 
-- `Sources/PosleApp`: SwiftUI/AppKit, устройства, календарь и координация действий.
-- `Sources/PosleCore`: чистые модели, календарная геометрия и форматирование.
-- `Sources/PosleApp/Diagnostics`: только DEBUG-сценарии с настоящим UI. Они остаются
+- `Sources/AfterApp`: SwiftUI/AppKit, устройства, календарь и координация действий.
+- `Sources/AfterCore`: чистые модели, календарная геометрия и форматирование.
+- `Sources/AfterApp/Diagnostics`: только DEBUG-сценарии с настоящим UI. Они остаются
   в модуле приложения для доступа к его жизненному циклу; release-сборка их исключает.
-- `Tests`: SwiftPM-проверки PosleCore; `UpdateFixture.swift` — отдельное приложение
+- `Tests`: SwiftPM-проверки AfterCore; `UpdateFixture.swift` — отдельное приложение
   для реального Sparkle E2E, не часть production app или core test target.
 - `rust-core`: хранилище, поиск, AI-запросы, карточки и атомарные операции.
   Домен `task_workspace` хранит связи материалов, историю, снимки контекста и

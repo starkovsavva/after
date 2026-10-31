@@ -64,10 +64,10 @@
 | [notes.rs](../../rust-core/src/notes.rs) | UUID заметок, ревизии, папки, вложения. Устойчивых block ID и самостоятельной модели связей пока нет. |
 | [knowledge.rs](../../rust-core/src/knowledge.rs) | Проверяемые источники, RRF, ответы с цитатами. Нужен обязательный ограниченный scope для агентского поиска. |
 | [semantic.rs](../../rust-core/src/semantic.rs) | Manifest модели и chunker, поколения, проверка актуальности, локальные embeddings. Текущий лимит — 10 000 фрагментов. |
-| [jobs.rs](../../rust-core/src/jobs.rs), [BackgroundJobs.swift](../../Sources/PosleApp/BackgroundJobs.swift) | Durable очередь и ограничения ресурсов. Нужны постоянная идемпотентность dispatch и низкий приоритет обслуживания. |
-| [JobExecution.swift](../../Sources/PosleApp/JobExecution.swift) | Снимок профиля, отмена, проверка входов. Новые команды надо явно подключить к этим проверкам. |
+| [jobs.rs](../../rust-core/src/jobs.rs), [BackgroundJobs.swift](../../Sources/AfterApp/BackgroundJobs.swift) | Durable очередь и ограничения ресурсов. Нужны постоянная идемпотентность dispatch и низкий приоритет обслуживания. |
+| [JobExecution.swift](../../Sources/AfterApp/JobExecution.swift) | Снимок профиля, отмена, проверка входов. Новые команды надо явно подключить к этим проверкам. |
 | [task_workspace.rs](../../rust-core/src/task_workspace.rs), [mcp.rs](../../rust-core/src/mcp.rs) | Claims, contextVersion, отчёты, артефакты. Сейчас семь task-инструментов; поиска по библиотеке в MCP нет. |
-| [TaskHistoryView.swift](../../Sources/PosleApp/TaskHistoryView.swift) | Расширить существующую Историю, без второго конкурирующего журнала задач. |
+| [TaskHistoryView.swift](../../Sources/AfterApp/TaskHistoryView.swift) | Расширить существующую Историю, без второго конкурирующего журнала задач. |
 
 Три обязательных расширения инфраструктуры:
 
