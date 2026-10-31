@@ -53,3 +53,14 @@ impl Default for Settings {
         }
     }
 }
+
+pub(crate) fn validate_reasoning(effort: &str) -> anyhow::Result<()> {
+    if ![
+        "auto", "none", "minimal", "low", "medium", "high", "xhigh", "max",
+    ]
+    .contains(&effort)
+    {
+        anyhow::bail!("Выберите уровень рассуждений ChatGPT в настройках.");
+    }
+    Ok(())
+}

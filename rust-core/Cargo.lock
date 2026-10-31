@@ -1095,6 +1095,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "unicode-normalization",
+ "url",
  "uuid",
  "windows-sys",
 ]

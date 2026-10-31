@@ -29,7 +29,7 @@ In `desktop/`: `npm run build` checks TypeScript/builds Vite; `npm test` runs mo
 
 Run `cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked` for host tests; substitute `rust-core/Cargo.toml` for core tests. Real-engine/installer checks: `docs/desktop.md`, `.github/workflows/windows-preview.yml`.
 
-`python3 scripts/verify.py desktop` checks core/frontend/host/real IPC without Swift. Config types: `rust-core/src/domain/config.rs`; native adapters/debug resource lookup: host `platform.rs`.
+`python3 scripts/verify.py desktop` checks core/frontend/host/real IPC without Swift. Pure models/validation: `rust-core/src/domain/`; check with `python3 scripts/check_layers.py`; native adapters/debug resource lookup: host `platform.rs`.
 
 For macOS, `python3 scripts/verify.py quick` builds/tests Swift, Python, and Rust; `native` requires a graphical Mac session. `bash scripts/build.sh` requires an Apple signing certificate.
 

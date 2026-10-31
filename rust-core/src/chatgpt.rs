@@ -119,16 +119,7 @@ pub fn error_diagnostics(error: &anyhow::Error) -> Option<&ChatGPTDiagnostics> {
         .map(|failure| &failure.diagnostics)
 }
 
-pub(crate) fn validate_reasoning(effort: &str) -> Result<()> {
-    if ![
-        "auto", "none", "minimal", "low", "medium", "high", "xhigh", "max",
-    ]
-    .contains(&effort)
-    {
-        bail!("Выберите уровень рассуждений ChatGPT в настройках.");
-    }
-    Ok(())
-}
+pub(crate) use crate::domain::config::validate_reasoning;
 
 pub(crate) fn request_body(
     model: &str,

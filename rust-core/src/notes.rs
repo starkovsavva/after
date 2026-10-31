@@ -3,7 +3,6 @@
 //! prevent a quick-capture panel from silently overwriting a newer editor save.
 use anyhow::{bail, ensure, Context, Result};
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -14,82 +13,11 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 const MAX_ATTACHMENT: u64 = 25 * 1_048_576;
-const MAX_TEXT: usize = 100_000;
-const MAX_NOTES: usize = 10_000;
 const CONFLICT: &str = "Заметка уже изменена в другом окне. Обновите данные; ваш текст остаётся в редакторе.";
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct NoteAttachment {
-    pub id: String, pub name: String, pub relative_path: String,
-    pub content_type: String, #[serde(default)] pub extracted_text: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct CapturedNote {
-    pub id: String, #[serde(default)] pub text: String,
-    #[serde(default = "note_kind")] pub kind: String,
-    #[serde(default, rename = "meetingID", alias = "meetingId")] pub meeting_id: Option<String>,
-    #[serde(default)] pub timestamp: Option<f64>,
-    pub created_at: f64, pub updated_at: f64,
-    #[serde(default)] pub revision: u64,
-    #[serde(default, rename = "sourceURL", alias = "sourceUrl")] pub source_url: String,
-    #[serde(default)] pub owner: String, #[serde(default)] pub due: String,
-    #[serde(default)] pub completed: bool,
-    #[serde(default)] pub title: String,
-    #[serde(default, rename="contentRTF", alias="contentRtf")] pub content_rtf: String,
-    #[serde(default)] pub folder: String,
-    #[serde(default, rename="folderID", alias="folderId")] pub folder_id: Option<String>,
-    #[serde(default)] pub tags: Vec<String>,
-    #[serde(default)] pub pinned: bool,
-    #[serde(default)] pub trashed_at: Option<f64>,
-    #[serde(default)] pub attachments: Vec<NoteAttachment>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub expansion: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub task_origin: Option<Value>,
-    #[serde(default)] pub history: Vec<Value>,
-    #[serde(default)] pub subtasks: Vec<Value>,
-}
-fn note_kind() -> String { "note".into() }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NoteTemplate {
-    pub id: String, pub name: String, pub body: String,
-    #[serde(default)] pub focus: String, #[serde(default)] pub revision: u64,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MeetingContext {
-    #[serde(rename = "meetingID", alias = "meetingId")] pub meeting_id: String, #[serde(default)] pub project: String,
-    #[serde(default)] pub person: String, #[serde(default, rename = "templateID", alias = "templateId")] pub template_id: Option<String>,
-    #[serde(default, rename="folderID", alias="folderId")] pub folder_id: Option<String>,
-    #[serde(default)] pub revision: u64,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NotesWorkspace {
-    #[serde(default)] pub folders: Vec<crate::folders::Folder>,
-    #[serde(default)] pub notes: Vec<CapturedNote>,
-    #[serde(default)] pub templates: Vec<NoteTemplate>,
-    #[serde(default)] pub contexts: Vec<MeetingContext>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub voice_plans: Vec<Value>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub voice_operations: Vec<Value>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub task_workspaces: Vec<crate::task_workspace::TaskRecord>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub task_plans: Vec<Value>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")] pub task_operations: Vec<Value>,
-    #[serde(default)] pub task_integration: crate::task_workspace::TaskIntegration,
-}
-pub(crate) fn defaults() -> NotesWorkspace {
-    let templates = [
-        ("purchases", "Закупки", "Цель встречи\n\nВопросы\n• Цена и скидки\n• Минимальная партия\n• Доставка\n• Оплата\n\nДоговорённости\n\nЧто уточнить", "Точные цены, валюты, скидки, объёмы, сроки доставки и оплаты. Отдельно — условия и открытые вопросы."),
-        ("interview", "Собеседование", "Роль и контекст\n\nМои вопросы\n\nСильные ответы\n\nПробелы и что повторить\n\nСледующие шаги", "Вопросы собеседования, ответы, пробелы в знаниях и темы для повторения. Не додумывай оценки кандидата."),
-        ("one-on-one", "Один на один", "Как дела\n\nЧто получилось\n\nЧто мешает\n\nОбратная связь\n\nДоговорённости", "Обратная связь, препятствия, ожидания и договорённости. Отделяй мнение от подтверждённых фактов."),
-        ("english", "Английский", "Тема разговора\n\nНовые фразы\n\nЧто было трудно сказать\n\nОшибки и исправления\n\nЧто повторить", "Полезные английские фразы с контекстом, переводом и исправлениями, только если они подтверждены записью."),
-    ].into_iter().map(|(id,name,body,focus)| NoteTemplate { id:id.into(),name:name.into(),body:body.into(),focus:focus.into(),revision:1 }).collect();
-    NotesWorkspace { folders:vec![],notes:vec![],templates,contexts:vec![],voice_plans:vec![],voice_operations:vec![],task_workspaces:vec![],task_plans:vec![],task_operations:vec![],task_integration:Default::default() }
-}
-fn valid_id(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
+pub use crate::domain::workspace::{NoteAttachment, CapturedNote, NoteTemplate, MeetingContext, NotesWorkspace};
+pub(crate) use crate::domain::workspace::{defaults, task_signature};
+pub(crate) use crate::domain::workspace_validation::{validate_workspace, valid_id, bounded, validate_note, attachment_type, MAX_TEXT};
 #[cfg(unix)]
 fn private_directory(path: &Path) -> Result<()> {
     if let Ok(info) = fs::symlink_metadata(path) {
@@ -132,64 +60,6 @@ pub(crate) fn load(directory: &Path) -> Result<NotesWorkspace> {
 pub(crate) fn persist(directory: &Path, data: &NotesWorkspace) -> Result<()> {
     validate_workspace(data)?;
     crate::workspace_repository::persist_locked(directory, data)?;
-    Ok(())
-}
-fn bounded(value: &str, max: usize, label: &str) -> Result<()> {
-    ensure!(value.len() <= max && !value.contains('\0'), "Слишком длинное или некорректное поле: {label}"); Ok(())
-}
-fn validate_note(note: &CapturedNote) -> Result<()> {
-    ensure!(valid_id(&note.id), "Некорректный ID заметки");
-    ensure!(["note","important","question","task"].contains(&note.kind.as_str()), "Неизвестный тип заметки");
-    bounded(&note.text,MAX_TEXT,"текст")?; bounded(&note.owner,512,"ответственный")?; bounded(&note.due,512,"срок")?;
-    ensure!(note.created_at.is_finite() && note.created_at >= 0.0 && note.updated_at.is_finite() && note.updated_at >= 0.0, "Некорректная дата заметки");
-    if let Some(id) = &note.meeting_id { ensure!(valid_id(id), "Некорректный ID встречи"); }
-    if let Some(time) = note.timestamp { ensure!(note.meeting_id.is_some() && time.is_finite() && (0.0..=604_800.0).contains(&time), "Некорректный таймкод заметки"); }
-    bounded(&note.title,1024,"название")?; bounded(&note.folder,256,"папка")?;
-    bounded(&note.content_rtf,2_000_000,"форматирование")?;
-    ensure!(note.tags.len() <= 30,"В заметке можно сохранить до 30 тегов");
-    for tag in &note.tags { bounded(tag,128,"тег")?; }
-    if let Some(time)=note.trashed_at { ensure!(time.is_finite() && time >= 0.0,"Некорректная дата удаления"); }
-    bounded(&note.source_url,8192,"источник")?;
-    if !note.source_url.is_empty() {
-        let url = reqwest::Url::parse(&note.source_url).context("Источник должен быть HTTP- или HTTPS-ссылкой")?;
-        ensure!(["http","https"].contains(&url.scheme()) && url.host_str().is_some() && url.username().is_empty() && url.password().is_none(), "Источник должен быть HTTP- или HTTPS-ссылкой без пароля");
-    }
-    ensure!(note.attachments.len() <= 12,"В одной заметке можно сохранить до 12 вложений");
-    let mut attachment_ids = std::collections::HashSet::new();
-    for attachment in &note.attachments {
-        ensure!(valid_id(&attachment.id) && attachment_ids.insert(&attachment.id), "Некорректный или повторный ID вложения");
-        bounded(&attachment.name,512,"имя вложения")?; bounded(&attachment.extracted_text,MAX_TEXT,"распознанный текст")?;
-        let expected = format!("notes/attachments/{}.",attachment.id);
-        ensure!(attachment.relative_path.starts_with(&expected) && Path::new(&attachment.relative_path).components().count() == 3 && attachment.relative_path[expected.len()..].bytes().all(|b|b.is_ascii_alphanumeric()), "Некорректный путь вложения");
-        let extension=Path::new(&attachment.relative_path).extension().and_then(|s|s.to_str()).unwrap_or("");
-        ensure!(attachment_type(extension)==Some(attachment.content_type.as_str()),"Некорректный тип вложения");
-    }
-    ensure!(note.history.len() <= 1000 && note.subtasks.len() <= 200, "Слишком много дополнений или подзадач");
-    for entry in &note.history { ensure!(entry["text"].as_str().is_some_and(|text|text.len() <= MAX_TEXT) && entry["id"].as_str().is_some_and(valid_id) && entry["createdAt"].as_f64().is_some_and(|t|t.is_finite()&&t>=0.0), "Некорректная история задачи"); }
-    let mut subtask_ids=std::collections::HashSet::new();
-    for entry in &note.subtasks { ensure!(subtask_ids.insert(entry["id"].as_str()),"Повторный ID подзадачи"); ensure!(entry["text"].as_str().is_some_and(|text|!text.trim().is_empty()&&text.len()<=10_000) && entry["id"].as_str().is_some_and(valid_id) && entry["completed"].as_bool().is_some(), "Некорректная подзадача"); }
-    if let Some(origin)=&note.task_origin { ensure!(note.kind=="task" && origin["meetingID"].as_str().is_some_and(valid_id) && origin["itemSignature"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit())), "Некорректный источник задачи"); }
-    if let Some(expansion) = &note.expansion { ensure!(expansion.is_object() && serde_json::to_vec(expansion)?.len() <= 200_000, "Некорректное дополнение заметки"); }
-    Ok(())
-}
-pub(crate) fn validate_workspace(data: &NotesWorkspace) -> Result<()> {
-    crate::task_workspace::validate_workspace(data)?;
-    crate::folders::validate_workspace(data)?;
-    ensure!(data.notes.len() <= MAX_NOTES && data.templates.len() <= 100 && data.contexts.len() <= MAX_NOTES,"Слишком много заметок или шаблонов");
-    ensure!(data.voice_plans.len() <= 100 && data.voice_operations.len() <= 500, "Слишком много голосовых операций");
-    let mut ids = std::collections::HashSet::new();
-    for note in &data.notes { validate_note(note)?; ensure!(ids.insert(&note.id),"Повторный ID заметки"); }
-    let mut ids = std::collections::HashSet::new();
-    for template in &data.templates {
-        ensure!(valid_id(&template.id) && ids.insert(&template.id) && !template.name.trim().is_empty(),"Некорректный шаблон");
-        bounded(&template.name,256,"имя шаблона")?; bounded(&template.body,MAX_TEXT,"шаблон")?; bounded(&template.focus,10_000,"фокус")?;
-    }
-    let mut ids = std::collections::HashSet::new();
-    for context in &data.contexts {
-        ensure!(valid_id(&context.meeting_id) && ids.insert(&context.meeting_id),"Некорректный контекст встречи");
-        bounded(&context.project,512,"проект")?; bounded(&context.person,512,"собеседник")?;
-        if let Some(id) = &context.template_id { ensure!(valid_id(id),"Некорректный ID шаблона"); }
-    }
     Ok(())
 }
 fn ensure_meeting(root: &Path, id: Option<&str>) -> Result<()> {
@@ -303,13 +173,6 @@ pub fn delete_template(root:&Path,id:&str,revision:u64) -> Result<Value> {
 }
 fn attachment_folder(root:&Path) -> Result<PathBuf> {
     let dir=directory(root)?.join("attachments"); private_directory(&dir)?; Ok(dir)
-}
-fn attachment_type(extension:&str) -> Option<&'static str> {
-    match extension {
-        "png"=>Some("image/png"),"jpg"|"jpeg"=>Some("image/jpeg"),"heic"=>Some("image/heic"),
-        "gif"=>Some("image/gif"),"tif"|"tiff"=>Some("image/tiff"),"webp"=>Some("image/webp"),
-        "pdf"=>Some("application/pdf"),"txt"|"md"=>Some("text/plain"),_=>None,
-    }
 }
 fn attachment_file(root:&Path,attachment:&NoteAttachment) -> Result<PathBuf> {
     let folder=attachment_folder(root)?;
@@ -489,9 +352,6 @@ pub fn search_hits(root:&Path,query:&str) -> Result<Vec<Value>> {
             "start":note.timestamp,"sourceFingerprint":format!("note:{}",note.revision),"noteID":note.id,"noteRevision":note.revision}));
     }
     Ok(hits)
-}
-pub(crate) fn task_signature(item:&Value) -> String {
-    format!("{:x}",Sha256::digest(serde_json::to_vec(&json!([item["text"],item["segmentIDs"]])).expect("JSON value")))
 }
 pub fn tasks(root:&Path) -> Result<Value> {
     let workspace=list(root)?; let meetings=crate::storage::list_meetings(root)?;

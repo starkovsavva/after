@@ -43,7 +43,9 @@ host tests и ignored интеграции настоящего engine чере�
 
 ## Архитектурные границы
 
-Общие типы настроек находятся в `rust-core/src/domain/config.rs` без I/O и runtime.
+Общие настройки, модели workspace/задач и их валидация находятся в `rust-core/src/domain/`
+без I/O и runtime. `scripts/check_layers.py` запрещает зависимости domain от внешних
+модулей и системных библиотек; это source-level guard, не полный Rust dependency parser.
 `ai_config` отвечает за чтение/разрешение профилей и пока относится к application/
 infrastructure, а не к чистому domain. File picker изолирован в host `platform.rs`.
 Engine объявляет общие tasks/cards; host дополняет capabilities своими адаптерами.
