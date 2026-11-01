@@ -77,3 +77,9 @@ WebView startup smoke с bundled engine. Сценарий IPC также имп�
 отдельный регрессионный тест; финально 20 host-тестов, включая настоящий IPC, прошли. Диалог выбора файла, кодеки и физические устройства
 этим не проверены. Ubuntu/Arch/Windows workflows настроены, их удалённый прогон
 не выполнялся в этой сессии.
+
+Workspace use cases теперь координируются в `application/workspace.rs` через
+`WorkspaceRepository`, `WorkspaceLocks`, `WorkspaceRecovery`. SQLite, файловые lock
+и journal recovery находятся в `infrastructure/`; корневые modules сохраняют API
+и соединяют реализации. Порядок блокировок и общая транзакция сохранены.
+Решение и ограничения: [ADR](decisions/workspace-boundaries.md).

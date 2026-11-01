@@ -88,6 +88,7 @@ class Verification:
             if probe.returncode:
                 raise RuntimeError("Linux host requires WebKitGTK 4.1 and GTK3 development libraries. On Arch: sudo pacman -S --needed webkit2gtk-4.1")
         self.run("Domain layer boundaries", [self.python, "scripts/check_layers.py"])
+        self.run("Architecture guard contracts", [self.python, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_layers.py"])
         self.run("Rust domain contracts", self.cargo_command("test"))
         self.build_rust()
         frontend = ["npm.cmd" if os.name == "nt" else "npm", "--prefix", PROJECT / "desktop"]

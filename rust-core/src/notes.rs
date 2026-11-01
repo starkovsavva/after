@@ -5,10 +5,8 @@ use anyhow::{bail, ensure, Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Read;
-#[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -16,27 +14,9 @@ const MAX_ATTACHMENT: u64 = 25 * 1_048_576;
 const CONFLICT: &str = "Заметка уже изменена в другом окне. Обновите данные; ваш текст остаётся в редакторе.";
 
 pub use crate::domain::workspace::{NoteAttachment, CapturedNote, NoteTemplate, MeetingContext, NotesWorkspace};
-pub(crate) use crate::domain::workspace::{defaults, task_signature};
-pub(crate) use crate::domain::workspace_validation::{validate_workspace, valid_id, bounded, validate_note, attachment_type, MAX_TEXT};
-#[cfg(unix)]
-fn private_directory(path: &Path) -> Result<()> {
-    if let Ok(info) = fs::symlink_metadata(path) {
-        ensure!(info.is_dir() && !info.file_type().is_symlink(), "Папка заметок не должна быть ссылкой");
-    }
-    DirBuilder::new().recursive(true).mode(0o700).create(path)?;
-    let info = fs::symlink_metadata(path)?;
-    ensure!(info.is_dir() && !info.file_type().is_symlink(), "Некорректная папка заметок");
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-#[cfg(windows)]
-fn private_directory(path: &Path) -> Result<()> { crate::platform_fs::private_directory(path) }
-pub(crate) fn directory(root: &Path) -> Result<PathBuf> {
-    ensure!(root.is_absolute(), "Папка данных должна иметь абсолютный путь");
-    private_directory(root)?;
-    let directory = root.join("notes"); private_directory(&directory)?;
-    Ok(directory)
-}
+pub(crate) use crate::domain::workspace::{task_signature};
+pub(crate) use crate::domain::workspace_validation::{valid_id, bounded, validate_note, attachment_type, MAX_TEXT};
+pub(crate) use crate::infrastructure::workspace_files::{directory, lock, private_directory};
 fn regular(path: &Path, max: u64) -> Result<File> {
     let info = fs::symlink_metadata(path)?;
     ensure!(info.is_file() && !info.file_type().is_symlink() && info.len() <= max, "Ожидался обычный файл допустимого размера");
@@ -44,23 +24,11 @@ fn regular(path: &Path, max: u64) -> Result<File> {
     ensure!(file.metadata()?.is_file() && file.metadata()?.len() <= max, "Файл слишком большой");
     Ok(file)
 }
-pub(crate) fn lock(directory: &Path) -> Result<File> {
-    let path = directory.join(".workspace.lock");
-    if let Ok(info) = fs::symlink_metadata(&path) { ensure!(info.is_file() && !info.file_type().is_symlink(), "Некорректная блокировка заметок"); }
-    let file = crate::platform_fs::open_private(&path,false)?;
-    crate::platform_fs::secure_file(&file)?;
-    file.lock().context("Не удалось заблокировать заметки")?;
-    Ok(file)
-}
 pub(crate) fn load(directory: &Path) -> Result<NotesWorkspace> {
-    crate::corrections::recover_notes_transaction(directory)?;
-    let snapshot = crate::workspace_repository::load_locked(directory)?;
-    serde_json::from_value(snapshot.value).context("Не удалось прочитать заметки. База сохранена.")
+    crate::workspace_repository::load_notes_locked(directory)
 }
 pub(crate) fn persist(directory: &Path, data: &NotesWorkspace) -> Result<()> {
-    validate_workspace(data)?;
-    crate::workspace_repository::persist_locked(directory, data)?;
-    Ok(())
+    crate::workspace_repository::persist_notes_locked(directory, data)
 }
 fn ensure_meeting(root: &Path, id: Option<&str>) -> Result<()> {
     if let Some(id) = id {
@@ -439,7 +407,7 @@ fn complete_task_checked(root:&Path,meeting_id:&str,item_index:usize,text:&str,c
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{symlink,MetadataExt};
+    use std::os::unix::fs::{symlink,MetadataExt,PermissionsExt};
     fn note(text:&str) -> CapturedNote { serde_json::from_value(json!({"id":Uuid::new_v4().to_string(),"text":text,"createdAt":0.0,"updatedAt":0.0})).unwrap() }
     fn meeting(root:&Path,id:&str) -> PathBuf {
         let dir=crate::storage::meeting_directory(root,id).unwrap();

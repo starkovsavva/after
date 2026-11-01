@@ -205,3 +205,15 @@ pub(crate) fn attachment_type(extension: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+pub(crate) fn consumer_id(consumer: &str) -> Result<()> {
+    ensure!(
+        !consumer.is_empty()
+            && consumer.len() <= 128
+            && consumer
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')),
+        "Некорректное имя обработчика изменений"
+    );
+    Ok(())
+}

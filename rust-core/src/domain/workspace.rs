@@ -170,6 +170,24 @@ pub(crate) fn task_signature(item: &Value) -> String {
     )
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSnapshot {
+    pub revision: u64,
+    pub fingerprint: String,
+    pub value: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEvent {
+    pub id: String,
+    pub revision: u64,
+    pub kind: String,
+    pub created_at: f64,
+    pub payload: Value,
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::workspace_validation::{validate_note, validate_workspace};

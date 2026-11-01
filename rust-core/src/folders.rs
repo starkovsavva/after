@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 pub use crate::domain::workspace::{Folder, ProfileSnapshot};
-pub(crate) use crate::domain::profiles::{valid_id, bumped, validate_overrides, migrate_legacy, normalize_note_folder};
+pub(crate) use crate::domain::profiles::{valid_id, bumped, validate_overrides, normalize_note_folder};
 pub fn save(root: &Path, mut folder: Folder) -> Result<Folder> {
     folder.name = folder.name.trim().to_owned();
     ensure!(valid_id(&folder.id), "Некорректный ID папки");

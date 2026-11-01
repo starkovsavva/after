@@ -1,3 +1,5 @@
+pub(crate) mod application;
+pub(crate) mod infrastructure;
 pub mod domain;
 pub mod platform_fs;
 mod ai_config;

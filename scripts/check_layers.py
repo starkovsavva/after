@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source-level guardrails for the pure domain; not a complete Rust dependency parser."""
+"""Source-level layer guardrails; not a complete Rust dependency parser."""
 import argparse
 from pathlib import Path
 import re
@@ -52,16 +52,31 @@ def violations(root):
             break
 
 
+def outer_layer_violations(src):
+    for layer in ("application", "infrastructure"):
+        root = src / layer
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.rs")):
+            source = re.split(r"#\s*\[\s*cfg\s*\(\s*(?:all\s*\(\s*)?test\b", path.read_text(), maxsplit=1)[0]
+            source = re.sub(r"/\*.*?\*/|//[^\n]*", lambda m: "\n" * m[0].count("\n"), source, flags=re.S)
+            forbidden = r"\bcrate\s*::\s*(?:notes|folders|corrections|workspace_repository)\b"
+            if layer == "application":
+                forbidden = r"\bcrate\s*::\s*(?:infrastructure|notes|folders|storage|corrections|workspace_repository|platform_fs)\b|\b(?:reqwest|rusqlite|libc|tauri)\s*::|\bstd\s*::\s*(?:fs|os|process|net|env)\b"
+            for match in re.finditer(forbidden, source):
+                yield f"{path}:{source[:match.start()].count(chr(10)) + 1}: {layer} depends on a concrete outer implementation/facade"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--domain-root", type=Path, default=Path(__file__).resolve().parents[1] / "rust-core/src/domain")
     args = parser.parse_args()
     if not args.domain_root.is_dir() or not any(args.domain_root.rglob("*.rs")):
         parser.error("Domain source directory is missing or empty")
-    errors = list(violations(args.domain_root))
+    errors = list(violations(args.domain_root)) + list(outer_layer_violations(args.domain_root.parent))
     if errors:
         raise SystemExit("\n".join(errors))
-    print("PASS: domain layer boundaries")
+    print("PASS: domain/application/infrastructure layer boundaries")
 
 
 if __name__ == "__main__":

@@ -15,7 +15,10 @@
 - Добавлены Ubuntu real-engine проверки и Arch CI job; удалённый CI пока не запускался.
 - Общие Settings/AppFeatures и модели/валидация заметок, папок и задач выделены
   в чистый `domain`; старые API-пути сохранены реэкспортами. Границы domain проверяет
-  `scripts/check_layers.py`. Циклы persistence, общий scheduler и остальные этапы ещё не завершены.
+  `scripts/check_layers.py`. Циклы между notes/repository/corrections устранены: application-координатор
+  использует контракты repository/locks/recovery, реализации находятся в infrastructure.
+  Старые публичные API сохранены. См. [ADR](decisions/workspace-boundaries.md).
+  Общий scheduler и остальные этапы ещё не завершены.
 - Команды и ограничения актуальны в [Linux-инструкции](linux.md).
 
 ## Правила выполнения
