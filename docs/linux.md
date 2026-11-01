@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 613 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 29 host + 6 real-engine
+и helper), 620 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 29 host + 7 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 13 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -91,8 +91,7 @@ Workspace use cases теперь координируются в `application/wo
 через transaction/clock/ID порты; `jobs.rs` сохраняет Swift/CLI JSON API. Snapshot
 читает jobs/count/account pauses в одной read-транзакции. Swift пока управляет
 живыми заданиями. Native Tauri queue port использует scoped `desktop-import` очередь;
-native `Run` выполняет import внутри lifetime lease; UI binding и автоматический
-startup receipt reconciliation ещё не подключены
+native `Run` выполняет import внутри lifetime lease; native connection startup сверяет receipts без запуска работы; UI binding ещё не подключён
 ([ADR](decisions/scoped-executors.md)). Подробности: [границы очереди](decisions/job-queue-boundaries.md).
 
 Engine worker и Tauri transport используют общий `process-runtime/` для владения

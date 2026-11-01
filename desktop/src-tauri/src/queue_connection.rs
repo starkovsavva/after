@@ -98,7 +98,37 @@ fn read_frame(input: &mut impl BufRead) -> Result<Frame, HostError> {
 
 impl QueueConnection {
     pub(crate) fn open(engine: &Path, root: &Path) -> Result<Self, HostError> {
-        Self::connect(engine, root, TIMEOUT)
+        let connection = Self::connect(engine, root, TIMEOUT)?;
+        let mut cursor: Option<String> = None;
+        loop {
+            let reply = connection.execute(QueueCommand::Reconcile {
+                after_job_id: cursor.clone(),
+            })?;
+            let report = reply.reconciliation.ok_or_else(protocol)?;
+            if report.examined > 64 || (report.has_more && report.examined != 64) {
+                return Err(protocol());
+            }
+            if report.stale > 0 {
+                return Err(HostError::new(
+                    "busy",
+                    "The import queue changed during recovery. Reconnect before starting work.",
+                ));
+            }
+            if !report.has_more {
+                break;
+            }
+            let next = report
+                .next_cursor
+                .filter(|next| {
+                    !next.is_empty()
+                        && next.len() <= 512
+                        && !next.contains('\0')
+                        && cursor.as_ref().is_none_or(|previous| next > previous)
+                })
+                .ok_or_else(protocol)?;
+            cursor = Some(next);
+        }
+        Ok(connection)
     }
     fn connect(engine: &Path, root: &Path, timeout: Duration) -> Result<Self, HostError> {
         let mut command = Command::new(engine);

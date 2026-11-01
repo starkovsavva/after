@@ -49,6 +49,9 @@ pub(crate) enum Request {
         progress: f64,
     },
     Recover {},
+    Reconcile {
+        after_job_id: Option<String>,
+    },
 }
 
 #[derive(Deserialize, Serialize)]
@@ -87,7 +90,9 @@ pub(crate) fn execute(root: &Path, request: Request) -> Result<Value> {
                 follow_ups: Vec::new(),
             }
         }
-        Request::Run { .. } => anyhow::bail!("Import run requires its live executor"),
+        Request::Reconcile { .. } | Request::Run { .. } => {
+            anyhow::bail!("Import run requires its live executor")
+        }
         Request::List {} => JobCommand::List,
         Request::Get { job_id } => {
             id(&job_id)?;

@@ -37,6 +37,14 @@ pub(crate) trait JobQueueRepository {
     /// admission pauses must not disappear when a job leaves visible history.
     /// Filter before history pagination; counts and rows share one snapshot.
     fn snapshot(&self, kind: Option<&str>) -> Result<JobQueueSnapshot>;
+    /// Bounded recovery pages independent of presentation history. Stable ID
+    /// ordering allows a caller to advance past unresolved entries.
+    fn recovery_candidates(
+        &self,
+        kind: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Job>>;
     fn get(&self, id: &str) -> Result<Job>;
     /// Serializes competing claims before reading admission state. The adapter
     /// must not split this callback into independently committed operations.

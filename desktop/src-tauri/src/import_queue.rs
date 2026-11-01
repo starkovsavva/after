@@ -82,6 +82,10 @@ pub enum QueueCommand {
     },
     /// Requires an exclusive desktop-import executor lease, not just a DB lock.
     Recover,
+    /// Read-only receipt probes plus conditional ledger repair; no work starts.
+    Reconcile {
+        after_job_id: Option<String>,
+    },
 }
 
 #[derive(Clone, Deserialize)]
@@ -120,6 +124,19 @@ pub struct QueueReply {
     pub has_more: Option<bool>,
     pub deduplicated: Option<bool>,
     pub recovered: Option<usize>,
+    pub reconciliation: Option<ImportReconciliation>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportReconciliation {
+    pub examined: usize,
+    pub published: usize,
+    pub interrupted: usize,
+    pub cancelled: usize,
+    pub unresolved: usize,
+    pub stale: usize,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
 }
 pub trait ImportQueue: Send + Sync {
     fn execute(&self, command: QueueCommand) -> Result<QueueReply, HostError>;

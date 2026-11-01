@@ -352,6 +352,28 @@ mod tests {
                     .collect(),
             })
         }
+        fn recovery_candidates(
+            &self,
+            kind: &str,
+            after: Option<&str>,
+            limit: usize,
+        ) -> Result<Vec<Job>> {
+            let mut jobs: Vec<_> = self
+                .state
+                .borrow()
+                .jobs
+                .iter()
+                .filter(|job| {
+                    job.kind == kind
+                        && ["running", "interrupted"].contains(&job.state.as_str())
+                        && after.is_none_or(|after| job.id.as_str() > after)
+                })
+                .cloned()
+                .collect();
+            jobs.sort_by(|a, b| a.id.cmp(&b.id));
+            jobs.truncate(limit);
+            Ok(jobs)
+        }
         fn get(&self, id: &str) -> Result<Job> {
             self.state
                 .borrow()

@@ -1,6 +1,7 @@
 //! Durable import inputs and execution contracts. File publication and queue
 //! persistence remain separate effects, joined by an exact receipt identity.
 use super::imports::ImportObserver;
+use crate::domain::jobs::Job;
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -92,10 +93,38 @@ pub(crate) trait ImportJobStore: Send + Sync {
     fn progress(&self, id: &str, attempt: u64, fraction: f64) -> Result<bool>;
     fn finish(&self, id: &str, attempt: u64, outcome: ImportOutcome) -> Result<()>;
 }
-pub(crate) trait ImportWorker: Send + Sync {
+pub(crate) trait ImportReceipts: Send + Sync {
     /// Only a receipt with both exact identifiers is authoritative. An I/O error
     /// means unknown, never evidence that publication did not happen.
     fn committed(&self, input: &ImportInput) -> Result<bool>;
+}
+pub(crate) trait ImportWorker: ImportReceipts {
     /// Ok means the receipt was published; observers must not run after that.
     fn import(&self, input: &ImportInput, observer: &mut dyn ImportObserver) -> Result<()>;
+}
+
+pub(crate) fn input_for_job(job: &Job) -> Result<ImportInput> {
+    ensure!(
+        job.kind == IMPORT_JOB_KIND,
+        "Import belongs to another executor"
+    );
+    let input: ImportInput = serde_json::from_value(job.config.clone())?;
+    input.validate()?;
+    ensure!(input.operation_id == job.object_id, "Import object changed");
+    Ok(input)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImportRecoveryOutcome {
+    Published,
+    Interrupted,
+    Cancelled,
+    Unresolved,
+}
+
+pub(crate) trait ImportRecoveryStore {
+    fn candidates(&self, after: Option<&str>, limit: usize) -> Result<Vec<Job>>;
+    /// Compare all typed fields of the observed record inside the write transaction. False
+    /// means another mutation won; never overwrite that newer state.
+    fn resolve(&self, observed: &Job, outcome: ImportRecoveryOutcome) -> Result<bool>;
 }

@@ -1,8 +1,8 @@
 # Lifetime lease and native queue connection
 
 Статус: kernel lease и persistent queue service реализованы; explicit native Run
-[владеет worker lifetime](owned-import-execution.md). Startup reconciliation и UI
-binding ещё не подключены; UI пока использует standalone import session.
+[владеет worker lifetime](owned-import-execution.md). [Startup reconciliation](import-startup-recovery.md) выполняется при открытии native connection; UI
+binding ещё не подключён; UI пока использует standalone import session.
 
 ## Владение
 
@@ -26,7 +26,7 @@ Legacy Swift/CLI API остаётся глобальным; при общем ro
 После получения lease service отправляет versioned `ready`; каждый запрос имеет
 UUID и закрытую import queue action. Ответ сохраняет UUID. EOF освобождает lease.
 Неверный action возвращает sanitized domain error и сохраняет соединение;
-повреждённый outer frame прекращает service. Нет auto recovery и auto retries.
+повреждённый outer frame прекращает service. Recovery запускает native connection после handshake; автоматических retries нет.
 
 `LibraryBridge.open_import_queue()` проверяет engine и возвращает
 `QueueConnection`, реализующий порт `ImportQueue`. Host сериализует RPC через
@@ -40,7 +40,7 @@ reaps; соединение больше не используется. Обыч
 
 Explicit Run уже размещает import worker внутри owner-процесса и joins его
 до освобождения lease. Существующий standalone UI import пока остаётся отдельным
-путём. Нужны UI/controller binding и startup receipt reconciliation; явный retry
+путём. Нужен UI/controller binding; явный retry
 проверяет receipt до нового копирования. Сам lease не делает внешний эффект
 идемпотентным: [политика выполнения](owned-import-execution.md) описывает эту границу.
 

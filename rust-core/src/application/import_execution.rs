@@ -2,7 +2,8 @@
 //! never persists raw worker errors, grants or an ambiguous success as failure.
 use super::{
     import_ports::{
-        ImportInput, ImportJobStore, ImportOutcome, ImportStop, ImportWorker, IMPORT_JOB_KIND,
+        input_for_job, ImportInput, ImportJobStore, ImportOutcome, ImportStop, ImportWorker,
+        IMPORT_JOB_KIND,
     },
     imports::{ImportCancelled, ImportObserver, ImportPhase, ImportProgress},
 };
@@ -19,12 +20,7 @@ pub(crate) fn execute(
         job.state == "running" && job.attempt > 0 && job.kind == IMPORT_JOB_KIND,
         "Import attempt is not running"
     );
-    let input = (|| -> Result<ImportInput> {
-        let input: ImportInput = serde_json::from_value(job.config.clone())?;
-        input.validate()?;
-        ensure!(input.operation_id == job.object_id, "Import object changed");
-        Ok(input)
-    })();
+    let input = input_for_job(job);
     let outcome = match input {
         Err(_) => ImportOutcome::Failed,
         Ok(input) => run(store, worker, job, &input, stop),
@@ -191,7 +187,7 @@ mod tests {
         stop: Arc<ImportStop>,
         store: Arc<Store>,
     }
-    impl ImportWorker for Worker {
+    impl super::super::import_ports::ImportReceipts for Worker {
         fn committed(&self, _: &ImportInput) -> Result<bool> {
             match self.receipt.load(Ordering::Acquire) {
                 0 => Ok(false),
@@ -199,6 +195,8 @@ mod tests {
                 _ => anyhow::bail!("synthetic unreadable receipt"),
             }
         }
+    }
+    impl ImportWorker for Worker {
         fn import(&self, _: &ImportInput, observer: &mut dyn ImportObserver) -> Result<()> {
             self.called.fetch_add(1, Ordering::AcqRel);
             for copied in 0..=1000 {

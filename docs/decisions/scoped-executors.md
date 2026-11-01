@@ -1,7 +1,7 @@
 # Scoped durable queue executors
 
 Статус: scoped application queue и native import queue port реализованы.
-Автоматический desktop executor/recovery ещё не включён.
+Native connection startup сверяет receipts; UI ещё использует transient import session.
 
 ## Проблема
 
@@ -49,8 +49,7 @@ import session, не durable executor.
 
 Scope — граница ответственности, **не lease процесса**. Перед production recovery
 реализован [lifetime lock](import-executor-lease.md), исключающий второй queue owner.
-Для explicit import Run [worker lifetime покрыт lease](owned-import-execution.md); UI binding ещё требуется. После получения lease coordinator должен сверить atomic publication receipts до
-решения о повторном запуске. Публикация и запись queue completion разделены;
+Для explicit import Run [worker lifetime покрыт lease](owned-import-execution.md); UI binding ещё требуется. После получения lease native connection [сверяет atomic publication receipts](import-startup-recovery.md) до возврата caller; повторный запуск остаётся явным. Публикация и запись queue completion разделены;
 повторное выполнение нельзя считать безопасным только потому, что job interrupted.
 Это соответствует требованиям к идемпотентным Activities в
 [Temporal](https://github.com/temporalio/documentation/blob/main/docs/encyclopedia/activities/activity-definition.mdx).

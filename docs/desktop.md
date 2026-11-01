@@ -129,7 +129,7 @@ node scripts/check-desktop-browser.mjs
 
 ## Следующие срезы
 
-1. Подключить Tauri UI к [durable import Run](decisions/owned-import-execution.md) и startup receipt reconciliation. Native service уже удерживает lease до остановки/join worker; standalone UI import пока остаётся отдельным путём.
+1. Подключить Tauri UI к [durable import Run](decisions/owned-import-execution.md). Native connection startup уже сверяет receipts без повторного запуска; [ADR](decisions/import-startup-recovery.md). Native service уже удерживает lease до остановки/join worker; standalone UI import пока остаётся отдельным путём.
 2. Импорт копии существующей библиотеки, профили и функциональные вкладки папок, задачи/карточки, MCP и помощник.
 3. Отдельные CaptureBackend macOS / Windows / portal+PipeWire; микрофон, звук Mac/PC и видео с одним таймлайном.
 4. Перенос ASR/model-runtime manifests, секретов, календаря и безопасного обновления; проверка полных сценариев на каждой ОС.

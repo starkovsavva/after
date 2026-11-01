@@ -4,7 +4,7 @@ use crate::application::job_ports::{
     JobMatchScope, JobQueueRepository, JobQueueTransaction, JobSelection,
 };
 use crate::domain::jobs::{Job, JobQueueSnapshot};
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 use std::{fs, path::Path, time::Duration};
@@ -34,6 +34,10 @@ fn open(root: &Path) -> Result<crate::platform_fs::GuardedConnection> {
     connection.busy_timeout(Duration::from_secs(5))?;
     connection.execute_batch("PRAGMA foreign_keys=ON;")?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    ensure!(
+        version <= 2,
+        "Очередь создана более новой версией приложения"
+    );
     if version < 1 {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         transaction.execute_batch("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, state TEXT NOT NULL, resource TEXT NOT NULL, object_id TEXT NOT NULL, dedup_key TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL DEFAULT 0, payload TEXT NOT NULL);")?;
@@ -107,7 +111,7 @@ fn paused_chatgpt_jobs(connection: &Connection) -> Result<Vec<Job>> {
 
 fn get(connection: &Connection, id: &str) -> Result<Job> {
     let text: String = connection
-        .query_row("SELECT payload FROM jobs WHERE id=?1", [id], |row| {
+        .query_row("SELECT payload FROM jobs WHERE id=?1", [&id], |row| {
             row.get(0)
         })
         .optional()?
@@ -115,7 +119,21 @@ fn get(connection: &Connection, id: &str) -> Result<Job> {
     Ok(serde_json::from_str(&text)?)
 }
 fn persist(connection: &Connection, job: &Job) -> Result<()> {
-    connection.execute("INSERT INTO jobs(id,state,resource,object_id,dedup_key,created_at,updated_at,payload) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at,payload=excluded.payload", params![job.id,job.state,job.resource,job.object_id,job.dedup_key()?,job.created_at,job.updated_at,serde_json::to_string(job)?])?;
+    let existing: Option<String> = connection
+        .query_row("SELECT payload FROM jobs WHERE id=?1", [&job.id], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    let mut payload: Value = existing
+        .map(|raw| serde_json::from_str(&raw))
+        .transpose()?
+        .unwrap_or_else(|| serde_json::json!({}));
+    let fields = serde_json::to_value(job)?;
+    payload
+        .as_object_mut()
+        .context("Некорректное задание")?
+        .extend(fields.as_object().context("Некорректное задание")?.clone());
+    connection.execute("INSERT INTO jobs(id,state,resource,object_id,dedup_key,created_at,updated_at,payload) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at,payload=excluded.payload", params![job.id,job.state,job.resource,job.object_id,job.dedup_key()?,job.created_at,job.updated_at,serde_json::to_string(&payload)?])?;
     Ok(())
 }
 
@@ -144,6 +162,28 @@ impl JobQueueRepository for SqliteJobQueue<'_> {
             total: total.try_into().context("Некорректный размер очереди")?,
             paused_chatgpt_failures,
         })
+    }
+
+    fn recovery_candidates(
+        &self,
+        kind: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Job>> {
+        ensure!((1..=256).contains(&limit), "Invalid recovery page limit");
+        let connection = open(self.root)?;
+        let mut statement = connection.prepare("SELECT id,payload FROM jobs WHERE state IN ('running','interrupted') AND json_extract(payload,'$.kind')=?1 AND id>?2 ORDER BY id LIMIT ?3")?;
+        let rows = statement
+            .query_map(params![kind, after.unwrap_or(""), limit as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+        rows.map(|row| {
+            let (id, payload) = row?;
+            let job: Job = serde_json::from_str(&payload)?;
+            ensure!(job.id == id, "Invalid recovery record identity");
+            Ok(job)
+        })
+        .collect()
     }
 
     fn get(&self, id: &str) -> Result<Job> {
@@ -242,6 +282,53 @@ mod tests {
     }
     fn enqueue(root: &Path, object: &str, resource: &str) -> Value {
         call(root,"job-enqueue",json!({"kind":"summarize","objectID":object,"resource":resource,"inputRevision":"v1","config":{"model":"local"}}))["job"].clone()
+    }
+
+    #[test]
+    fn queue_mutations_preserve_unknown_compatible_payload_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let initial = enqueue(root.path(), "future-compatible", "light");
+        let id = initial["id"].as_str().unwrap().to_owned();
+        let connection = open(root.path()).unwrap();
+        let mut payload = initial;
+        let extension = json!({"opaque":["keep",{"revision":7}]});
+        payload["futureExtension"] = extension.clone();
+        connection
+            .execute(
+                "UPDATE jobs SET payload=?1 WHERE id=?2",
+                params![payload.to_string(), &id],
+            )
+            .unwrap();
+        drop(connection);
+        call(root.path(), "job-claim", json!({"jobID":id}));
+        call(
+            root.path(),
+            "job-update",
+            json!({"jobID":id,"expectedAttempt":1,"progress":0.5}),
+        );
+        call(root.path(), "job-recover", json!({}));
+        let connection = open(root.path()).unwrap();
+        let raw: String = connection
+            .query_row("SELECT payload FROM jobs WHERE id=?1", [&id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let persisted: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(persisted["futureExtension"], extension);
+        assert_eq!(persisted["state"], "interrupted");
+    }
+
+    #[test]
+    fn a_future_queue_schema_is_never_opened_or_rewritten_by_an_old_adapter() {
+        let root = tempfile::tempdir().unwrap();
+        enqueue(root.path(), "future-schema", "light");
+        let connection = open(root.path()).unwrap();
+        connection.pragma_update(None, "user_version", 3).unwrap();
+        drop(connection);
+        let path = root.path().join("jobs.sqlite");
+        let before = fs::read(&path).unwrap();
+        assert!(SqliteJobQueue { root: root.path() }.snapshot(None).is_err());
+        assert_eq!(fs::read(path).unwrap(), before);
     }
     #[test]
     fn failed_transaction_callback_rolls_back_job_and_account_pause() {

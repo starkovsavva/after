@@ -1,7 +1,7 @@
 # Imports owned by the queue lease
 
 Статус: явный native `Run` выполняет durable import внутри leased service.
-Привязка Tauri UI и автоматический startup reconciliation ещё не подключены.
+Native connection startup выполняет [receipt reconciliation](import-startup-recovery.md); привязка Tauri UI ещё не подключена.
 
 ## Границы
 
@@ -67,6 +67,6 @@ publication/completion gap без исходного файла; чужой toke
 локально не запускались. Native Run отменяется кооперативно на checkpoints; принудительная граница
 супервизора — весь owner process. При UI binding нужно сохранить deadline/grace
 политику прежнего WorkerHost и восстановление соединения.
-Следующие шаги — UI/controller binding, startup receipt reconciliation и расширение worker ports; автоматические retries и Swift removal
+Следующие шаги — UI/controller binding и расширение worker ports; автоматические retries и Swift removal
 не включены. При совместном root с legacy writer всё ещё нужна защита от его
 глобального claim/recover; штатные библиотеки клиентов разделены.

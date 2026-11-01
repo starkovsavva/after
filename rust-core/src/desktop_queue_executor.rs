@@ -3,12 +3,17 @@
 use crate::{
     application::{
         import_execution,
-        import_ports::{ImportInput, ImportJobStore, ImportOutcome, ImportStop, ImportWorker},
+        import_ports::{
+            ImportInput, ImportJobStore, ImportOutcome, ImportReceipts, ImportRecoveryOutcome,
+            ImportRecoveryStore, ImportStop, ImportWorker,
+        },
+        import_recovery,
         imports::ImportObserver,
+        job_ports::{JobClock, JobQueueRepository},
         jobs::{ClaimRequest, JobCommand, JobReply},
     },
     desktop_queue::{self, Request},
-    domain::jobs::{JobMutation, JobUpdate, UpdateField},
+    domain::jobs::{Job, JobMutation, JobUpdate, UpdateField},
     infrastructure::executor_lease::ImportExecutorLease,
 };
 use anyhow::{bail, Result};
@@ -81,9 +86,42 @@ impl Executor {
                     | Request::Update { .. }
                     | Request::Retry { .. }
                     | Request::Recover {}
+                    | Request::Reconcile { .. }
             )
         {
             return Err(ExecutorBusy.into());
+        }
+        if let Request::Reconcile { after_job_id } = request {
+            if let Some(cursor) = &after_job_id {
+                anyhow::ensure!(
+                    !cursor.is_empty() && cursor.len() <= 512 && !cursor.contains('\0'),
+                    "Invalid recovery cursor"
+                );
+            }
+            let store = QueueStore {
+                lease: self.lease.clone(),
+            };
+            let report =
+                import_recovery::reconcile(&store, &*self.worker, after_job_id.as_deref())?;
+            return Ok(json!({"reconciliation":report}));
+        }
+        if matches!(request, Request::Recover {}) {
+            let store = QueueStore {
+                lease: self.lease.clone(),
+            };
+            let mut cursor = None;
+            let mut recovered = 0;
+            loop {
+                let report = import_recovery::reconcile(&store, &*self.worker, cursor.as_deref())?;
+                recovered += report.published + report.interrupted + report.cancelled;
+                if !report.has_more {
+                    break;
+                }
+                cursor = report.next_cursor;
+            }
+            let mut result = desktop_queue::execute(self.lease.root(), Request::List {})?;
+            result["recovered"] = json!(recovered);
+            return Ok(result);
         }
         if let Request::Run { job_id } = request {
             return self.run(job_id);
@@ -157,6 +195,57 @@ impl Drop for Executor {
 struct QueueStore {
     lease: Arc<ImportExecutorLease>,
 }
+impl ImportRecoveryStore for QueueStore {
+    fn candidates(&self, after: Option<&str>, limit: usize) -> Result<Vec<Job>> {
+        desktop_queue::queue(self.lease.root())
+            .repository
+            .recovery_candidates(
+                crate::application::import_ports::IMPORT_JOB_KIND,
+                after,
+                limit,
+            )
+    }
+    fn resolve(&self, observed: &Job, outcome: ImportRecoveryOutcome) -> Result<bool> {
+        let queue = desktop_queue::queue(self.lease.root());
+        queue.repository.transaction(|transaction| {
+            if transaction.state(&observed.id)?.is_none() {
+                return Ok(false);
+            }
+            let mut current = transaction.get(&observed.id)?;
+            if current.kind != crate::application::import_ports::IMPORT_JOB_KIND
+                || !["running", "interrupted"].contains(&current.state.as_str())
+                || serde_json::to_value(&current)? != serde_json::to_value(observed)?
+            {
+                return Ok(false);
+            }
+            match outcome {
+                ImportRecoveryOutcome::Published => {
+                    current.state = "succeeded".into();
+                    current.progress = 1.0;
+                    current.cancel_requested = false;
+                    current.message.clear();
+                }
+                ImportRecoveryOutcome::Cancelled => {
+                    current.state = "cancelled".into();
+                    current.cancel_requested = false;
+                    current.message = "Import cancelled".into();
+                }
+                ImportRecoveryOutcome::Interrupted => {
+                    current.state = "interrupted".into();
+                    current.cancel_requested = false;
+                    current.message = "Work was interrupted. Retry explicitly.".into();
+                }
+                ImportRecoveryOutcome::Unresolved => {
+                    current.state = "interrupted".into();
+                    current.message = "Import outcome requires reconciliation".into();
+                }
+            }
+            current.updated_at = queue.clock.now();
+            transaction.save(&current)?;
+            Ok(true)
+        })
+    }
+}
 impl ImportJobStore for QueueStore {
     fn progress(&self, id: &str, attempt: u64, fraction: f64) -> Result<bool> {
         match desktop_queue::queue(self.lease.root()).execute(JobCommand::Mutate {
@@ -196,7 +285,7 @@ impl ImportJobStore for QueueStore {
 struct FileWorker {
     lease: Arc<ImportExecutorLease>,
 }
-impl ImportWorker for FileWorker {
+impl ImportReceipts for FileWorker {
     fn committed(&self, input: &ImportInput) -> Result<bool> {
         Ok(crate::desktop_import::committed(
             self.lease.root(),
@@ -205,6 +294,8 @@ impl ImportWorker for FileWorker {
         )?
         .is_some())
     }
+}
+impl ImportWorker for FileWorker {
     fn import(&self, input: &ImportInput, observer: &mut dyn ImportObserver) -> Result<()> {
         crate::desktop_import::import_observed(
             self.lease.root(),
@@ -239,10 +330,12 @@ mod tests {
         resume: Mutex<mpsc::Receiver<()>>,
         published: AtomicBool,
     }
-    impl ImportWorker for Paused {
+    impl ImportReceipts for Paused {
         fn committed(&self, _: &ImportInput) -> Result<bool> {
             Ok(self.published.load(Ordering::Acquire))
         }
+    }
+    impl ImportWorker for Paused {
         fn import(&self, _: &ImportInput, observer: &mut dyn ImportObserver) -> Result<()> {
             observer.checkpoint(ImportProgress {
                 phase: ImportPhase::Copying,
@@ -407,5 +500,40 @@ mod tests {
         );
         assert!(meta.is_dir());
         assert!(!directory.join("source.wav").exists());
+    }
+
+    #[test]
+    fn recovery_resolution_cannot_overwrite_a_concurrent_cancel() {
+        let root = tempfile::tempdir().unwrap();
+        let mut executor = owner(root.path());
+        let (id, _) = enqueue(&mut executor, root.path());
+        executor
+            .command(Request::Claim {
+                job_id: Some(id.clone()),
+            })
+            .unwrap();
+        let store = QueueStore {
+            lease: executor.lease.clone(),
+        };
+        let observed = store.candidates(None, 64).unwrap().remove(0);
+        executor
+            .command(Request::Cancel {
+                job_id: id.clone(),
+                expected_attempt: 1,
+            })
+            .unwrap();
+        assert!(!store
+            .resolve(&observed, ImportRecoveryOutcome::Published)
+            .unwrap());
+        let current = store.candidates(None, 64).unwrap().remove(0);
+        assert!(current.cancel_requested);
+        assert_eq!(current.state, "running");
+        assert!(store
+            .resolve(&current, ImportRecoveryOutcome::Cancelled)
+            .unwrap());
+        assert_eq!(
+            executor.command(Request::Get { job_id: id }).unwrap()["job"]["state"],
+            "cancelled"
+        );
     }
 }

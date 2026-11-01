@@ -7,3 +7,5 @@ pub(crate) mod imports;
 
 pub(crate) mod import_ports;
 pub(crate) mod import_execution;
+
+pub(crate) mod import_recovery;

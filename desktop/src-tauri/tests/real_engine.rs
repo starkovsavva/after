@@ -10,6 +10,151 @@ use std::path::PathBuf;
 
 #[test]
 #[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
+fn opening_a_queue_reconciles_all_pages_without_starting_missing_or_uncertain_work() {
+    use after_desktop::{
+        import_queue::{ImportInput, ImportJob, ImportQueue, JobState, QueueCommand},
+        worker_host::ImportWork,
+    };
+    use std::sync::atomic::AtomicBool;
+    let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("startup-library");
+    let bridge = LibraryBridge::for_development(engine, root.clone()).unwrap();
+    let source = fixture.path().join("keep original.wav");
+    std::fs::write(&source, b"original source").unwrap();
+    let queue = bridge.open_import_queue().unwrap();
+    let mut history: Vec<ImportJob> = Vec::new();
+    for _ in 0..71 {
+        let work = ImportWork {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            attempt_token: uuid::Uuid::new_v4().to_string(),
+            source: source.clone(),
+            title: None,
+        };
+        let job = queue
+            .execute(QueueCommand::Enqueue {
+                input: ImportInput::from(&work),
+            })
+            .unwrap()
+            .job
+            .unwrap();
+        queue
+            .execute(QueueCommand::Claim {
+                job_id: Some(job.id.clone()),
+            })
+            .unwrap()
+            .job
+            .unwrap();
+        queue
+            .execute(QueueCommand::Update {
+                job_id: job.id.clone(),
+                expected_attempt: 1,
+                state: JobState::Interrupted,
+                progress: 0.0,
+            })
+            .unwrap();
+        history.push(job);
+    }
+    // This candidate sorts beyond the first 64-row recovery page.
+    history.sort_by(|a, b| a.id.cmp(&b.id));
+    let published = history.last().unwrap();
+    bridge
+        .import_work(
+            &published.config.work(),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .unwrap();
+    let uncertain = &history[0];
+    let corrupt = root
+        .join("meetings")
+        .join(&uncertain.object_id)
+        .join("meta.json");
+    std::fs::create_dir_all(&corrupt).unwrap();
+
+    let cancelled_work = ImportWork {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        attempt_token: uuid::Uuid::new_v4().to_string(),
+        source: source.clone(),
+        title: None,
+    };
+    let cancelled = queue
+        .execute(QueueCommand::Enqueue {
+            input: ImportInput::from(&cancelled_work),
+        })
+        .unwrap()
+        .job
+        .unwrap();
+    queue
+        .execute(QueueCommand::Claim {
+            job_id: Some(cancelled.id.clone()),
+        })
+        .unwrap()
+        .job
+        .unwrap();
+    queue
+        .execute(QueueCommand::Cancel {
+            job_id: cancelled.id.clone(),
+            expected_attempt: 1,
+        })
+        .unwrap();
+    drop(queue);
+    let successor = bridge.open_import_queue().unwrap();
+    assert_eq!(
+        successor
+            .execute(QueueCommand::Get {
+                job_id: published.id.clone()
+            })
+            .unwrap()
+            .job
+            .unwrap()
+            .state,
+        JobState::Succeeded
+    );
+    assert_eq!(
+        successor
+            .execute(QueueCommand::Get {
+                job_id: cancelled.id
+            })
+            .unwrap()
+            .job
+            .unwrap()
+            .state,
+        JobState::Cancelled
+    );
+    assert_eq!(
+        successor
+            .execute(QueueCommand::Get {
+                job_id: uncertain.id.clone()
+            })
+            .unwrap()
+            .job
+            .unwrap()
+            .state,
+        JobState::Interrupted
+    );
+    assert!(corrupt.is_dir());
+    for job in &history {
+        if job.id != published.id && job.id != uncertain.id {
+            assert!(
+                !root.join("meetings").join(&job.object_id).exists(),
+                "recovery must not create source copies"
+            );
+        }
+    }
+    assert!(!root
+        .join("meetings")
+        .join(cancelled_work.operation_id)
+        .exists());
+    assert_eq!(std::fs::read(&source).unwrap(), b"original source");
+    assert_eq!(
+        successor.execute(QueueCommand::List).unwrap().total,
+        Some(72)
+    );
+}
+
+#[test]
+#[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
 fn leased_queue_executes_import_and_reconciles_a_published_attempt_without_its_source() {
     use after_desktop::{
         import_queue::{ImportInput, ImportJob, ImportQueue, JobState, QueueCommand},
@@ -111,23 +256,17 @@ fn leased_queue_executes_import_and_reconciles_a_published_attempt_without_its_s
     let successor = bridge.open_import_queue().unwrap();
     assert_eq!(
         successor.execute(QueueCommand::Recover).unwrap().recovered,
-        Some(1)
+        Some(0)
     );
-    successor
-        .execute(QueueCommand::Retry {
-            job_id: pending_job.id.clone(),
-            expected_attempt: 1,
-        })
-        .unwrap();
-    successor
+    let recovered = wait(&successor, &pending_job.id, JobState::Succeeded);
+    assert_eq!(recovered.attempt, 1);
+    assert!(successor
         .execute(QueueCommand::Run {
-            job_id: pending_job.id.clone(),
+            job_id: pending_job.id.clone()
         })
         .unwrap()
         .job
-        .unwrap();
-    let recovered = wait(&successor, &pending_job.id, JobState::Succeeded);
-    assert_eq!(recovered.attempt, 2);
+        .is_none());
     assert!(!pending_source.exists());
     assert_eq!(
         std::fs::read(
@@ -262,11 +401,11 @@ fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing(
         .unwrap()
         .job
         .unwrap();
-    assert_eq!(persisted.state, JobState::Running);
+    assert_eq!(persisted.state, JobState::Interrupted);
     assert_eq!(persisted.config.attempt_token, work.attempt_token);
     // The persistent helper holds the exclusive lifetime lease across requests.
     let recovery = queue.execute(QueueCommand::Recover).unwrap();
-    assert_eq!(recovery.recovered, Some(1));
+    assert_eq!(recovery.recovered, Some(0));
     assert_eq!(recovery.jobs[0].state, JobState::Interrupted);
     assert!(queue
         .execute(QueueCommand::Claim {
