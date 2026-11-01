@@ -6,6 +6,9 @@ enum Ink {
     static var accent: Color { Color(nsColor: themedAccent(fill: false)) }
     static var actionFill: Color { Color(nsColor: themedAccent(fill: true)) }
     static let recordFill = Color(red: 0.72, green: 0.16, blue: 0.16)
+    static let destructiveText = Color(nsColor: adaptive("destructiveText", light: (0.72, 0.16, 0.16), dark: (1.0, 0.55, 0.51)))
+    static let controlSurfaceColor = adaptive("controlSurface", light: (0.985, 0.985, 0.985), dark: (0.24, 0.24, 0.24))
+    static let controlSurface = Color(nsColor: controlSurfaceColor)
     static let green = Color(nsColor: adaptive("success", light: (0.16, 0.43, 0.32), dark: (0.43, 0.80, 0.65)))
     static let warning = Color(nsColor: adaptive("warning", light: (0.57, 0.29, 0.04), dark: (1.0, 0.74, 0.39)))
     static let paper = Color(nsColor: .windowBackgroundColor)
@@ -113,5 +116,5 @@ private struct AppContentLayout: ViewModifier {
 extension View {
     func appContentLayout() -> some View { modifier(AppContentLayout()) }
     /// Native controls use the same regular size and font in windows and sheets.
-    func appControlDefaults() -> some View { font(AppTypography.control).controlSize(.regular) }
+    func appControlDefaults() -> some View { font(AppTypography.control).controlSize(.regular).buttonStyle(AfterSoftButtonStyle()) }
 }

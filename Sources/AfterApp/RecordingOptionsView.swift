@@ -13,16 +13,14 @@ struct RecordingOptionsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Picker(L("Качество аудио"), selection: $audioQuality) {
-                ForEach(RecordingAudioQuality.allCases) { Text(L($0.title)).tag($0) }
-            }.accessibilityIdentifier("record.audioQuality")
+            AfterCompactPicker(L("Качество аудио"), selection: $audioQuality,
+                options: RecordingAudioQuality.allCases.map { .init(title: L($0.title), value: $0) }, identifier: "record.audioQuality")
             Toggle(L("Сохранять видео экрана"), isOn: $video)
                 .accessibilityIdentifier("record.video")
             if video {
                 VStack(alignment: .leading, spacing: 10) {
-                    Picker(L("Качество видео"), selection: $videoQuality) {
-                        ForEach(RecordingVideoQuality.allCases) { Text(L($0.title)).tag($0) }
-                    }.accessibilityIdentifier("record.videoQuality").help(L(videoQuality.detail))
+                    AfterCompactPicker(L("Качество видео"), selection: $videoQuality,
+                        options: RecordingVideoQuality.allCases.map { .init(title: L($0.title), value: $0) }, identifier: "record.videoQuality").help(L(videoQuality.detail))
                     Text(L("MP4 · H.264 · 30 кадров/с"))
                         .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                         .accessibilityIdentifier("record.format")
@@ -51,13 +49,10 @@ struct CardGenerationPicker: View {
     let inheritedTitle: String
     let identifier: String
     var body: some View {
-        Picker(L("Автосоздание карточек"), selection: $selection) {
-            Text(inheritedTitle + (inherited ? L(" · создавать") : L(" · не создавать"))).tag("inherit")
-                .accessibilityIdentifier(identifier + ".inherit")
-            Text(L("Создавать при обновлении конспекта")).tag("on")
-                .accessibilityIdentifier(identifier + ".on")
-            Text(L("Не создавать для этой встречи")).tag("off")
-                .accessibilityIdentifier(identifier + ".off")
-        }.pickerStyle(.radioGroup).accessibilityIdentifier(identifier)
+        AfterChoicePicker(L("Автосоздание карточек"), selection: $selection, options: [
+            .init(title: inheritedTitle + (inherited ? L(" · создавать") : L(" · не создавать")), value: "inherit"),
+            .init(title: L("Создавать при обновлении конспекта"), value: "on"),
+            .init(title: L("Не создавать для этой встречи"), value: "off")], identifier: identifier)
+            .accessibilityIdentifier(identifier)
     }
 }

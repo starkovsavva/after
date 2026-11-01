@@ -67,7 +67,7 @@ struct SummaryView: View {
                     Spacer()
                     Button { store.summarizeSelected() } label: {
                         Label(store.summary == nil ? L("Создать конспект") : L("Обновить"), systemImage: "sparkles").frame(minWidth: 120)
-                    }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(overviewLocked || overviewEditing)
+                    }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).disabled(overviewLocked || overviewEditing)
                 }
                 if profileSettings.mode == "cloud" {
                     Text(cloudContextDisclosure)
@@ -138,7 +138,7 @@ struct SummaryView: View {
                     VStack(alignment: .leading, spacing: 15) {
                         Image(systemName: "text.badge.star").font(.system(size: 35)).foregroundStyle(Ink.accent)
                         Text(L("Конспект не создан")).font(AppTypography.emptyTitle)
-                        Button(L("Настройки ИИ")) { store.openSettings("ai") }.buttonStyle(.bordered)
+                        Button(L("Настройки ИИ")) { store.openSettings("ai") }.buttonStyle(AfterSoftButtonStyle())
                     }.padding(.vertical, 45).frame(maxWidth: 540, alignment: .leading)
                 }
             }.appContentLayout()
@@ -191,7 +191,7 @@ struct SummaryView: View {
                               store.notes.capture(text: overviewDraft, meetingID: id) != nil else { return }
                         cancelOverviewEdit()
                         store.notice = L("Правка сохранена в заметки встречи")
-                    }.buttonStyle(.bordered)
+                    }.buttonStyle(AfterSoftButtonStyle())
                 }
             }
             HStack(spacing: 10) {
@@ -200,14 +200,14 @@ struct SummaryView: View {
                 }
                 Spacer()
                 Button(L("Отмена")) { cancelOverviewEdit() }
-                    .buttonStyle(.bordered).disabled(overviewLocked)
+                    .buttonStyle(AfterSoftButtonStyle()).disabled(overviewLocked)
                 Button(L("Сохранить")) {
                     guard let id = overviewMeetingID else { return }
                     if store.saveOverview(overviewDraft, meetingID: id, expectedOverview: originalOverview,
                                           expectedGeneratedAt: originalGeneratedAt) {
                         cancelOverviewEdit()
                     }
-                }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                     .disabled(overviewLocked || overviewConflict || overviewDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || overviewDraft == originalOverview)
             }

@@ -23,7 +23,7 @@ struct TranscriptView: View {
                 }.padding(10).background(Ink.soft, in: RoundedRectangle(cornerRadius: AppLayout.controlRadius))
                 Button { showingSpeakers = true } label: {
                     Label(LF("Собеседники: {0}", arguments: [String(describing: (Set((store.transcript?.segments ?? []).map(\.speaker).filter { $0 != "unknown" }).count))]), systemImage: "person.2")
-                }.buttonStyle(.bordered).disabled(store.busy || store.isRecording)
+                }.buttonStyle(AfterSoftButtonStyle()).disabled(store.busy || store.isRecording)
                     .help(L("Указать точное число участников и пересчитать голоса без повторного распознавания"))
                 Button {
                     if store.copyTranscriptMarkdown() { transcriptCopied = true }
@@ -31,7 +31,7 @@ struct TranscriptView: View {
                     Image(systemName: transcriptCopied ? "checkmark" : "doc.on.doc")
                         .frame(width: 20, height: 20)
                         .foregroundStyle(transcriptCopied ? Ink.green : .secondary)
-                }.buttonStyle(.bordered)
+                }.buttonStyle(AfterSoftButtonStyle())
                     .disabled(store.transcript?.segments.isEmpty ?? true)
                     .help(transcriptCopied ? L("Транскрипт скопирован") : L("Скопировать весь транскрипт в Markdown"))
                     .accessibilityLabel(L("Скопировать транскрипт в Markdown"))

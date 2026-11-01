@@ -128,6 +128,14 @@ private struct TrackerSyncConnectionEditor: View {
     @State private var savedOnce: Bool
     let folders: [LibraryFolder]
     let defaults: AppSettings
+    private var folderOptions: [AfterPickerOption<String>] {
+        var values: [AfterPickerOption<String>] = [.init(title: L("Без папки · настройки приложения"), value: "")]
+        values += folders.map { .init(title: $0.name, value: $0.id) }
+        if let id = config.folderID, !folders.contains(where: { $0.id == id }) {
+            values.append(.init(title: L("Удалённая папка"), value: id, isEnabled: false))
+        }
+        return values
+    }
     init(coordinator: TrackerSyncCoordinator, initial: TrackerSyncConfiguration, folders: [LibraryFolder], defaults: AppSettings) {
         self.folders = folders; self.defaults = defaults
         self.coordinator = coordinator
@@ -166,13 +174,8 @@ private struct TrackerSyncConnectionEditor: View {
                         }
                     }
                     Section {
-                        Picker(L("Новые задачи сохранять в"), selection: Binding(get: { config.folderID ?? "" }, set: { config.folderID = $0.isEmpty ? nil : $0 })) {
-                            Text(L("Без папки · настройки приложения")).tag("")
-                            ForEach(folders) { folder in Text(folder.name).tag(folder.id) }
-                            if let id = config.folderID, !folders.contains(where: { $0.id == id }) {
-                                Text(L("Удалённая папка")).tag(id).disabled(true)
-                            }
-                        }.accessibilityIdentifier("tracker.folder")
+                        AfterCompactPicker(L("Новые задачи сохранять в"), selection: Binding(get: { config.folderID ?? "" }, set: { config.folderID = $0.isEmpty ? nil : $0 }),
+                            options: folderOptions, searchable: true, identifier: "tracker.folder")
                         Text(L("Выбор действует для новых задач. Уже сохранённые задачи остаются в своих папках."))
                             .font(AppTypography.caption).foregroundStyle(.secondary)
                         if let id = config.folderID, !folders.contains(where: { $0.id == id }) {

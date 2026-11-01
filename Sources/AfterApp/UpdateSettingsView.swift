@@ -15,7 +15,7 @@ struct UpdateSettingsView: View {
                 HStack {
                     Label(LF("Доступна версия {0}", arguments: [String(describing: (version))]), systemImage: "arrow.down.circle")
                     Spacer()
-                    Button(L("Обновить…")) { updates.checkForUpdates() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    Button(L("Обновить…")) { updates.checkForUpdates() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                         .disabled(!updates.canCheck).accessibilityIdentifier("updates.install")
                 }
             }
@@ -24,7 +24,7 @@ struct UpdateSettingsView: View {
                 set: { updates.setAutomaticChecks($0) }
             )).disabled(!updates.isAvailable).accessibilityIdentifier("updates.automatic")
             Button(L("Проверить обновления…")) { updates.checkForUpdates() }
-                .buttonStyle(.bordered).disabled(!updates.isAvailable || !updates.canCheck)
+                .buttonStyle(AfterSoftButtonStyle()).disabled(!updates.isAvailable || !updates.canCheck)
                 .accessibilityIdentifier("updates.check")
             if let checked = updates.lastChecked {
                 LabeledContent(L("Последняя проверка")) {
@@ -44,7 +44,7 @@ struct UpdateSettingsView: View {
             }
             if updates.settingsSaveFailed {
                 Button(L("Повторить установку")) { updates.retryInstallation() }
-                    .buttonStyle(.bordered).disabled(updates.waitingForWork).accessibilityIdentifier("updates.retryInstall")
+                    .buttonStyle(AfterSoftButtonStyle()).disabled(updates.waitingForWork).accessibilityIdentifier("updates.retryInstall")
             }
             Link(L("История версий"), destination: URL(string: "https://github.com/starkovsavva/after/releases")!)
                 .font(AppTypography.caption)
@@ -70,8 +70,8 @@ struct UpdateAvailabilityButton: View {
                         Text(LF("Доступна версия {0}", arguments: [String(describing: (version))])).font(AppTypography.heading)
                         HStack(spacing: 12) {
                             Button(L("Обновить…")) { presented = false; updates.checkForUpdates() }
-                                .buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(!updates.canCheck)
-                            Button(L("Позже")) { presented = false; updates.dismissUpdateAnnouncement() }.buttonStyle(.bordered)
+                                .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).disabled(!updates.canCheck)
+                            Button(L("Позже")) { presented = false; updates.dismissUpdateAnnouncement() }.buttonStyle(AfterSoftButtonStyle())
                         }
                     }.padding(20).appControlDefaults().frame(minWidth: 280)
                 }

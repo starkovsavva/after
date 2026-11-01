@@ -74,7 +74,7 @@ struct FeatureDefaultsSheet: View {
                     Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning).lineLimit(2).help(error)
                 }
                 Spacer()
-                Button(L("Готово")) { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
+                Button(L("Готово")) { dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(AfterSoftButtonStyle(.primary))
                     .tint(Ink.actionFill).accessibilityIdentifier("features.defaults.close")
             }.padding(18)
         }.frame(width: 620, height: 650).background(Ink.paper).tint(Ink.accent).appControlDefaults()
@@ -104,7 +104,7 @@ struct OptionalFeatureGate: View {
                     NotificationCenter.default.post(name: Notification.Name("PosleEditFolder"), object: folder.id, userInfo: ["section": "features"])
                 } else { store.openSettings("features") }
             }
-                .buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                 .accessibilityIdentifier("features.openSettings")
         }.padding(AppLayout.contentInset).frame(maxWidth: .infinity, maxHeight: .infinity)
     }

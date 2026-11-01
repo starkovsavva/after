@@ -25,11 +25,11 @@ struct TaskHistoryView: View {
                         }.font(AppTypography.caption).foregroundStyle(.secondary)
                         if let value = event.snapshot {
                             Button { snapshot = TaskSnapshotPresentation(snapshot: value) } label: { Label(event.kind == "claimed" ? L("Контекст на момент принятия") : event.kind == "report" ? L("Контекст на момент отчёта") : L("Сохранённый контекст"), systemImage: "shippingbox") }
-                                .buttonStyle(.bordered).font(AppTypography.control).accessibilityIdentifier("tasks.history.snapshot." + event.id)
+                                .buttonStyle(AfterSoftButtonStyle()).font(AppTypography.control).accessibilityIdentifier("tasks.history.snapshot." + event.id)
                         }
                         ForEach(event.artifacts) { value in
                             Button { artifact = value } label: { Label(value.title, systemImage: value.symbol) }
-                                .buttonStyle(.bordered).font(AppTypography.control).accessibilityIdentifier("tasks.history.artifact." + value.id)
+                                .buttonStyle(AfterSoftButtonStyle()).font(AppTypography.control).accessibilityIdentifier("tasks.history.artifact." + value.id)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }.accessibilityElement(children: .contain).accessibilityIdentifier("tasks.history.event." + event.id)

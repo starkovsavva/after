@@ -44,7 +44,7 @@ struct TaskAttachmentSheet: View {
                 }
                 Spacer()
                 Button(L("Отмена")) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(L("Прикрепить"), action: attach).buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                Button(L("Прикрепить"), action: attach).buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                     .disabled(!canAttach || notes.taskWorkspaceBusy).keyboardShortcut(.defaultAction).accessibilityIdentifier("tasks.attach-confirm")
             }
         }.padding(24).frame(width: 580).frame(minHeight: 360, idealHeight: kind == .note || kind == .meeting ? 620 : 380).appControlDefaults()
@@ -74,10 +74,8 @@ struct TaskAttachmentSheet: View {
     }
     private var meetingPicker: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker(L("Встреча"), selection: $meetingID) {
-                Text(L("Выберите встречу")).tag("")
-                ForEach(app.noteMeetings) { Text($0.title).tag($0.id) }
-            }.onChange(of: meetingID) { _, _ in selectedSegments = []; query = ""; loadTranscript() }
+            AfterCompactPicker(L("Встреча"), selection: $meetingID,
+                options: [.init(title: L("Выберите встречу"), value: "")] + app.noteMeetings.map { .init(title: $0.title, value: $0.id) }, searchable: true).onChange(of: meetingID) { _, _ in selectedSegments = []; query = ""; loadTranscript() }
             TextField(L("Найти реплику"), text: $query).textFieldStyle(.roundedBorder)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {

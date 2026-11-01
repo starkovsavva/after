@@ -254,20 +254,22 @@ struct SemanticSearchSettings: View {
                 .font(AppTypography.control).foregroundStyle(.secondary)
             setupGuide
             VStack(alignment: .leading, spacing: 14) {
-                Picker(L("Модель поиска"), selection: Binding(get: { config.provider }, set: { provider in
+                AfterCompactPicker(L("Модель поиска"), selection: Binding(get: { config.provider }, set: { provider in
                     config.provider = provider
                     config.endpoint = provider == "managed" ? "" : provider == "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234/v1"
                     config.modelRevision = ""
                     if provider == "managed" { config.model = "qwen3-embedding:0.6b"; config.dimensions = 1024; config.allowCloud = false; config.queryPrefix = SemanticSearchConfiguration().queryPrefix; config.documentPrefix = "" }
                     loadKey(); resetServerStatus()
-                })) { Text(L("Встроенная модель After")).tag("managed"); Text("Ollama").tag("ollama"); Text(L("LM Studio / совместимый API")).tag("openai") }.accessibilityIdentifier("semantic.provider")
+                }), options: [.init(title: L("Встроенная модель After"), value: "managed"), .init(title: "Ollama", value: "ollama"), .init(title: L("LM Studio / совместимый API"), value: "openai")], identifier: "semantic.provider")
                 if config.provider != "managed" {
                 LabeledContent(L("Адрес")) { TextField("http://127.0.0.1:11434", text: endpointBinding).textFieldStyle(.roundedBorder).accessibilityIdentifier("semantic.endpoint") }
                 LabeledContent(L("Модель")) { TextField("qwen3-embedding:0.6b", text: modelBinding).textFieldStyle(.roundedBorder).accessibilityIdentifier("semantic.model") }
                 HStack {
                     Button(L("Проверить сервер и найти модели")) { discover() }.disabled(busy).accessibilityIdentifier("semantic.discover")
                     if !availableModels.isEmpty {
-                        Menu(L("Выбрать модель")) { ForEach(availableModels, id: \.self) { name in Button(name) { config.model = name; config.modelRevision = "" } } }
+                        AfterCompactPicker(L("Выбрать модель"), selection: Binding(get: { config.model }, set: { name in config.model = name; config.modelRevision = "" }),
+                            options: (availableModels.contains(config.model) ? [] : [.init(title: config.model, value: config.model)])
+                                + availableModels.map { .init(title: $0, value: $0) }, showsLabel: false, searchable: true)
                     }
                 }
                 }

@@ -59,7 +59,7 @@ struct TaskTrackerSheet: View {
                         Text(L("Добавление по ссылке")).font(AppTypography.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button(L("Добавить задачу…")) { newSource = source }.buttonStyle(.bordered)
+                    Button(L("Добавить задачу…")) { newSource = source }.buttonStyle(AfterSoftButtonStyle())
                 }.padding(.vertical, 10)
             }
             Text(L("Ссылка открывает оригинал. Статус, мысли и материалы остаются в «After»; автоматическая синхронизация не подключена."))

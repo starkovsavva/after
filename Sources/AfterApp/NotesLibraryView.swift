@@ -159,7 +159,7 @@ struct NotesLibraryView: View {
                 VStack(spacing: 14) {
                     Image(systemName: "note.text").font(.system(size: 30)).foregroundStyle(Ink.accent).accessibilityHidden(true)
                     Text(filter == "trash" ? L("Корзина пуста") : L("Выберите заметку")).font(AppTypography.heading)
-                    if filter != "trash" { Button(L("Новая заметка")) { createNote() }.buttonStyle(.borderedProminent).tint(Ink.actionFill) }
+                    if filter != "trash" { Button(L("Новая заметка")) { createNote() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.background(Ink.paper)
@@ -239,15 +239,14 @@ struct NotesLibraryView: View {
                     TextField(L("Поиск заметок"), text: $query).textFieldStyle(.plain).accessibilityLabel(L("Поиск по заголовкам, тексту, тегам и вложениям"))
                     if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel(L("Очистить поиск заметок")) }
                 }.padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 7))
-                Picker(L("Показать"), selection: $filter) {
-                    Text(L("Все заметки")).tag("all"); Text(L("Без встречи")).tag("inbox")
-                    Text(L("Закреплённые")).tag("pinned"); Text(L("Корзина")).tag("trash")
-                }.labelsHidden()
+                AfterCompactPicker(L("Показать"), selection: $filter, options: [
+                    .init(title: L("Все заметки"), value: "all"), .init(title: L("Без встречи"), value: "inbox"),
+                    .init(title: L("Закреплённые"), value: "pinned"), .init(title: L("Корзина"), value: "trash")
+                ], showsLabel: false)
                 if !folders.isEmpty && filter != "trash" && app.folderSelection == nil {
-                    Picker(L("Папка"), selection: $folder) {
-                        Text(L("Все папки")).tag("")
-                        ForEach(folders) { Text($0.name).tag($0.id) }
-                    }.labelsHidden()
+                    AfterCompactPicker(L("Папка"), selection: $folder, options:
+                        [.init(title: L("Все папки"), value: "")] + folders.map { .init(title: $0.name, value: $0.id) },
+                        showsLabel: false, maxWidth: 240, searchable: true)
                 }
             }.padding(.horizontal, 12).padding(.bottom, 12)
             Divider()
@@ -305,7 +304,7 @@ struct NotesLibraryView: View {
                 if draft.trashedAt != nil {
                     Label(L("В корзине"), systemImage: "trash").font(AppTypography.control).foregroundStyle(.secondary)
                     Spacer()
-                    Button(L("Восстановить")) { restore(draft) }.buttonStyle(.bordered)
+                    Button(L("Восстановить")) { restore(draft) }.buttonStyle(AfterSoftButtonStyle())
                     Button { deleting = persisted ?? draft } label: { Image(systemName: "trash.slash") }.help(L("Удалить навсегда"))
                 } else {
                     Button { document.edit { $0.pinned.toggle() }; _ = document.flush() } label: { Image(systemName: draft.pinned ? "pin.fill" : "pin") }.help(draft.pinned ? L("Открепить") : L("Закрепить"))

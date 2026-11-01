@@ -42,14 +42,12 @@ struct FolderSettingsView: View {
                 Button { close() } label: { Image(systemName: "xmark").frame(width: 28, height: 28) }.buttonStyle(.plain).accessibilityLabel(L("Закрыть настройки папки"))
             }.padding(22)
             Divider()
-            HStack(spacing: 0) {
-                VStack(spacing: 3) {
-                    tab("general", L("Общие"), "folder")
-                    tab("features", L("Возможности"), "square.grid.2x2")
-                    tab("summary", L("Конспект и карточки"), "text.alignleft")
-                    tab("model", L("Модель"), "sparkles")
-                    Spacer()
-                }.padding(12).frame(width: 200).appSurface(.sidebar)
+            VStack(spacing: 0) {
+                AppTabBar(label: L("Настройки папки"), selection: $section, tabs: [
+                    AppTab(L("Общие"), value: "general"), AppTab(L("Возможности"), value: "features"),
+                    AppTab(L("Конспект и карточки"), value: "summary"), AppTab(L("Модель"), value: "model")
+                ], identifier: "folder.tab").frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 26).padding(.top, 12)
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
@@ -74,7 +72,7 @@ struct FolderSettingsView: View {
                     Spacer()
                     Button(L("Отмена")) { close() }.keyboardShortcut(.cancelAction)
                     Button(isNew ? L("Создать") : L("Сохранить")) { save() }.keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                        .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                         .disabled(locked || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .accessibilityIdentifier("folder.save")
                 }
@@ -99,12 +97,6 @@ struct FolderSettingsView: View {
                 Button(L("Отмена"), role: .cancel) {}
             } message: { Text(L("Встречи и заметки останутся в библиотеке. Для них будут действовать настройки приложения.")) }
     }
-    private func tab(_ id: String, _ title: String, _ icon: String) -> some View {
-        Button { section = id } label: {
-            Label(title, systemImage: icon).frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10).background(section == id ? Ink.selection : .clear, in: RoundedRectangle(cornerRadius: 7))
-        }.buttonStyle(.plain).accessibilityIdentifier("folder.tab." + id)
-    }
     private var general: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(L("Общие")).font(AppTypography.heading)
@@ -120,7 +112,7 @@ struct FolderSettingsView: View {
             Text(L("Возможности папки")).font(AppTypography.heading)
             Text(L("«Как в приложении» использует общие настройки и следует их изменениям. Свой выбор действует только в этой папке."))
                 .font(AppTypography.control).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
-            featureGroup(L("Разделы в этой папке"), features: [.tasks, .cards, .calendar])
+            featureGroup(L("Разделы в этой папке"), features: [.knowledgeBase, .tasks, .cards, .calendar])
             featureGroup(L("Помощь и поиск"), features: [.assistant, .semanticSearch])
             Text(L("Встречи, заметки, конспекты и транскрипты доступны всегда. Скрытие раздела сохраняет его данные."))
                 .font(AppTypography.caption).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
@@ -151,11 +143,10 @@ struct FolderSettingsView: View {
                             Image(systemName: FeaturePresentation.icon(feature)).frame(width: 22).foregroundStyle(Ink.secondaryText)
                             Text(FeaturePresentation.title(feature))
                         }.font(AppTypography.control).frame(maxWidth: .infinity, alignment: .leading)
-                        Picker(FeaturePresentation.title(feature), selection: featureBinding(feature)) {
-                            Text(L("Как в приложении · ") + (inherited.features[feature] ? L("вкл.") : L("выкл."))).tag("inherit")
-                            Text(L("Включено")).tag("on")
-                            Text(L("Выключено")).tag("off")
-                        }.labelsHidden().frame(width: 228).accessibilityIdentifier("folder.feature." + feature.rawValue)
+                        AfterCompactPicker(FeaturePresentation.title(feature), selection: featureBinding(feature), options: [
+                            .init(title: L("Как в приложении · ") + (inherited.features[feature] ? L("вкл.") : L("выкл.")), value: "inherit"),
+                            .init(title: L("Включено"), value: "on"), .init(title: L("Выключено"), value: "off")
+                        ], showsLabel: false, maxWidth: 260, identifier: "folder.feature." + feature.rawValue)
                     }.padding(.vertical, 10)
                     if index < features.count - 1 { Divider() }
                 }
@@ -165,18 +156,15 @@ struct FolderSettingsView: View {
     private var summary: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(L("Конспект и карточки")).font(AppTypography.heading)
-            Picker(L("Язык конспекта"), selection: Binding(get: { draft.overrides.language ?? "" }, set: { draft.overrides.language = $0.isEmpty ? nil : $0 })) {
-                Text(L("Как в приложении")).tag("")
-                Text(L("Русский")).tag("ru")
-                Text("English").tag("en")
-            }.accessibilityIdentifier("folder.language")
+            AfterCompactPicker(L("Язык конспекта"), selection: Binding(get: { draft.overrides.language ?? "" }, set: { draft.overrides.language = $0.isEmpty ? nil : $0 }), options: [
+                .init(title: L("Как в приложении"), value: ""), .init(title: L("Русский"), value: "ru"), .init(title: "English", value: "en")
+            ], identifier: "folder.language")
             inheritedText(L("Стиль конспекта"), field: \.focus, placeholder: inherited.focus, height: 90)
             inheritedText(L("Контекст обо мне"), field: \.summaryUserContext, placeholder: inherited.summaryUserContext, height: 80)
-            Picker(L("Генерация карточек"), selection: boolBinding(\.generateCards)) {
-                Text(L("Не создавать без выбора во встрече")).tag("inherit")
-                Text(L("По умолчанию включена")).tag("on")
-                Text(L("По умолчанию выключена")).tag("off")
-            }.accessibilityIdentifier("folder.generateCards")
+            AfterCompactPicker(L("Генерация карточек"), selection: boolBinding(\.generateCards), options: [
+                .init(title: L("Не создавать без выбора во встрече"), value: "inherit"),
+                .init(title: L("По умолчанию включена"), value: "on"), .init(title: L("По умолчанию выключена"), value: "off")
+            ], maxWidth: 360, identifier: "folder.generateCards")
             Text(effective.features.cards
                  ? L("Действует для новых и существующих встреч этой папки. Выбор в меню конкретной встречи имеет приоритет; сохранённые карточки остаются на месте.")
                  : L("Карточки выключены для папки. Включите их в разделе «Возможности», чтобы создавать автоматически."))
@@ -207,13 +195,13 @@ struct FolderSettingsView: View {
                 if $0 { draft.overrides.inheritModel() } else { draft.overrides.copyModel(from: inherited) }
             })).toggleStyle(.checkbox).accessibilityIdentifier("folder.model.inherit")
             if draft.overrides.overridesModel {
-                Picker(L("Обработка"), selection: modelString(\.mode, inherited: inherited.mode)) {
-                    Text(L("На Mac")).tag("local"); Text(L("В облаке")).tag("cloud")
-                }.pickerStyle(.segmented).accessibilityIdentifier("folder.model.mode")
+                AfterChoicePicker(L("Обработка"), selection: modelString(\.mode, inherited: inherited.mode), options: [
+                    .init(title: L("На Mac"), value: "local"), .init(title: L("В облаке"), value: "cloud")
+                ], identifier: "folder.model.mode")
                 if effective.mode == "local" { localModel }
                 else { cloudModel }
                 Button(L("Использовать текущие настройки модели")) { draft.overrides.copyModel(from: inherited) }
-                    .buttonStyle(.bordered).accessibilityIdentifier("folder.model.copy")
+                    .buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("folder.model.copy")
             } else {
                 Label(effective.mode == "local" ? L("На Mac · ") + effective.localModel : L(effective.cloudProviderTitle) + " · " + effective.cloudModel, systemImage: effective.mode == "local" ? "desktopcomputer" : "cloud")
                     .foregroundStyle(Ink.secondaryText).textSelection(.enabled)
@@ -224,9 +212,9 @@ struct FolderSettingsView: View {
     }
     private var localModel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Picker(L("Источник"), selection: modelString(\.localProvider, inherited: inherited.localProvider)) {
-                Text(L("After")).tag("managed"); Text("Ollama").tag("ollama"); Text("LM Studio").tag("lmstudio")
-            }
+            AfterCompactPicker(L("Источник"), selection: modelString(\.localProvider, inherited: inherited.localProvider), options: [
+                .init(title: L("After"), value: "managed"), .init(title: "Ollama", value: "ollama"), .init(title: "LM Studio", value: "lmstudio")
+            ])
             LabeledContent(L("Модель")) { TextField(L("ID локальной модели"), text: modelString(\.localModel, inherited: inherited.localModel)).textFieldStyle(.roundedBorder).accessibilityIdentifier("folder.model.localModel") }
             if effective.localProvider != "managed" {
                 LabeledContent(L("Адрес")) { TextField(effective.resolvedLocalEndpoint, text: modelString(\.localEndpoint, inherited: inherited.localEndpoint)).textFieldStyle(.roundedBorder) }
@@ -235,7 +223,7 @@ struct FolderSettingsView: View {
     }
     private var cloudModel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Picker(L("Провайдер"), selection: Binding(get: { effective.cloudProvider }, set: { provider in
+            AfterCompactPicker(L("Провайдер"), selection: Binding(get: { effective.cloudProvider }, set: { provider in
                 var configuration = effective
                 configuration.switchCloudProvider(provider)
                 draft.overrides.cloudProvider = configuration.cloudProvider
@@ -243,10 +231,11 @@ struct FolderSettingsView: View {
                 draft.overrides.cloudEndpoint = configuration.cloudEndpoint
                 draft.overrides.cloudAPI = configuration.cloudAPI
                 draft.overrides.cloudOutput = configuration.cloudOutput
-            })) {
-                Text(L("ChatGPT (подписка)")).tag("chatgpt"); Text("OpenAI API").tag("openai")
-                Text("OpenRouter").tag("openrouter"); Text("Polza").tag("polza"); Text(L("Свой провайдер")).tag("custom")
-            }
+            }), options: [
+                .init(title: L("ChatGPT (подписка)"), value: "chatgpt"), .init(title: "OpenAI API", value: "openai"),
+                .init(title: "OpenRouter", value: "openrouter"), .init(title: "Polza", value: "polza"),
+                .init(title: L("Свой провайдер"), value: "custom")
+            ])
             LabeledContent(L("Модель")) { TextField(L("ID модели"), text: modelString(\.cloudModel, inherited: inherited.cloudModel)).textFieldStyle(.roundedBorder).accessibilityIdentifier("folder.model.cloudModel") }
             if effective.cloudProvider == "custom" {
                 LabeledContent(L("Адрес API")) { TextField("https://example.com/v1", text: modelString(\.cloudEndpoint, inherited: inherited.cloudEndpoint)).textFieldStyle(.roundedBorder) }
@@ -254,14 +243,17 @@ struct FolderSettingsView: View {
             DisclosureGroup(L("Дополнительно")) {
                 VStack(alignment: .leading, spacing: 12) {
                     if effective.cloudProvider != "chatgpt" {
-                        Picker(L("Формат API"), selection: modelString(\.cloudAPI, inherited: inherited.cloudAPI)) { Text("Chat Completions").tag("chat"); Text("Responses").tag("responses") }
-                        Picker(L("Формат ответа"), selection: modelString(\.cloudOutput, inherited: inherited.cloudOutput)) {
-                            Text("JSON Schema").tag("schema"); Text("JSON").tag("json"); Text(L("JSON по инструкции")).tag("prompt")
-                        }
+                        AfterCompactPicker(L("Формат API"), selection: modelString(\.cloudAPI, inherited: inherited.cloudAPI), options: [
+                            .init(title: "Chat Completions", value: "chat"), .init(title: "Responses", value: "responses")
+                        ])
+                        AfterCompactPicker(L("Формат ответа"), selection: modelString(\.cloudOutput, inherited: inherited.cloudOutput), options: [
+                            .init(title: "JSON Schema", value: "schema"), .init(title: "JSON", value: "json"), .init(title: L("JSON по инструкции"), value: "prompt")
+                        ])
                     }
-                    Picker(L("Рассуждение"), selection: modelString(\.cloudReasoning, inherited: inherited.cloudReasoning)) {
-                        Text(L("Без рассуждения")).tag("none"); Text(L("Минимальное")).tag("minimal"); Text(L("Низкое")).tag("low"); Text(L("Среднее")).tag("medium"); Text(L("Высокое")).tag("high")
-                    }
+                    AfterCompactPicker(L("Рассуждение"), selection: modelString(\.cloudReasoning, inherited: inherited.cloudReasoning), options: [
+                        .init(title: L("Без рассуждения"), value: "none"), .init(title: L("Минимальное"), value: "minimal"),
+                        .init(title: L("Низкое"), value: "low"), .init(title: L("Среднее"), value: "medium"), .init(title: L("Высокое"), value: "high")
+                    ])
                 }.padding(.top, 10)
             }
         }

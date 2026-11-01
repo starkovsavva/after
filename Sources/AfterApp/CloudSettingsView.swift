@@ -44,15 +44,10 @@ struct CloudSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
-            Picker(L("Провайдер"), selection: Binding(get: { store.settings.cloudProvider }, set: {
+            AfterCompactPicker(L("Провайдер"), selection: Binding(get: { store.settings.cloudProvider }, set: {
                 store.settings.switchCloudProvider($0)
-            })) {
-                Text(L("ChatGPT (подписка)")).tag("chatgpt")
-                Text("OpenAI API").tag("openai")
-                Text("OpenRouter").tag("openrouter")
-                Text("Polza").tag("polza")
-                Text(L("Свой провайдер")).tag("custom")
-            }
+            }), options: [.init(title: L("ChatGPT (подписка)"), value: "chatgpt"), .init(title: "OpenAI API", value: "openai"),
+                .init(title: "OpenRouter", value: "openrouter"), .init(title: "Polza", value: "polza"), .init(title: L("Свой провайдер"), value: "custom")])
             if store.settings.cloudProvider == "chatgpt" {
                 ChatGPTSettingsView(account: chatGPTAccount)
             } else {
@@ -60,7 +55,7 @@ struct CloudSettingsView: View {
             }
             if hasPendingKeys {
                 Button(L("Отменить правки ключей")) { drafts = savedKeys; keyMessage = ""; registerDrafts() }
-                    .buttonStyle(.bordered).accessibilityIdentifier("cloud.key.cancel")
+                    .buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("cloud.key.cancel")
             }
         }
         .onAppear { mounted = true; loadAccount(); registerDrafts() }
@@ -101,7 +96,7 @@ struct CloudSettingsView: View {
             }
             HStack(spacing: 10) {
                 Button(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !savedKey.isEmpty ? L("Удалить ключ") : L("Сохранить ключ"), action: saveKey)
-                    .buttonStyle(.bordered).disabled(account == nil || !keyIsDirty).accessibilityIdentifier("cloud.key.save")
+                    .buttonStyle(AfterSoftButtonStyle()).disabled(account == nil || !keyIsDirty).accessibilityIdentifier("cloud.key.save")
                 if keyIsDirty {
                     Text(L("Не сохранён")).font(AppTypography.caption).foregroundStyle(Ink.warning)
                 } else if !keyMessage.isEmpty {
@@ -111,15 +106,10 @@ struct CloudSettingsView: View {
             }
             DisclosureGroup(L("Дополнительно")) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker(L("Формат API"), selection: $store.settings.cloudAPI) {
-                        Text("Chat Completions").tag("chat")
-                        Text("Responses").tag("responses")
-                    }
-                    Picker(L("Формат ответа"), selection: $store.settings.cloudOutput) {
-                        Text("JSON Schema").tag("schema")
-                        Text("JSON").tag("json")
-                        Text(L("JSON по инструкции")).tag("prompt")
-                    }.help(L("JSON Schema проверяет структуру у провайдера. Два других режима нужны для моделей без этой возможности; «After» продолжает проверять поля и ссылки на источники."))
+                    AfterCompactPicker(L("Формат API"), selection: $store.settings.cloudAPI,
+                        options: [.init(title: "Chat Completions", value: "chat"), .init(title: "Responses", value: "responses")])
+                    AfterCompactPicker(L("Формат ответа"), selection: $store.settings.cloudOutput,
+                        options: [.init(title: "JSON Schema", value: "schema"), .init(title: "JSON", value: "json"), .init(title: L("JSON по инструкции"), value: "prompt")]).help(L("JSON Schema проверяет структуру у провайдера. Два других режима нужны для моделей без этой возможности; «After» продолжает проверять поля и ссылки на источники."))
                     if store.settings.cloudOutput != "schema" {
                         Text(L("Модель должна соблюдать структуру JSON. Неподходящий ответ не заменит ваши данные."))
                             .font(AppTypography.caption).foregroundStyle(.secondary)
@@ -128,7 +118,7 @@ struct CloudSettingsView: View {
             }
             HStack(spacing: 10) {
                 Button(L("Проверить подключение")) { store.checkCloudConnection() }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(AfterSoftButtonStyle())
                     .disabled(account == nil || keyIsDirty || savedKey.isEmpty || store.settings.cloudModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.busy)
                     .help(L("Один короткий запрос {ok:true}, без текста и записей встреч. Провайдер может списать стоимость запроса."))
                 if let status = store.cloudConnectionStatus {

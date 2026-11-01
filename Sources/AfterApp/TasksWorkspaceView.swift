@@ -113,13 +113,13 @@ struct TasksWorkspaceView: View {
             Button { trackerSheet = true } label: { Label(L("Трекеры"), systemImage: "point.3.connected.trianglepath.dotted") }
                 .buttonStyle(.borderless).accessibilityIdentifier("tasks.trackers")
             Button { newTaskSheet = true } label: { Label(L("Задача"), systemImage: "plus") }
-                .buttonStyle(.borderedProminent).tint(Ink.actionFill).accessibilityIdentifier("tasks.create")
+                .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).accessibilityIdentifier("tasks.create")
         }.padding(.horizontal, AppLayout.contentInset).padding(.top, 20).padding(.bottom, 16)
     }
     private var controls: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 14) { viewPicker; filters; Spacer(minLength: 0) }
-            VStack(alignment: .leading, spacing: 12) { viewPicker; HStack(spacing: 12) { filters; Spacer(minLength: 0) } }
+            VStack(alignment: .leading, spacing: 12) { viewPicker; AfterControlFlow(spacing: 8) { filters } }
         }.padding(.horizontal, AppLayout.contentInset).padding(.bottom, 16)
     }
     private var viewPicker: some View {
@@ -128,17 +128,18 @@ struct TasksWorkspaceView: View {
                   identifier: "tasks.presentation")
     }
     @ViewBuilder private var filters: some View {
-        Picker(L("Состояние"), selection: statusFilterBinding) { Text(L("Открытые")).tag("open"); Text(L("Все задачи")).tag("all"); Text(L("Готовые")).tag("done") }
-            .labelsHidden().frame(width: 132).accessibilityIdentifier("tasks.status-filter")
-        Picker(L("Источник"), selection: $sourceFilter) {
-            Text(L("Все источники")).tag("all")
-            ForEach(TaskWorkspaceSource.allCases) { Text(L($0.title)).tag($0.rawValue) }
-        }.labelsHidden().frame(width: 168).accessibilityIdentifier("tasks.source-filter")
+        AfterCompactPicker(L("Состояние"), selection: statusFilterBinding, options: [
+            .init(title: L("Открытые"), value: "open"), .init(title: L("Все задачи"), value: "all"),
+            .init(title: L("Готовые"), value: "done")
+        ], showsLabel: false, identifier: "tasks.status-filter")
+        AfterCompactPicker(L("Источник"), selection: $sourceFilter, options:
+            [.init(title: L("Все источники"), value: "all")] + TaskWorkspaceSource.allCases.map {
+                .init(title: L($0.title), value: $0.rawValue)
+            }, showsLabel: false, identifier: "tasks.source-filter")
         if !projects.isEmpty {
-            Picker(L("Проект"), selection: $notes.selectedTaskProject) {
-                Text(L("Все проекты")).tag("all")
-                ForEach(projects, id: \.self) { Text($0).tag($0) }
-            }.labelsHidden().frame(width: 144).accessibilityIdentifier("tasks.project-filter")
+            AfterCompactPicker(L("Проект"), selection: $notes.selectedTaskProject, options:
+                [.init(title: L("Все проекты"), value: "all")] + projects.map { .init(title: $0, value: $0) },
+                showsLabel: false, maxWidth: 260, searchable: true, identifier: "tasks.project-filter")
         }
     }
     @ViewBuilder private var detail: some View {
@@ -153,12 +154,12 @@ struct TasksWorkspaceView: View {
                 .font(AppTypography.emptyTitle)
             if allTasks.isEmpty {
                 HStack(spacing: 12) {
-                    Button(L("Новая задача")) { newTaskSheet = true }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    Button(L("Новая задача")) { newTaskSheet = true }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                         .accessibilityIdentifier("tasks.empty-create")
-                    Button(L("Надиктовать")) { app.voice.present(projectID: notes.selectedTaskProject == "all" ? nil : notes.selectedTaskProject) }.buttonStyle(.bordered)
+                    Button(L("Надиктовать")) { app.voice.present(projectID: notes.selectedTaskProject == "all" ? nil : notes.selectedTaskProject) }.buttonStyle(AfterSoftButtonStyle())
                 }
             } else if filtered.isEmpty {
-                Button(L("Сбросить фильтры")) { resetFilters() }.buttonStyle(.bordered)
+                Button(L("Сбросить фильтры")) { resetFilters() }.buttonStyle(AfterSoftButtonStyle())
                     .accessibilityIdentifier("tasks.empty-reset")
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)

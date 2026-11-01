@@ -256,10 +256,10 @@ struct TaskSnapshotShareSheet: View {
                             connectionID = ""; selected.removeAll(); query = ""
                             await model.history(taskID: taskID)
                         }
-                    } }.buttonStyle(.borderedProminent).disabled(model.busy || !model.hasPendingConnection(connectionID)).accessibilityIdentifier("snapshot.approve")
+                    } }.buttonStyle(AfterSoftButtonStyle(.primary)).disabled(model.busy || !model.hasPendingConnection(connectionID)).accessibilityIdentifier("snapshot.approve")
                 } else if model.completion == nil {
                     Button(L("Посмотреть снимок")) { Task { await model.prepare(taskID: taskID, notes: notes.notes.filter { selected.contains($0.id) }) } }
-                        .buttonStyle(.borderedProminent).disabled(model.busy || selected.isEmpty || !model.hasPendingConnection(connectionID)).accessibilityIdentifier("snapshot.preview")
+                        .buttonStyle(AfterSoftButtonStyle(.primary)).disabled(model.busy || selected.isEmpty || !model.hasPendingConnection(connectionID)).accessibilityIdentifier("snapshot.preview")
                 }
             }
         }.padding(24).frame(minWidth: 620, idealWidth: 720, minHeight: 560, idealHeight: 720).appControlDefaults()

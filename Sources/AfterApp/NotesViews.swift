@@ -156,17 +156,16 @@ private struct NoteComposer: View {
             PlainNoteInput(text: $text, placeholder: placeholder, isFocused: $focused, documentID: documentID)
                 .frame(height: editorHeight)
             HStack(spacing: 10) {
-                Picker(L("Тип заметки"), selection: $kind) {
-                    ForEach(app.isFeatureEnabled(.tasks) ? ["note", "important", "question", "task"] : ["note", "important", "question"], id: \.self) { value in Label(noteKindTitle(value), systemImage: noteKindIcon(value)).tag(value) }
-                }.labelsHidden().frame(width: 130).accessibilityLabel(L("Тип заметки"))
-                    .accessibilityIdentifier("note.composer.kind")
+                AfterCompactPicker(L("Тип заметки"), selection: $kind,
+                    options: (app.isFeatureEnabled(.tasks) ? ["note", "important", "question", "task"] : ["note", "important", "question"]).map { .init(title: noteKindTitle($0), value: $0) },
+                    showsLabel: false, identifier: "note.composer.kind")
                 Button { expanded.toggle(); focused = true } label: {
                     Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").frame(width: 24, height: 24)
                 }.buttonStyle(.plain).foregroundStyle(.secondary)
                     .help(expanded ? L("Уменьшить поле заметки") : L("Увеличить поле заметки"))
                     .accessibilityLabel(expanded ? L("Уменьшить поле заметки") : L("Увеличить поле заметки"))
                 Spacer()
-                Button(L("Сохранить"), action: save).buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                Button(L("Сохранить"), action: save).buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .keyboardShortcut(.return, modifiers: [.command]).help(L("Сохранить · ⌘↩"))
             }
@@ -240,13 +239,20 @@ struct NoteEditorView: View {
     private var current: CapturedNote { persisted ?? session.baseline }
     private var profileSettings: AppSettings { app.settingsForNote(session.draft) }
     private var dirty: Bool { session.hasUnsavedChanges }
+    private var meetingOptions: [AfterPickerOption<String>] {
+        var options: [AfterPickerOption<String>] = [.init(title: L("Входящие · без встречи"), value: "")]
+        if let id = session.draft.meetingID, !app.noteMeetings.contains(where: { $0.id == id }) {
+            options.append(.init(title: app.allNoteMeetings.first(where: { $0.id == id })?.title ?? L("Встреча недоступна"), value: id))
+        }
+        return options + app.noteMeetings.map { .init(title: $0.title, value: $0.id) }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(L("Заметка")).font(AppTypography.modalTitle)
                 Spacer()
                 Button(L("Закрыть")) { if dirty { dismissConfirmation = true } else { dismiss() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("notes.edit.cancel")
-                Button(L("Сохранить")) { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command]).accessibilityIdentifier("notes.edit.save")
+                Button(L("Сохранить")) { save() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command]).accessibilityIdentifier("notes.edit.save")
             }.padding(22)
             Divider()
             if session.conflicted {
@@ -254,7 +260,7 @@ struct NoteEditorView: View {
                             Label(L("Заметка изменилась в другом окне. Ваши правки остались здесь."), systemImage: "exclamationmark.circle").font(AppTypography.control).foregroundStyle(Ink.warning)
                             Text(L("Можно сохранить свой текст и поля новой заметкой. Вложения останутся в исходной.")).font(AppTypography.caption).foregroundStyle(.secondary)
                             HStack {
-                                Button(L("Сохранить как новую заметку")) { saveAsNew() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                                Button(L("Сохранить как новую заметку")) { saveAsNew() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                                 if let persisted { Button(L("Открыть сохранённую версию")) { session.didPersist(persisted); notes.error = nil } }
                             }
                         }.padding(14).background(Ink.warning.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
@@ -263,9 +269,8 @@ struct NoteEditorView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         if app.isFeatureEnabled(.tasks) || session.draft.kind != "task" {
-                            Picker(L("Тип"), selection: $session.draft.kind) {
-                                ForEach(app.isFeatureEnabled(.tasks) ? ["note", "important", "question", "task"] : ["note", "important", "question"], id: \.self) { Text(noteKindTitle($0)).tag($0) }
-                            }.frame(width: 190)
+                            AfterCompactPicker(L("Тип"), selection: $session.draft.kind,
+                                options: (app.isFeatureEnabled(.tasks) ? ["note", "important", "question", "task"] : ["note", "important", "question"]).map { .init(title: noteKindTitle($0), value: $0) })
                         }
                         Spacer()
                         if let time = session.draft.timestamp { Text(Exporter.timestamp(time)).font(AppTypography.control).monospacedDigit().foregroundStyle(Ink.accent) }
@@ -275,15 +280,9 @@ struct NoteEditorView: View {
                         persistBeforeAttachment { note in notes.paste(into: note, board: board) }
                     }).frame(minHeight: 160, maxHeight: 240)
                         .padding(10).background(Ink.field, in: RoundedRectangle(cornerRadius: 8)).accessibilityLabel(L("Текст заметки"))
-                    Picker(L("Встреча"), selection: Binding(get: { session.draft.meetingID ?? "" }, set: { value in
+                    AfterCompactPicker(L("Встреча"), selection: Binding(get: { session.draft.meetingID ?? "" }, set: { value in
                         if session.draft.meetingID != (value.isEmpty ? nil : value) { session.draft.timestamp = nil }; session.draft.meetingID = value.isEmpty ? nil : value
-                    })) {
-                        Text(L("Входящие · без встречи")).tag("")
-                        if let id = session.draft.meetingID, !app.noteMeetings.contains(where: { $0.id == id }) {
-                            Text(app.allNoteMeetings.first(where: { $0.id == id })?.title ?? L("Встреча недоступна")).tag(id)
-                        }
-                        ForEach(app.noteMeetings) { Text($0.title).tag($0.id) }
-                    }
+                    }), options: meetingOptions, searchable: true)
                     if showingSource || !session.draft.sourceURL.isEmpty { TextField(L("Ссылка"), text: $session.draft.sourceURL).textFieldStyle(.roundedBorder).accessibilityLabel(L("Ссылка на источник")) }
                     if app.isFeatureEnabled(.tasks), session.draft.kind == "task" {
                         HStack { TextField(L("Кто делает"), text: $session.draft.owner); TextField(L("Срок, например до пятницы"), text: $session.draft.due) }.textFieldStyle(.roundedBorder)
@@ -397,7 +396,7 @@ private struct TemplateEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text(L("Шаблон заметки")).font(AppTypography.modalTitle); Spacer(); Button(L("Отмена")) { close() }.accessibilityIdentifier("notes.template.cancel"); Button(L("Сохранить")) { if notes.saveTemplate(template) { close() } }.accessibilityIdentifier("notes.template.save").buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(template.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            HStack { Text(L("Шаблон заметки")).font(AppTypography.modalTitle); Spacer(); Button(L("Отмена")) { close() }.accessibilityIdentifier("notes.template.cancel"); Button(L("Сохранить")) { if notes.saveTemplate(template) { close() } }.accessibilityIdentifier("notes.template.save").buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).disabled(template.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             TextField(L("Название"), text: $template.name).textFieldStyle(.roundedBorder)
             Text(L("Структура заметки")).font(AppTypography.control).foregroundStyle(.secondary)
             TextEditor(text: $template.body).font(AppTypography.body).frame(height: 180).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 8))
@@ -464,9 +463,9 @@ private struct MeetingContextEditor: View {
                 Text(L("Встреча появится в «Проекты и люди». Папка и её настройки сохранятся."))
                     .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
             }
-            Picker(L("Шаблон"), selection: $selectedTemplate) {
-                Text(L("Без шаблона")).tag(""); ForEach(notes.templates) { Text($0.name).tag($0.id) }
-            }.accessibilityIdentifier("notes.context.template")
+            AfterCompactPicker(L("Шаблон"), selection: $selectedTemplate,
+                options: [.init(title: L("Без шаблона"), value: "")] + notes.templates.map { .init(title: $0.name, value: $0.id) },
+                searchable: true, identifier: "notes.context.template")
             if !selectedTemplate.isEmpty { Toggle(L("Создать заметку по шаблону"), isOn: $insertTemplate).accessibilityIdentifier("notes.context.insertTemplate") }
             if let detail = templateFailureDetail {
                 HStack(alignment: .top, spacing: 10) {
@@ -483,7 +482,7 @@ private struct MeetingContextEditor: View {
                 Spacer()
                 Button(L("Отмена")) { close() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("notes.context.cancel")
                 Button(L("Сохранить"), action: save).keyboardShortcut(.defaultAction)
-                    .accessibilityIdentifier("notes.context.save").buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    .accessibilityIdentifier("notes.context.save").buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                     .disabled(app.isTerminating)
             }
         }.padding(24).frame(width: 570)
@@ -670,11 +669,9 @@ struct NotesContextsView: View {
                 }
                 if !allLabels.isEmpty {
                     HStack(spacing: 12) {
-                        Picker(mode == "project" ? L("Проект") : L("Человек"), selection: $selected) {
-                            if labels.isEmpty { Text(L("Ничего не найдено")).tag("") }
-                            ForEach(labels, id: \.self) { Text($0).tag($0) }
-                        }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading).accessibilityLabel(mode == "project" ? L("Выбрать проект") : L("Выбрать человека"))
-                            .accessibilityIdentifier("contexts.selection")
+                        AfterCompactPicker(mode == "project" ? L("Выбрать проект") : L("Выбрать человека"), selection: $selected,
+                            options: (labels.isEmpty ? [.init(title: L("Ничего не найдено"), value: "")] : [])
+                                + labels.map { .init(title: $0, value: $0) }, showsLabel: false, searchable: true, identifier: "contexts.selection")
                         if !selected.isEmpty { Text(LF("Встреч: {0}", arguments: [String(describing: (related.count))])).font(AppTypography.caption).foregroundStyle(.secondary) }
                         if allLabels.count > 7 || !query.isEmpty {
                             TextField(L("Фильтр"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 180)
@@ -692,7 +689,7 @@ struct NotesContextsView: View {
                                     .accessibilityIdentifier("contexts.openMeetings")
                             } else {
                                 Button(L("Связать встречу…")) { assigning = true }
-                                    .buttonStyle(.borderedProminent).tint(Ink.actionFill).accessibilityIdentifier("contexts.add")
+                                    .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).accessibilityIdentifier("contexts.add")
                             }
                             Text(L("Папки задают настройки. Проекты и люди собирают связанные встречи."))
                                 .font(AppTypography.caption).foregroundStyle(Ink.secondaryText).multilineTextAlignment(.center).frame(maxWidth: 440).padding(.top, 16)

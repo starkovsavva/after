@@ -167,8 +167,22 @@ enum KnowledgeTopicsNativeChecks {
         guard let confirm=find("knowledge.collection.pick.confirm",in:sheet),press(confirm) else {
             throw AppError.message("Cannot select and add the note")
         }
-        try await wait {host.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return find("knowledge.collection.note.orphan-note",in:host) != nil}
         let removeID="knowledge.collection.remove.\(collectionID).orphan-note"
+        try await wait {
+            host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            // The same note already belongs to the earlier manual collection.
+            // Wait for this add to finish and its exact collection to refresh.
+            return window.attachedSheet == nil && NativeTabNavigation.nodes(in: host).contains {
+                $0.identifier == removeID && $0.enabled
+            }
+        }
+        let addedSnapshot = try dictionary(bridge.request(root: root, command: "kb-snapshot"))
+        let addedTopics = try dictionary(bridge.request(root: root, command: "kb-topics", arguments: [
+            "expectedWorkspaceRevision": addedSnapshot["workspaceRevision"]!, "expectedKBRevision": addedSnapshot["kbRevision"]!]))
+        guard (addedTopics["collections"] as? [[String: Any]])?.contains(where: { value in
+            value["id"] as? String == collectionID &&
+            (value["sources"] as? [[String: Any]])?.contains(where: { $0["noteID"] as? String == "orphan-note" }) == true
+        }) == true else { throw AppError.message("Adding the note did not commit to the intended collection") }
         guard let remove=find(removeID,in:host),press(remove) else {throw AppError.message("Cannot remove note from collection")}
         try await wait {
             host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
@@ -317,6 +331,7 @@ enum KnowledgeTopicsNativeChecks {
         print("PASS: topics save a collection, add and remove notes without deleting them, and search ungrouped notes")
         try await mixedNavigationLifecycle(store: store)
         try await KnowledgeRebuildNativeChecks.run(store: store)
+        try await KnowledgeCollectionPickerNativeChecks.run(store: store)
     }
     private static func mixedNavigationLifecycle(store: AppStore) async throws {
         let gate = MixedSourceValidationGate()

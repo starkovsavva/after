@@ -33,27 +33,21 @@ struct SpeechSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Label(L("Распознавание речи"), systemImage: "waveform").font(AppTypography.heading)
-            Picker(L("Обработка"), selection: $store.settings.speechMode) {
-                Label(L("На Mac"), systemImage: "laptopcomputer").tag("local")
-                Label(L("Облако"), systemImage: "cloud").tag("cloud")
-            }.pickerStyle(.segmented).tint(Ink.actionFill)
+            AfterChoicePicker(L("Обработка"), selection: $store.settings.speechMode,
+                options: [.init(title: L("На Mac"), value: "local"), .init(title: L("Облако"), value: "cloud")], identifier: "speech.processingMode")
+                .accessibilityIdentifier("speech.processingMode")
             if store.settings.speechMode == "local" { localSettings } else { cloudSettings }
             if hasPendingKeys {
                 Button(L("Отменить правки ключей")) { drafts = savedKeys; keyMessage = ""; registerDrafts() }
-                    .buttonStyle(.bordered).accessibilityIdentifier("speech.key.cancel")
+                    .buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("speech.key.cancel")
             }
             Divider()
             Toggle(L("Разделять собеседников"), isOn: $store.settings.diarization)
                 .disabled(lacksSpeakerTiming).help(lacksSpeakerTiming ? L("Ответ без таймкодов не позволяет точно разделить реплики.") : L("Разделять реплики по голосам."))
-            HStack {
-                Text(L("Участников по умолчанию"))
-                Spacer()
-                Picker(L("Участников по умолчанию"), selection: $store.settings.speakerCount) {
-                    Text(L("Автоматически")).tag(0)
-                    ForEach(1...10, id: \.self) { Text("\($0)").tag($0) }
-                }.labelsHidden().frame(width: 170)
-                    .help(L("Включая вас. Число можно уточнить отдельно для готовой встречи."))
-            }.disabled(!store.settings.diarization || lacksSpeakerTiming)
+            AfterCompactPicker(L("Участников по умолчанию"), selection: $store.settings.speakerCount,
+                options: [.init(title: L("Автоматически"), value: 0)] + (1...10).map { .init(title: String($0), value: $0) })
+                .help(L("Включая вас. Число можно уточнить отдельно для готовой встречи."))
+                .disabled(!store.settings.diarization || lacksSpeakerTiming)
             if store.settings.speechMode == "cloud", store.settings.diarization, store.settings.speechResponseFormat == "verbose_json" {
                 Text(L("Для ответа с таймкодами без меток голосов используется локальное разделение. Его компоненты нужно установить на Mac."))
                     .font(AppTypography.caption).foregroundStyle(.secondary)
@@ -66,13 +60,11 @@ struct SpeechSettingsView: View {
     }
     private var localSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker(L("Модель"), selection: Binding(get: { store.settings.speechLocalModel }, set: { model in
+            AfterCompactPicker(L("Модель"), selection: Binding(get: { store.settings.speechLocalModel }, set: { model in
                 store.settings.speechLocalModel = model
                 store.settings.asrModelPath = ""; store.settings.asrModelFormat = "auto"
                 store.saveSettings()
-            })) {
-                ForEach(SpeechModelPreset.catalog) { model in Text("\(model.name) · \(model.sizeLabel)").tag(model.id) }
-            }
+            }), options: SpeechModelPreset.catalog.map { .init(title: "\($0.name) · \($0.sizeLabel)", value: $0.id) }, searchable: true)
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L(selected.detail)).font(AppTypography.caption).foregroundStyle(.secondary)
@@ -81,7 +73,7 @@ struct SpeechSettingsView: View {
                 }
                 Spacer()
                 Button(store.selectedASRVerified ? L("Проверить") : L("Скачать / проверить")) { store.installRuntime() }
-                    .buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
             }
             Text(L("Размер загрузки. Компоненты обработки устанавливаются отдельно."))
                 .font(AppTypography.caption).foregroundStyle(.secondary)
@@ -93,8 +85,8 @@ struct SpeechSettingsView: View {
             DisclosureGroup(L("Использовать скачанную модель")) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Button(L("Найти на Mac")) { store.discoverASRModels() }.buttonStyle(.bordered)
-                        Button(L("Выбрать папку…")) { store.chooseASRFolder() }.buttonStyle(.bordered)
+                        Button(L("Найти на Mac")) { store.discoverASRModels() }.buttonStyle(AfterSoftButtonStyle())
+                        Button(L("Выбрать папку…")) { store.chooseASRFolder() }.buttonStyle(AfterSoftButtonStyle())
                     }
                     if !store.asrStatus.isEmpty { Text(store.asrStatus).font(AppTypography.caption).foregroundStyle(.secondary) }
                     ForEach(store.installedASRModels) { model in
@@ -107,7 +99,7 @@ struct SpeechSettingsView: View {
                             Spacer()
                             if model.compatible {
                                 Button(model.path == store.settings.asrModelPath ? L("Выбрано") : L("Использовать")) { store.selectASRModel(model) }
-                                    .buttonStyle(.bordered).disabled(model.path == store.settings.asrModelPath)
+                                    .buttonStyle(AfterSoftButtonStyle()).disabled(model.path == store.settings.asrModelPath)
                             }
                         }.padding(10).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
                     }
@@ -127,7 +119,7 @@ struct SpeechSettingsView: View {
                         .font(AppTypography.captionStrong).foregroundStyle(store.runtimeReady ? Ink.green : Color.secondary)
                     Spacer(minLength: 4)
                     Button(store.runtimeReady ? L("Проверить компоненты") : L("Подготовить компоненты на Mac")) { store.installRuntime() }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(AfterSoftButtonStyle())
                         .accessibilityIdentifier("speech.cloud.prepare-audio")
                         .appLayoutAnchor("speech.cloud.prepare-audio")
                         .disabled(store.busy || store.isRecording)
@@ -135,13 +127,10 @@ struct SpeechSettingsView: View {
                 Text(L("Нужны для подготовки аудио перед отправкой сервису."))
                     .font(AppTypography.caption).foregroundStyle(.secondary)
             }.padding(10).background(Ink.soft, in: RoundedRectangle(cornerRadius: AppLayout.controlRadius))
-            Picker(L("Сервис"), selection: Binding(get: { store.settings.speechCloudProvider }, set: { provider in
+            AfterCompactPicker(L("Сервис"), selection: Binding(get: { store.settings.speechCloudProvider }, set: { provider in
                 store.settings.speechCloudProvider = provider
                 if provider == "openai" { store.settings.speechCloudModel = "gpt-transcribe"; store.settings.speechResponseFormat = "json" }
-            })) {
-                Text("OpenAI").tag("openai")
-                Text(L("Совместимый API")).tag("custom")
-            }
+            }), options: [.init(title: "OpenAI", value: "openai"), .init(title: L("Совместимый API"), value: "custom")])
             if store.settings.speechCloudProvider == "custom" {
                 LabeledContent(L("Адрес API")) {
                     TextField("https://example.com/v1", text: $store.settings.speechCloudEndpoint)
@@ -162,7 +151,7 @@ struct SpeechSettingsView: View {
             }
             HStack(spacing: 10) {
                 Button(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !savedKey.isEmpty ? L("Удалить ключ") : L("Сохранить ключ")) { saveKey() }
-                    .buttonStyle(.bordered).disabled(key.trimmingCharacters(in: .whitespacesAndNewlines) == savedKey)
+                    .buttonStyle(AfterSoftButtonStyle()).disabled(key.trimmingCharacters(in: .whitespacesAndNewlines) == savedKey)
                 if key.trimmingCharacters(in: .whitespacesAndNewlines) != savedKey {
                     Text(L("Не сохранён")).font(AppTypography.caption).foregroundStyle(Ink.warning)
                 } else if !keyMessage.isEmpty {
@@ -171,11 +160,9 @@ struct SpeechSettingsView: View {
             }
             DisclosureGroup(L("Дополнительно")) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Picker(L("Ответ сервиса"), selection: $store.settings.speechResponseFormat) {
-                        Text(L("JSON — текст")).tag("json")
-                        Text(L("Verbose JSON — таймкоды")).tag("verbose_json")
-                        Text(L("Diarized JSON — собеседники")).tag("diarized_json")
-                    }.help(L("Выбранная модель должна поддерживать этот формат ответа. Совместимость зависит от сервиса."))
+                    AfterCompactPicker(L("Ответ сервиса"), selection: $store.settings.speechResponseFormat, options: [
+                        .init(title: L("JSON — текст"), value: "json"), .init(title: L("Verbose JSON — таймкоды"), value: "verbose_json"),
+                        .init(title: L("Diarized JSON — собеседники"), value: "diarized_json")]).help(L("Выбранная модель должна поддерживать этот формат ответа. Совместимость зависит от сервиса."))
                     Text(L("Выберите формат, который поддерживает модель: таймкоды — для точных ссылок, метки голосов — для разделения собеседников сервисом."))
                         .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }.padding(.top, 8)
@@ -184,11 +171,8 @@ struct SpeechSettingsView: View {
                 Text(L("Без таймкодов: ссылки ведут к началу минутных фрагментов. Точно разделить реплики и собеседников по такому ответу нельзя."))
                     .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Picker(L("Язык записи"), selection: $store.settings.speechLanguage) {
-                Text(L("Определять автоматически")).tag("auto")
-                Text(L("Русский")).tag("ru")
-                Text(L("Английский")).tag("en")
-            }
+            AfterCompactPicker(L("Язык записи"), selection: $store.settings.speechLanguage, options: [
+                .init(title: L("Определять автоматически"), value: "auto"), .init(title: L("Русский"), value: "ru"), .init(title: L("Английский"), value: "en")])
             Label(LF("Аудиозапись отправляется на {0}. Оплата — по тарифам сервиса.", arguments: [L(store.settings.speechDestinationLabel)]), systemImage: "cloud")
                 .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }

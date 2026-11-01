@@ -27,8 +27,8 @@ struct GuidanceSheet: View {
                 .font(AppTypography.body).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 12) {
                 Button { controller.complete(with: .record) } label: { Label(L("Записать встречу"), systemImage: "record.circle") }
-                    .buttonStyle(.borderedProminent).tint(Ink.actionFill)
-                Button { controller.complete(with: .importFile) } label: { Label(L("Добавить файл…"), systemImage: "arrow.down.doc") }.buttonStyle(.bordered)
+                    .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
+                Button { controller.complete(with: .importFile) } label: { Label(L("Добавить файл…"), systemImage: "arrow.down.doc") }.buttonStyle(AfterSoftButtonStyle())
             }
             Button(L("Выбрать локальную или облачную модель")) { controller.complete(with: .speechSettings) }.buttonStyle(.borderless)
             Divider()
@@ -37,7 +37,7 @@ struct GuidanceSheet: View {
                     .toggleStyle(.checkbox)
                 Spacer()
                 Button(L("Позже")) { controller.complete() }
-                    .buttonStyle(.bordered).keyboardShortcut(.cancelAction)
+                    .buttonStyle(AfterSoftButtonStyle()).keyboardShortcut(.cancelAction)
             }
             if let error = controller.error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning) }
         }.padding(28).frame(width: 580).appControlDefaults().tint(Ink.accent).background(Ink.paper)

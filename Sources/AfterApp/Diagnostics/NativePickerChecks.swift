@@ -22,6 +22,25 @@ enum NativePickerChecks {
         return node.get("accessibilityValue") as? String
     }
 
+    static func nativeControl(_ identifier: String, in roots: [NSView]) -> NSPopUpButton? {
+        picker(identifier, in: roots).flatMap(nativePopup)
+    }
+
+    /// Opens the real AppKit menu and drives its own event queue. This check
+    /// cannot succeed solely by changing a native cell's selected item.
+    static func selectWithKeyboard(title: String, identifier: String, in roots: [NSView]) async throws {
+        guard let popup = nativeControl(identifier, in: roots), popup.isEnabled else {
+            throw AppError.message("Native keyboard picker missing or disabled: " + identifier)
+        }
+        try await trackNativePopup(popup, title: title, identifier: identifier, viaAccessibility: true)
+        for _ in 0..<100 {
+            roots.forEach { $0.layoutSubtreeIfNeeded() }
+            if value(identifier, in: roots) == title { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw AppError.message("Native keyboard picker did not select: \(identifier) → \(title)")
+    }
+
     static func select(title: String, identifier: String, in roots: [NSView]) async throws {
         // A newly attached SwiftUI sheet can expose its AX nodes before those
         // controls accept interaction. Resolve the node after presentation.
@@ -99,7 +118,7 @@ enum NativePickerChecks {
         guard selected else { throw AppError.message("Native picker menu option missing: \(identifier) → \(title)") }
     }
 
-    private static func trackNativePopup(_ popup: NSPopUpButton, title: String, identifier: String) async throws {
+    private static func trackNativePopup(_ popup: NSPopUpButton, title: String, identifier: String, viaAccessibility: Bool = false) async throws {
         let driver = PopupTrackingDriver(popup: popup, title: title)
         let timer = Timer(fireAt: Date().addingTimeInterval(0.3), interval: 0.1,
                           target: driver, selector: #selector(PopupTrackingDriver.tick(_:)), userInfo: nil, repeats: true)
@@ -108,7 +127,11 @@ enum NativePickerChecks {
         RunLoop.main.add(timer, forMode: .eventTracking)
         RunLoop.main.add(timer, forMode: .default)
         defer { timer.invalidate() }
-        popup.performClick(nil)
+        if viaAccessibility {
+            guard popup.accessibilityPerformPress() else { throw AppError.message("Native picker AX press failed: " + identifier) }
+        } else {
+            popup.performClick(nil)
+        }
         for _ in 0..<150 {
             if driver.finished { break }
             try await Task.sleep(for: .milliseconds(20))

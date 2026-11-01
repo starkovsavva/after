@@ -29,15 +29,14 @@ struct TrackerSyncExportSheet: View {
                 Text(L("В настройках подключите трекер, выберите списки и разрешите отправку изменений."))
                     .font(AppTypography.control).foregroundStyle(.secondary)
             } else {
-                Picker(L("Аккаунт"), selection: $connectionID) {
-                    ForEach(connections) { config in Text("\(config.account) · \(config.providerTitle)").tag(config.id) }
-                }
+                AfterCompactPicker(L("Аккаунт"), selection: $connectionID, options: connections.map {
+                    .init(title: "\($0.account) · \($0.providerTitle)", value: $0.id)
+                }, searchable: true)
                 if loading { ProgressView(L("Загружаем списки…")).controlSize(.small) }
                 else {
-                    Picker(L("Список"), selection: $scopeID) {
-                        Text(L("Выберите список")).tag("")
-                        ForEach(scopes) { scope in Text(scope.title).tag(scope.id) }
-                    }.disabled(scopes.isEmpty)
+                    AfterCompactPicker(L("Список"), selection: $scopeID, options:
+                        [.init(title: L("Выберите список"), value: "")] + scopes.map { .init(title: $0.title, value: $0.id) },
+                        searchable: true).disabled(scopes.isEmpty)
                 }
                 Text(L("Будут отправлены название, описание, статус и срок. Материалы и история останутся в «After»."))
                     .font(AppTypography.caption).foregroundStyle(.secondary)

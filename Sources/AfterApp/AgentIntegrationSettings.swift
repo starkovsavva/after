@@ -94,13 +94,9 @@ struct AgentIntegrationSettings: View {
             }
             if enabled {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker(L("Клиент"), selection: $client) {
-                        ForEach(AgentMCPConfiguration.Client.allCases) { client in
-                            Text(client.title).tag(client)
-                        }
-                    }
-                    .frame(maxWidth: 280, alignment: .leading)
-                    .accessibilityIdentifier("integrations.mcp.client")
+                    AfterCompactPicker(L("Клиент"), selection: $client, options:
+                        AgentMCPConfiguration.Client.allCases.map { .init(title: $0.title, value: $0) },
+                        maxWidth: 280, identifier: "integrations.mcp.client")
                     Toggle(L("Поиск в материалах задачи"), isOn: $sharedMaterialSearch)
                     Text(L("Агент сможет искать только в материалах, которые вы явно открыли ему в закреплённой задаче. Поиск по всей базе знаний не включается."))
                         .font(AppTypography.caption).foregroundStyle(.secondary)
@@ -115,7 +111,7 @@ struct AgentIntegrationSettings: View {
                         NSPasteboard.general.setString(configuration, forType: .string)
                         failed = false; message = L("Настройки подключения скопированы")
                     } label: { Label(L("Скопировать настройки"), systemImage: "doc.on.doc") }
-                        .buttonStyle(.bordered).accessibilityIdentifier("integrations.mcp.copy")
+                        .buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("integrations.mcp.copy")
                     Text(L("После добавления перезапустите подключение MCP в клиенте. Агент сможет брать разрешённые задачи в работу, добавлять результаты и завершать их. Папки передаются как ссылки; доступ к файлам задаётся в среде агента."))
                         .font(AppTypography.caption).foregroundStyle(.secondary)
                 }

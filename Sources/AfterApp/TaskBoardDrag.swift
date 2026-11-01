@@ -59,7 +59,10 @@ final class TaskBoardDragSession {
                 guard error == nil, let data else {
                     app.notes.error = L("Не удалось перенести задачу. Обновите доску и повторите."); completion?(false); return
                 }
-                completion?(self.apply(data, target: target, app: app))
+                // Persistence must run even when the caller has no observer;
+                // optional chaining would otherwise skip evaluating apply.
+                let result = self.apply(data, target: target, app: app)
+                completion?(result)
             }
         }
         return true
@@ -83,9 +86,13 @@ final class TaskBoardDragSession {
               taskFolder(current, app: app) == entry.taskFolderID else {
             app.notes.error = L("Задача изменилась во время переноса. Обновите доску и повторите."); return false
         }
-        if current.status == target { app.notes.error = nil; return true }
+        if current.status == target {
+            app.notes.selectedTaskID = current.id
+            app.notes.error = nil; return true
+        }
         guard let saved = app.notes.updateTaskWorkspace(entry.task, patch: ["status": target.rawValue], requireFeature: true, expectedFolderID: entry.taskFolderID) else { return false }
         app.reloadLibrary()
+        app.notes.selectedTaskID = saved.id
         if app.selection == saved.meetingID { app.refreshResults(saved.meetingID ?? "") }
         app.notes.notice = LF("Статус изменён: {0}", arguments: [L(target.title)])
         return true

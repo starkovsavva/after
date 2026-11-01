@@ -464,7 +464,7 @@ struct MainView: View {
                 Label(store.stoppingRecording ? L("Сохраняю…") : store.isRecording ? L("Остановить") : L("Записать"),
                       systemImage: store.isRecording ? "stop.circle" : "record.circle").frame(width: 108)
             }.disabled(store.stoppingRecording || store.startingRecording)
-                .buttonStyle(.bordered).foregroundStyle(store.isRecording ? Ink.recordFill : Color.primary)
+                .buttonStyle(AfterSoftButtonStyle(tint: store.isRecording ? Ink.destructiveText : nil))
                 .appLayoutAnchor("toolbar.record").help(store.isRecording ? L("Остановить и сохранить запись") : L("Записать встречу · ⌘N"))
         }.font(AppTypography.control).controlSize(.regular).padding(.horizontal, 16)
             .frame(height: AppLayout.toolbarHeight).appSurface(.toolbar).appLayoutAnchor("toolbar")
@@ -491,8 +491,8 @@ struct MainView: View {
             Text(store.folderSelection == nil ? L("Пока нет встреч") : L("В папке пока нет встреч")).font(AppTypography.pageTitle)
             Text(L("Перетащите сюда аудио или видео")).font(AppTypography.body).foregroundStyle(.secondary)
             HStack(spacing: 10) {
-                Button(L("Импортировать запись")) { store.chooseFile() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(store.busy)
-                Button(L("Записать встречу")) { store.showingRecord = true }.buttonStyle(.bordered).disabled(store.startingRecording)
+                Button(L("Импортировать запись")) { store.chooseFile() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).disabled(store.busy)
+                Button(L("Записать встречу")) { store.showingRecord = true }.buttonStyle(AfterSoftButtonStyle()).disabled(store.startingRecording)
             }
             if let folder = store.notes.folder(store.folderSelection), store.meetings.contains(where: { $0.libraryKind != "cards" && store.folderID(for: $0.id) != folder.id }) {
                 Button(L("Переместить встречу из библиотеки…")) { folderMeetingPicker = folder }.buttonStyle(.borderless)
@@ -504,7 +504,7 @@ struct MainView: View {
         HStack(spacing: 14) {
             Button { store.togglePlayback() } label: {
                 Image(systemName: store.isPlaying ? "pause.fill" : "play.fill").frame(width: 22, height: 22)
-            }.buttonStyle(.bordered).accessibilityLabel(store.isPlaying ? L("Приостановить") : L("Воспроизвести"))
+            }.buttonStyle(AfterSoftButtonStyle()).accessibilityLabel(store.isPlaying ? L("Приостановить") : L("Воспроизвести"))
                 .accessibilityIdentifier("meeting.playback.toggle")
             Text(Exporter.timestamp(store.playbackTime)).monospacedDigit().frame(width: 52)
             Slider(value: Binding(get: { store.playbackTime }, set: { store.seek($0) }), in: 0...max(1, store.playbackDuration))

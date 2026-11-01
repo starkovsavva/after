@@ -20,16 +20,16 @@ struct SupportSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 12) {
                 Link(destination: github) { Label(L("Поставить звезду на GitHub"), systemImage: "star") }
-                    .buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                     .accessibilityIdentifier("support.github")
-                Button(L("Обратная связь…"), action: feedback).buttonStyle(.bordered)
+                Button(L("Обратная связь…"), action: feedback).buttonStyle(AfterSoftButtonStyle())
                     .accessibilityIdentifier("support.feedback")
             }
             Text(L("Спасибо, что помогаете After становиться лучше."))
                 .font(AppTypography.control).foregroundStyle(Ink.secondaryText)
             HStack {
                 Spacer()
-                Button(L("Готово"), action: close).buttonStyle(.bordered).keyboardShortcut(.defaultAction)
+                Button(L("Готово"), action: close).buttonStyle(AfterSoftButtonStyle()).keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("support.close")
             }
         }.padding(28).frame(width: 680).background(Ink.paper).tint(Ink.accent).appControlDefaults()

@@ -54,7 +54,7 @@ struct ChatGPTSettingsView: View {
                     .accessibilityIdentifier("chatgpt.account.message").chatGPTUIAnchor("chatgpt.account.message")
                 if account.isError, usesPlan, account.models.isEmpty {
                     Button(L("Войти заново")) { startSignIn(accountID: store.settings.chatGPTAccountID) }
-                        .buttonStyle(.bordered).disabled(account.isConnecting || account.isSigningOut)
+                        .buttonStyle(AfterSoftButtonStyle()).disabled(account.isConnecting || account.isSigningOut)
                         .accessibilityIdentifier("chatgpt.account.reconnect").chatGPTUIAnchor("chatgpt.account.reconnect")
                 }
             }
@@ -62,7 +62,7 @@ struct ChatGPTSettingsView: View {
                 modelSettings
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Button(L("Проверить подключение")) { store.checkCloudConnection() }
-                        .buttonStyle(.bordered).chatGPTUIAnchor("chatgpt.connection.check")
+                        .buttonStyle(AfterSoftButtonStyle()).chatGPTUIAnchor("chatgpt.connection.check")
                         .disabled(selectedModel == nil || account.isLoadingModels || account.isConnecting || store.busy)
                         .help(L("Короткий запрос без текста и записей встреч. Использует лимиты ChatGPT."))
                         .accessibilityIdentifier("chatgpt.connection.check")
@@ -144,14 +144,10 @@ struct ChatGPTSettingsView: View {
                 }
             }
             if account.savedProfiles.count > 1 {
-                Picker(L("Аккаунт"), selection: selectedAccount) {
-                    if !account.savedProfiles.contains(where: { $0.id == store.settings.chatGPTAccountID }) {
-                        Text(L("Выберите аккаунт")).tag(store.settings.chatGPTAccountID)
-                    }
-                    ForEach(account.savedProfiles) { profile in
-                        Text(ChatGPTConnectionLabels.title(for: profile, among: knownProfiles)).tag(profile.id)
-                    }
-                }.disabled(account.isConnecting)
+                AfterCompactPicker(L("Аккаунт"), selection: selectedAccount,
+                    options: (account.savedProfiles.contains(where: { $0.id == store.settings.chatGPTAccountID }) ? [] :
+                        [.init(title: L("Выберите аккаунт"), value: store.settings.chatGPTAccountID)])
+                        + account.savedProfiles.map { .init(title: ChatGPTConnectionLabels.title(for: $0, among: knownProfiles), value: $0.id) }, searchable: true, identifier: "chatgpt.account.picker").disabled(account.isConnecting)
                     .accessibilityIdentifier("chatgpt.account.picker").chatGPTUIAnchor("chatgpt.account.picker")
             }
             if account.isConnecting {
@@ -160,7 +156,7 @@ struct ChatGPTSettingsView: View {
                     Text(L("Завершите вход в браузере")).font(AppTypography.control)
                     Spacer(minLength: 8)
                     Button(L("Отменить")) { account.cancelSignIn(); signInTask?.cancel() }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(AfterSoftButtonStyle())
                 }.accessibilityIdentifier("chatgpt.account.connecting").chatGPTUIAnchor("chatgpt.account.connecting")
             } else if account.isSigningOut || isDisconnecting {
                 HStack(spacing: 10) {
@@ -183,7 +179,7 @@ struct ChatGPTSettingsView: View {
                         if let profile = selectedProfile { startSignIn(accountID: profile.id) }
                         else { startSignIn(useDifferentAccount: true) }
                     }
-                    .buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                     .accessibilityLabel(L("Continue with ChatGPT — продолжить вход через ChatGPT"))
                     .accessibilityIdentifier("chatgpt.account.sign-in").chatGPTUIAnchor("chatgpt.account.sign-in")
                     if isActiveAccount { usageLink }
@@ -199,13 +195,11 @@ struct ChatGPTSettingsView: View {
     private var modelSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Picker(L("Модель"), selection: $store.settings.cloudModel) {
-                    if !store.settings.cloudModel.isEmpty, selectedModel == nil {
-                        Text(L("Проверяем выбранную модель…")).tag(store.settings.cloudModel)
-                    }
-                    Text(account.isLoadingModels ? L("Загрузка моделей…") : L("Выберите модель")).tag("")
-                    ForEach(account.models) { model in Text(model.name).tag(model.id) }
-                }
+                AfterCompactPicker(L("Модель"), selection: $store.settings.cloudModel,
+                    options: ((!store.settings.cloudModel.isEmpty && selectedModel == nil) ?
+                        [.init(title: L("Проверяем выбранную модель…"), value: store.settings.cloudModel)] : [])
+                        + [.init(title: account.isLoadingModels ? L("Загрузка моделей…") : L("Выберите модель"), value: "")]
+                        + account.models.map { .init(title: $0.name, value: $0.id) }, searchable: true, identifier: "chatgpt.model.picker")
                 .chatGPTUIAnchor("chatgpt.model.picker")
                 .disabled(account.models.isEmpty || account.isLoadingModels)
                 .accessibilityLabel(L("Модель по подписке ChatGPT для конспекта и карточек"))
@@ -232,21 +226,15 @@ struct ChatGPTSettingsView: View {
                     LabeledContent(L("Рассуждения"), value: L("Как у модели"))
                         .foregroundStyle(.secondary)
                 } else {
-                    Picker(L("Рассуждения"), selection: $store.settings.cloudReasoning) {
-                        Text(L("Как у модели")).tag("auto")
-                        ForEach(reasoningChoices, id: \.self) { effort in
-                            Text(Self.reasoningTitle(effort)).tag(effort)
-                        }
-                    }.accessibilityIdentifier("chatgpt.reasoning.picker").chatGPTUIAnchor("chatgpt.reasoning.picker")
+                    AfterCompactPicker(L("Рассуждения"), selection: $store.settings.cloudReasoning,
+                        options: [.init(title: L("Как у модели"), value: "auto")]
+                            + reasoningChoices.map { .init(title: Self.reasoningTitle($0), value: $0) }, identifier: "chatgpt.reasoning.picker").accessibilityIdentifier("chatgpt.reasoning.picker").chatGPTUIAnchor("chatgpt.reasoning.picker")
                         .help(L("Более глубокие рассуждения могут увеличить время ответа и расход лимитов подписки."))
                 }
             }
             DisclosureGroup(L("Дополнительно")) {
-                Picker(L("Формат ответа"), selection: $store.settings.cloudOutput) {
-                    Text("JSON Schema").tag("schema")
-                    Text("JSON").tag("json")
-                    Text(L("JSON по инструкции")).tag("prompt")
-                }
+                AfterCompactPicker(L("Формат ответа"), selection: $store.settings.cloudOutput,
+                    options: [.init(title: "JSON Schema", value: "schema"), .init(title: "JSON", value: "json"), .init(title: L("JSON по инструкции"), value: "prompt")])
                 .padding(.top, 8)
                 .help(L("Если модель не поддерживает JSON Schema, выберите JSON или JSON по инструкции. «After» проверит структуру и ссылки на источники."))
             }

@@ -260,27 +260,23 @@ struct QuickCaptureView: View {
             PlainNoteInput(text: $draft.text, placeholder: L("Новая заметка…"), isFocused: $focused, accessibilityLabel: L("Текст быстрой заметки"))
                 .frame(height: 106).padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 9))
                 .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(focused ? Ink.accent.opacity(0.7) : Ink.line))
-            HStack(spacing: 12) {
-                Picker(L("Тип"), selection: Binding(get: {
+            AfterControlFlow(spacing: 12) {
+                AfterCompactPicker(L("Тип заметки"), selection: Binding(get: {
                     draft.kind == "task" && !draft.settings(in: app).features.tasks ? "note" : draft.kind
-                }, set: { draft.kind = $0 })) {
-                    Text(L("Заметка")).tag("note"); Text(L("Важно")).tag("important"); Text(L("Вопрос")).tag("question")
-                    if draft.settings(in: app).features.tasks { Text(L("Задача")).tag("task") }
-                }
-                    .labelsHidden().frame(width: 116).accessibilityLabel(L("Тип заметки"))
-                Picker(L("Куда сохранить"), selection: $draft.meetingID) {
-                    Text(L("Без встречи")).tag("")
-                    if !draft.meetingID.isEmpty && !app.allNoteMeetings.contains(where: { $0.id == draft.meetingID }) { Text(L("Встреча недоступна · выберите другую")).tag(draft.meetingID) }
-                    ForEach(app.allNoteMeetings) { Text($0.title).tag($0.id) }
-                }.labelsHidden().accessibilityLabel(L("Куда сохранить заметку"))
+                }, set: { draft.kind = $0 }), options: [.init(title: L("Заметка"), value: "note"),
+                    .init(title: L("Важно"), value: "important"), .init(title: L("Вопрос"), value: "question")]
+                    + (draft.settings(in: app).features.tasks ? [.init(title: L("Задача"), value: "task")] : []), showsLabel: false)
+                AfterCompactPicker(L("Куда сохранить заметку"), selection: $draft.meetingID,
+                    options: [.init(title: L("Без встречи"), value: "")]
+                        + ((!draft.meetingID.isEmpty && !app.allNoteMeetings.contains(where: { $0.id == draft.meetingID })) ? [.init(title: L("Встреча недоступна · выберите другую"), value: draft.meetingID)] : [])
+                        + app.allNoteMeetings.map { .init(title: $0.title, value: $0.id) }, showsLabel: false, maxWidth: 280, searchable: true)
                     .help(L("Куда сохранить заметку"))
             }
             if !draft.hasMeeting {
-                Picker(L("Папка"), selection: Binding(get: { draft.folderID ?? "" }, set: { draft.selectFolder($0.isEmpty ? nil : $0) })) {
-                    Text(L("Без папки")).tag("")
-                    ForEach(app.notes.folders) { Text($0.name).tag($0.id) }
-                    if let id = draft.folderID, app.notes.folder(id) == nil { Text(L("Удалённая папка · выберите другую")).tag(id) }
-                }.font(AppTypography.caption).accessibilityLabel(L("Папка быстрой заметки"))
+                AfterCompactPicker(L("Папка"), selection: Binding(get: { draft.folderID ?? "" }, set: { draft.selectFolder($0.isEmpty ? nil : $0) }),
+                    options: [.init(title: L("Без папки"), value: "")] + app.notes.folders.map { .init(title: $0.name, value: $0.id) }
+                        + (draft.folderID.map { id in app.notes.folder(id) == nil ? [.init(title: L("Удалённая папка · выберите другую"), value: id)] : [] } ?? []), searchable: true)
+                    .font(AppTypography.caption).accessibilityLabel(L("Папка быстрой заметки"))
             }
             HStack(spacing: 10) {
                 if let error = notes.error {
@@ -301,7 +297,7 @@ struct QuickCaptureView: View {
                     .help(L("Закрыть окно и оставить черновик до выхода из приложения"))
                 Button(L("Сохранить")) {
                     if draft.save(in: app) != nil { close() }
-                }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command])
+                }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).keyboardShortcut(.return, modifiers: [.command])
                     .disabled(draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).help(L("Сохранить · ⌘↩"))
             }
         }.padding(18).frame(width: 490).background(Ink.paper).appControlDefaults()

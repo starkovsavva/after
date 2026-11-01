@@ -44,7 +44,7 @@ struct FolderNameSheet: View {
                 Spacer()
                 Button(L("Отмена")) { finish() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("folder.quick.cancel")
                 Button(isNew ? L("Создать папку") : L("Сохранить")) { save() }.keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                     .disabled(app.isTerminating || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("folder.quick.save")
             }

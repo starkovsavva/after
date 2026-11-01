@@ -71,7 +71,7 @@ struct KnowledgeRebuildSheet: View {
                     else {
                         Text(controller.receipt?.undone == true ? L("Применение отменено.") : L("Изменения применены. Их можно отменить в истории."))
                             .font(AppTypography.heading).accessibilityIdentifier("knowledge.rebuild.finished")
-                        Button(L("Открыть историю применений")) { tab = "history" }.buttonStyle(.bordered)
+                        Button(L("Открыть историю применений")) { tab = "history" }.buttonStyle(AfterSoftButtonStyle())
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
             }
@@ -289,7 +289,7 @@ struct KnowledgeRebuildSheet: View {
                     Text(KnowledgeMaterialPresentation.date(operation.appliedAt)).font(AppTypography.caption).foregroundStyle(.secondary)
                     if operation.undoneAt != nil { Text(L("Применение отменено.")).font(AppTypography.caption).foregroundStyle(.secondary) }
                     else {
-                        Button(L("Отменить применение")) { controller.undo(operation) }.buttonStyle(.bordered)
+                        Button(L("Отменить применение")) { controller.undo(operation) }.buttonStyle(AfterSoftButtonStyle())
                             .disabled(controller.busy || !operation.canUndo || workBlocked)
                             .accessibilityIdentifier("knowledge.rebuild.undo." + operation.operationID)
                         if !operation.canUndo {
@@ -312,7 +312,7 @@ struct KnowledgeRebuildSheet: View {
                 if controller.phase == .select {
                     Button(L("Предложить изменения")) {
                         controller.generate(notes: candidates, folderID: app.folderSelection, provider: app.knowledgeRebuildProviderDescription)
-                    }.buttonStyle(.borderedProminent).disabled(!canGenerate)
+                    }.buttonStyle(AfterSoftButtonStyle(.primary)).disabled(!canGenerate)
                         .accessibilityIdentifier("knowledge.rebuild.generate")
                 } else {
                     Button(L("Новое поручение")) {
@@ -322,7 +322,7 @@ struct KnowledgeRebuildSheet: View {
                     if controller.phase == .review {
                         Button(controller.reviewChanged ? L("Проверить изменения") : L("Применить изменения")) {
                             if controller.reviewChanged { controller.validateEdits() } else { controller.apply() }
-                        }.buttonStyle(.borderedProminent)
+                        }.buttonStyle(AfterSoftButtonStyle(.primary))
                             .disabled(controller.busy || workBlocked || unavailableSelection || controller.proposal?.hasChanges != true)
                             .accessibilityIdentifier(controller.reviewChanged ? "knowledge.rebuild.validate" : "knowledge.rebuild.apply")
                     }

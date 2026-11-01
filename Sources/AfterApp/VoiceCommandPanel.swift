@@ -162,7 +162,7 @@ struct VoiceCommandPanel: View {
                     }
                 }
                 HStack {
-                    Button(L("Открыть")) { controller.openResult() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(controller.isWorking)
+                    Button(L("Открыть")) { controller.openResult() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).disabled(controller.isWorking)
                     if result.canUndo { Button(L("Отменить изменение")) { controller.undo() }.buttonStyle(.borderless).disabled(controller.isWorking) }
                     if controller.isWorking { ProgressView().controlSize(.small) }
                     Spacer()
@@ -225,7 +225,7 @@ struct VoiceCommandPanel: View {
                             Text(controller.phase == .applying ? L("Сохраняю…") : L("Применить"))
                         }
                     }
-                        .buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                        .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                         .disabled(!controller.canConfirmReview || app.busy)
                         .accessibilityIdentifier("voice-review-confirm")
                 }
@@ -275,7 +275,7 @@ struct VoiceCommandPanel: View {
                             .font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
                         Spacer(minLength: 0)
                         Button(L("Выполнить")) { commandFocused = false; controller.perform() }
-                            .buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                            .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                             .disabled(controller.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || app.busy)
                             .keyboardShortcut(.return, modifiers: [.command])
                     }

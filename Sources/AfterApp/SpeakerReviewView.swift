@@ -20,10 +20,9 @@ struct SpeakerReviewView: View {
                 Spacer()
                 Text(LF("Найдено: {0}", arguments: [String(describing: (detected))])).font(AppTypography.control).foregroundStyle(.secondary)
             }
-            Picker(L("Количество участников"), selection: $automatic) {
-                Text(L("Указать число")).tag(false)
-                Text(L("Автоматически")).tag(true)
-            }.pickerStyle(.segmented).tint(Ink.actionFill).labelsHidden().accessibilityLabel(L("Способ определения числа участников"))
+            AfterChoicePicker(L("Способ определения числа участников"), selection: $automatic, options: [
+                .init(title: L("Указать число"), value: false), .init(title: L("Автоматически"), value: true)
+            ], showsLabel: false)
             if !automatic {
                 HStack {
                     Text(L("Участников в записи"))
@@ -52,7 +51,7 @@ struct SpeakerReviewView: View {
                         let requested = automatic ? 0 : count
                         dismiss(); Task { await store.rediarizeMeeting(meetingID, speakers: requested) }
                     } else { dismiss(); store.openSettings("speech") }
-                }.buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.defaultAction)
+                }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).keyboardShortcut(.defaultAction)
                     .disabled((store.runtimeReady && !automatic && !(1...100).contains(count)) || store.busy || store.isRecording)
             }
         }.padding(AppLayout.contentInset).frame(width: 560).appControlDefaults()

@@ -125,7 +125,7 @@ struct ReleaseNotesView: View {
                             }
                             Button { controller.openFeatureSettings(update.id) } label: {
                                 Label(isDisabled(update.id) ? L("Включить в настройках") : L("Открыть настройки"), systemImage: "slider.horizontal.3")
-                            }.buttonStyle(.bordered).accessibilityIdentifier("releases.settings")
+                            }.buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("releases.settings")
                         }.id("detail-top")
                         ForEach([ReleaseChangeKind.added, .changed, .fixed], id: \.self) { kind in
                             let changes = update.changes.filter { $0.kind == kind }
@@ -167,7 +167,7 @@ struct ReleaseNotesView: View {
             Spacer(minLength: 0)
             Button(L("Поддержать After…")) { controller.complete(with: .support) }
                 .buttonStyle(.borderless).font(AppTypography.control).accessibilityIdentifier("releases.support")
-            Button(L("Понятно")) { controller.complete() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+            Button(L("Понятно")) { controller.complete() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                 .keyboardShortcut(.defaultAction).accessibilityIdentifier("releases.done")
         }.padding(.horizontal, 22).padding(.vertical, 14)
     }

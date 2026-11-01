@@ -16,13 +16,17 @@ final class KnowledgeRebuildController: ObservableObject {
     typealias Request = @Sendable (URL, String, Data) async throws -> Data
     enum Phase: Equatable { case select, review, finished }
     enum Activity: Equatable { case generate, preview, apply, undo }
+    private enum StatusMessage {
+        case localizedKey(String)
+        case verbatim(String)
+    }
     @Published var selectedNoteIDs = Set<String>()
     @Published var instruction = ""
     @Published var proposal: KnowledgeRebuildProposal?
     @Published private(set) var preview: KnowledgeRebuildPreview?
     @Published private(set) var phase = Phase.select
     @Published private(set) var activity: Activity?
-    @Published private(set) var status = ""
+    @Published private var statusMessage: StatusMessage?
     @Published private(set) var error: String?
     @Published private(set) var receipt: KnowledgeRebuildReceipt?
     @Published private(set) var history: [KnowledgeRebuildHistory.Operation] = []
@@ -42,6 +46,15 @@ final class KnowledgeRebuildController: ObservableObject {
     var busy: Bool { activity != nil }
     var mutating: Bool { activity == .apply || activity == .undo }
     var reviewChanged: Bool { proposal != nil && proposal != preview?.proposal }
+    // Resolve app-owned copy when read by the view so a live language change
+    // does not leave an earlier translation behind. Provider progress is data.
+    var status: String {
+        switch statusMessage {
+        case .localizedKey(let key): return L(key)
+        case .verbatim(let message): return message
+        case nil: return ""
+        }
+    }
 
     init(root: URL, generate: @escaping Generate, request: @escaping Request = KnowledgeRebuildController.liveRequest) {
         self.root = root; self.generator = generate; self.request = request
@@ -70,27 +83,27 @@ final class KnowledgeRebuildController: ObservableObject {
         sourceNotes = Dictionary(selected.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         selectionFolderID = folderID; providerDescription = provider
         let current = UUID(); generation = current
-        activity = .generate; error = nil; receipt = nil; status = L("Готовлю предложение…")
+        activity = .generate; error = nil; receipt = nil; statusMessage = .localizedKey("Готовлю предложение…")
         task = Task { [self] in
             defer { if generation == current { activity = nil; task = nil } }
             do {
                 let data = try await generator(selected.map(\.id).sorted(), folderID, instruction) { [weak self] message in
-                    guard let self, self.generation == current else { return }; self.status = message
+                    guard let self, self.generation == current else { return }; self.statusMessage = .verbatim(message)
                 }
                 try Task.checkCancellation()
                 guard generation == current else { return }
                 let value = try JSONDecoder().decode(KnowledgeRebuildPreview.self, from: data)
                 preview = value; proposal = value.proposal; phase = .review; applyOperationID = nil
-                status = L("Предложение готово. Проверьте изменения перед применением.")
+                statusMessage = .localizedKey("Предложение готово. Проверьте изменения перед применением.")
             } catch {
                 guard generation == current, !Task.isCancelled else { return }
-                status = ""; self.error = error.localizedDescription
+                statusMessage = nil; self.error = error.localizedDescription
             }
         }
     }
     func validateEdits() {
         guard !busy, let preview, let proposal else { return }
-        activity = .preview; error = nil; status = L("Проверяю изменённое предложение…")
+        activity = .preview; error = nil; statusMessage = .localizedKey("Проверяю изменённое предложение…")
         let current = UUID(); generation = current
         task = Task { [self] in
             defer { if generation == current { activity = nil; task = nil } }
@@ -102,17 +115,17 @@ final class KnowledgeRebuildController: ObservableObject {
                 guard generation == current else { return }
                 let value = try JSONDecoder().decode(KnowledgeRebuildPreview.self, from: data)
                 self.preview = value; self.proposal = value.proposal; applyOperationID = nil
-                status = L("Изменения проверены. Теперь их можно применить.")
+                statusMessage = .localizedKey("Изменения проверены. Теперь их можно применить.")
             } catch {
                 guard generation == current, !Task.isCancelled else { return }
-                status = ""; self.error = error.localizedDescription
+                statusMessage = nil; self.error = error.localizedDescription
             }
         }
     }
     func apply() {
         guard !busy, !reviewChanged, let preview, preview.proposal.hasChanges else { return }
         let operationID = applyOperationID ?? UUID().uuidString.lowercased(); applyOperationID = operationID
-        activity = .apply; error = nil; status = L("Применяю изменения…")
+        activity = .apply; error = nil; statusMessage = .localizedKey("Применяю изменения…")
         task = Task { [self] in
             defer { activity = nil; task = nil }
             do {
@@ -120,24 +133,24 @@ final class KnowledgeRebuildController: ObservableObject {
                     "expectedDraftRevision": preview.draftRevision, "operationID": operationID])
                 receipt = try JSONDecoder().decode(KnowledgeRebuildReceipt.self, from: data)
                 self.preview = nil; proposal = nil; phase = .finished; selectedNoteIDs.removeAll()
-                status = L("Изменения применены. Их можно отменить в истории.")
+                statusMessage = .localizedKey("Изменения применены. Их можно отменить в истории.")
                 NotificationCenter.default.post(name: .knowledgeRebuildChanged, object: root)
                 await loadHistory()
-            } catch { status = ""; self.error = error.localizedDescription }
+            } catch { statusMessage = nil; self.error = error.localizedDescription }
         }
     }
     func undo(_ operation: KnowledgeRebuildHistory.Operation) {
         guard !busy, operation.canUndo, operation.undoneAt == nil else { return }
-        activity = .undo; error = nil; status = L("Отменяю применение…")
+        activity = .undo; error = nil; statusMessage = .localizedKey("Отменяю применение…")
         task = Task { [self] in
             defer { activity = nil; task = nil }
             do {
                 let data = try await call("kb-rebuild-undo", ["operationID": operation.operationID])
                 receipt = try JSONDecoder().decode(KnowledgeRebuildReceipt.self, from: data)
-                status = L("Применение отменено.")
+                statusMessage = .localizedKey("Применение отменено.")
                 NotificationCenter.default.post(name: .knowledgeRebuildChanged, object: root)
                 await loadHistory()
-            } catch { status = ""; self.error = error.localizedDescription; await loadHistory() }
+            } catch { statusMessage = nil; self.error = error.localizedDescription; await loadHistory() }
         }
     }
     func loadHistory() async {
@@ -160,7 +173,7 @@ final class KnowledgeRebuildController: ObservableObject {
     }
     func startOver() {
         guard !busy else { return }
-        phase = .select; preview = nil; proposal = nil; receipt = nil; error = nil; status = ""; applyOperationID = nil
+        phase = .select; preview = nil; proposal = nil; receipt = nil; error = nil; statusMessage = nil; applyOperationID = nil
     }
     func removeEdit(_ noteID: String) {
         guard !busy, var proposal else { return }

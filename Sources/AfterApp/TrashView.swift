@@ -64,7 +64,7 @@ struct TrashView: View {
                                 Spacer(minLength: 12)
                                 if restoring == entry.key { ProgressView().controlSize(.small) }
                                 Button(L("Восстановить")) { Task { await restore(entry) } }
-                                    .buttonStyle(.bordered).disabled(restoring != nil || app.busy)
+                                    .buttonStyle(AfterSoftButtonStyle()).disabled(restoring != nil || app.busy)
                                     .accessibilityLabel(LF("Восстановить: {0}", arguments: [String(describing: (entry.title))]))
                             }.padding(.vertical, 10)
                             Divider()

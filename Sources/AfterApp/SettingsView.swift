@@ -91,7 +91,8 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
                         settingsContent
-                    }.font(AppTypography.control).frame(maxWidth: .infinity, alignment: .leading).padding(26)
+                    }.font(AppTypography.control).frame(maxWidth: 620, alignment: .leading).padding(26)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                 }.frame(maxWidth: .infinity)
             }
             Divider()
@@ -101,21 +102,23 @@ struct SettingsView: View {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small).accessibilityHidden(true)
                             Text(store.progressText.isEmpty ? L("Подготавливаю модели…") : L(store.progressText))
-                                .font(AppTypography.control).lineLimit(1).help(store.progressText)
-                            if store.canCancelJob { Button(L("Отменить")) { store.cancelJob() }.buttonStyle(.bordered) }
+                                .font(AppTypography.control).fixedSize(horizontal: false, vertical: true).help(store.progressText)
+                            if store.canCancelJob { Button(L("Отменить")) { store.cancelJob() }.buttonStyle(AfterSoftButtonStyle()) }
                         }.accessibilityElement(children: .contain)
                     }
                     SettingsDraftWarning(updates: store.updates)
                     if let error = store.error {
                         Label(L(error), systemImage: "exclamationmark.triangle")
                             .font(AppTypography.caption).foregroundStyle(Ink.warning)
-                            .lineLimit(2).help(error).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true).help(error).textSelection(.enabled)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                Button(L("Готово")) { closeSettings() }.buttonStyle(.borderedProminent)
+                Button(L("Готово")) { closeSettings() }.buttonStyle(AfterSoftButtonStyle(.primary))
                     .tint(Ink.actionFill).keyboardShortcut(.defaultAction)
-            }.padding(.horizontal, 16).frame(height: AppLayout.statusHeight)
+            }.padding(.horizontal, 16).padding(.vertical, 12).frame(minHeight: AppLayout.statusHeight)
+                .accessibilityElement(children: .contain).accessibilityIdentifier("settings.footer")
         }.frame(width: 900, height: 690).background(Ink.paper).tint(Ink.accent).appControlDefaults()
+            .buttonStyle(AfterSoftButtonStyle())
             .background(UpdateSettingsWindowReader(updates: store.updates).frame(width: 0, height: 0))
             .preferredColorScheme(theme.colorScheme)
             .sheet(isPresented: $showingTemplates) {
@@ -177,23 +180,21 @@ struct SettingsView: View {
     }
     private var generalSettings: some View {
         settingsSection(L("Общие"), "gearshape") {
-            Picker(L("Язык интерфейса"), selection: Binding(get: { localization.language.rawValue }, set: { localization.setLanguage(fromString: $0) })) {
-                ForEach(UILanguage.allCases) { language in Text(language.title).tag(language.rawValue) }
-            }.accessibilityIdentifier("settings.language")
+            AfterCompactPicker(L("Язык интерфейса"), selection: Binding(get: { localization.language.rawValue }, set: { localization.setLanguage(fromString: $0) }),
+                options: UILanguage.allCases.map { .init(title: $0.title, value: $0.rawValue) }, identifier: "settings.language").accessibilityIdentifier("settings.language")
             Text(L("Язык интерфейса не меняет язык конспектов, распознавания и сохранённых материалов."))
                 .font(AppTypography.caption).foregroundStyle(Ink.secondaryText).fixedSize(horizontal: false, vertical: true)
             if let error = localization.error {
                 Text(L(error)).font(AppTypography.caption).foregroundStyle(Ink.warning).accessibilityIdentifier("settings.language.error")
             }
             Divider()
-            Picker(L("При запуске открывать"), selection: Binding(get: {
+            AfterCompactPicker(L("При запуске открывать"), selection: Binding(get: {
                 let section = store.settings.startSection
                 return ["meetings", "inbox", "tasks", "cards"].contains(section) && store.settings.allowsSection(section) ? section : "meetings"
-            }, set: { store.settings.startSection = $0 })) {
-                Text(L("Все встречи")).tag("meetings"); Text(L("Заметки")).tag("inbox")
-                if store.isFeatureEnabled(.tasks) { Text(L("Мои задачи")).tag("tasks") }
-                if store.isFeatureEnabled(.cards) { Text(L("Карточки")).tag("cards") }
-            }
+            }, set: { store.settings.startSection = $0 }), options: [
+                .init(title: L("Все встречи"), value: "meetings"), .init(title: L("Заметки"), value: "inbox")
+            ] + (store.isFeatureEnabled(.tasks) ? [.init(title: L("Мои задачи"), value: "tasks")] : [])
+              + (store.isFeatureEnabled(.cards) ? [.init(title: L("Карточки"), value: "cards")] : []))
         }
     }
     private var recordSettings: some View {
@@ -211,11 +212,9 @@ struct SettingsView: View {
             settingsSection(L("Заметки и шаблоны"), "square.and.pencil") {
                 Toggle(L("Прикреплять быстрые заметки к текущей записи"), isOn: $store.settings.notesSaveToActiveMeeting)
                 Toggle(L("Добавлять таймкод к пометкам"), isOn: $store.settings.notesAutoTimestamp)
-                Picker(L("Шаблон новых заметок встречи"), selection: $store.settings.defaultTemplateID) {
-                    Text(L("Чистая заметка")).tag("")
-                    ForEach(store.notes.templates) { Text($0.name).tag($0.id) }
-                }
-                Button(L("Управлять шаблонами…")) { showingTemplates = true }.buttonStyle(.bordered)
+                AfterCompactPicker(L("Шаблон новых заметок встречи"), selection: $store.settings.defaultTemplateID,
+                    options: [.init(title: L("Чистая заметка"), value: "")] + store.notes.templates.map { .init(title: $0.name, value: $0.id) }, searchable: true)
+                Button(L("Управлять шаблонами…")) { showingTemplates = true }.buttonStyle(AfterSoftButtonStyle())
             }
             focusSettings
         }
@@ -223,9 +222,8 @@ struct SettingsView: View {
     private var shortcutSettings: some View {
         settingsSection(L("Горячие клавиши"), "keyboard") {
             Toggle(L("Открывать быструю заметку из любого приложения"), isOn: $store.settings.quickCaptureEnabled)
-            Picker(L("Быстрая заметка"), selection: $store.settings.quickCaptureShortcut) {
-                Text("⌃⌥N").tag("controlOptionN"); Text(L("⌃⇧Пробел")).tag("controlShiftSpace")
-            }.disabled(!store.settings.quickCaptureEnabled)
+            AfterCompactPicker(L("Быстрая заметка"), selection: $store.settings.quickCaptureShortcut,
+                options: [.init(title: "⌃⌥N", value: "controlOptionN"), .init(title: L("⌃⇧Пробел"), value: "controlShiftSpace")]).disabled(!store.settings.quickCaptureEnabled)
             Toggle(L("Отмечать важный момент по ⌃⌥B"), isOn: $store.settings.bookmarkShortcutEnabled)
             if store.isFeatureEnabled(.assistant) {
                 Toggle(L("Голосовое поручение по ⌃⌥M"), isOn: $store.settings.voiceShortcutEnabled)
@@ -238,26 +236,21 @@ struct SettingsView: View {
     }
     private var aiSettings: some View {
         settingsSection(store.isFeatureEnabled(.cards) ? L("Конспект и карточки") : L("Конспект"), "sparkles") {
-            Picker(L("Обработка"), selection: Binding(get: { store.settings.mode }, set: { mode in
+            AfterChoicePicker(L("Обработка"), selection: Binding(get: { store.settings.mode }, set: { mode in
                 guard !SettingsDraftRegistry.hasUnsaved else {
                     store.updates.revealSettingsDrafts(); store.objectWillChange.send(); return
                 }
                 store.settings.mode = mode
-            })) {
-                Label(L("На Mac"), systemImage: "laptopcomputer").tag("local")
-                Label(L("Облако"), systemImage: "cloud").tag("cloud")
-            }.pickerStyle(.segmented).tint(Ink.actionFill)
+            }), options: [.init(title: L("На Mac"), value: "local"), .init(title: L("Облако"), value: "cloud")], identifier: "settings.processingMode")
             if store.settings.mode == "local" {
-                Picker(L("Источник"), selection: Binding(get: { store.settings.localProvider }, set: { store.changeLocalProvider($0) })) {
-                    Text(L("After")).tag("managed"); Text("Ollama").tag("ollama"); Text("LM Studio").tag("lmstudio")
-                }.pickerStyle(.segmented).tint(Ink.actionFill)
+                AfterChoicePicker(L("Источник"), selection: Binding(get: { store.settings.localProvider }, set: { store.changeLocalProvider($0) }),
+                    options: [.init(title: L("After"), value: "managed"), .init(title: "Ollama", value: "ollama"), .init(title: "LM Studio", value: "lmstudio")])
                     .help(L("After хранит свою модель отдельно. Ollama и LM Studio используют свои установленные модели."))
                 if store.settings.localProvider == "managed" {
-                    Picker(L("Модель"), selection: localModelPreset) {
-                        Text(L("Qwen3.5 9B · качество · 6,6 ГБ")).tag("quality")
-                        Text(L("Qwen3.5 4B · быстрее · 3,3 ГБ")).tag("fast")
-                        Text(L("Своя модель")).tag("custom")
-                    }.help(L("Размер скачивания. На Mac с 16 ГБ распознавание и конспект выполняются по очереди."))
+                    AfterCompactPicker(L("Модель"), selection: localModelPreset, options: [
+                        .init(title: L("Qwen3.5 9B · качество · 6,6 ГБ"), value: "quality"),
+                        .init(title: L("Qwen3.5 4B · быстрее · 3,3 ГБ"), value: "fast"),
+                        .init(title: L("Своя модель"), value: "custom")]).help(L("Размер скачивания. На Mac с 16 ГБ распознавание и конспект выполняются по очереди."))
                     if localModelPreset.wrappedValue == "custom" {
                         LabeledContent(L("Имя модели")) {
                             TextField(L("Имя из каталога Ollama"), text: $store.settings.localModel).textFieldStyle(.roundedBorder)
@@ -284,17 +277,17 @@ struct SettingsView: View {
                 installedLocalModelPicker
                 HStack {
                     if store.settings.localProvider != "managed" || store.runtimeReady {
-                        Button(L("Найти модели")) { store.discoverLocalModels() }.buttonStyle(.bordered)
+                        Button(L("Найти модели")) { store.discoverLocalModels() }.buttonStyle(AfterSoftButtonStyle())
                     }
                     if store.settings.localProvider == "managed" {
                         if store.runtimeReady {
-                            Button(L("Подготовить ИИ")) { store.prepareLocal() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                            Button(L("Подготовить ИИ")) { store.prepareLocal() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                         } else {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(L("Сначала установите компоненты обработки."))
                                     .font(AppTypography.caption).foregroundStyle(.secondary)
                                 Button(L("Установить компоненты…")) { section = "speech" }
-                                    .buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                                    .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                                     .help(L("Откроется раздел «Распознавание речи». После установки вернитесь к подготовке ИИ."))
                             }
                         }
@@ -310,9 +303,8 @@ struct SettingsView: View {
             } else {
                 CloudSettingsView()
             }
-            Picker(L("Язык конспекта"), selection: $store.settings.language) {
-                Text(L("Русский")).tag("ru"); Text("English").tag("en")
-            }.frame(maxWidth: 340)
+            AfterCompactPicker(L("Язык конспекта"), selection: $store.settings.language,
+                options: [.init(title: L("Русский"), value: "ru"), .init(title: "English", value: "en")])
             Divider().padding(.vertical, 8)
             SummaryContextSettingsView()
         }
@@ -330,8 +322,8 @@ struct SettingsView: View {
     }
     private var dataSettings: some View {
         settingsSection(L("Данные и экспорт"), "externaldrive") {
-            Button(L("Экспортировать заметки…")) { store.exportManualNotes() }.buttonStyle(.bordered)
-            Button(L("Открыть папку данных")) { NSWorkspace.shared.open(store.root) }.buttonStyle(.bordered)
+            Button(L("Экспортировать заметки…")) { store.exportManualNotes() }.buttonStyle(AfterSoftButtonStyle())
+            Button(L("Открыть папку данных")) { NSWorkspace.shared.open(store.root) }.buttonStyle(AfterSoftButtonStyle())
                 .help(store.root.path)
         }
     }
@@ -340,14 +332,11 @@ struct SettingsView: View {
     private var installedLocalModelPicker: some View {
         let models = store.installedLocalModels.filter { $0.provider == store.settings.localProvider }
         if !models.isEmpty {
-            Picker(L("Установленная модель"), selection: Binding(get: { store.settings.localModel }, set: { id in
+            AfterCompactPicker(L("Установленная модель"), selection: Binding(get: { store.settings.localModel }, set: { id in
                 if let model = models.first(where: { $0.id == id }) { store.selectLocalModel(model) }
-            })) {
-                if !models.contains(where: { $0.id == store.settings.localModel }) {
-                    Text(store.settings.localModel.isEmpty ? L("Выберите модель") : store.settings.localModel).tag(store.settings.localModel)
-                }
-                ForEach(models) { model in Text(model.name).tag(model.id) }
-            }.accessibilityLabel(store.isFeatureEnabled(.cards) ? L("Установленная модель для конспекта и карточек") : L("Установленная модель для конспекта"))
+            }), options: (models.contains(where: { $0.id == store.settings.localModel }) ? [] :
+                [.init(title: store.settings.localModel.isEmpty ? L("Выберите модель") : store.settings.localModel, value: store.settings.localModel)])
+                + models.map { .init(title: $0.name, value: $0.id) }, searchable: true).accessibilityLabel(store.isFeatureEnabled(.cards) ? L("Установленная модель для конспекта и карточек") : L("Установленная модель для конспекта"))
         } else if store.settings.localProvider != "managed" && !store.settings.localModel.isEmpty {
             LabeledContent(L("Выбрана модель")) {
                 Text(store.settings.localModel).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
@@ -358,8 +347,8 @@ struct SettingsView: View {
     private var ggufModelSettings: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack {
-                Button(L("Найти модели на Mac")) { store.discoverGGUFModels() }.buttonStyle(.bordered)
-                Button(L("Выбрать файл…")) { store.chooseGGUFFile() }.buttonStyle(.bordered).disabled(!store.runtimeReady)
+                Button(L("Найти модели на Mac")) { store.discoverGGUFModels() }.buttonStyle(AfterSoftButtonStyle())
+                Button(L("Выбрать файл…")) { store.chooseGGUFFile() }.buttonStyle(AfterSoftButtonStyle()).disabled(!store.runtimeReady)
             }
             if !store.runtimeReady {
                 Button(L("Установить компоненты…")) { section = "speech" }.buttonStyle(.link)
@@ -379,7 +368,7 @@ struct SettingsView: View {
                     }
                     Spacer(minLength: 4)
                     Button(L("Подключить")) { store.importGGUFModel(URL(fileURLWithPath: model.path)) }
-                        .buttonStyle(.bordered).disabled(!store.runtimeReady)
+                        .buttonStyle(AfterSoftButtonStyle()).disabled(!store.runtimeReady)
                         .accessibilityLabel(LF("Подключить {0} из {1}", arguments: [model.name, model.source]))
                 }.padding(11).background(Ink.soft, in: RoundedRectangle(cornerRadius: 8))
             }
@@ -433,11 +422,10 @@ struct RecordView: View {
             Text(L("Запись встречи")).font(AppTypography.modalTitle)
             TextField(L("Название встречи"), text: $title).textFieldStyle(.roundedBorder)
                 .accessibilityLabel(L("Название новой встречи")).disabled(startLocked)
-            Picker(L("Папка"), selection: $folderID) {
-                Text(L("Без папки · настройки приложения")).tag("")
-                ForEach(store.notes.folders) { Text($0.name).tag($0.id) }
-                if !destinationExists { Text(L("Папка недоступна")).tag(folderID) }
-            }.accessibilityIdentifier("record.folder").disabled(startLocked)
+            AfterCompactPicker(L("Папка"), selection: $folderID,
+                options: [.init(title: L("Без папки · настройки приложения"), value: "")]
+                    + store.notes.folders.map { .init(title: $0.name, value: $0.id) }
+                    + (destinationExists ? [] : [.init(title: L("Папка недоступна"), value: folderID)]), searchable: true, identifier: "record.folder").accessibilityIdentifier("record.folder").disabled(startLocked)
             Button { showingProcessing = true } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "slider.horizontal.3").foregroundStyle(Ink.secondaryText)
@@ -474,10 +462,8 @@ struct RecordView: View {
                             .accessibilityIdentifier("record.processing.done") }
                     }.padding(20).frame(width: 420).appControlDefaults()
                 }
-            Picker(L("Звук"), selection: $systemAudio) {
-                Text(L("Микрофон и звук Mac")).tag(true)
-                Text(L("Только микрофон")).tag(false)
-            }.pickerStyle(.radioGroup).disabled(startLocked)
+            AfterChoicePicker(L("Звук"), selection: $systemAudio,
+                options: [.init(title: L("Микрофон и звук Mac"), value: true), .init(title: L("Только микрофон"), value: false)]).disabled(startLocked)
                 .help(L("Для звонков выберите звук Mac и используйте наушники. Для встречи в комнате — только микрофон."))
             RecordingOptionsView(audioQuality: $audioQuality, video: $video,
                                  videoQuality: $videoQuality, systemAudio: systemAudio).disabled(startLocked)
@@ -506,7 +492,7 @@ struct RecordView: View {
                         captureTask?.cancel()
                         Task { await audioCheck.stop(); await store.cancelRecordingStart() }
                     } else { dismiss() }
-                }.buttonStyle(.bordered).keyboardShortcut(.cancelAction)
+                }.buttonStyle(AfterSoftButtonStyle()).keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("record.cancel")
                 Spacer()
                 Button(L("Начать запись")) {
@@ -526,7 +512,7 @@ struct RecordView: View {
                         await store.startRecording(systemAudio: captureSystemAudio, video: captureVideo, title: captureTitle, destination: destination)
                         if !store.isRecording { recordingError = store.error }
                     }
-                }.buttonStyle(.borderedProminent).tint(Ink.recordFill)
+                }.buttonStyle(AfterSoftButtonStyle(.primary, tint: Ink.recordFill))
                     .disabled(startLocked || !destinationExists).keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("record.start")
             }

@@ -76,7 +76,7 @@ struct StudyCardContent: View {
                             }.frame(width: 15, height: 15).accessibilityHidden(true)
                             Text(example == nil ? L("Пример") : L("Другой пример"))
                         }
-                    }.buttonStyle(.bordered).disabled(makingExample)
+                    }.buttonStyle(AfterSoftButtonStyle()).disabled(makingExample)
                         .accessibilityLabel(example == nil ? L("Придумать пример с этой карточкой") : L("Придумать другой пример с этой карточкой"))
                         .help(L("Создать пример с этой карточкой; исходная цитата сохранится"))
                     Spacer()
@@ -161,7 +161,7 @@ struct StudyReviewBar: View {
         Button(L("Показать ответ")) {
             guard enabled, !flipped else { return }
             flipped = true
-        }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+        }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
             .keyboardShortcut(.space, modifiers: []).disabled(!enabled)
             .help(L("Показать ответ · Пробел")).frame(minWidth: 180)
     }
@@ -170,7 +170,7 @@ struct StudyReviewBar: View {
             guard enabled, flipped else { return }
             rate(value)
         } label: { gradeLabel(value) }
-            .buttonStyle(.bordered).disabled(!enabled)
+            .buttonStyle(AfterSoftButtonStyle()).disabled(!enabled)
             .keyboardShortcut(KeyEquivalent(Character(String(value))), modifiers: [])
             .help(gradeHelp(value))
             .accessibilityLabel(labels[value - 1] + ": " + descriptions[value - 1])
@@ -185,7 +185,7 @@ struct StudyReviewBar: View {
             if let interval = intervals[value] {
                 Text(interval).font(AppTypography.caption).foregroundStyle(.secondary)
             }
-        }.frame(maxWidth: .infinity, minHeight: 24)
+        }.frame(minWidth: 80, minHeight: 24)
     }
     private func gradeHelp(_ value: Int) -> String {
         var text = descriptions[value - 1] + " · \(value)"

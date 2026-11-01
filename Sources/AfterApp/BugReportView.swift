@@ -53,9 +53,9 @@ struct BugReportView: View {
                     Button(L("Закрыть"), action: close).keyboardShortcut(.cancelAction).accessibilityIdentifier("bugReport.close")
                     Spacer(minLength: 12)
                     Button(L("Сохранить…"), action: save).disabled(!session.draft.isValid).accessibilityIdentifier("bugReport.save")
-                    Button(L("Скопировать отчёт"), action: copy).buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    Button(L("Скопировать отчёт"), action: copy).buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                         .disabled(!session.draft.isValid).keyboardShortcut(.defaultAction).accessibilityIdentifier("bugReport.copy")
-                }.buttonStyle(.bordered)
+                }.buttonStyle(AfterSoftButtonStyle())
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 24).padding(.vertical, 16)
         }.frame(minWidth: 570, minHeight: 480).appControlDefaults().tint(Ink.accent).background(Ink.paper)
     }

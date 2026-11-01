@@ -41,15 +41,17 @@ struct CardEditorView: View {
                 Label(folder.name, systemImage: "folder").font(AppTypography.caption).foregroundStyle(.secondary)
             }
             if request.entry == nil && request.meeting == nil {
-                Picker(L("Сохранить в"), selection: $destination) {
-                    Text(L("Новая колода")).tag("")
-                    ForEach(app.meetings.filter { $0.status == "ready" && (app.folderSelection == nil || app.folderID(for: $0.id) == app.folderSelection) }) { Text($0.title).tag($0.id) }
-                }
+                AfterCompactPicker(L("Сохранить в"), selection: $destination, options:
+                    [.init(title: L("Новая колода"), value: "")] + app.meetings.filter {
+                        $0.status == "ready" && (app.folderSelection == nil || app.folderID(for: $0.id) == app.folderSelection)
+                    }.map { .init(title: $0.title, value: $0.id) }, searchable: true)
                 if destination.isEmpty { TextField(L("Название колоды"), text: $deckTitle).textFieldStyle(.roundedBorder) }
             } else {
                 Text(request.entry?.meeting.title ?? request.meeting?.title ?? "").font(AppTypography.control).foregroundStyle(.secondary).lineLimit(2)
             }
-            Picker(L("Тип"), selection: $kind) { Text(L("Фраза")).tag("phrase"); Text(L("Понятие")).tag("concept") }.pickerStyle(.segmented)
+            AfterChoicePicker(L("Тип"), selection: $kind, options: [
+                .init(title: L("Фраза"), value: "phrase"), .init(title: L("Понятие"), value: "concept")
+            ])
             VStack(alignment: .leading, spacing: 7) {
                 Text(L("Вопрос или фраза")).font(AppTypography.controlStrong)
                 TextEditor(text: $front).font(AppTypography.body).frame(height: 78)
@@ -73,7 +75,7 @@ struct CardEditorView: View {
                 Button(L("Отмена")) { close() }.keyboardShortcut(.cancelAction).disabled(saving).accessibilityIdentifier("cards.edit.cancel")
                 Spacer()
                 if saving { ProgressView().controlSize(.small) }
-                Button(L("Сохранить")) { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                Button(L("Сохранить")) { save() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                     .disabled(saving || front.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || back.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || destination.isEmpty && deckTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .keyboardShortcut(.defaultAction).accessibilityIdentifier("cards.edit.save")
             }

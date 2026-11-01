@@ -128,17 +128,17 @@ struct MeetingView: View {
                             .accessibilityIdentifier("meeting.source.open")
                         Button(L("Сохранить исходную запись…")) { store.exportMeetingAudio(meeting.id, original: true) }
                             .accessibilityIdentifier("meeting.source.export")
-                    }.buttonStyle(.bordered)
+                    }.buttonStyle(AfterSoftButtonStyle())
                 } else if playback == nil {
                     Text(L("Откройте файлы встречи, чтобы проверить исходную запись."))
                         .font(AppTypography.control).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    Button(L("Показать файлы встречи")) { store.showMeetingFiles(meeting.id) }.buttonStyle(.bordered)
+                    Button(L("Показать файлы встречи")) { store.showMeetingFiles(meeting.id) }.buttonStyle(AfterSoftButtonStyle())
                 }
                 if source != nil || playback != nil {
                     Button(store.runtimeReady ? (store.settings.speechMode == "cloud" ? L("Распознать в облаке…") : L("Распознать встречу")) : L("Установить модели")) {
                         if store.runtimeReady { Task { await store.processMeeting(meeting.id) } }
                         else { store.openSettings("speech") }
-                    }.buttonStyle(.borderedProminent).tint(Ink.actionFill).controlSize(.large).disabled(store.jobs.contains(objectID: meeting.id))
+                    }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).controlSize(.large).disabled(store.jobs.contains(objectID: meeting.id))
                 }
             }
             if let error = meeting.error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning) }

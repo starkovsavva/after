@@ -112,9 +112,9 @@ struct KnowledgeMaterialsView: View {
                         .font(AppTypography.control).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if !hasMaterials {
                         HStack {
-                            Button(L("Новая заметка")) { createNote() }.buttonStyle(.borderedProminent)
+                            Button(L("Новая заметка")) { createNote() }.buttonStyle(AfterSoftButtonStyle(.primary))
                                 .accessibilityIdentifier("knowledge.materials.new-note")
-                            Button(L("Записать встречу")) { app.showingRecord = true }.buttonStyle(.bordered)
+                            Button(L("Записать встречу")) { app.showingRecord = true }.buttonStyle(AfterSoftButtonStyle())
                                 .disabled(app.isRecording || app.startingRecording || app.stoppingRecording)
                                 .accessibilityIdentifier("knowledge.materials.record")
                         }

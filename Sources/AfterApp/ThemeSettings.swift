@@ -162,10 +162,12 @@ struct ThemeSettingsView: View {
         Binding(get: { theme.palette[keyPath: keyPath] }, set: { value in theme.change { $0[keyPath: keyPath] = value } })
     }
     private func row<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 18) {
-            Text(title).frame(width: 120, alignment: .leading)
-            content()
-            Spacer(minLength: 0)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 18) {
+                Text(title).frame(width: 120, alignment: .leading)
+                content()
+            }
+            VStack(alignment: .leading, spacing: 8) { Text(title); content() }
         }
     }
     var body: some View {
@@ -173,18 +175,17 @@ struct ThemeSettingsView: View {
             AppPageHeader(title: L("Оформление"), compact: true)
             VStack(alignment: .leading, spacing: 18) {
                 row(L("Стиль")) {
-                    Picker(L("Стиль"), selection: binding(\.material)) {
-                        ForEach(AppearanceMaterial.allCases) { material in Text(material.title).tag(material.rawValue) }
-                    }.labelsHidden().frame(width: 210).accessibilityIdentifier("theme.material")
+                    AfterCompactPicker(L("Стиль"), selection: binding(\.material),
+                        options: AppearanceMaterial.allCases.map { .init(title: $0.title, value: $0.rawValue) }, showsLabel: false, identifier: "theme.material")
                 }
                 if theme.palette.material == AppearanceMaterial.nativeLiquidGlass.rawValue,
                    !AppearanceMaterial.nativeLiquidGlass.availabilityDescription.isEmpty {
                     Text(AppearanceMaterial.nativeLiquidGlass.availabilityDescription)
                         .font(AppTypography.caption).foregroundStyle(Ink.secondaryText)
                 }
-                Picker(L("Внешний вид"), selection: binding(\.appearance)) {
-                    Text(L("Как в macOS")).tag("system"); Text(L("Светлый")).tag("light"); Text(L("Тёмный")).tag("dark")
-                }.pickerStyle(.segmented).labelsHidden().accessibilityLabel(L("Внешний вид"))
+                AfterChoicePicker(L("Внешний вид"), selection: binding(\.appearance), options: [
+                    .init(title: L("Как в macOS"), value: "system"), .init(title: L("Светлый"), value: "light"), .init(title: L("Тёмный"), value: "dark")])
+                    .accessibilityIdentifier("theme.appearance")
                 row(L("Цвет акцента")) {
                     HStack(spacing: 10) {
                         ForEach([(L("Графит"), "65696F"), (L("Синий"), "2867B2"), (L("Зелёный"), "34745A"), (L("Янтарный"), "A26826")], id: \.1) { name, hex in
@@ -203,14 +204,12 @@ struct ThemeSettingsView: View {
                     }
                 }
                 row(L("Размер текста")) {
-                    Picker(L("Размер текста"), selection: binding(\.textSize)) {
-                        ForEach(12...18, id: \.self) { Text(LF("{0} пт", arguments: [String(describing: ($0))])).tag($0) }
-                    }.labelsHidden().frame(width: 110)
+                    AfterCompactPicker(L("Размер текста"), selection: binding(\.textSize),
+                        options: (12...18).map { .init(title: LF("{0} пт", arguments: [String($0)]), value: $0) }, showsLabel: false)
                 }
                 row(L("Плотность")) {
-                    Picker(L("Плотность"), selection: binding(\.density)) {
-                        Text(L("Обычная")).tag("regular"); Text(L("Компактная")).tag("compact")
-                    }.labelsHidden().frame(width: 160)
+                    AfterCompactPicker(L("Плотность"), selection: binding(\.density),
+                        options: [.init(title: L("Обычная"), value: "regular"), .init(title: L("Компактная"), value: "compact")], showsLabel: false)
                 }
             }
             ThemeApplicationPreview()
@@ -220,7 +219,7 @@ struct ThemeSettingsView: View {
                 Button(L("Экспортировать…")) { theme.exportPalette() }
                 Spacer()
                 Button(L("Сбросить")) { theme.change { $0 = .graphite } }.disabled(theme.palette == .graphite)
-            }.buttonStyle(.bordered)
+            }.buttonStyle(AfterSoftButtonStyle())
             if let error = theme.error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled) }
         }
     }

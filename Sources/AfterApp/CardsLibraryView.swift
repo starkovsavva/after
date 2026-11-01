@@ -125,7 +125,9 @@ struct CardsWorkspaceView: View {
             if hasContent {
                 HStack(spacing: 12) {
                     if !embedded && decks.count > 1 {
-                        Picker(L("Колода"), selection: $deck) { Text(L("Все колоды")).tag(""); ForEach(decks) { Text($0.title).tag($0.id) } }.labelsHidden().frame(maxWidth: 210, alignment: .leading)
+                        AfterCompactPicker(L("Колода"), selection: $deck, options:
+                            [.init(title: L("Все колоды"), value: "")] + decks.map { .init(title: $0.title, value: $0.id) },
+                            showsLabel: false, maxWidth: 210, searchable: true)
                     }
                     TextField(L("Найти карточку"), text: $query).textFieldStyle(.roundedBorder).frame(minWidth: 120, maxWidth: 320)
                     Spacer()
@@ -174,7 +176,7 @@ struct CardsWorkspaceView: View {
         VStack(alignment: .leading, spacing: 14) {
             if workspace.error != nil || !workspace.errors.isEmpty {
                 Text(hasContent ? L("Нет доступных карточек") : L("Не удалось загрузить карточки")).font(AppTypography.heading)
-                Button(L("Повторить загрузку")) { Task { await reload() } }.buttonStyle(.bordered)
+                Button(L("Повторить загрузку")) { Task { await reload() } }.buttonStyle(AfterSoftButtonStyle())
             } else if !hasContent {
                 Text(L("Карточек пока нет")).font(AppTypography.heading)
                 if embedded, scopeMeeting?.libraryKind != "cards" {
@@ -186,24 +188,24 @@ struct CardsWorkspaceView: View {
                     Text(L("Сохраняйте фразы и понятия из встреч и повторяйте их здесь.")).font(AppTypography.body).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 12) {
-                    Button(L("Создать карточку")) { editor = CardEditorRequest(meeting: scopeMeeting) }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                    Button(L("Создать карточку")) { editor = CardEditorRequest(meeting: scopeMeeting) }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                     Button(embedded ? L("Открыть конспект") : L("Взять из встречи…")) {
                         if embedded { app.tab = "summary" } else { showingMeetings = true }
-                    }.buttonStyle(.bordered)
+                    }.buttonStyle(AfterSoftButtonStyle())
                 }
                 if !embedded {
                     Button(L("Импортировать…")) { chooseImport() }.buttonStyle(.plain).font(AppTypography.control).foregroundStyle(.secondary)
                 }
             } else if !query.isEmpty {
                 Text(L("Ничего не найдено")).font(AppTypography.heading)
-                Button(L("Очистить поиск")) { query = "" }.buttonStyle(.bordered)
+                Button(L("Очистить поиск")) { query = "" }.buttonStyle(AfterSoftButtonStyle())
             } else if mode == "study" {
                 Text(L("На сегодня всё")).font(AppTypography.heading)
                 Text(matching.allSatisfy(\.suspended) ? L("Эти карточки исключены из повторения.") : L("Можно посмотреть все карточки или вернуться позже.")).font(AppTypography.body).foregroundStyle(.secondary)
-                Button(L("Все карточки")) { mode = "all" }.buttonStyle(.bordered)
+                Button(L("Все карточки")) { mode = "all" }.buttonStyle(AfterSoftButtonStyle())
             } else {
                 Text(L("В этой колоде нет карточек")).font(AppTypography.heading)
-                Button(L("Все колоды")) { deck = "" }.buttonStyle(.bordered)
+                Button(L("Все колоды")) { deck = "" }.buttonStyle(AfterSoftButtonStyle())
             }
         }.frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading).padding(.vertical, 30)
     }
@@ -219,7 +221,7 @@ struct CardsWorkspaceView: View {
                 }.buttonStyle(.plain)
             }.frame(height: 260)
             if app.filteredMeetings.isEmpty {
-                Button(L("Открыть встречи")) { showingMeetings = false; app.librarySection = "meetings" }.buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                Button(L("Открыть встречи")) { showingMeetings = false; app.librarySection = "meetings" }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
             }
         }.padding(24).frame(width: 540).appControlDefaults()
     }
@@ -228,7 +230,7 @@ struct CardsWorkspaceView: View {
             Image(systemName: "exclamationmark.triangle").foregroundStyle(Ink.warning)
             Text(text).font(AppTypography.control).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             Spacer()
-            Button(L("Повторить")) { Task { await reload() } }.buttonStyle(.bordered).disabled(workspace.loading)
+            Button(L("Повторить")) { Task { await reload() } }.buttonStyle(AfterSoftButtonStyle()).disabled(workspace.loading)
         }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Ink.warning.opacity(0.07))
     }
     private func reload() async { await workspace.reload(root: app.root, meetingID: meetingID); revealTarget() }
@@ -273,7 +275,10 @@ private struct CardImportView: View {
             }
             Text(url.lastPathComponent).font(AppTypography.control).foregroundStyle(.secondary)
             TextField(L("Название колоды"), text: $title).textFieldStyle(.roundedBorder)
-            Picker(L("Разделитель"), selection: $separator) { Text(L("Автоматически")).tag("auto"); Text(L("Табуляция")).tag("tab"); Text(L("Запятая")).tag("comma"); Text(L("Точка с запятой")).tag("semicolon") }
+            AfterCompactPicker(L("Разделитель"), selection: $separator, options: [
+                .init(title: L("Автоматически"), value: "auto"), .init(title: L("Табуляция"), value: "tab"),
+                .init(title: L("Запятая"), value: "comma"), .init(title: L("Точка с запятой"), value: "semicolon")
+            ])
             Text(L("Первые два столбца — вопрос и ответ. Столбец Context или «Контекст» добавляется отдельно. Карточки начнут повторяться как новые.")).font(AppTypography.control).foregroundStyle(.secondary)
             if loading { ProgressView().frame(maxWidth: .infinity) }
             if let error { Text(error).font(AppTypography.control).foregroundStyle(Ink.warning).textSelection(.enabled) }
@@ -291,7 +296,7 @@ private struct CardImportView: View {
             HStack {
                 Button(L("Отмена")) { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
                 Spacer()
-                Button(saving ? L("Импортирую…") : L("Импортировать")) { save() }.buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(loading || saving || preview?.cards.isEmpty != false || app.busy).keyboardShortcut(.defaultAction)
+                Button(saving ? L("Импортирую…") : L("Импортировать")) { save() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).disabled(loading || saving || preview?.cards.isEmpty != false || app.busy).keyboardShortcut(.defaultAction)
             }
         }.padding(28).frame(width: 650).task(id: separator) { await loadPreview() }
             .onAppear { title = url.deletingPathExtension().lastPathComponent }

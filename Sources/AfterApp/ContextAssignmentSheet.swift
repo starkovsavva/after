@@ -67,11 +67,10 @@ struct ContextAssignmentSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(mode == "project" ? L("Связать встречу с проектом") : L("Добавить человека к встрече")).font(AppTypography.modalTitle)
-            Picker(L("Встреча"), selection: $meetingID) {
-                if candidates.isEmpty { Text(L("Нет встреч")).tag("") }
-                if !meetingID.isEmpty && !candidates.contains(where: { $0.id == meetingID }) { Text(L("Встреча недоступна")).tag(meetingID) }
-                ForEach(candidates) { Text($0.title).tag($0.id) }
-            }.accessibilityIdentifier("contexts.link.meeting")
+            AfterCompactPicker(L("Встреча"), selection: $meetingID,
+                options: (candidates.isEmpty ? [.init(title: L("Нет встреч"), value: "")] : [])
+                    + ((!meetingID.isEmpty && !candidates.contains(where: { $0.id == meetingID })) ? [.init(title: L("Встреча недоступна"), value: meetingID)] : [])
+                    + candidates.map { .init(title: $0.title, value: $0.id) }, searchable: true, identifier: "contexts.link.meeting")
             TextField(mode == "project" ? L("Название проекта") : L("Имя человека"), text: $label)
                 .textFieldStyle(.roundedBorder).focused($labelFocused).accessibilityIdentifier("contexts.link.label")
                 .onSubmit { save() }
@@ -84,7 +83,7 @@ struct ContextAssignmentSheet: View {
             HStack {
                 Spacer()
                 Button(L("Отмена")) { finish() }.keyboardShortcut(.cancelAction).accessibilityIdentifier("contexts.link.cancel")
-                Button(L("Связать")) { save() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).tint(Ink.actionFill)
+                Button(L("Связать")) { save() }.keyboardShortcut(.defaultAction).buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
                     .disabled(app.isTerminating || currentDraft?.normalizedLabel.isEmpty != false || !candidates.contains(where: { $0.id == meetingID }))
                     .accessibilityIdentifier("contexts.link.save")
             }

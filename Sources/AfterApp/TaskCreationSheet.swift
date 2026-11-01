@@ -78,7 +78,8 @@ struct TaskCreationSheet: View {
                         }
                     }
                     field(L("Источник")) {
-                        Picker(L("Источник"), selection: $source) { ForEach(TaskWorkspaceSource.allCases) { Text(L($0.title)).tag($0) } }.labelsHidden()
+                        AfterCompactPicker(L("Источник"), selection: $source, options:
+                            TaskWorkspaceSource.allCases.map { .init(title: L($0.title), value: $0) }, showsLabel: false)
                     }
                     if source != .local {
                         field(L("Ссылка на оригинал")) { TextField("https://…", text: $externalURL).accessibilityIdentifier("tasks.form.external-url") }
@@ -91,7 +92,7 @@ struct TaskCreationSheet: View {
                 Spacer()
                 Button(L("Отмена")) { if dirty { confirmingDiscard = true } else { close() } }.keyboardShortcut(.cancelAction).accessibilityIdentifier("tasks.form.cancel")
                 Button(task == nil ? L("Создать") : L("Сохранить"), action: save)
-                    .buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.defaultAction)
+                    .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).keyboardShortcut(.defaultAction)
                     .disabled(!ready || loading || !valid || notes.taskWorkspaceBusy).accessibilityIdentifier("tasks.form.save")
             }
         }.padding(24).frame(width: 540).frame(minHeight: 540, idealHeight: 650).appControlDefaults()

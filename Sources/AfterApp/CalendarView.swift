@@ -24,7 +24,7 @@ struct CalendarWorkspace: View {
                     AppWorkspaceHeader(title: L("Календарь")) {
                         Button { showingCalendars.toggle() } label: {
                             Label(L("Календари"), systemImage: "line.3.horizontal.decrease")
-                        }.buttonStyle(.bordered).accessibilityIdentifier("calendar.sources")
+                        }.buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("calendar.sources")
                             .popover(isPresented: $showingCalendars, arrowEdge: .bottom) { sources }
                         Button { calendar.refresh() } label: {
                             ZStack {
@@ -34,7 +34,7 @@ struct CalendarWorkspace: View {
                         }.buttonStyle(.plain).help(refreshHelp).accessibilityLabel(calendar.refreshing ? L("Обновляю календарь") : L("Обновить календарь"))
                             .disabled(calendar.refreshing).accessibilityIdentifier("calendar.refresh")
                         Button { createDefault() } label: { Label(L("Событие"), systemImage: "plus") }
-                            .buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(!canCreate)
+                            .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).disabled(!canCreate)
                             .accessibilityIdentifier("calendar.add")
                     }
                     ViewThatFits(in: .horizontal) {
@@ -85,7 +85,7 @@ struct CalendarWorkspace: View {
     }
     private var navigation: some View {
         HStack(spacing: 10) {
-            Button(L("Сегодня")) { calendar.selectedDate = Date() }.buttonStyle(.bordered)
+            Button(L("Сегодня")) { calendar.selectedDate = Date() }.buttonStyle(AfterSoftButtonStyle())
                 .accessibilityIdentifier("calendar.today")
             HStack(spacing: 2) {
                 Button { move(-1) } label: { Image(systemName: "chevron.left").frame(width: 24, height: 24) }
@@ -183,10 +183,10 @@ private struct CalendarConnection: View {
                 .font(AppTypography.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
                 Button(calendar.requesting ? L("Проверяю доступ…") : calendar.permissionDenied ? L("Проверить доступ") : L("Подключить календарь")) { Task { await calendar.connect() } }
-                    .buttonStyle(.borderedProminent).tint(Ink.actionFill).disabled(calendar.requesting || !calendar.canConnect)
+                    .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).disabled(calendar.requesting || !calendar.canConnect)
                     .accessibilityIdentifier("calendar.connect")
                 if calendar.permissionDenied {
-                    Button(L("Разрешить в macOS")) { CalendarStore.openPermissions() }.buttonStyle(.bordered)
+                    Button(L("Разрешить в macOS")) { CalendarStore.openPermissions() }.buttonStyle(AfterSoftButtonStyle())
                         .accessibilityIdentifier("calendar.permissions")
                 }
             }
@@ -325,10 +325,9 @@ struct CalendarEventEditor: View {
                     if let event, !event.writable {
                         LabeledContent(L("Календарь"), value: event.calendarTitle)
                     } else {
-                        Picker(L("Календарь"), selection: $calendarID) {
-                            if calendarID.isEmpty { Text(L("Выберите календарь")).tag("") }
-                            ForEach(calendar.calendars.filter(\.writable)) { Text($0.label).tag($0.id) }
-                        }
+                        AfterCompactPicker(L("Календарь"), selection: $calendarID, options:
+                            (calendarID.isEmpty ? [.init(title: L("Выберите календарь"), value: "")] : []) +
+                            calendar.calendars.filter(\.writable).map { .init(title: $0.label, value: $0.id) }, searchable: true)
                     }
                 }.disabled(event?.writable == false)
                 if let link {
@@ -339,7 +338,7 @@ struct CalendarEventEditor: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(L("После обновления конспекта на этом месте другая задача. Событие сохранено без изменений: отвяжите его или свяжите с новой задачей."))
                                 .font(AppTypography.control).foregroundStyle(Ink.warning)
-                            Button(L("Связать с этой задачей")) { calendar.resolve(task: currentTask, useTask: true); load() }.buttonStyle(.bordered)
+                            Button(L("Связать с этой задачей")) { calendar.resolve(task: currentTask, useTask: true); load() }.buttonStyle(AfterSoftButtonStyle())
                         }
                     } else if link.conflict, let currentTask {
                         VStack(alignment: .leading, spacing: 10) {
@@ -348,7 +347,7 @@ struct CalendarEventEditor: View {
                             HStack {
                                 Button(L("Из задачи")) { calendar.resolve(task: currentTask, useTask: true); load() }
                                 Button(L("Из календаря")) { calendar.resolve(task: currentTask, useTask: false); load() }
-                            }.buttonStyle(.bordered)
+                            }.buttonStyle(AfterSoftButtonStyle())
                         }
                     }
                     DisclosureGroup(L("Как связаны задача и событие")) {
@@ -371,9 +370,9 @@ struct CalendarEventEditor: View {
                         Button(L("Открыть Календарь")) { CalendarStore.openSystemCalendar() }.buttonStyle(.borderless)
                     }
                     Spacer()
-                    Button(L("Отмена")) { finish() }.buttonStyle(.bordered).accessibilityIdentifier("calendar.editor.cancel")
+                    Button(L("Отмена")) { finish() }.buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("calendar.editor.cancel")
                     Button(event == nil && link == nil ? L("Добавить") : L("Сохранить"), action: save)
-                        .buttonStyle(.borderedProminent).tint(Ink.actionFill).keyboardShortcut(.defaultAction).disabled(!canSave)
+                        .buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill).keyboardShortcut(.defaultAction).disabled(!canSave)
                         .accessibilityIdentifier("calendar.editor.save")
                 }
             }

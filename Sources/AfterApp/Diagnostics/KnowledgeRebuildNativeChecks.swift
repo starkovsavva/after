@@ -135,9 +135,17 @@ enum KnowledgeRebuildNativeChecks {
         if let document=views(host,as:NSScrollView.self).first(where:{$0.frame.width>600 && $0.frame.height>200})?.documentView {
             document.scroll(NSPoint(x:0,y:0))
         }
+        let reviewedProposal = controller.proposal, reviewedInstruction = controller.instruction
         for locale in [UILanguage.ru,.en] {
             setenv("POSLE_UI_LANGUAGE",locale.rawValue,1);_ = UILocalization.shared.setLanguage(locale)
-            try await Task.sleep(for:.milliseconds(80));draw()
+            let expectedStatus = locale == .ru ? "Изменения проверены. Теперь их можно применить." : "Changes validated. You can now apply them."
+            try await wait {
+                draw()
+                return controller.status == expectedStatus && NativeTabNavigation.nodes(in:host).contains { $0.value == expectedStatus }
+            }
+            guard controller.proposal == reviewedProposal, controller.instruction == reviewedInstruction, generatedIDs.count == 1 else {
+                throw AppError.message("Live rebuild status translation changed proposal content or regenerated it")
+            }
             try capture(host,to:root.appendingPathComponent("knowledge-rebuild-review-"+locale.rawValue+".png"))
         }
         try NativeTabNavigation.press("knowledge.rebuild.apply",in:host)
@@ -195,12 +203,17 @@ enum KnowledgeRebuildNativeChecks {
         }
         // An uncancellable late provider response is ignored after dismissal.
         var continuation:CheckedContinuation<Data,Never>?
-        let cancelled=KnowledgeRebuildController(root:root) { _,_,_,_ in
-            await withCheckedContinuation { continuation=$0 }
+        let progressFixture = "Готовлю предложение…"
+        let cancelled=KnowledgeRebuildController(root:root) { _,_,_,event in
+            event(progressFixture)
+            return await withCheckedContinuation { continuation=$0 }
         }
         cancelled.selectedNoteIDs=[originalA.id];cancelled.instruction="Подготовь предложение"
         cancelled.generate(notes:store.notes.notes,folderID:nil,provider:"offline fixture")
         try await wait {continuation != nil}
+        guard UILocalization.shared.resolvedLanguage == "en", cancelled.status == progressFixture else {
+            throw AppError.message("Provider progress matching a translation key must remain verbatim")
+        }
         cancelled.cancel();continuation?.resume(returning:cancellationPreview)
         try await Task.sleep(for:.milliseconds(80))
         guard cancelled.preview==nil,cancelled.phase == .select,cancelled.receipt==nil else {throw AppError.message("Cancelled generation resurrected a plan or applied changes")}
@@ -208,6 +221,7 @@ enum KnowledgeRebuildNativeChecks {
         print("PASS: rejecting proposed parts removes dependent references and requires a fresh server preview before Apply")
         print("PASS: rebuild applies and safely undoes real split/merge provenance; stale reviews and conflicting undo preserve user changes")
         print("PASS: an initial delayed history snapshot cannot swallow Apply's refresh or hide its operation")
+        print("PASS: live EN/RU status translation preserves the reviewed proposal; provider progress remains verbatim")
         print("PASS: cancelled late provider results are ignored; no real provider or credentials used")
     }
     private static func enabled(_ id:String,in root:NSView)->Bool {NativeTabNavigation.nodes(in:root).contains{$0.identifier==id && $0.enabled}}

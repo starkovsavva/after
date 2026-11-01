@@ -92,8 +92,11 @@ private final class KnowledgeTopicsController: ObservableObject {
             }
         }
     }
-    func change(root: URL, arguments: [String: Any], completed: @escaping (Bool) -> Void) {
-        guard !busy, mutationTask == nil, let result else { return }
+    func change(root: URL, arguments: [String: Any], completed: @escaping (Result<Void, Error>) -> Void) {
+        guard !busy, mutationTask == nil, let result else {
+            completed(.failure(AppError.message(L("Подборки обновляются. Подождите немного и повторите сохранение."))))
+            return
+        }
         busy = true; error = nil
         var input = arguments
         input["operationID"] = UUID().uuidString.lowercased()
@@ -102,9 +105,9 @@ private final class KnowledgeTopicsController: ObservableObject {
         mutationTask = Task {
             do {
                 _ = try await Self.request(root: root, command: "kb-collection-change", arguments: input)
-                mutationTask = nil; busy = false; completed(true)
+                mutationTask = nil; busy = false; completed(.success(()))
             } catch {
-                mutationTask = nil; busy = false; self.error = error.localizedDescription; completed(false)
+                mutationTask = nil; busy = false; self.error = error.localizedDescription; completed(.failure(error))
             }
         }
     }
@@ -179,8 +182,16 @@ struct KnowledgeBaseView: View {
         app.openCapturedNote(current)
     }
     private func change(_ arguments: [String: Any]) {
-        controller.change(root: app.root, arguments: arguments) { succeeded in
-            if succeeded { app.notes.reload(); topicOffset = 0; reload() }
+        controller.change(root: app.root, arguments: arguments) { result in
+            if case .success = result { app.notes.reload(); topicOffset = 0; reload() }
+        }
+    }
+    private func saveCollection(_ arguments: [String: Any]) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            controller.change(root: app.root, arguments: arguments) { result in
+                if case .success = result { app.notes.reload(); topicOffset = 0; reload() }
+                continuation.resume(with: result)
+            }
         }
     }
     private func saveTopic(_ topic: KnowledgeTopic) {
@@ -213,7 +224,7 @@ struct KnowledgeBaseView: View {
                     Spacer()
                     if section == "collections" {
                         Button(L("Создать подборку")) { newCollectionName = L("Новая подборка"); creatingCollection = true }
-                            .buttonStyle(.bordered).disabled(controller.busy || controller.result == nil)
+                            .buttonStyle(AfterSoftButtonStyle()).disabled(controller.busy || controller.result == nil)
                             .accessibilityIdentifier("knowledge.collection.create")
                     }
                 }
@@ -382,18 +393,17 @@ struct KnowledgeBaseView: View {
         }.background(Ink.paper)
             .sheet(isPresented: $showingRebuild) { KnowledgeRebuildSheet(store: app) }
             .sheet(isPresented: $creatingCollection) {
-                KnowledgeCollectionPicker(excluded: [], capacity: 200, title: L("Новая подборка"), name: $newCollectionName) { selected in
-                    change(["action":"create", "name":newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines),
+                KnowledgeCollectionPicker(excluded: [], capacity: 200, scopeFolderID: app.folderSelection,
+                    title: L("Новая подборка"), name: $newCollectionName) { selected in
+                    try await saveCollection(["action":"create", "name":newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines),
                             "sources":selected.map { ["noteID":$0.id,"revision":$0.revision] }])
-                    creatingCollection = false
                 }.environmentObject(app)
             }
             .sheet(item:$addingCollection) { collection in
                 KnowledgeCollectionPicker(excluded:Set(collection.sources.map(\.noteID)),
-                    capacity:200-collection.sources.count) { selected in
-                    change(["action":"add-sources","collectionID":collection.id,"expectedRevision":collection.revision,
+                    capacity:200-collection.sources.count, scopeFolderID: app.folderSelection) { selected in
+                    try await saveCollection(["action":"add-sources","collectionID":collection.id,"expectedRevision":collection.revision,
                             "sources":selected.map { ["noteID":$0.id,"revision":$0.revision] }])
-                    addingCollection=nil
                 }.environmentObject(app)
             }
             .alert(L("Переименовать подборку"), isPresented: $showingRenameCollection) {
@@ -417,81 +427,5 @@ struct KnowledgeBaseView: View {
                 if let changedRoot = notification.object as? URL,
                    changedRoot.standardizedFileURL.resolvingSymlinksInPath() == app.root.standardizedFileURL.resolvingSymlinksInPath() { refreshPage() }
             }
-    }
-}
-
-/// User explicitly chooses note IDs; the callback captures each displayed
-/// revision so edits while the picker is open cannot be added unnoticed.
-private struct KnowledgeCollectionPicker: View {
-    @EnvironmentObject private var app: AppStore
-    @Environment(\.dismiss) private var dismiss
-    let excluded: Set<String>
-    let capacity: Int
-    var title = L("Добавить заметки")
-    var name: Binding<String>? = nil
-    let onAdd: ([CapturedNote]) -> Void
-    @State private var query=""
-    @State private var selected: [String:Int]=[:]
-    @State private var error: String?
-
-    private func permitted(_ note: CapturedNote) -> Bool {
-        guard note.kind == "note", note.trashedAt == nil, !excluded.contains(note.id) else {return false}
-        let folder=note.folderID ?? note.meetingID.flatMap { app.folderID(for:$0) }
-        guard app.folderSelection == nil || folder == app.folderSelection else {return false}
-        return app.effectiveSettings(for:note.folderID == nil ? note.meetingID : nil,folderID:note.folderID).features.knowledgeBase
-    }
-    private var candidates: [CapturedNote] {
-        let value=query.trimmingCharacters(in:.whitespacesAndNewlines)
-        return app.notes.workspace.notes.filter { note in
-            permitted(note) && (value.isEmpty || note.displayTitle.localizedCaseInsensitiveContains(value) ||
-                note.text.localizedCaseInsensitiveContains(value))
-        }
-    }
-    var body: some View {
-        VStack(alignment:.leading,spacing:16) {
-            AppPageHeader(title:title,modal:true)
-            if let name {
-                TextField(L("Название подборки"), text: name).textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("knowledge.collection.pick.name")
-            }
-            Text(L("Выберите заметки. Их содержимое останется без изменений."))
-                .font(AppTypography.control).foregroundStyle(.secondary)
-            Text(LF("Доступно мест в подборке: {0}",arguments:[String(capacity)]))
-                .font(AppTypography.caption).foregroundStyle(.secondary)
-            TextField(L("Поиск заметок"),text:$query).textFieldStyle(.roundedBorder)
-            ScrollView {
-                LazyVStack(alignment:.leading,spacing:8) {
-                    ForEach(candidates) { note in
-                        Toggle(isOn:Binding(get:{selected[note.id] != nil},set:{value in
-                            if value { if selected.count < capacity {selected[note.id]=note.revision} }
-                            else {selected.removeValue(forKey:note.id)}
-                        })) {
-                            Text(note.displayTitle).lineLimit(2)
-                        }.toggleStyle(.checkbox)
-                            .disabled(selected[note.id] == nil && selected.count >= capacity)
-                            .accessibilityIdentifier("knowledge.collection.pick.\(note.id)")
-                    }
-                }.frame(maxWidth:.infinity,alignment:.leading)
-            }.frame(maxHeight:.infinity)
-            if let error { Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning) }
-            HStack {
-                Text(LF("Выбрано: {0}",arguments:[String(selected.count)])).font(AppTypography.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button(L("Отмена")) {dismiss()}.keyboardShortcut(.cancelAction)
-                Button(name == nil ? L("Добавить") : L("Создать подборку")) {
-                    let byID=Dictionary(app.notes.workspace.notes.map {($0.id,$0)},uniquingKeysWith:{first,_ in first})
-                    let picked=selected.keys.sorted().compactMap { id -> CapturedNote? in
-                        guard let note=byID[id],permitted(note),note.revision==selected[id] else {return nil}
-                        return note
-                    }
-                    guard picked.count==selected.count else {
-                        error=L("Заметки изменились или стали недоступны. Выберите их заново."); return
-                    }
-                    onAdd(picked)
-                }.disabled(selected.isEmpty || name.map { $0.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } == true)
-                    .keyboardShortcut(.defaultAction)
-                    .accessibilityIdentifier("knowledge.collection.pick.confirm")
-            }
-        }.padding(24).frame(minWidth:500,idealWidth:580,minHeight:420,idealHeight:540).appControlDefaults()
     }
 }

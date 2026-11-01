@@ -89,11 +89,10 @@ struct TaskDetailView: View {
         }
     }
     private var status: some View {
-        Picker(L("В «After»"), selection: Binding(get: { task.status }, set: { value in
+        AfterCompactPicker(L("В «After»"), selection: Binding(get: { task.status }, set: { value in
             if notes.updateTaskWorkspace(task, patch: ["status": value.rawValue]) != nil { app.reloadLibrary() }
-        })) {
-            ForEach(TaskWorkspaceStatus.allCases) { Label(L($0.title), systemImage: $0.symbol).tag($0) }
-        }.fixedSize().accessibilityIdentifier("tasks.detail-status")
+        }), options: TaskWorkspaceStatus.allCases.map { .init(title: L($0.title), value: $0) }, maxWidth: 240,
+            identifier: "tasks.detail-status")
     }
     @ViewBuilder private var metadata: some View {
         if !task.due.isEmpty {
