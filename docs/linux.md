@@ -70,7 +70,7 @@ UI-сценарий и не проверка нормального закрыт
 
 ## Подтверждённый срез
 
-Локально на Arch прошли portable-профиль (429 core + 4 CLI теста, frontend build/test,
+Локально на Arch прошли portable-профиль (434 core + 4 CLI теста, frontend build/test,
 host-тесты, 2 real-engine интеграции и настоящий Tauri IPC-сценарий) и native
 WebView startup smoke с bundled engine. Сценарий IPC также импортирует синтетический
 файл и проверяет чтение диапазона медиа. После исправления resource locator добавлен
@@ -87,5 +87,8 @@ Workspace use cases теперь координируются в `application/wo
 Модель и чистые политики очереди находятся в `domain/jobs.rs`; SQLite queue adapter
 в `infrastructure/job_queue.rs` использует общий `platform_fs` вместо Unix API.
 Этот storage-срез включён в Windows core tests, но Windows-прогон локально не выполнен.
-Swift пока управляет живыми заданиями; подключение общего executor и очереди к
+Типизированные enqueue/claim/update/cancel/retry/recover выполняет `application/jobs.rs`
+через transaction/clock/ID порты; `jobs.rs` сохраняет Swift/CLI JSON API. Snapshot
+читает jobs/count/account pauses в одной read-транзакции. Swift пока управляет
+живыми заданиями; подключение общего executor и очереди к
 Tauri — следующие шаги. Подробности: [границы очереди](decisions/job-queue-boundaries.md).

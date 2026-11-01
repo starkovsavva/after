@@ -1,41 +1,26 @@
-//! Durable native work queue. SQLite transactions own eligibility; executors own handles.
-use anyhow::{bail, ensure, Context, Result};
-use chrono::Utc;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
-use crate::domain::jobs::{chatgpt_account, reached_chatgpt_limit, resource_available, secret_free, Job};
-use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use std::{
-    collections::HashSet,
-    fs,
-    path::Path,
-    time::Duration,
+//! SQLite implementation of the application queue ports. No transport dispatch
+//! or scheduling rules live here; a callback owns one immediate transaction.
+use crate::application::job_ports::{
+    JobMatchScope, JobQueueRepository, JobQueueTransaction, JobSelection,
 };
-use uuid::Uuid;
+use crate::domain::jobs::{Job, JobQueueSnapshot};
+use anyhow::{Context, Result};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
+use serde_json::Value;
+use std::{fs, path::Path, time::Duration};
 
-
-fn now() -> f64 {
-    Utc::now().timestamp_millis() as f64 / 1000.0
-}
-fn bounded(text: &str, max: usize, label: &str) -> Result<()> {
-    ensure!(
-        text.len() <= max && !text.contains('\0'),
-        "Некорректное поле задания: {label}"
-    );
-    Ok(())
-}
-fn field<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
-    value[key]
-        .as_str()
-        .with_context(|| format!("Нет поля задания: {key}"))
-}
 fn open(root: &Path) -> Result<crate::platform_fs::GuardedConnection> {
     crate::platform_fs::private_directory(root)?;
     // Resolve system aliases such as macOS /tmp after validating the leaf.
     // SQLite NOFOLLOW also rejects symlinks in ancestor path components.
     let root = fs::canonicalize(root)?;
     let path = root.join("jobs.sqlite");
-    for name in ["jobs.sqlite", "jobs.sqlite-journal", "jobs.sqlite-wal", "jobs.sqlite-shm"] {
+    for name in [
+        "jobs.sqlite",
+        "jobs.sqlite-journal",
+        "jobs.sqlite-wal",
+        "jobs.sqlite-shm",
+    ] {
         crate::platform_fs::ordinary_single_file(&root.join(name))?;
     }
     let _file = crate::platform_fs::open_private(&path, false)?;
@@ -124,406 +109,145 @@ fn get(connection: &Connection, id: &str) -> Result<Job> {
         .context("Задание больше недоступно")?;
     Ok(serde_json::from_str(&text)?)
 }
-fn dedup(job: &Job) -> Result<String> {
-    let value = json!([
-        job.kind,
-        job.object_id,
-        job.input_revision,
-        job.config,
-        job.resource,
-        job.dependencies
-    ]);
-    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
-}
 fn persist(connection: &Connection, job: &Job) -> Result<()> {
-    connection.execute("INSERT INTO jobs(id,state,resource,object_id,dedup_key,created_at,updated_at,payload) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at,payload=excluded.payload", params![job.id,job.state,job.resource,job.object_id,dedup(job)?,job.created_at,job.updated_at,serde_json::to_string(job)?])?;
+    connection.execute("INSERT INTO jobs(id,state,resource,object_id,dedup_key,created_at,updated_at,payload) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at,payload=excluded.payload", params![job.id,job.state,job.resource,job.object_id,job.dedup_key()?,job.created_at,job.updated_at,serde_json::to_string(job)?])?;
     Ok(())
 }
-fn make_job(value: &Value) -> Result<Job> {
-    let kind = field(value, "kind")?;
-    ensure!(
-        !kind.is_empty()
-            && kind.len() <= 64
-            && kind
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'),
-        "Неизвестный тип задания"
-    );
-    let object_id = field(value, "objectID")?;
-    bounded(object_id, 512, "objectID")?;
-    ensure!(!object_id.is_empty(), "Нет объекта задания");
-    let input_revision = value["inputRevision"].as_str().unwrap_or("");
-    bounded(input_revision, 512, "inputRevision")?;
-    let resource = value["resource"].as_str().unwrap_or("light");
-    ensure!(
-        ["local-heavy", "cloud", "light"].contains(&resource),
-        "Неизвестный ресурс задания"
-    );
-    let config = value.get("config").cloned().unwrap_or_else(|| json!({}));
-    ensure!(
-        config.is_object() && serde_json::to_vec(&config)?.len() <= 262_144,
-        "Конфигурация задания слишком большая"
-    );
-    secret_free(&config, 0)?;
-    let dependencies: Vec<String> = serde_json::from_value(
-        value
-            .get("dependencies")
-            .cloned()
-            .unwrap_or_else(|| json!([])),
-    )?;
-    ensure!(
-        dependencies.len() <= 32
-            && dependencies.iter().collect::<HashSet<_>>().len() == dependencies.len(),
-        "Некорректные зависимости задания"
-    );
-    let title = value["title"].as_str().unwrap_or(kind);
-    bounded(title, 512, "title")?;
-    let time = now();
-    let job = Job {
-        id: Uuid::new_v4().to_string(),
-        kind: kind.into(),
-        object_id: object_id.into(),
-        input_revision: input_revision.into(),
-        config,
-        resource: resource.into(),
-        dependencies,
-        state: "queued".into(),
-        progress: 0.0,
-        message: String::new(),
-        created_at: time,
-        updated_at: time,
-        attempt: 0,
-        cancel_requested: false,
-        paid: value["paid"].as_bool().unwrap_or(false),
-        title: title.into(),
-        result: None,
-    };
-    Ok(job)
+
+pub(crate) struct SqliteJobQueue<'a> {
+    pub root: &'a Path,
 }
-fn insert_job(connection: &Connection, job: Job, any_state: bool) -> Result<(Job, bool)> {
-    let key = dedup(&job)?;
-    let sql = if any_state {
-        "SELECT payload FROM jobs WHERE dedup_key=?1 ORDER BY created_at LIMIT 1"
-    } else {
-        "SELECT payload FROM jobs WHERE dedup_key=?1 AND state IN ('queued','running','interrupted','blocked')"
-    };
-    if let Some(text) = connection
-        .query_row(sql, [key], |row| row.get::<_, String>(0))
-        .optional()?
-    {
-        return Ok((serde_json::from_str(&text)?, true));
+
+impl JobQueueRepository for SqliteJobQueue<'_> {
+    fn snapshot(&self) -> Result<JobQueueSnapshot> {
+        let mut connection = open(self.root)?;
+        // One read snapshot keeps jobs, counts and admission pauses consistent.
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let jobs = listed(&transaction)?;
+        let total: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))?;
+        let paused_chatgpt_failures = paused_chatgpt_jobs(&transaction)?;
+        transaction.commit()?;
+        Ok(JobQueueSnapshot {
+            jobs,
+            total: total.try_into().context("Некорректный размер очереди")?,
+            paused_chatgpt_failures,
+        })
     }
-    for dependency in &job.dependencies {
-        let _ = get(connection, dependency)?;
+
+    fn get(&self, id: &str) -> Result<Job> {
+        let connection = open(self.root)?;
+        get(&connection, id)
     }
-    let pending: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM jobs WHERE state IN ('queued','running')",
-        [],
-        |row| row.get(0),
-    )?;
-    ensure!(
-        pending < 256,
-        "В очереди уже 256 операций. Дождитесь завершения или отмените лишние."
-    );
-    persist(connection, &job)?;
-    Ok((job, false))
-}
-fn enqueue(connection: &mut Connection, value: &Value) -> Result<Value> {
-    let parent = make_job(value)?;
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let (parent, deduplicated) = insert_job(&transaction, parent, false)?;
-    let follow_ups = match value.get("followUps") {
-        None => Vec::new(),
-        Some(value) => value
-            .as_array()
-            .context("Некорректные следующие этапы задания")?
-            .clone(),
-    };
-    ensure!(
-        follow_ups.len() <= 16,
-        "Слишком много следующих этапов задания"
-    );
-    let mut children = Vec::new();
-    for definition in follow_ups {
-        let mut child = make_job(&definition)?;
-        ensure!(
-            child.object_id == parent.object_id,
-            "Связанные этапы должны относиться к одному объекту"
-        );
-        child.input_revision = child.input_revision.replace("$parent", &parent.id);
-        if !child.dependencies.contains(&parent.id) {
-            child.dependencies.push(parent.id.clone());
-        }
-        // One child per exact parent attempt chain, including terminal children:
-        // repeated subscriptions cannot revive an explicitly cancelled stage.
-        let (child, _) = insert_job(&transaction, child, true)?;
-        children.push(child);
-    }
-    transaction.commit()?;
-    Ok(json!({"job":parent,"deduplicated":deduplicated,"followUps":children}))
-}
-/// A dependent stage never holds admission/power/update gates after its parent
-/// stops. Only dependency-blocked stages revive after an explicit parent retry;
-/// a user-cancelled child remains cancelled.
-fn block_descendants(connection: &Connection) -> Result<()> {
-    loop {
-        let mut query=connection.prepare("SELECT payload FROM jobs WHERE state IN ('queued','blocked') ORDER BY created_at,rowid")?;
-        let jobs = query
-            .query_map([], |row| row.get::<_, String>(0))?
-            .map(|row| Ok(serde_json::from_str::<Job>(&row?)?))
-            .collect::<Result<Vec<_>>>()?;
-        let mut changed = false;
-        for mut job in jobs {
-            let states = job
-                .dependencies
-                .iter()
-                .map(|id| {
-                    connection
-                        .query_row("SELECT state FROM jobs WHERE id=?1", [id], |row| {
-                            row.get::<_, String>(0)
-                        })
-                        .optional()
-                })
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let blocked = states.iter().any(|state| {
-                state.as_ref().is_none_or(|state| {
-                    ["failed", "cancelled", "interrupted", "blocked"].contains(&state.as_str())
-                })
-            });
-            if job.state == "queued" && blocked {
-                job.state = "blocked".into();
-                job.message =
-                    "Предыдущий этап не завершён. Повторите его или отмените этот этап.".into();
-            } else if job.state == "blocked"
-                && states
-                    .iter()
-                    .all(|state| state.as_deref() == Some("succeeded"))
-            {
-                job.state = "queued".into();
-                job.message.clear();
-            } else {
-                continue;
-            }
-            job.updated_at = now();
-            persist(connection, &job)?;
-            changed = true;
-        }
-        if !changed {
-            return Ok(());
-        }
+
+    fn transaction<T>(
+        &self,
+        action: impl FnOnce(&mut dyn JobQueueTransaction) -> Result<T>,
+    ) -> Result<T> {
+        let mut connection = open(self.root)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let result = action(&mut SqliteQueueSession(&transaction))?;
+        transaction.commit()?;
+        Ok(result)
     }
 }
 
-fn claim(connection: &mut Connection, value: &Value) -> Result<Value> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    block_descendants(&transaction)?;
-    let jobs = query_jobs(
-        &transaction,
-        "SELECT payload FROM jobs WHERE state IN ('queued','running') ORDER BY created_at,rowid",
-    )?;
-    let running: Vec<_> = jobs.iter().filter(|job| job.state == "running").collect();
-    let paused_accounts: HashSet<_> = paused_chatgpt_jobs(&transaction)?.iter()
-        .filter_map(chatgpt_account).map(str::to_owned).collect();
-    let wanted = value["jobID"].as_str();
-    let allowed: Option<Vec<String>> = value
-        .get("allowedResources")
-        .map(|value| serde_json::from_value(value.clone()))
-        .transpose()?;
-    if let Some(allowed) = &allowed {
-        ensure!(
-            allowed
-                .iter()
-                .all(|resource| ["local-heavy", "cloud", "light"].contains(&resource.as_str())),
-            "Неизвестный ресурс задания"
-        );
+struct SqliteQueueSession<'a>(&'a Connection);
+
+impl JobQueueTransaction for SqliteQueueSession<'_> {
+    fn selected(&self, selection: JobSelection) -> Result<Vec<Job>> {
+        query_jobs(self.0, match selection {
+            JobSelection::Active => "SELECT payload FROM jobs WHERE state IN ('queued','running') ORDER BY created_at,rowid",
+            JobSelection::WaitingDependencies => "SELECT payload FROM jobs WHERE state IN ('queued','blocked') ORDER BY created_at,rowid",
+            JobSelection::Running => "SELECT payload FROM jobs WHERE state='running'",
+        })
     }
-    let mut candidate = None;
-    for job in jobs.iter().filter(|job| job.state == "queued") {
-        if wanted.is_some_and(|id| id != job.id)
-            || chatgpt_account(job).is_some_and(|account| paused_accounts.contains(account))
-            || allowed
-                .as_ref()
-                .is_some_and(|allowed| !allowed.contains(&job.resource))
-        {
-            continue;
-        }
-        if !resource_available(job, &running) {
-            continue;
-        }
-        let states = job
-            .dependencies
-            .iter()
-            .map(|id| {
-                transaction
-                    .query_row("SELECT state FROM jobs WHERE id=?1", [id], |row| {
-                        row.get::<_, String>(0)
-                    })
-                    .optional()
+
+    fn get(&self, id: &str) -> Result<Job> {
+        get(self.0, id)
+    }
+
+    fn state(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .0
+            .query_row("SELECT state FROM jobs WHERE id=?1", [id], |row| {
+                row.get::<_, String>(0)
             })
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        if states
-            .iter()
-            .all(|state| state.as_deref() == Some("succeeded"))
-        {
-            candidate = Some(job.clone());
-            break;
-        }
+            .optional()?)
     }
-    let Some(mut job) = candidate else {
-        transaction.commit()?;
-        return Ok(json!({"job":null}));
-    };
-    job.state = "running".into();
-    job.progress = 0.0;
-    job.message.clear();
-    job.cancel_requested = false;
-    job.attempt += 1;
-    job.updated_at = now();
-    persist(&transaction, &job)?;
-    transaction.commit()?;
-    Ok(json!({"job":job}))
-}
-fn mutate(connection: &mut Connection, value: &Value, operation: &str) -> Result<Value> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let mut job = get(&transaction, field(value, "jobID")?)?;
-    let previous_state = job.state.clone();
-    if let Some(attempt) = value["expectedAttempt"].as_u64() {
-        ensure!(attempt == job.attempt, "Попытка задания уже изменилась");
+
+    fn matching(&self, job: &Job, scope: JobMatchScope) -> Result<Option<Job>> {
+        let sql = match scope {
+            JobMatchScope::AnyState => "SELECT payload FROM jobs WHERE dedup_key=?1 ORDER BY created_at LIMIT 1",
+            JobMatchScope::Pending => "SELECT payload FROM jobs WHERE dedup_key=?1 AND state IN ('queued','running','interrupted','blocked')",
+        };
+        self.0
+            .query_row(sql, [job.dedup_key()?], |row| row.get::<_, String>(0))
+            .optional()?
+            .map(|text| Ok(serde_json::from_str(&text)?))
+            .transpose()
     }
-    match operation {
-        "job-cancel" => {
-            if ["queued", "blocked", "interrupted"].contains(&job.state.as_str()) {
-                job.state = "cancelled".into();
-                job.message = "Отменено".into();
-            } else if job.state == "running" {
-                job.cancel_requested = true;
-                job.message = "Останавливаю…".into();
-            }
-        }
-        "job-retry" => {
-            ensure!(
-                ["failed", "cancelled", "interrupted"].contains(&job.state.as_str()),
-                "Это задание нельзя запустить повторно"
-            );
-            ensure!(
-                !job.paid || job.attempt == 0 || value["confirmPaid"].as_bool() == Some(true),
-                "Подтвердите повтор платного запроса: предыдущий запрос мог быть оплачен"
-            );
-            job.state = "queued".into();
-            job.progress = 0.0;
-            job.message.clear();
-            job.cancel_requested = false;
-            job.result = None;
-        }
-        "job-update" => {
-            let state = value["state"].as_str().unwrap_or(&job.state).to_owned();
-            ensure!(
-                ["running", "succeeded", "failed", "cancelled", "interrupted"]
-                    .contains(&state.as_str()),
-                "Некорректное состояние задания"
-            );
-            if job.state != "running" {
-                ensure!(
-                    value["state"].as_str() == Some(job.state.as_str())
-                        && ["succeeded", "failed", "cancelled"].contains(&job.state.as_str()),
-                    "Задание уже завершено или не запущено"
-                );
-                // Repeated completion is idempotent. Late progress callbacks
-                // never change an already published terminal result/message.
-                return Ok(json!({"job":job}));
-            }
-            if let Some(progress) = value.get("progress") {
-                let progress = progress.as_f64().context("Некорректный прогресс задания")?;
-                ensure!(
-                    progress.is_finite() && (0.0..=1.0).contains(&progress),
-                    "Некорректный прогресс задания"
-                );
-                job.progress = progress;
-            }
-            if let Some(message) = value.get("message") {
-                let message = message.as_str().context("Некорректное сообщение задания")?;
-                bounded(message, 2000, "message")?;
-                job.message = message.into();
-            }
-            if let Some(result) = value.get("result") {
-                ensure!(
-                    serde_json::to_vec(result)?.len() <= 262_144,
-                    "Результат задания слишком большой"
-                );
-                secret_free(result, 0)?;
-                job.result = Some(result.clone());
-            }
-            if state == "succeeded" {
-                job.progress = 1.0;
-            }
-            job.state = state;
-        }
-        _ => bail!("Неизвестная операция задания"),
+
+    fn active_count(&self) -> Result<u64> {
+        let count: i64 = self.0.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE state IN ('queued','running')",
+            [],
+            |row| row.get(0),
+        )?;
+        count.try_into().context("Некорректный размер очереди")
     }
-    job.updated_at = now();
-    persist(&transaction, &job)?;
-    if let Some(account) = chatgpt_account(&job) {
-        if operation == "job-update" && job.state == "failed" && reached_chatgpt_limit(&job.message) {
-            transaction.execute("INSERT INTO job_chatgpt_pauses(account_id,job_id) VALUES(?1,?2) ON CONFLICT(account_id) DO UPDATE SET job_id=excluded.job_id", params![account, job.id])?;
-        } else if operation == "job-retry" {
-            // A rejected retry never reaches this point. Preserve the explicit
-            // confirmation decision even across shutdown or a process crash.
-            transaction.execute("DELETE FROM job_chatgpt_pauses WHERE account_id=?1", [account])?;
-        }
+
+    fn paused_jobs(&self) -> Result<Vec<Job>> {
+        paused_chatgpt_jobs(self.0)
     }
-    if job.state != previous_state {
-        block_descendants(&transaction)?;
+
+    fn save(&mut self, job: &Job) -> Result<()> {
+        persist(self.0, job)
     }
-    transaction.commit()?;
-    Ok(json!({"job":job}))
-}
-pub(crate) fn dispatch(root: &Path, value: &Value) -> Result<Value> {
-    let mut connection = open(root)?;
-    match field(value, "command")? {
-        "job-enqueue" => enqueue(&mut connection, value),
-        "job-list" => {
-            let jobs = listed(&connection)?;
-            let total: i64 =
-                connection.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))?;
-            Ok(json!({"hasMore":total as usize>jobs.len(),"total":total,"jobs":jobs,"pausedChatGPTFailures":paused_chatgpt_jobs(&connection)?}))
-        }
-        "job-get" => Ok(json!({"job":get(&connection,field(value,"jobID")?)?})),
-        "job-claim" => claim(&mut connection, value),
-        command @ ("job-update" | "job-cancel" | "job-retry") => {
-            mutate(&mut connection, value, command)
-        }
-        "job-recover" => {
-            let transaction =
-                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let mut recovered = 0;
-            for mut job in query_jobs(
-                &transaction,
-                "SELECT payload FROM jobs WHERE state='running'",
-            )? {
-                job.state = "interrupted".into();
-                job.message = "Работа прервалась. Можно продолжить вручную.".into();
-                job.cancel_requested = false;
-                job.updated_at = now();
-                persist(&transaction, &job)?;
-                recovered += 1;
-            }
-            block_descendants(&transaction)?;
-            transaction.commit()?;
-            Ok(json!({"recovered":recovered,"jobs":listed(&connection)?}))
-        }
-        _ => bail!("Неизвестная команда очереди"),
+
+    fn pause_account(&mut self, account: &str, job: &str) -> Result<()> {
+        self.0.execute("INSERT INTO job_chatgpt_pauses(account_id,job_id) VALUES(?1,?2) ON CONFLICT(account_id) DO UPDATE SET job_id=excluded.job_id", params![account, job])?;
+        Ok(())
+    }
+
+    fn resume_account(&mut self, account: &str) -> Result<()> {
+        self.0.execute(
+            "DELETE FROM job_chatgpt_pauses WHERE account_id=?1",
+            [account],
+        )?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::jobs::{reached_chatgpt_limit, JobDefinition, JobResource};
+    use crate::jobs::dispatch;
+    use serde_json::json;
     fn call(root: &Path, command: &str, mut fields: Value) -> Value {
         fields["command"] = json!(command);
         dispatch(root, &fields).unwrap()
     }
     fn enqueue(root: &Path, object: &str, resource: &str) -> Value {
         call(root,"job-enqueue",json!({"kind":"summarize","objectID":object,"resource":resource,"inputRevision":"v1","config":{"model":"local"}}))["job"].clone()
+    }
+    #[test]
+    fn failed_transaction_callback_rolls_back_job_and_account_pause() {
+        let root = tempfile::tempdir().unwrap();
+        let initial = enqueue(root.path(), "a", "cloud");
+        let repository = SqliteJobQueue { root: root.path() };
+        let result: Result<()> = repository.transaction(|session| {
+            let mut job = session.get(initial["id"].as_str().unwrap())?;
+            job.state = "running".into();
+            session.save(&job)?;
+            session.pause_account("fixture-account", &job.id)?;
+            anyhow::bail!("injected callback failure")
+        });
+        assert!(result.is_err());
+        let reopened = SqliteJobQueue { root: root.path() }.snapshot().unwrap();
+        assert!(reopened.paused_chatgpt_failures.is_empty());
+        assert_eq!(serde_json::to_value(&reopened.jobs[0]).unwrap(), initial);
     }
     #[test]
     fn dedup_survives_reopen_and_configuration_changes_are_distinct() {
@@ -649,22 +373,38 @@ mod tests {
     }
     #[test]
     fn linked_database_and_sidecars_are_rejected_before_touching_the_target() {
-        for name in ["jobs.sqlite", "jobs.sqlite-journal", "jobs.sqlite-wal", "jobs.sqlite-shm"] {
+        for name in [
+            "jobs.sqlite",
+            "jobs.sqlite-journal",
+            "jobs.sqlite-wal",
+            "jobs.sqlite-shm",
+        ] {
             let root = tempfile::tempdir().unwrap();
             let outside = tempfile::tempdir().unwrap();
             let target = outside.path().join("untouched");
             fs::write(&target, b"do not modify").unwrap();
             fs::hard_link(&target, root.path().join(name)).unwrap();
-            assert!(dispatch(root.path(), &json!({"command":"job-list"})).is_err(), "{name}");
+            assert!(
+                dispatch(root.path(), &json!({"command":"job-list"})).is_err(),
+                "{name}"
+            );
             assert_eq!(fs::read(&target).unwrap(), b"do not modify");
         }
     }
     #[test]
     fn directories_cannot_be_used_as_database_or_sidecars() {
-        for name in ["jobs.sqlite", "jobs.sqlite-journal", "jobs.sqlite-wal", "jobs.sqlite-shm"] {
+        for name in [
+            "jobs.sqlite",
+            "jobs.sqlite-journal",
+            "jobs.sqlite-wal",
+            "jobs.sqlite-shm",
+        ] {
             let root = tempfile::tempdir().unwrap();
             fs::create_dir(root.path().join(name)).unwrap();
-            assert!(dispatch(root.path(), &json!({"command":"job-list"})).is_err(), "{name}");
+            assert!(
+                dispatch(root.path(), &json!({"command":"job-list"})).is_err(),
+                "{name}"
+            );
         }
     }
     #[test]
@@ -722,8 +462,15 @@ mod tests {
                 "config":{"command":command,"settings":{"mode":"cloud","cloudProvider":"chatgpt","chatGPTAccountID":account}}}))["job"].clone()
         };
         let finish = |job: &Value, message: &str| {
-            assert_eq!(call(root.path(), "job-claim", json!({"jobID":job["id"]}))["job"]["id"], job["id"]);
-            call(root.path(), "job-update", json!({"jobID":job["id"],"state":"failed","message":message,"expectedAttempt":1}));
+            assert_eq!(
+                call(root.path(), "job-claim", json!({"jobID":job["id"]}))["job"]["id"],
+                job["id"]
+            );
+            call(
+                root.path(),
+                "job-update",
+                json!({"jobID":job["id"],"state":"failed","message":message,"expectedAttempt":1}),
+            );
         };
         // This separate failed job can later be explicitly retried. The quota
         // failure itself then remains in history and must not recreate a pause.
@@ -732,7 +479,10 @@ mod tests {
         let quota_a = plan("quota-a", "account-a", "summarize");
         let quota_b = plan("quota-b", "account-b", "voice-plan");
         for job in [&quota_a, &quota_b] {
-            finish(job, "ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded. Fixture limit.");
+            finish(
+                job,
+                "ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded. Fixture limit.",
+            );
         }
         let pending_a = plan("pending-a", "account-a", "example");
         let pending_b = plan("pending-b", "account-b", "example");
@@ -740,35 +490,80 @@ mod tests {
             assert!(call(root.path(), "job-claim", json!({"jobID":job["id"]}))["job"].is_null());
         }
         // Neither other accounts nor API-key-backed speech inherits the pause.
-        for job in [plan("other-account", "account-c", "example"), plan("speech", "account-a", "transcribe")] {
-            assert_eq!(call(root.path(), "job-claim", json!({"jobID":job["id"]}))["job"]["id"], job["id"]);
-            call(root.path(), "job-update", json!({"jobID":job["id"],"state":"succeeded"}));
+        for job in [
+            plan("other-account", "account-c", "example"),
+            plan("speech", "account-a", "transcribe"),
+        ] {
+            assert_eq!(
+                call(root.path(), "job-claim", json!({"jobID":job["id"]}))["job"]["id"],
+                job["id"]
+            );
+            call(
+                root.path(),
+                "job-update",
+                json!({"jobID":job["id"],"state":"succeeded"}),
+            );
         }
         for index in 0..55 {
             let job = enqueue(root.path(), &format!("history-{index}"), "light");
             call(root.path(), "job-claim", json!({"jobID":job["id"]}));
-            call(root.path(), "job-update", json!({"jobID":job["id"],"state":"succeeded"}));
+            call(
+                root.path(),
+                "job-update",
+                json!({"jobID":job["id"],"state":"succeeded"}),
+            );
         }
         let list = call(root.path(), "job-list", json!({}));
-        assert!(!list["jobs"].as_array().unwrap().iter().any(|job| job["id"] == quota_a["id"]));
+        assert!(!list["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["id"] == quota_a["id"]));
         assert_eq!(list["pausedChatGPTFailures"].as_array().unwrap().len(), 2);
-        assert!(dispatch(root.path(), &json!({"command":"job-retry","jobID":resume_a["id"],"confirmPaid":false})).is_err());
-        assert_eq!(call(root.path(), "job-list", json!({}))["pausedChatGPTFailures"].as_array().unwrap().len(), 2);
-        call(root.path(), "job-retry", json!({"jobID":resume_a["id"],"confirmPaid":true}));
+        assert!(dispatch(
+            root.path(),
+            &json!({"command":"job-retry","jobID":resume_a["id"],"confirmPaid":false})
+        )
+        .is_err());
+        assert_eq!(
+            call(root.path(), "job-list", json!({}))["pausedChatGPTFailures"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        call(
+            root.path(),
+            "job-retry",
+            json!({"jobID":resume_a["id"],"confirmPaid":true}),
+        );
         let reopened = call(root.path(), "job-list", json!({}));
-        assert_eq!(reopened["pausedChatGPTFailures"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            reopened["pausedChatGPTFailures"].as_array().unwrap().len(),
+            1
+        );
         assert_eq!(reopened["pausedChatGPTFailures"][0]["id"], quota_b["id"]);
-        assert_eq!(call(root.path(), "job-get", json!({"jobID":quota_a["id"]}))["job"]["state"], "failed");
-        assert_eq!(call(root.path(), "job-claim", json!({"jobID":pending_a["id"]}))["job"]["id"], pending_a["id"]);
+        assert_eq!(
+            call(root.path(), "job-get", json!({"jobID":quota_a["id"]}))["job"]["state"],
+            "failed"
+        );
+        assert_eq!(
+            call(root.path(), "job-claim", json!({"jobID":pending_a["id"]}))["job"]["id"],
+            pending_a["id"]
+        );
         assert!(call(root.path(), "job-claim", json!({"jobID":pending_b["id"]}))["job"].is_null());
     }
 
     #[test]
     fn quota_pause_classification_requires_the_exact_transport_code() {
-        assert!(reached_chatgpt_limit("ChatGPT: HTTP 429 · subscription_sharing_usage_limit_exceeded. Retry later."));
-        for message in ["ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded_extra. Other code.",
+        assert!(reached_chatgpt_limit(
+            "ChatGPT: HTTP 429 · subscription_sharing_usage_limit_exceeded. Retry later."
+        ));
+        for message in [
+            "ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded_extra. Other code.",
             "ChatGPT: HTTP nope · subscription_sharing_usage_limit_exceeded. Not a status.",
-            "Provider mentioned subscription_sharing_usage_limit_exceeded."] {
+            "Provider mentioned subscription_sharing_usage_limit_exceeded.",
+        ] {
             assert!(!reached_chatgpt_limit(message));
         }
     }
@@ -778,15 +573,30 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let job = enqueue(root.path(), "legacy", "cloud");
         call(root.path(), "job-claim", json!({"jobID":job["id"]}));
-        call(root.path(), "job-update", json!({"jobID":job["id"],"state":"failed",
-            "message":"ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded. Historical failure."}));
+        call(
+            root.path(),
+            "job-update",
+            json!({"jobID":job["id"],"state":"failed",
+            "message":"ChatGPT: HTTP 200 · subscription_sharing_usage_limit_exceeded. Historical failure."}),
+        );
         let connection = open(root.path()).unwrap();
-        connection.execute_batch("DROP TABLE job_chatgpt_pauses; PRAGMA user_version=1;").unwrap();
+        connection
+            .execute_batch("DROP TABLE job_chatgpt_pauses; PRAGMA user_version=1;")
+            .unwrap();
         drop(connection);
         let migrated = call(root.path(), "job-list", json!({}));
         assert_eq!(migrated["jobs"][0]["id"], job["id"]);
-        assert!(migrated["pausedChatGPTFailures"].as_array().unwrap().is_empty());
-        assert_eq!(open(root.path()).unwrap().pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 2);
+        assert!(migrated["pausedChatGPTFailures"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            open(root.path())
+                .unwrap()
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 
     #[test]
@@ -804,6 +614,17 @@ mod tests {
                 root.path(),
                 "job-update",
                 json!({"jobID":job["id"],"expectedAttempt":1,"state":"succeeded","message":"Old progress"})
+            ),
+            done
+        );
+        assert_eq!(
+            call(
+                root.path(),
+                "job-update",
+                json!({
+                    "jobID":job["id"],"expectedAttempt":1,"state":"succeeded",
+                    "progress":null,"message":[],"result":{"token":"ignored late result"}
+                })
             ),
             done
         );
@@ -958,7 +779,17 @@ mod tests {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .unwrap();
-            let mut row = make_job(&json!({"kind":"example","objectID":"history"})).unwrap();
+            let mut row = JobDefinition {
+                kind: "example".into(),
+                object_id: "history".into(),
+                input_revision: String::new(),
+                config: json!({}),
+                resource: JobResource::Light,
+                dependencies: Vec::new(),
+                title: "example".into(),
+                paid: false,
+            }
+            .into_job("history".into(), 1.0);
             row.state = "succeeded".into();
             row.created_at = 1.0;
             row.updated_at = 1.0;

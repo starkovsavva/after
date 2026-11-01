@@ -20,8 +20,10 @@
   Старые публичные API сохранены. См. [ADR](decisions/workspace-boundaries.md).
   Очередь: модель, resource/secret/quota policies выделены в `domain/jobs.rs`,
   SQLite adapter использует `platform_fs` и включён также в Windows-сборку.
-  Claim-транзакции и прежний API сохранены; [границы](decisions/job-queue-boundaries.md).
-  Общий executor, application queue-контракты и Tauri queue API ещё не завершены.
+  Типизированные queue use cases перенесены в `application/jobs.rs`, порты transaction/
+  clock/identity — в `application/job_ports.rs`. SQLite больше не содержит scheduler
+  или JSON dispatch. Claim-транзакции и прежний API сохранены;
+  [границы](decisions/job-queue-boundaries.md). Общий executor и Tauri queue API ещё не завершены.
 - Команды и ограничения актуальны в [Linux-инструкции](linux.md).
 
 ## Правила выполнения

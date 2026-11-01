@@ -60,9 +60,9 @@ def outer_layer_violations(src):
         for path in sorted(root.rglob("*.rs")):
             source = re.split(r"#\s*\[\s*cfg\s*\(\s*(?:all\s*\(\s*)?test\b", path.read_text(), maxsplit=1)[0]
             source = re.sub(r"/\*.*?\*/|//[^\n]*", lambda m: "\n" * m[0].count("\n"), source, flags=re.S)
-            forbidden = r"\bcrate\s*::\s*(?:notes|folders|corrections|workspace_repository)\b"
+            forbidden = r"\bcrate\s*::\s*(?:notes|folders|corrections|workspace_repository|jobs)\b"
             if layer == "application":
-                forbidden = r"\bcrate\s*::\s*(?:infrastructure|notes|folders|storage|corrections|workspace_repository|platform_fs)\b|\b(?:reqwest|rusqlite|libc|tauri)\s*::|\bstd\s*::\s*(?:fs|os|process|net|env)\b"
+                forbidden = r"\bcrate\s*::\s*(?:infrastructure|notes|folders|storage|corrections|workspace_repository|platform_fs|jobs)\b|\b(?:reqwest|rusqlite|libc|tauri)\s*::|\bstd\s*::\s*(?:fs|os|process|net|env)\b"
             for match in re.finditer(forbidden, source):
                 yield f"{path}:{source[:match.start()].count(chr(10)) + 1}: {layer} depends on a concrete outer implementation/facade"
 

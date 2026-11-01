@@ -1,6 +1,6 @@
-# Очередь: общая модель и переносимое хранилище
+# Очередь: прикладные сценарии и переносимое хранилище
 
-Статус: реализован первый срез этапа 4, 1 ноября 2026.
+Статус: реализованы storage и application-срезы этапа 4, 1 ноября 2026.
 
 ## Границы
 
@@ -8,11 +8,20 @@
 исключение одновременной обработки одного объекта, определение ChatGPT-account/
 quota failure и запрет сохранения секретов. Здесь нет SQLite, HTTP или вызовов ОС.
 URL проверяются библиотекой `url`, без зависимости от HTTP-клиента.
+Определения новых заданий отделены от сохранённых jobs: identity/time передаются
+при создании извне. Переходы cancel/retry/update валидируют модель без I/O.
 
-`infrastructure/job_queue.rs` сохраняет существующие SQL-операции и транзакции.
-`jobs.rs` остаётся совместимым API для Swift/CLI и реэкспортирует модель. Модуль
-очереди больше не исключён из Windows-сборки через `cfg(unix)`; Windows transport по-прежнему
-ограничен typed desktop protocol и не открывает произвольные engine-команды.
+`application/jobs.rs` выполняет типизированные enqueue/list/get/claim/mutate/recover,
+дедупликацию цепочек, admission и распространение dependency-blocked состояний.
+Он зависит от портов `JobQueueRepository`, `JobQueueTransaction`, `JobClock`,
+`JobIds` в `application/job_ports.rs`. Внутри нет SQL, путей, системного времени
+или генерации случайных идентификаторов.
+
+`infrastructure/job_queue.rs` реализует SQL-порты; `job_context.rs` предоставляет
+системное время и UUID. `jobs.rs` переводит прежний JSON в команды/ответы и соединяет
+адаптеры. Swift/CLI используют этот путь уже сейчас. Модуль очереди включён и в
+Windows-сборку; Windows transport по-прежнему ограничен typed desktop protocol
+и не открывает произвольные engine-команды.
 
 ## Гарантии
 
@@ -21,6 +30,15 @@ URL проверяются библиотекой `url`, без зависимо
 за транзакцию: два исполнителя могли бы одновременно пройти admission.
 Сохраняются формат JSON/SQLite, dedup, expectedAttempt, explicit paid retry,
 recover в interrupted и атомарное добавление следующих стадий.
+Application получает заимствованную сессию только внутри callback. SQL adapter
+делает commit после успешного callback; ошибка откатывает всю операцию, включая
+обновление job и account pause. Это использует
+[SQLite transaction semantics](https://www.sqlite.org/lang_transaction.html) и
+[rollback-on-drop rusqlite](https://docs.rs/rusqlite/0.40.2/rusqlite/struct.Transaction.html).
+Чтение списка теперь использует одну deferred read-транзакцию для согласованности
+jobs/count/account pauses. Время не обновляется при повторном terminal completion;
+его опоздавшие progress/message/result игнорируются, но stale expectedAttempt
+по-прежнему отклоняется до проверки идемпотентности.
 
 Открытие БД использует `platform_fs`: Unix permissions и Windows ACL/reparse guards
 остаются в соответствующих адаптерах. До открытия проверяются основной файл и
@@ -38,16 +56,22 @@ account isolation и историю. Новые проверки отклоня�
 database/sidecars до изменения внешнего файла. Unix отдельно проверяет symlink
 и права `0600`.
 
-На Arch прошёл `python3 scripts/verify.py desktop`: 429 library + 4 CLI, 4 layer
+Application-контракты проверяются независимым in-memory repository, clock и IDs:
+invalid input до I/O, rollback цепочки, paid quota retry, recovery и late callbacks.
+Отдельный тест настоящего SQLite проверяет откат job/account pause при ошибке
+callback. Layer guard запрещает обратные вызовы в JSON-фасад очереди.
+
+На Arch прошёл `python3 scripts/verify.py desktop`: 434 library + 4 CLI, 5 layer
 guard tests, frontend build + 7 tests, 19 host + 2 real-engine + 1 real Tauri IPC.
-Все 26 SQL-литералов очереди сохранены при переносе. Windows/macOS локально не
+
+Все 24 различных SQL-литерала очереди сохранены; повтор одинакового запроса state
+сведён к одному методу порта. Windows/macOS локально не
 запускались; CI-конфигурация не считается результатом их выполнения.
 После staging нового engine пересобран автономный debug host с `custom-protocol`;
 `check-desktop-linux.py` подтвердил реальный WebView и создание canonical library
 на временных данных. Это startup smoke, не проверка всех операций очереди через UI.
 
-Это ещё не общий исполнитель. SQL adapter пока содержит прикладные переходы
-состояний и JSON dispatch; следующий срез должен выделить типизированные команды
-и application-контракты, сохранив транзакционные границы. Swift JobCoordinator
-пока управляет живыми handles, progress, recording admission и shutdown.
+Это ещё не общий исполнитель. Следующий срез переносит lifecycle живых attempts
+за WorkerHost/ProcessSupervisor и общий coordinator. Swift JobCoordinator пока
+управляет handles, progress, recording admission и shutdown.
 Tauri queue API, ProcessSupervisor и Linux speech runtime ещё не реализованы.

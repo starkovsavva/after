@@ -2,6 +2,8 @@
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +26,225 @@ pub struct Job {
     pub paid: bool,
     pub title: String,
     pub result: Option<Value>,
+}
+
+pub(crate) struct JobQueueSnapshot {
+    pub jobs: Vec<Job>,
+    pub total: u64,
+    pub paused_chatgpt_failures: Vec<Job>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JobResource {
+    LocalHeavy,
+    Cloud,
+    Light,
+}
+
+impl JobResource {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "local-heavy" => Ok(Self::LocalHeavy),
+            "cloud" => Ok(Self::Cloud),
+            "light" => Ok(Self::Light),
+            _ => anyhow::bail!("Неизвестный ресурс задания"),
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalHeavy => "local-heavy",
+            Self::Cloud => "cloud",
+            Self::Light => "light",
+        }
+    }
+}
+
+pub(crate) struct JobDefinition {
+    pub kind: String,
+    pub object_id: String,
+    pub input_revision: String,
+    pub config: Value,
+    pub resource: JobResource,
+    pub dependencies: Vec<String>,
+    pub title: String,
+    pub paid: bool,
+}
+
+impl JobDefinition {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.kind.is_empty()
+                && self.kind.len() <= 64
+                && self
+                    .kind
+                    .bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'),
+            "Неизвестный тип задания"
+        );
+        bounded(&self.object_id, 512, "objectID")?;
+        ensure!(!self.object_id.is_empty(), "Нет объекта задания");
+        bounded(&self.input_revision, 512, "inputRevision")?;
+        ensure!(
+            self.config.is_object() && serde_json::to_vec(&self.config)?.len() <= 262_144,
+            "Конфигурация задания слишком большая"
+        );
+        secret_free(&self.config, 0)?;
+        ensure!(
+            self.dependencies.len() <= 32
+                && self.dependencies.iter().collect::<HashSet<_>>().len()
+                    == self.dependencies.len(),
+            "Некорректные зависимости задания"
+        );
+        bounded(&self.title, 512, "title")
+    }
+
+    /// The caller validates before supplying effectful identity/time sources.
+    pub fn into_job(self, id: String, time: f64) -> Job {
+        Job {
+            id,
+            kind: self.kind,
+            object_id: self.object_id,
+            input_revision: self.input_revision,
+            config: self.config,
+            resource: self.resource.as_str().into(),
+            dependencies: self.dependencies,
+            state: "queued".into(),
+            progress: 0.0,
+            message: String::new(),
+            created_at: time,
+            updated_at: time,
+            attempt: 0,
+            cancel_requested: false,
+            paid: self.paid,
+            title: self.title,
+            result: None,
+        }
+    }
+}
+
+/// Invalid legacy JSON fields remain distinguishable from absent fields. In
+/// particular, repeated terminal completion ignores late progress/message data.
+pub(crate) enum UpdateField<T> {
+    Unchanged,
+    Set(T),
+    Invalid,
+}
+
+pub(crate) struct JobUpdate {
+    pub state: Option<String>,
+    pub progress: UpdateField<f64>,
+    pub message: UpdateField<String>,
+    pub result: Option<Value>,
+}
+
+pub(crate) enum JobMutation {
+    Cancel,
+    Retry { confirm_paid: bool },
+    Update(JobUpdate),
+}
+
+impl Job {
+    pub(crate) fn dedup_key(&self) -> Result<String> {
+        let value = serde_json::json!([
+            self.kind,
+            self.object_id,
+            self.input_revision,
+            self.config,
+            self.resource,
+            self.dependencies
+        ]);
+        Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
+    }
+
+    /// Returns false only for an idempotent repeated completion. No update or
+    /// account pause may be republished in that case. Time is supplied by caller.
+    pub(crate) fn apply(&mut self, mutation: &JobMutation) -> Result<bool> {
+        match mutation {
+            JobMutation::Cancel => {
+                if ["queued", "blocked", "interrupted"].contains(&self.state.as_str()) {
+                    self.state = "cancelled".into();
+                    self.message = "Отменено".into();
+                } else if self.state == "running" {
+                    self.cancel_requested = true;
+                    self.message = "Останавливаю…".into();
+                }
+            }
+            JobMutation::Retry { confirm_paid } => {
+                ensure!(
+                    ["failed", "cancelled", "interrupted"].contains(&self.state.as_str()),
+                    "Это задание нельзя запустить повторно"
+                );
+                ensure!(
+                    !self.paid || self.attempt == 0 || *confirm_paid,
+                    "Подтвердите повтор платного запроса: предыдущий запрос мог быть оплачен"
+                );
+                self.state = "queued".into();
+                self.progress = 0.0;
+                self.message.clear();
+                self.cancel_requested = false;
+                self.result = None;
+            }
+            JobMutation::Update(update) => {
+                let state = update.state.as_deref().unwrap_or(&self.state);
+                ensure!(
+                    ["running", "succeeded", "failed", "cancelled", "interrupted"].contains(&state),
+                    "Некорректное состояние задания"
+                );
+                if self.state != "running" {
+                    ensure!(
+                        update.state.as_deref() == Some(self.state.as_str())
+                            && ["succeeded", "failed", "cancelled"].contains(&self.state.as_str()),
+                        "Задание уже завершено или не запущено"
+                    );
+                    return Ok(false);
+                }
+                match &update.progress {
+                    UpdateField::Unchanged => {}
+                    UpdateField::Set(progress) => ensure!(
+                        progress.is_finite() && (0.0..=1.0).contains(progress),
+                        "Некорректный прогресс задания"
+                    ),
+                    UpdateField::Invalid => anyhow::bail!("Некорректный прогресс задания"),
+                }
+                match &update.message {
+                    UpdateField::Unchanged => {}
+                    UpdateField::Set(message) => bounded(message, 2000, "message")?,
+                    UpdateField::Invalid => anyhow::bail!("Некорректное сообщение задания"),
+                }
+                if let Some(result) = &update.result {
+                    ensure!(
+                        serde_json::to_vec(result)?.len() <= 262_144,
+                        "Результат задания слишком большой"
+                    );
+                    secret_free(result, 0)?;
+                }
+                // Validate all fields before changing the in-memory model.
+                let state = state.to_owned();
+                if let UpdateField::Set(progress) = update.progress {
+                    self.progress = progress;
+                }
+                if let UpdateField::Set(message) = &update.message {
+                    self.message = message.clone();
+                }
+                if let Some(result) = &update.result {
+                    self.result = Some(result.clone());
+                }
+                if state == "succeeded" {
+                    self.progress = 1.0;
+                }
+                self.state = state;
+            }
+        }
+        Ok(true)
+    }
+}
+
+fn bounded(text: &str, max: usize, label: &str) -> Result<()> {
+    ensure!(
+        text.len() <= max && !text.contains('\0'),
+        "Некорректное поле задания: {label}"
+    );
+    Ok(())
 }
 
 pub(crate) fn chatgpt_account(job: &Job) -> Option<&str> {

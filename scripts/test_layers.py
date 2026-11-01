@@ -42,6 +42,14 @@ class LayerBoundaryTests(unittest.TestCase):
             source.write_text("use crate::notes;\n")
             self.assertEqual(len(list(outer_layer_violations(root))), 1)
 
+    def test_queue_facade_cannot_be_used_as_an_inner_layer_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for layer in ("application", "infrastructure"):
+                (root / layer).mkdir()
+                (root / layer / "queue.rs").write_text("use crate::jobs;\n")
+            self.assertEqual(len(list(outer_layer_violations(root))), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
