@@ -745,3 +745,43 @@ fn tasks_and_cards_cross_real_host_transport_and_remain_isolated() {
         "Привет"
     );
 }
+
+#[test]
+#[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
+fn queued_file_import_persists_success_and_reuses_exact_receipt_without_source() {
+    use after_desktop::{
+        import_queue::{ImportQueue, JobState, QueueCommand},
+        worker_host::ImportWork,
+    };
+    use std::sync::atomic::AtomicBool;
+    let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+    let fixture = tempfile::tempdir().unwrap();
+    let bridge = LibraryBridge::for_development(engine, fixture.path().join("queued-library")).unwrap();
+    let source = fixture.path().join("synthetic.wav");
+    let original: Vec<u8> = (0..2_097_152).map(|index| (index % 251) as u8).collect();
+    std::fs::write(&source, &original).unwrap();
+    let work = ImportWork {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        attempt_token: uuid::Uuid::new_v4().to_string(),
+        source: source.clone(), title: Some("Durable import".into()),
+    };
+    let mut progress = Vec::new();
+    let meeting = bridge.import_queued_work(&work,&AtomicBool::new(false),&mut |value| progress.push(value)).unwrap();
+    assert_eq!(meeting.id,work.operation_id);
+    assert_eq!(std::fs::read(&source).unwrap(),original);
+    assert!(!progress.is_empty());
+    assert!(progress.windows(2).all(|pair|pair[0]<=pair[1]));
+    let queue = bridge.open_import_queue().unwrap();
+    let history = queue.execute(QueueCommand::List).unwrap();
+    assert_eq!(history.total,Some(1));
+    assert_eq!(history.jobs[0].state,JobState::Succeeded);
+    assert_eq!(history.jobs[0].attempt,1);
+    drop(queue);
+    std::fs::remove_file(&source).unwrap();
+    assert_eq!(bridge.import_queued_work(&work,&AtomicBool::new(false),&mut |_| {}).unwrap().id,meeting.id);
+    let queue = bridge.open_import_queue().unwrap();
+    assert_eq!(queue.execute(QueueCommand::List).unwrap().total,Some(1));
+    drop(queue);
+    let wrong = ImportWork { attempt_token: uuid::Uuid::new_v4().to_string(), ..work };
+    assert!(bridge.import_queued_work(&wrong,&AtomicBool::new(false),&mut |_| {}).is_err());
+}

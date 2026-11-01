@@ -1,7 +1,7 @@
 # Native import queue startup reconciliation
 
-Статус: реализовано при открытии native queue connection. Tauri UI пока использует
-standalone import session; подключение durable controller остаётся следующим этапом.
+Статус: реализовано при открытии native queue connection. Выбор файла в Tauri UI использует
+[durable controller](queued-import-controller.md); история/retry после перезапуска host ещё не подключены.
 
 ## Границы и порядок
 
@@ -17,7 +17,7 @@ Filesystem probe и SQLite остаются адаптерами. Native `Recove
 и страницы по 64 записи независимо от последних 50 строк отображаемой истории.
 Cursor продвигается и через неопределённые исходы; полная последняя страница
 допускает дополнительный пустой запрос. Каждый RPC ограничен прежними frame limits
-и deadline 12 секунд. При UI binding открывать соединение нужно вне UI-потока.
+и deadline 12 секунд. File-picker controller открывает соединение вне UI-потока.
 
 ## Выбор исхода
 
@@ -42,5 +42,4 @@ Application tests проверяют приоритет publication, неопр�
 повторное открытие, receipt за первой страницей, durable cancel и повреждённый
 receipt без повторного импорта. Windows/macOS локально не проверены.
 
-Recovery не включает автоматический запуск/retry. Следующий срез — UI/controller
-binding с сохранением deadline/grace и восстановления соединения из WorkerHost.
+Recovery не включает автоматический запуск/retry. File-picker controller сохраняет deadline/grace и восстанавливает соединение после ошибки без запуска работы. Следующий срез — persistent history/retry UI и app-startup recovery.

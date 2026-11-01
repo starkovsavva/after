@@ -1,7 +1,7 @@
 //! Host-owned import sessions. Renderer sees progress and an opaque ID only.
 use crate::{
     models::HostError,
-    worker_host::{ImportPhase, ImportProgress, ImportWork},
+    worker_host::ImportWork,
 };
 use serde::Serialize;
 use std::{
@@ -19,6 +19,7 @@ pub(crate) struct ImportStatus {
     pub phase: String,
     pub copied_bytes: u64,
     pub total_bytes: u64,
+    pub progress: Option<f64>,
     pub cancel_requested: bool,
 }
 struct State {
@@ -104,16 +105,11 @@ impl ImportSession {
             title: None,
         }
     }
-    pub fn progress(&self, progress: ImportProgress) {
+    pub fn fraction(&self, value: f64) {
         let mut state = self.owner.0.lock().unwrap_or_else(|e| e.into_inner());
         if state.status.operation_id.as_deref() == Some(&self.id) {
-            state.status.phase = match progress.phase {
-                ImportPhase::Copying => "copying",
-                ImportPhase::Committing => "committing",
-            }
-            .into();
-            state.status.copied_bytes = progress.copied_bytes;
-            state.status.total_bytes = progress.total_bytes;
+            state.status.progress = Some(value);
+            state.status.phase = if value >= 1.0 { "committing" } else { "copying" }.into();
         }
     }
     pub fn finish(&mut self, phase: &str) {

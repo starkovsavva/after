@@ -219,7 +219,7 @@ test('an in-flight import can be cancelled without creating a meeting', async ({
 test('a reloaded interface reconnects to the host-owned import and can cancel it', async ({ page }) => {
   await page.addInitScript(() => {
     let cancelled = false;
-    const status = () => ({ operationId: '11111111-1111-4111-8111-111111111111', phase: cancelled ? 'cancelled' : 'copying', copiedBytes: 25, totalBytes: 100, cancelRequested: cancelled });
+    const status = () => ({ operationId: '11111111-1111-4111-8111-111111111111', phase: cancelled ? 'cancelled' : 'copying', copiedBytes: 0, totalBytes: 0, progress: 0.25, cancelRequested: cancelled });
     Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke: async (command: string) => {
       if (command === 'get_workspace') return { folders: [], meetings: [], notes: [], capabilities: { library: true, import: true, recording: false, calendar: false, assistant: false, cards: false, tasks: false } };
       if (command === 'import_status') return status();
@@ -230,8 +230,9 @@ test('a reloaded interface reconnects to the host-owned import and can cancel it
   await page.goto('/');
   const dialog = page.getByRole('dialog', { name: 'Choose or import a recording…' });
   await expect(dialog.getByRole('progressbar')).toBeVisible();
+  await expect(dialog.getByRole('progressbar')).toHaveAttribute('value', '0.25');
   await page.reload();
-  await expect(dialog.getByRole('progressbar')).toBeVisible();
+  await expect(dialog.getByRole('progressbar')).toHaveAttribute('value', '0.25');
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(dialog).not.toBeVisible();
   await expect(page.getByRole('heading', { name: 'No meetings here yet', exact: true })).toBeVisible();

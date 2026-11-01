@@ -1,8 +1,8 @@
 # Lifetime lease and native queue connection
 
 Статус: kernel lease и persistent queue service реализованы; explicit native Run
-[владеет worker lifetime](owned-import-execution.md). [Startup reconciliation](import-startup-recovery.md) выполняется при открытии native connection; UI
-binding ещё не подключён; UI пока использует standalone import session.
+[владеет worker lifetime](owned-import-execution.md). [Startup reconciliation](import-startup-recovery.md) выполняется при открытии native connection; file-picker UI использует
+[durable controller](queued-import-controller.md); recording import пока standalone.
 
 ## Владение
 
@@ -39,8 +39,8 @@ reaps; соединение больше не используется. Обыч
 ## Следующая граница
 
 Explicit Run уже размещает import worker внутри owner-процесса и joins его
-до освобождения lease. Существующий standalone UI import пока остаётся отдельным
-путём. Нужен UI/controller binding; явный retry
+до освобождения lease. File-picker UI использует durable controller; recording import пока отдельный
+путь. Нужны persistent history/retry UI и app-startup recovery; явный retry
 проверяет receipt до нового копирования. Сам lease не делает внешний эффект
 идемпотентным: [политика выполнения](owned-import-execution.md) описывает эту границу.
 

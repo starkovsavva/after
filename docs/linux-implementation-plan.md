@@ -35,7 +35,7 @@
   canonical queue реализованы ([ADR](decisions/scoped-executors.md)). Lifetime queue lease реализован
   ([ADR](decisions/import-executor-lease.md)); explicit native Run теперь
   [владеет worker lifetime и проверяет receipts](decisions/owned-import-execution.md).
-  Native connection startup сверяет receipts по всем страницам без повторного импорта; UI binding остаётся следующим срезом; [ADR](decisions/live-job-coordinator.md).
+  Native connection startup сверяет receipts по всем страницам без повторного импорта; выбор файла в UI подключён к [durable controller](decisions/queued-import-controller.md). История/retry после перезапуска host и перенос recording import остаются следующими срезами; [ADR](decisions/live-job-coordinator.md).
 - Main 0.18.2 интегрирован: Swift разбит на AfterCore/Platform/Localization/macOS/App;
   новые knowledge SQL/rebuild modules сохраняют canonical transaction в infrastructure.
   Optional semantic/agent cleanup выбираются через native boundaries; Tauri UI

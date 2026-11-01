@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 620 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 29 host + 7 real-engine
+и helper), 620 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 36 host + 8 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 13 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -91,7 +91,7 @@ Workspace use cases теперь координируются в `application/wo
 через transaction/clock/ID порты; `jobs.rs` сохраняет Swift/CLI JSON API. Snapshot
 читает jobs/count/account pauses в одной read-транзакции. Swift пока управляет
 живыми заданиями. Native Tauri queue port использует scoped `desktop-import` очередь;
-native `Run` выполняет import внутри lifetime lease; native connection startup сверяет receipts без запуска работы; UI binding ещё не подключён
+native `Run` выполняет import внутри lifetime lease; native connection startup сверяет receipts без запуска работы; выбор файла в UI использует durable controller
 ([ADR](decisions/scoped-executors.md)). Подробности: [границы очереди](decisions/job-queue-boundaries.md).
 
 Engine worker и Tauri transport используют общий `process-runtime/` для владения
@@ -106,8 +106,10 @@ Engine worker и Tauri transport используют общий `process-runtim
 executor: native Swift suite запускается только на Mac (`verify.py queue`), локально
 он не выполнен. Контракт и оставшиеся этапы: [ADR](decisions/live-job-coordinator.md).
 
-Импорт использует [WorkerHost](decisions/worker-host-import.md): progress, отмена до
-публикации и восстановление панели после reload WebView. Это ещё не durable queue.
+Выбор файла использует [durable controller](decisions/queued-import-controller.md):
+progress, отмена до публикации и восстановление панели после reload WebView.
+История/retry после перезапуска host ещё не показаны в UI; сохранение recordings
+пока использует standalone [WorkerHost](decisions/worker-host-import.md).
 
 Native queue соединение удерживает [kernel lease](decisions/import-executor-lease.md).
 Проверены конкурирующие owner-процессы и освобождение lock после аварийного exit.

@@ -109,6 +109,7 @@ export interface LibraryAPI {
   searchLibrary(query: string, folderId?: string): Promise<SearchResponse>;
 }
 export interface ImportStatus {
+  progress?: number | null;
   operationId: string | null;
   phase: 'idle' | 'choosing' | 'copying' | 'committing' | 'completed' | 'cancelled' | 'failed';
   copiedBytes: number;

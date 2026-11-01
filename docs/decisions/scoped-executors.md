@@ -1,7 +1,7 @@
 # Scoped durable queue executors
 
 Статус: scoped application queue и native import queue port реализованы.
-Native connection startup сверяет receipts; UI ещё использует transient import session.
+Native connection startup сверяет receipts; file-picker UI использует durable controller с transient status.
 
 ## Проблема
 
@@ -42,14 +42,13 @@ List/recovery возвращают компактные summaries без config,
 Host зависит от порта `import_queue::ImportQueue`; `LibraryBridge.open_import_queue()`
 возвращает leased `QueueConnection` через bounded persistent transport.
 Обычный metadata transport больше не принимает `import_queue`. Порт не зарегистрирован в Tauri
-ACL, private DTO нельзя выдавать WebView. Текущий UI пока использует transient
-import session, не durable executor.
+ACL, private DTO нельзя выдавать WebView. File-picker UI использует durable executor; transient status не является сохранённой историей.
 
 ## Следующий обязательный шаг
 
 Scope — граница ответственности, **не lease процесса**. Перед production recovery
 реализован [lifetime lock](import-executor-lease.md), исключающий второй queue owner.
-Для explicit import Run [worker lifetime покрыт lease](owned-import-execution.md); UI binding ещё требуется. После получения lease native connection [сверяет atomic publication receipts](import-startup-recovery.md) до возврата caller; повторный запуск остаётся явным. Публикация и запись queue completion разделены;
+Для explicit import Run [worker lifetime покрыт lease](owned-import-execution.md); file-picker UI подключён, persistent history/retry UI ещё требуется. После получения lease native connection [сверяет atomic publication receipts](import-startup-recovery.md) до возврата caller; повторный запуск остаётся явным. Публикация и запись queue completion разделены;
 повторное выполнение нельзя считать безопасным только потому, что job interrupted.
 Это соответствует требованиям к идемпотентным Activities в
 [Temporal](https://github.com/temporalio/documentation/blob/main/docs/encyclopedia/activities/activity-definition.mdx).

@@ -1,7 +1,7 @@
 # Import WorkerHost
 
-Статус: standalone import WorkerHost используется UI; durable native
-[Run](owned-import-execution.md) реализован отдельно, UI binding ещё не подключён.
+Статус: standalone WorkerHost используется recording import и protocol checks.
+Выбор файла в UI использует durable native [controller](queued-import-controller.md).
 
 ## Границы
 
@@ -41,5 +41,5 @@ Native `imports.rs` владеет transient session. UI показывает pr
 проверки progress, отмены, изоляции и receipts. Диалог выбора, физические устройства
 и кодеки не покрыты этими проверками. Windows/macOS локально не запускались.
 
-Native [scoped queue port](scoped-executors.md) реализован отдельно. Native Run и [startup reconciliation](import-startup-recovery.md) готовы; UI binding, ASR/model workers, ResourceLocator
+Native [scoped queue port](scoped-executors.md) реализован отдельно. Native Run и [startup reconciliation](import-startup-recovery.md) готовы; persistent history/retry UI, recording queue binding, ASR/model workers, ResourceLocator
 и SleepInhibitor остаются следующими этапами. Swift сохраняется до проверки паритета.

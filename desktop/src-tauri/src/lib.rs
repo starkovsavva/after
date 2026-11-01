@@ -3,6 +3,7 @@ pub mod worker_host;
 pub mod import_queue;
 pub mod queue_connection;
 mod process_worker;
+mod queued_import;
 mod imports;
 mod capture;
 mod media;
@@ -79,7 +80,7 @@ async fn choose_and_import(
     let mut session = imports.begin()?;
     background(move || {
         let Some(path) = platform::choose_media_file() else { session.finish("cancelled"); return Ok(None); };
-        let result = bridge.import_work(&session.work(path), &session.cancelled, &mut |value| session.progress(value));
+        let result = bridge.import_queued_work(&session.work(path), &session.cancelled, &mut |value| session.fraction(value));
         match result {
             Ok(meeting) => { session.finish("completed"); Ok(Some(meeting)) },
             Err(error) if error.code == "cancelled" => { session.finish("cancelled"); Ok(None) },

@@ -452,7 +452,8 @@ export default function App() {
     </div>
     {importing && <Dialog title={t.importing}>
       <p className="dialog-description" role="status">{importStatus?.cancelRequested ? t.importStopping : t.importHint}</p>
-      {!!importStatus?.totalBytes && <progress aria-label={t.importing} max={importStatus.totalBytes} value={importStatus.copiedBytes} style={{ width: '100%' }}/>}
+      {importStatus?.progress != null && <progress aria-label={t.importing} max={1} value={importStatus.progress} style={{ width: '100%' }}/>}
+      {importStatus?.progress == null && !!importStatus?.totalBytes && <progress aria-label={t.importing} max={importStatus.totalBytes} value={importStatus.copiedBytes} style={{ width: '100%' }}/>}
       {importStatus?.operationId && ['choosing', 'copying', 'committing'].includes(importStatus.phase) && <button className="button" disabled={importStatus.cancelRequested} onClick={() => {
         void api.cancelImport(importStatus.operationId!).then(setImportStatus).catch(() => setError(t.importFailed));
       }}>{t.cancel}</button>}

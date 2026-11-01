@@ -149,6 +149,34 @@ impl LibraryBridge {
         }
         result
     }
+    /// Durable file import. Queue DTOs/grants never cross the renderer boundary.
+    pub fn import_queued_work(
+        &self,
+        work: &ImportWork,
+        cancelled: &AtomicBool,
+        progress: &mut dyn FnMut(f64),
+    ) -> Result<Meeting, HostError> {
+        let queue = self.open_import_queue()?;
+        // A completed logical operation must not enqueue a fresh job merely
+        // because generic queue deduplication intentionally excludes terminals.
+        if let Some(meeting) = self.call::<Option<Meeting>>(
+            "get_import_result",
+            json!({"operationId":work.operation_id,"attemptToken":work.attempt_token}),
+        )? { return Ok(meeting); }
+        let result = crate::queued_import::execute(
+            &queue, work, cancelled, progress, Default::default(),
+        );
+        // Reconnection repairs a lost completion without starting/retrying work.
+        if result.is_err() { let _ = self.open_import_queue(); }
+        // The owner is stopped/reaped before fallback: publication cannot race it.
+        let receipt: Option<Meeting> = self.call(
+            "get_import_result",
+            json!({"operationId":work.operation_id,"attemptToken":work.attempt_token}),
+        )?;
+        if let Some(meeting) = receipt { return Ok(meeting); }
+        result?;
+        Err(HostError::new("import_interrupted", "Import completion could not be confirmed."))
+    }
     pub(crate) fn media_chunk(
         &self,
         id: &str,

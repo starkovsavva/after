@@ -1,7 +1,7 @@
 //! Persistent, leased import queue adapter. A failed connection cannot be reused;
 //! its entire process scope is killed/reaped before another request is admitted.
 use crate::{
-    import_queue::{ImportQueue, QueueCommand, QueueReply},
+    import_queue::{ImportQueue, ImportQueueSession, QueueCommand, QueueReply, RequestBudget},
     models::HostError,
 };
 use after_process_runtime::ProcessTree;
@@ -223,16 +223,44 @@ impl Connection {
                 mpsc::RecvTimeoutError::Disconnected => unavailable(),
             })
     }
-    fn exchange(&mut self, bytes: Vec<u8>, id: &str) -> Result<Envelope, HostError> {
+    fn receive_with_budget(
+        &self,
+        budget: &dyn RequestBudget,
+        rpc_deadline: Instant,
+    ) -> Result<Event, HostError> {
+        loop {
+            let deadline = budget.deadline().min(rpc_deadline);
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(timed_out)?;
+            match self
+                .events
+                .recv_timeout(remaining.min(Duration::from_millis(20)))
+            {
+                Ok(event) => return Ok(event),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(unavailable()),
+            }
+        }
+    }
+    fn exchange(
+        &mut self,
+        bytes: Vec<u8>,
+        id: &str,
+        budget: &dyn RequestBudget,
+    ) -> Result<Envelope, HostError> {
         if !self.healthy || self.child.try_wait().map_err(|_| unavailable())?.is_some() {
             return Err(unavailable());
         }
+        let rpc_deadline = Instant::now() + self.timeout;
+        if budget.deadline().min(rpc_deadline) <= Instant::now() {
+            return Err(timed_out());
+        }
         self.input.try_send(bytes).map_err(|_| unavailable())?;
-        let deadline = Instant::now() + self.timeout;
         let mut sent = false;
         let mut reply = None;
         while !sent || reply.is_none() {
-            match self.receive(deadline)? {
+            match self.receive_with_budget(budget, rpc_deadline)? {
                 Event::InputDone if !sent => sent = true,
                 Event::Frame(Frame::Reply {
                     version: 1,
@@ -248,6 +276,21 @@ impl Connection {
 }
 impl ImportQueue for QueueConnection {
     fn execute(&self, command: QueueCommand) -> Result<QueueReply, HostError> {
+        self.execute_before(command, Instant::now() + TIMEOUT)
+    }
+}
+impl ImportQueueSession for QueueConnection {
+    fn shutdown(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stop();
+    }
+    fn execute_with_budget(
+        &self,
+        command: QueueCommand,
+        budget: &dyn RequestBudget,
+    ) -> Result<QueueReply, HostError> {
         let id = uuid::Uuid::new_v4().to_string();
         let mut bytes = serde_json::to_vec(&json!({"version":1,"id":id,"request":command}))
             .map_err(|_| HostError::invalid())?;
@@ -255,8 +298,17 @@ impl ImportQueue for QueueConnection {
             return Err(HostError::invalid());
         }
         bytes.push(b'\n');
-        let mut connection = self.0.lock().map_err(|_| unavailable())?;
-        let reply = match connection.exchange(bytes, &id) {
+        let mut connection = loop {
+            if Instant::now() >= budget.deadline() {
+                return Err(timed_out());
+            }
+            match self.0.try_lock() {
+                Ok(connection) => break connection,
+                Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable()),
+                Err(std::sync::TryLockError::WouldBlock) => thread::sleep(Duration::from_millis(1)),
+            }
+        };
+        let reply = match connection.exchange(bytes, &id, budget) {
             Ok(reply) => reply,
             Err(error) => {
                 connection.stop();
@@ -321,6 +373,76 @@ mod tests {
             "engine_failure"
         );
     }
+    #[cfg(unix)]
+    #[test]
+    fn supervisor_deadline_overrides_the_longer_rpc_timeout() {
+        let (root, engine) =
+            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nexec /usr/bin/sleep 30");
+        let connection =
+            QueueConnection::connect(&engine, root.path(), Duration::from_secs(5)).unwrap();
+        let start = Instant::now();
+        assert_eq!(
+            connection
+                .execute_before(QueueCommand::List, start + Duration::from_millis(50))
+                .err()
+                .unwrap()
+                .code,
+            "engine_timeout"
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            connection.execute(QueueCommand::List).err().unwrap().code,
+            "engine_failure"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_shortens_an_already_waiting_rpc_budget() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Budget {
+            cancelled: AtomicBool,
+            start: Instant,
+        }
+        impl RequestBudget for Budget {
+            fn deadline(&self) -> Instant {
+                self.start
+                    + if self.cancelled.load(Ordering::Acquire) {
+                        Duration::from_millis(150)
+                    } else {
+                        Duration::from_secs(5)
+                    }
+            }
+        }
+        let (root, engine) =
+            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nexec /usr/bin/sleep 30");
+        let connection =
+            QueueConnection::connect(&engine, root.path(), Duration::from_secs(5)).unwrap();
+        let budget = Budget {
+            cancelled: AtomicBool::new(false),
+            start: Instant::now(),
+        };
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(Duration::from_millis(50));
+                budget.cancelled.store(true, Ordering::Release);
+            });
+            assert_eq!(
+                connection
+                    .execute_with_budget(QueueCommand::List, &budget)
+                    .err()
+                    .unwrap()
+                    .code,
+                "engine_timeout"
+            );
+        });
+        assert!(budget.start.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            connection.execute(QueueCommand::List).err().unwrap().code,
+            "engine_failure"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn mismatched_reply_identity_closes_the_owner_connection() {

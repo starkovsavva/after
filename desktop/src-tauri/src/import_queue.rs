@@ -141,3 +141,30 @@ pub struct ImportReconciliation {
 pub trait ImportQueue: Send + Sync {
     fn execute(&self, command: QueueCommand) -> Result<QueueReply, HostError>;
 }
+
+/// Supervisor capability: each RPC fits the remaining operation/cancel budget.
+/// Shutdown must stop/reap the owner before receipt fallback or reconnection.
+pub trait RequestBudget {
+    fn deadline(&self) -> std::time::Instant;
+}
+pub struct FixedDeadline(pub std::time::Instant);
+impl RequestBudget for FixedDeadline {
+    fn deadline(&self) -> std::time::Instant {
+        self.0
+    }
+}
+pub trait ImportQueueSession: ImportQueue {
+    fn execute_before(
+        &self,
+        command: QueueCommand,
+        deadline: std::time::Instant,
+    ) -> Result<QueueReply, HostError> {
+        self.execute_with_budget(command, &FixedDeadline(deadline))
+    }
+    fn execute_with_budget(
+        &self,
+        command: QueueCommand,
+        budget: &dyn RequestBudget,
+    ) -> Result<QueueReply, HostError>;
+    fn shutdown(&self);
+}
