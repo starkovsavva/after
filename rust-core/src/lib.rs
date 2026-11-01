@@ -9,8 +9,11 @@ mod desktop_queue;
 pub mod desktop_queue_service;
 mod desktop_media;
 pub mod desktop_platform;
-#[cfg(unix)]
-pub mod python_runtime;
+mod platform;
+#[cfg(target_os = "macos")]
+pub use platform::{embedded_speech, python_runtime};
+#[cfg(target_os = "macos")]
+use platform::managed_embedding_transport;
 #[cfg(unix)]
 pub mod media;
 #[cfg(unix)]
@@ -47,6 +50,28 @@ pub mod corrections;
 #[cfg(unix)]
 pub mod source_snapshot;
 
+#[cfg(unix)]
+pub mod scoped_share;
+#[cfg(unix)]
+pub mod managed_embeddings;
+#[cfg(unix)]
+pub mod knowledge_rebuild_ai;
+pub mod knowledge_contract;
+pub(crate) mod knowledge_meetings;
+mod knowledge_vectors;
+mod source_cleanup;
+#[cfg(all(test, unix))]
+mod meeting_incarnation;
+#[allow(dead_code)]
+mod knowledge_mixed_inventory;
+#[cfg(unix)]
+pub mod assistant_find;
+#[cfg(unix)]
+pub mod assistant_note_find;
+#[cfg(unix)]
+#[allow(dead_code)]
+mod scoped_agent;
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::ffi::{CStr, CString};
@@ -80,6 +105,7 @@ pub fn request(value: &Value) -> Result<Value> {
     match value["command"].as_str().context("Нет команды ядра")? {
         command if command.starts_with("folder-") || command == "profile-resolve" => folders::dispatch(&root,value),
         command if command.starts_with("trash-") => trash::dispatch(&root,value),
+        command if command.starts_with("agent-share-") => scoped_share::dispatch(&root,value),
         command if command.starts_with("tracker-") => tracker_sync::request(&root,command,value),
         command if command.starts_with("semantic-") => semantic::dispatch(&root,value),
         command if command.starts_with("code-index-") => code_index::dispatch(&root,value),
@@ -91,6 +117,12 @@ pub fn request(value: &Value) -> Result<Value> {
         "meeting-content-snapshot" | "transcript-segment-save" | "summary-item-save" => corrections::dispatch(&root, value),
         "source-snapshot" => source_snapshot::snapshot(&root, value),
         "list" => Ok(json!({"meetings": storage::list_meetings(&root)?})),
+        "kb-rebuild-generate" => knowledge_rebuild_ai::generate(&root,value),
+        command if command.starts_with("kb-") => workspace_repository::knowledge_dispatch(&root,value),
+        "assistant-find" | "assistant-find-validate" | "assistant-find-validate-list" => assistant_find::dispatch(&root,value),
+        "assistant-note-find" | "assistant-note-validate" => assistant_note_find::dispatch(&root,value),
+        "knowledge-meeting-suggestions" => knowledge_meetings::suggestions(&root,value),
+        "knowledge-meeting-validate" => knowledge_meetings::validate_for_note(&root,value),
         "knowledge-search" => knowledge::lookup(&root, value),
         "knowledge-validate-source" => knowledge::validate_source(&root, value),
         "search-validate" => search::validate(&root, value["meetingID"].as_str().context("Нет ID встречи")?, value["sourceFingerprint"].as_str().unwrap_or("")),
@@ -231,6 +263,3 @@ mod tests {
         }
     }
 }
-
-#[cfg(unix)]
-pub mod embedded_speech;

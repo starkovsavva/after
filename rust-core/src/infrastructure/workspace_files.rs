@@ -37,7 +37,7 @@ pub(crate) fn directory(root: &Path) -> Result<PathBuf> {
     private_directory(&directory)?;
     Ok(directory)
 }
-pub(crate) fn lock(directory: &Path) -> Result<File> {
+fn workspace_lock_file(directory: &Path) -> Result<File> {
     let path = directory.join(".workspace.lock");
     if let Ok(info) = fs::symlink_metadata(&path) {
         ensure!(
@@ -47,6 +47,15 @@ pub(crate) fn lock(directory: &Path) -> Result<File> {
     }
     let file = crate::platform_fs::open_private(&path, false)?;
     crate::platform_fs::secure_file(&file)?;
+    Ok(file)
+}
+pub(crate) fn lock(directory: &Path) -> Result<File> {
+    let file = workspace_lock_file(directory)?;
     file.lock().context("Не удалось заблокировать заметки")?;
+    Ok(file)
+}
+pub(crate) fn try_lock(directory: &Path) -> Result<File> {
+    let file = workspace_lock_file(directory)?;
+    file.try_lock().context("Заметки заняты. Повторите очистку позже.")?;
     Ok(file)
 }

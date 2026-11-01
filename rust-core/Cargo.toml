@@ -1,6 +1,6 @@
 [package]
 name = "posle-engine"
-version = "0.17.6"
+version = "0.18.2"
 edition = "2021"
 description = "Local-first meeting library, grounded notes and spaced repetition for After"
 license = "MIT"
@@ -12,6 +12,15 @@ crate-type = ["rlib", "cdylib"]
 [[bin]]
 name = "posle-engine"
 path = "src/main.rs"
+
+# Research-only: never built by the normal app/release build.
+[[bin]]
+name = "after-embedding-helper-experiment"
+path = "experiments/managed_embedding_helper.rs"
+required-features = ["embedding-helper-experiment"]
+
+[features]
+embedding-helper-experiment = []
 
 [dependencies]
 after-process-runtime = { path = "../process-runtime" }
@@ -25,7 +34,7 @@ libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.40.1", features = ["bundled", "backup"] }
 rust-stemmers = "1.2.0"
 unicode-normalization = "0.1.26"
 sha2 = "0.10"

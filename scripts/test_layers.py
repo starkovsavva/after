@@ -60,6 +60,16 @@ class LayerBoundaryTests(unittest.TestCase):
             self.assertEqual(len(list(violations(root / "domain"))), 1)
             self.assertEqual(len(list(outer_layer_violations(root))), 1)
 
+    def test_inner_test_attribute_marks_an_entire_integration_test_module(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "infrastructure").mkdir()
+            source = root / "infrastructure/tests.rs"
+            source.write_text("#![cfg(all(test, unix))]\nuse crate::notes;\n")
+            self.assertEqual(list(outer_layer_violations(root)), [])
+            source.write_text("use crate::notes;\n")
+            self.assertEqual(len(list(outer_layer_violations(root))), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

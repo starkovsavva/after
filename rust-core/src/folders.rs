@@ -269,6 +269,7 @@ pub fn available_features(root: &Path) -> Result<crate::domain::config::AppFeatu
         enabled.calendar |= f.calendar;
         enabled.assistant |= f.assistant;
         enabled.semantic_search |= f.semantic_search;
+        enabled.knowledge_base |= f.knowledge_base;
     }
     Ok(enabled)
 }

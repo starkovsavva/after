@@ -18,7 +18,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+// The knowledge extension is additive; legacy v1 workspace tables stay compatible.
 const VERSION: i64 = 1;
+const WORKSPACE_VERSION: i64 = 1;
 pub(crate) const MAX_WORKSPACE: u64 = 32 * 1_048_576;
 const DATABASE: &str = "core.sqlite";
 const MARKER: &str = ".core-sqlite-migrated";
@@ -114,8 +116,11 @@ fn open(directory: &Path) -> Result<crate::platform_fs::GuardedConnection> {
             CREATE TABLE IF NOT EXISTS workspace_outbox_deliveries(\
                 consumer TEXT NOT NULL, event_id TEXT NOT NULL REFERENCES workspace_outbox(event_id),\
                 acknowledged_at REAL NOT NULL, PRIMARY KEY(consumer,event_id));")?;
-        transaction.pragma_update(None, "user_version", VERSION)?;
+        transaction.pragma_update(None, "user_version", WORKSPACE_VERSION)?;
         transaction.commit()?;
+    }
+    if version == WORKSPACE_VERSION && knowledge::has_extension(&connection)? {
+        knowledge::recover_migration(&connection, root)?;
     }
     for suffix in ["", "-journal", "-wal", "-shm"] {
         let path = root.join(format!("{DATABASE}{suffix}"));
@@ -488,6 +493,9 @@ fn commit(
         .transpose()?
         .unwrap_or_default();
     let new = entities(&value)?;
+    let removed_notes = old.keys().filter(|key| key.0 == "note" && !new.contains_key(*key))
+        .map(|key| key.1.clone()).collect::<BTreeSet<_>>();
+    knowledge::prune_removed(transaction, &removed_notes)?;
     let mut changes = vec![];
     let keys: BTreeSet<_> = old.keys().chain(new.keys()).collect();
     for key in keys {
@@ -617,11 +625,16 @@ pub(crate) fn read_committed(root: &Path) -> Result<Value> {
     ensure!(root.is_absolute(), "Нужен абсолютный путь библиотеки");
     let path = root.join(DATABASE);
     if ordinary(&path)? {
-        let connection = Connection::open_with_flags(
-            &path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        let connection = crate::platform_fs::sqlite_connection(
+            &fs::canonicalize(root)?.join(DATABASE),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         connection.busy_timeout(Duration::from_secs(5))?;
+        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        ensure!(version <= VERSION, "База создана более новой версией «After». Обновите приложение.");
+        if version == WORKSPACE_VERSION && knowledge::has_extension(&connection)? {
+            knowledge::assert_migration_ready(&connection, root)?;
+        }
         if let Some(snapshot) = read_snapshot(&connection)? {
             return Ok(snapshot.value);
         }
@@ -741,7 +754,7 @@ pub(crate) fn operation_receipt_locked(
     operation_id: &str,
 ) -> Result<Option<Value>> {
     ensure!(
-        ["voice", "task"].contains(&namespace)
+        ["voice", "task", "knowledge"].contains(&namespace)
             && !operation_id.is_empty()
             && operation_id.len() <= 256,
         "Некорректная операция"
@@ -759,6 +772,27 @@ pub(crate) fn operation_receipt_locked(
         .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
         .transpose()
 }
+
+mod knowledge;
+mod knowledge_rebuild;
+#[cfg(test)]
+#[path = "workspace_repository/knowledge_portable_tests.rs"]
+mod knowledge_portable_tests;
+pub fn knowledge_dispatch(root: &Path, input: &Value) -> Result<Value> {
+    if input["command"].as_str().is_some_and(|command| command.starts_with("kb-rebuild-")) {
+        return knowledge_rebuild_dispatch(root, input);
+    }
+    knowledge::dispatch(root, input)
+}
+pub fn knowledge_rebuild_dispatch(root: &Path, input: &Value) -> Result<Value> {
+    knowledge_rebuild::dispatch(root, input)
+}
+/// Re-read the server-owned, current source snapshot before invoking a provider.
+/// UI-provided source text and revisions are never authoritative.
+pub(crate) fn knowledge_rebuild_context(root: &Path, draft_id: &str) -> Result<Value> {
+    knowledge_rebuild::context(root, draft_id)
+}
+
 
 #[cfg(all(test, unix))]
 #[path = "../workspace_repository/tests.rs"]

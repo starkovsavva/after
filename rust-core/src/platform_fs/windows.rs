@@ -216,7 +216,11 @@ impl Deref for GuardedConnection { type Target=rusqlite::Connection; fn deref(&s
 impl DerefMut for GuardedConnection { fn deref_mut(&mut self)->&mut Self::Target { &mut self.connection } }
 pub fn sqlite_connection(path: &Path, flags:rusqlite::OpenFlags) -> Result<GuardedConnection> {
     let parents=pin_directory(path.parent().context("Invalid database path")?)?;
-    let file=open_private(path,false)?;
+    let file=if flags.contains(rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        open_read(path)?
+    } else {
+        open_private(path,false)?
+    };
     let connection=rusqlite::Connection::open_with_flags(path,flags)?;
     Ok(GuardedConnection {connection,_file:file,_parents:parents})
 }

@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 470 core + 4 CLI, frontend build + 7 tests, 29 host + 5 real-engine
+и helper), 603 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 29 host + 5 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 13 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -112,3 +112,9 @@ executor: native Swift suite запускается только на Mac (`veri
 
 Native queue соединение удерживает [kernel lease](decisions/import-executor-lease.md).
 Проверены конкурирующие owner-процессы и освобождение lock после аварийного exit.
+
+Интеграция main 0.18.2 сохраняет новые knowledge/agent-сценарии и переносимые
+слои ([решение и ограничения](decisions/main-0182-integration.md)). Snapshot MCP
+и knowledge rebuild проверены через реальные CLI/C ABI на синтетических данных.
+Swift-компилятор и Windows target здесь отсутствуют: source checks не заменяют
+native сборку этих платформ.

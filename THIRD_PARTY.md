@@ -14,7 +14,7 @@ Each component retains its original license and notices in the installed runtime
 - [Whisper](https://github.com/openai/whisper), MIT; selected model weights and tokenizer retain upstream notices.
 - Catalog conversions [Whisper Large v3 Turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo) and [Whisper Small MLX](https://huggingface.co/mlx-community/whisper-small-mlx): see the selected model cards and upstream license notices. Catalog weights use pinned repository revisions recorded in `backend/models.py`.
 - [Ollama](https://github.com/ollama/ollama), MIT. Optional local runtime.
-- [Qwen3 Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B), Apache-2.0. Optional multilingual embedding weights downloaded through the selected local runtime.
+- [Qwen3 Embedding](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B), Apache-2.0. Optional multilingual embedding weights, explicitly downloaded by After or the selected local runtime. The app-owned embedding engine uses llama.cpp (MIT) from the pinned Ollama distribution; its upstream and vendor notices are installed alongside the engine.
 - [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-9B), Apache-2.0; see the selected model's full model card and license.
 - [CPython](https://www.python.org/), Python Software Foundation License. Private speech runtime from [python-build-standalone](https://github.com/astral-sh/python-build-standalone), installed separately from a pinned archive; upstream notices remain in that runtime.
 - [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg), BSD-2-Clause. The separately downloaded FFmpeg binary retains its upstream licensing. Recording finalization verifies and caches this executable independently of the speech Python runtime.

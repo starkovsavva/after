@@ -62,3 +62,23 @@ mod unix {
 }
 #[cfg(unix)]
 pub use unix::*;
+
+#[cfg(test)]
+mod read_only_sql_tests {
+    use super::*;
+    use rusqlite::OpenFlags;
+
+    #[test]
+    fn read_only_sql_never_creates_a_missing_database_or_admits_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("read-only.sqlite");
+        assert!(sqlite_connection(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).is_err());
+        assert!(!path.exists());
+        let connection = sqlite_connection(&path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE).unwrap();
+        connection.execute_batch("CREATE TABLE fixture(value INTEGER); INSERT INTO fixture VALUES(1)").unwrap();
+        drop(connection);
+        let readonly = sqlite_connection(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert_eq!(readonly.query_row("SELECT value FROM fixture", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+        assert!(readonly.execute("INSERT INTO fixture VALUES(2)", []).is_err());
+    }
+}

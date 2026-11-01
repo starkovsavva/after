@@ -90,8 +90,7 @@ trivial conversational phrases. Copy the supporting source id numbers into segme
 Do not number facts or cards and use those new numbers as evidence IDs."#;
 
 pub use crate::ai_config::{AppFeatures, Settings};
-#[cfg(test)]
-use crate::ai_config::snapshot_settings;
+pub(crate) use crate::ai_config::{snapshot_settings, FeatureResolver};
 pub(crate) use crate::ai_config::{settings, live_features, live_features_for, live_features_for_input, profile_for_input, settings_for_input, require_profile_current, check_captured_profile};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1190,14 +1189,7 @@ fn verify_blob(path:&Path,hash:&str,size:u64) -> Result<()> {
     let (actual,_)=hash_model(&mut file,"Проверяю подключённый файл модели",0.45,0.75)?;
     if actual!=hash {bail!("Существующий файл модели «After» повреждён: SHA-256 не совпадает. Исходный GGUF сохранён.");} Ok(())
 }
-#[cfg(target_os="macos")]
-fn clone_model(source:&Path,destination:&Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let (Ok(source),Ok(destination))=(std::ffi::CString::new(source.as_os_str().as_bytes()),std::ffi::CString::new(destination.as_os_str().as_bytes())) else {return false;};
-    unsafe {libc::clonefile(source.as_ptr(),destination.as_ptr(),0)==0}
-}
-#[cfg(not(target_os="macos"))]
-fn clone_model(_source:&Path,_destination:&Path) -> bool {false}
+use crate::platform::clone_model;
 
 fn lock_gguf_install(directory:&Path) -> Result<fs::File> {
     let lock=fs::OpenOptions::new().read(true).write(true).create(true).mode(0o600)
@@ -1367,10 +1359,10 @@ mod tests {
 
     #[test]
     fn queued_settings_are_bounded_objects_and_keep_the_captured_provider() {
-        let captured = snapshot_settings(r#"{"mode":"cloud","cloudProvider":"openrouter","cloudEndpoint":"https://openrouter.ai/api/v1","cloudModel":"saved-model","cloudAPI":"chat"}"#).unwrap();
+        let captured: Settings = snapshot_settings(r#"{"mode":"cloud","cloudProvider":"openrouter","cloudEndpoint":"https://openrouter.ai/api/v1","cloudModel":"saved-model","cloudAPI":"chat"}"#).unwrap();
         assert_eq!(captured.mode,"cloud"); assert_eq!(captured.cloud_provider,"openrouter"); assert_eq!(captured.cloud_model,"saved-model"); assert_eq!(captured.cloud_api,"chat");
-        for invalid in ["null", "[]", "broken", "\"local\""] { assert!(snapshot_settings(invalid).is_err()); }
-        assert!(snapshot_settings(&format!("{{\"focus\":\"{}\"}}", "x".repeat(256*1024))).is_err());
+        for invalid in ["null", "[]", "broken", "\"local\""] { assert!(snapshot_settings::<Settings>(invalid).is_err()); }
+        assert!(snapshot_settings::<Settings>(&format!("{{\"focus\":\"{}\"}}", "x".repeat(256*1024))).is_err());
     }
     #[test]
     fn live_features_read_current_disk_flags_even_with_a_frozen_job_snapshot() {

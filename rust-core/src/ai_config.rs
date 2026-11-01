@@ -5,7 +5,7 @@ use std::path::Path;
 
 pub use crate::domain::config::{AppFeatures, Settings};
 
-pub(crate) fn snapshot_settings(snapshot: &str) -> Result<Settings> {
+pub(crate) fn snapshot_settings<T: serde::de::DeserializeOwned>(snapshot: &str) -> Result<T> {
     if snapshot.len() > 256 * 1024 { bail!("Сохранённые настройки операции слишком большие"); }
     let value: Value = serde_json::from_str(snapshot).context("Не удалось прочитать настройки фоновой операции")?;
     if !value.is_object() { bail!("Настройки фоновой операции должны быть объектом"); }

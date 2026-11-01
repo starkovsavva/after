@@ -58,7 +58,7 @@ def outer_layer_violations(src):
         if not root.exists():
             continue
         for path in sorted(root.rglob("*.rs")):
-            source = re.split(r"#\s*\[\s*cfg\s*\(\s*(?:all\s*\(\s*)?test\b", path.read_text(), maxsplit=1)[0]
+            source = re.split(r"#\s*!?\s*\[\s*cfg\s*\(\s*(?:all\s*\(\s*)?test\b", path.read_text(), maxsplit=1)[0]
             source = re.sub(r"/\*.*?\*/|//[^\n]*", lambda m: "\n" * m[0].count("\n"), source, flags=re.S)
             forbidden = r"\bcrate\s*::\s*(?:notes|folders|corrections|workspace_repository|jobs)\b"
             if layer == "application":

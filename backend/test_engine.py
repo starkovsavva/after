@@ -2,6 +2,8 @@ import contextlib
 import io
 import importlib.util
 import json
+import os
+import stat
 import struct
 import sys
 import types
@@ -62,6 +64,99 @@ class EngineTests(unittest.TestCase):
                 engine.atomic(destination, {"version": "new"})
         self.assertEqual(destination.read_bytes(), before)
         self.assertEqual(list(self.root.glob(".posle-*")), [])
+
+    def test_transcription_commit_failure_or_cancel_restores_exact_summary(self):
+        transcript = self.root / "transcript.json"
+        summary = self.root / "summary.json"
+        before_transcript = b'{ "previous" : "transcript" }\n'
+        before_summary = b'{ "previous" : "summary", "futureField": [1, 2] }\n'
+        for failure in (OSError("transcript disk full"), KeyboardInterrupt()):
+            transcript.write_bytes(before_transcript)
+            summary.write_bytes(before_summary)
+            def commit(path, _value):
+                self.assertEqual(path, transcript)
+                self.assertFalse(summary.exists())
+                retired, = self.root.glob(".posle-retired-summary-*")
+                self.assertEqual(retired.read_bytes(), before_summary)
+                self.assertEqual(stat.S_IMODE(retired.stat().st_mode), 0o600)
+                raise failure
+            with patch.object(engine, "atomic", side_effect=commit), self.assertRaises(type(failure)):
+                engine._publish_transcription(self.root, {"new": "transcript"})
+            self.assertEqual(transcript.read_bytes(), before_transcript)
+            self.assertEqual(summary.read_bytes(), before_summary)
+            self.assertEqual(list(self.root.glob(".posle-*")), [])
+        self.assertIsNone(engine._publish_transcription(self.root, {"new": "transcript"}))
+        self.assertEqual(engine.load(transcript), {"new": "transcript"})
+        self.assertFalse(summary.exists())
+        self.assertEqual(list(self.root.glob(".posle-*")), [])
+
+    def test_transcription_retirement_failure_never_changes_results(self):
+        transcript = self.root / "transcript.json"
+        summary = self.root / "summary.json"
+        transcript.write_bytes(b'{"previous": "transcript"}')
+        summary.write_bytes(b'{"previous": "summary"}')
+        before = transcript.read_bytes(), summary.read_bytes()
+        with patch.object(engine.os, "replace", side_effect=PermissionError("retirement denied")), \
+                patch.object(engine, "atomic") as commit, self.assertRaises(PermissionError):
+            engine._publish_transcription(self.root, {"new": "transcript"})
+        commit.assert_not_called()
+        self.assertEqual((transcript.read_bytes(), summary.read_bytes()), before)
+        self.assertEqual(list(self.root.glob(".posle-*")), [])
+
+    def test_transcription_rollback_failure_retains_only_copy_of_summary(self):
+        summary = self.root / "summary.json"
+        original = b'{ "futureField" : "keep exact bytes" }\n'
+        summary.write_bytes(original)
+        replace = engine.os.replace
+        def fail_restore(source, target):
+            if target == summary:
+                raise OSError("restore denied")
+            return replace(source, target)
+        with patch.object(engine, "atomic", side_effect=OSError("transcript failed")), \
+                patch.object(engine.os, "replace", side_effect=fail_restore), self.assertRaisesRegex(OSError, "restore denied"):
+            engine._publish_transcription(self.root, {"new": "transcript"})
+        retired, = self.root.glob(".posle-retired-summary-*")
+        self.assertEqual(retired.read_bytes(), original)
+        self.assertEqual(stat.S_IMODE(retired.stat().st_mode), 0o600)
+        self.assertFalse((self.root / "transcript.json").exists())
+
+    def test_transcription_retirement_never_changes_link_target_permissions(self):
+        target = self.root / "other-data.json"
+        summary = self.root / "summary.json"
+        transcript = self.root / "transcript.json"
+        original = b'{ "private" : "unrelated fixture" }\n'
+        target.write_bytes(original)
+        os.chmod(target, 0o640)
+        transcript.write_bytes(b'{"previous-transcript":true}')
+        for link in (lambda: summary.symlink_to(target), lambda: os.link(target, summary)):
+            link()
+            try:
+                with self.assertRaises((OSError, RuntimeError)):
+                    engine._publish_transcription(self.root, {"new": "transcript"})
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+                self.assertEqual(summary.read_bytes(), original)
+                self.assertEqual(transcript.read_bytes(), b'{"previous-transcript":true}')
+                self.assertEqual(list(self.root.glob(".posle-retired-summary-*")), [])
+            finally:
+                summary.unlink()
+
+    def test_transcription_cleanup_failure_keeps_completed_result(self):
+        summary = self.root / "summary.json"
+        original = b'{ "previous" : "summary" }\n'
+        summary.write_bytes(original)
+        unlink = Path.unlink
+        def fail_cleanup(path, *args, **kwargs):
+            if path.name.startswith(".posle-retired-summary-"):
+                raise PermissionError("cleanup denied")
+            return unlink(path, *args, **kwargs)
+        with patch.object(Path, "unlink", fail_cleanup):
+            notice = engine._publish_transcription(self.root, {"new": "transcript"})
+        self.assertIn("сохранена", notice)
+        self.assertEqual(engine.load(self.root / "transcript.json"), {"new": "transcript"})
+        self.assertFalse(summary.exists())
+        retired, = self.root.glob(".posle-retired-summary-*")
+        self.assertEqual(retired.read_bytes(), original)
 
     def test_invalid_numbers_never_replace_valid_transcript(self):
         destination = self.root / "transcript.json"
@@ -744,6 +839,49 @@ class WhisperChunkTests(unittest.TestCase):
         self.assertAlmostEqual(transcript["segments"][-1]["end"], 74.8)
         self.assertEqual(self.closed, [True])
         self.assertFalse((self.directory / "summary.json").exists(), "An unchanged old summary must be invalidated after successful ASR")
+        self.assertEqual(list(self.directory.glob(".posle-retired-summary-*")), [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS immutable-file regression")
+    def test_immutable_summary_preserves_previous_transcript_and_retry_succeeds(self):
+        transcript = self.directory / "transcript.json"
+        summary = self.directory / "summary.json"
+        before_transcript = b'{ "previous" : "transcript" }\n'
+        before_summary = b'{ "previous" : "summary", "futureField" : true }\n'
+        transcript.write_bytes(before_transcript)
+        summary.write_bytes(before_summary)
+        os.chflags(summary, stat.UF_IMMUTABLE)
+        try:
+            with self.assertRaises(PermissionError):
+                self.pipeline(lambda *_: None)
+            self.assertEqual(transcript.read_bytes(), before_transcript)
+            self.assertEqual(summary.read_bytes(), before_summary)
+            self.assertEqual(list(self.directory.glob(".posle-retired-summary-*")), [])
+            self.assertNotIn('"event": "done"', engine.PROTOCOL.getvalue())
+        finally:
+            os.chflags(summary, 0)
+        self.calls.clear()
+        self.pipeline(lambda *_: None)
+        self.assertIn('"event": "done"', engine.PROTOCOL.getvalue())
+        self.assertNotEqual(transcript.read_bytes(), before_transcript)
+        self.assertFalse(summary.exists())
+
+    def test_cleanup_failure_reports_completed_pipeline_without_stale_summary(self):
+        summary = self.directory / "summary.json"
+        summary.write_bytes(b'{"previous-summary":true}')
+        unlink = Path.unlink
+        messages = []
+        def fail_cleanup(path, *args, **kwargs):
+            if path.name.startswith(".posle-retired-summary-"):
+                raise PermissionError("cleanup denied")
+            return unlink(path, *args, **kwargs)
+        with patch.object(Path, "unlink", fail_cleanup):
+            self.pipeline(lambda message, *_: messages.append(message))
+        self.assertIn('"event": "done"', engine.PROTOCOL.getvalue())
+        self.assertIn("Не удалось удалить временную копию", messages[-1])
+        self.assertFalse(summary.exists())
+        self.assertEqual(engine.load(self.directory / "transcript.json")["duration"], 75)
+        retired, = self.directory.glob(".posle-retired-summary-*")
+        self.assertEqual(retired.read_bytes(), b'{"previous-summary":true}')
 
     def test_transcription_rejects_transcript_edit_during_inference(self):
         transcript = self.directory / "transcript.json"

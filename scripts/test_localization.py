@@ -6,7 +6,7 @@ import re
 import unittest
 
 PROJECT = Path(__file__).resolve().parents[1]
-CATALOG = PROJECT / 'Sources/PosleApp/Resources/Localization/en.json'
+CATALOG = PROJECT / 'Sources/AfterLocalization/Resources/en.json'
 
 
 def unique_object(pairs):
@@ -31,7 +31,7 @@ class LocalizationTests(unittest.TestCase):
     def test_explicit_interface_keys_exist(self):
         catalog = json.loads(CATALOG.read_text())
         missing = []
-        for path in (PROJECT / 'Sources/PosleApp').glob('*.swift'):
+        for path in (PROJECT / 'Sources').rglob('*.swift'):
             source = path.read_text()
             for match in re.finditer(r'\bL(?:F)?\(\s*("(?:\\.|[^"\\])*")', source):
                 try:
@@ -58,7 +58,7 @@ class LocalizationTests(unittest.TestCase):
         self.assertEqual(metadata['CFBundleName'], 'After')
         self.assertEqual(metadata['CFBundleDisplayName'], 'After')
         self.assertEqual(metadata['CFBundleIdentifier'], 'app.posle.meetings')
-        self.assertEqual(metadata['CFBundleExecutable'], 'Posle')
+        self.assertEqual(metadata['CFBundleExecutable'], 'After')
         self.assertEqual(metadata['SUFeedURL'], 'https://raw.githubusercontent.com/starkovsavva/after/updates/appcast.xml')
         self.assertIn('aria-label="After — a."', (PROJECT / 'packaging/Logo.svg').read_text())
 

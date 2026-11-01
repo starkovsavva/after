@@ -823,6 +823,51 @@ def _transcription_result_snapshot(directory: Path):
                  for path in (directory / "transcript.json", directory / "summary.json"))
 
 
+def _publish_transcription(directory: Path, transcript: dict[str, object]) -> str | None:
+    """Publish under the meeting lock and the non-cancellable checkpoint.
+
+    Retire the summary first: failure to remove it must never leave old evidence
+    IDs beside a new transcript. Rename preserves its exact bytes for rollback
+    without needing a second write when the transcript commit fails. This is
+    exception recovery, not a durable transaction across SIGKILL or power loss.
+    """
+    summary = directory / "summary.json"
+    retired = None
+    if summary.exists():
+        descriptor, name = tempfile.mkstemp(prefix=".posle-retired-summary-", dir=directory)
+        os.close(descriptor)
+        retired = Path(name)
+        try:
+            os.replace(summary, retired)
+        except BaseException:
+            retired.unlink(missing_ok=True)  # Only the empty reservation exists.
+            raise
+    try:
+        if retired is not None:
+            descriptor = os.open(retired, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as snapshot:
+                info = os.fstat(snapshot.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise RuntimeError("Данные встречи должны храниться в обычных файлах.")
+                os.fchmod(snapshot.fileno(), 0o600)
+        atomic(directory / "transcript.json", transcript)
+    except BaseException:
+        if retired is not None:
+            # If restoration itself fails, leave the private snapshot in place.
+            # Never let a temporary-directory cleanup delete the only copy.
+            os.replace(retired, summary)
+        raise
+    if retired is not None:
+        try:
+            retired.unlink()
+        except OSError:
+            # The new transcript is already committed and no stale summary is
+            # visible. Report completion with a cleanup notice, not a failed job
+            # that would invite another ASR run or an incorrect rollback.
+            return "Транскрипция сохранена. Не удалось удалить временную копию прежнего конспекта."
+    return None
+
+
 def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
     with _meeting_result_lock(directory):
         baseline = _transcription_result_snapshot(directory)
@@ -945,10 +990,8 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
         if _transcription_result_snapshot(directory) != baseline:
             raise RuntimeError("Транскрипция или конспект изменились во время распознавания. Ваши правки сохранены; запустите распознавание заново.")
         with publication():
-            atomic(directory / "transcript.json", transcript)
-            # A re-transcription invalidates old evidence IDs; preserve existing review history.
-            (directory / "summary.json").unlink(missing_ok=True)
-            progress("Транскрипция сохранена", 1)
+            cleanup_notice = _publish_transcription(directory, transcript)
+            progress(cleanup_notice or "Транскрипция сохранена", 1)
             emit("done", count=len(segments), duration=duration)
 
 

@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "description": "Tiny synthetic labeled regression/reporting fixture, already inspected by developers. Not representative, not used to choose thresholds, and not an independent final quality gate.",
+  "meetings": [
+    {
+      "id": "dev",
+      "text": "бюджет отдела разработки архитектура"
+    },
+    {
+      "id": "marketing",
+      "text": "бюджет отдела маркетинга реклама"
+    },
+    {
+      "id": "buying",
+      "text": "закупки поставщик доставка"
+    },
+    {
+      "id": "security",
+      "text": "протокол база шифрование"
+    },
+    {
+      "id": "health",
+      "text": "ребёнок врач приём лекарство"
+    }
+  ],
+  "notes": [
+    {
+      "id": "n-dev",
+      "text": "бюджет отдела разработки сервера"
+    },
+    {
+      "id": "n-marketing",
+      "text": "бюджет отдела маркетинга продажи"
+    },
+    {
+      "id": "n-buying",
+      "text": "закупки поставщик доставка"
+    },
+    {
+      "id": "n-security",
+      "text": "протокол база шифрование"
+    },
+    {
+      "id": "n-health",
+      "text": "педиатр обследование назначение ребёнок"
+    }
+  ],
+  "expectedPairs": [
+    {
+      "note": "n-dev",
+      "meeting": "dev"
+    },
+    {
+      "note": "n-marketing",
+      "meeting": "marketing"
+    },
+    {
+      "note": "n-buying",
+      "meeting": "buying"
+    },
+    {
+      "note": "n-security",
+      "meeting": "security"
+    },
+    {
+      "note": "n-health",
+      "meeting": "health"
+    }
+  ]
+}

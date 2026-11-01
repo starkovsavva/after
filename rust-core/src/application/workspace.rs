@@ -19,10 +19,15 @@ impl<R: WorkspaceRepository, L: WorkspaceLocks, C: WorkspaceRecovery>
     WorkspaceCoordinator<R, L, C>
 {
     pub fn load_notes_locked(&self, directory: &Path) -> Result<NotesWorkspace> {
-        self.recovery.recover_locked(directory)?;
-        let snapshot = self.repository.load_locked(directory)?;
+        let snapshot = self.load_snapshot_locked(directory)?;
         serde_json::from_value(snapshot.value)
             .context("Не удалось прочитать заметки. База сохранена.")
+    }
+    /// The caller already owns the workspace lock; recover before any scoped
+    /// source decision without recursively acquiring that lock.
+    pub fn load_snapshot_locked(&self, directory: &Path) -> Result<WorkspaceSnapshot> {
+        self.recovery.recover_locked(directory)?;
+        self.repository.load_locked(directory)
     }
     pub fn persist_notes_locked(&self, directory: &Path, data: &NotesWorkspace) -> Result<()> {
         validate_workspace(data)?;

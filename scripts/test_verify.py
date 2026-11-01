@@ -79,6 +79,7 @@ class VerifyIsolationTests(unittest.TestCase):
         controller.run = record
         controller.queue()
         self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0][0], str(controller.swift / 'debug/After'))
         self.assertIn('--check-queue', calls[0][0])
         self.assertIn('--preview', calls[0][0])
         self.assertFalse(calls[0][1].exists())
@@ -220,12 +221,12 @@ class VerifyIsolationTests(unittest.TestCase):
         with mock.patch.object(verify.subprocess, 'run', return_value=mock.Mock(returncode=1)):
             controller.core_tests()
         compilations = [command for _, command in calls if command[0] == 'swiftc']
-        self.assertEqual(len(compilations), 3)
-        for expected, command in zip(('CoreChecks', 'CalendarLayoutChecks', 'TaskDueDateChecks'), compilations):
+        self.assertEqual(len(compilations), 4)
+        for expected, command in zip(('CoreChecks', 'CalendarLayoutChecks', 'TaskDueDateChecks', 'AssistantReadChecks'), compilations):
             self.assertIn(verify.PROJECT / 'Tests' / (expected + '.swift'), command)
             self.assertIn('-module-cache-path', command)
             self.assertIn('-parse-as-library', command)
-        self.assertEqual(len(calls), 6)
+        self.assertEqual(len(calls), 8)
 
     def test_integration_preserves_unique_media_search_and_migration_checks(self):
         controller = self.controller()
@@ -238,7 +239,7 @@ class VerifyIsolationTests(unittest.TestCase):
         controller.run = record
         controller.integration()
         called = {str(command[1]) for command in commands}
-        self.assertEqual(called, {'scripts/e2e.py', 'scripts/e2e_media.py', 'scripts/check_media.py', 'scripts/check_import_playback.py', 'scripts/check_search.py', 'scripts/check_managed_identity.py', 'scripts/check_native_integrity.py', 'scripts/check_mcp.py'})
+        self.assertEqual(called, {'scripts/e2e.py', 'scripts/e2e_media.py', 'scripts/check_media.py', 'scripts/check_import_playback.py', 'scripts/check_search.py', 'scripts/check_managed_identity.py', 'scripts/check_process_runner.py', 'scripts/check_local_service.py', 'scripts/check_worker_credentials.py', 'scripts/check_native_integrity.py', 'scripts/check_mcp.py', 'scripts/check_snapshot_agent.py', 'scripts/check_knowledge_rebuild.py'})
         self.assertFalse(any('check_audio' in str(command) for command in commands))
         self.assertEqual(environments['scripts/check_media.py']['PYTHONPATH'], str(verify.PROJECT / 'backend'))
         self.assertEqual(environments['scripts/e2e_media.py']['POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS'], '1')

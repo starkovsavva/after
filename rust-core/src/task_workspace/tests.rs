@@ -36,6 +36,20 @@ fn c(root: &Path, t: &Value, agent: bool) -> Value {
     )
     .unwrap()
 }
+
+#[test]
+fn knowledge_selection_never_expands_legacy_task_material_permissions() {
+    let dir = tempfile::tempdir().unwrap(); let root = dir.path();
+    let task = create_task(root, "Task");
+    let task = add_note(root, &task, "explicit legacy material", true);
+    let before = get(root, &task["id"]);
+    let result = call(root, "task-material-share-notes", json!({"taskID":task["id"],
+        "expectedRevision":task["revision"], "operationID":uuid(),
+        "notes":[{"id":"ungranted","revision":1}]}));
+    assert!(result.is_err());
+    assert_eq!(get(root, &task["id"]), before);
+}
+
 #[test]
 fn legacy_workspace_status_and_note_editor_remain_compatible() {
     let root = tempfile::tempdir().unwrap();

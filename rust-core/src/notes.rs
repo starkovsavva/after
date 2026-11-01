@@ -16,7 +16,7 @@ const CONFLICT: &str = "Заметка уже изменена в другом �
 pub use crate::domain::workspace::{NoteAttachment, CapturedNote, NoteTemplate, MeetingContext, NotesWorkspace};
 pub(crate) use crate::domain::workspace::{task_signature};
 pub(crate) use crate::domain::workspace_validation::{valid_id, bounded, validate_note, attachment_type, MAX_TEXT};
-pub(crate) use crate::infrastructure::workspace_files::{directory, lock, private_directory};
+pub(crate) use crate::infrastructure::workspace_files::{directory, lock, try_lock, private_directory};
 fn regular(path: &Path, max: u64) -> Result<File> {
     let info = fs::symlink_metadata(path)?;
     ensure!(info.is_file() && !info.file_type().is_symlink() && info.len() <= max, "Ожидался обычный файл допустимого размера");
@@ -99,6 +99,7 @@ pub fn delete_note(root:&Path,id:&str,revision:u64) -> Result<Value> {
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
     let current=expected(&mut data,id,revision)?;
     if is_task_tombstone(current) { return Ok(json!({"deleted":true})); }
+    let cleanup_scoped_sources=current.kind=="note";
     let attachments=current.attachments.clone();
     if let Some(note)=data.notes.iter_mut().find(|note|note.id==id && note.task_origin.is_some()) {
         // Keep only a source tombstone: otherwise the unchanged summary would
@@ -110,8 +111,14 @@ pub fn delete_note(root:&Path,id:&str,revision:u64) -> Result<Value> {
         note.trashed_at=Some(now()-crate::storage::TRASH_RETENTION_SECONDS-1.0); note.revision=bumped(note.revision)?; note.updated_at=now();
     } else { data.notes.retain(|note|note.id != id); }
     persist(&dir,&data)?;
+    // The scoped store takes its own DB lock before reading the workspace.
+    // Release this lock first to preserve its lock order. If cleanup fails or
+    // the process stops here, scoped history retries reconciliation before
+    // returning any derived information.
+    drop(_lock);
+    let cleanup_pending=cleanup_scoped_sources && crate::source_cleanup::reconcile_deleted_sources(root).is_err();
     for attachment in attachments { let _=remove_owned_attachment(root,&attachment); }
-    Ok(json!({"deleted":true}))
+    Ok(json!({"deleted":true,"cleanupPending":cleanup_pending}))
 }
 pub fn save_context(root:&Path,mut context:MeetingContext) -> Result<MeetingContext> {
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;

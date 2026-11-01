@@ -46,3 +46,11 @@ pub fn operation_receipt(root: &Path, namespace: &str, operation: &str) -> Resul
 
 #[cfg(test)]
 pub(crate) use crate::infrastructure::workspace_repository::MAX_WORKSPACE;
+
+// Knowledge compatibility entry points share the canonical storage adapter.
+pub use crate::infrastructure::workspace_repository::{knowledge_dispatch, knowledge_rebuild_dispatch};
+pub(crate) use crate::infrastructure::workspace_repository::knowledge_rebuild_context;
+
+pub(crate) fn load_locked(directory: &Path) -> Result<WorkspaceSnapshot> {
+    coordinator().load_snapshot_locked(directory)
+}

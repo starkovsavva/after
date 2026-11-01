@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 pub(crate) const MAX_FOLDERS: usize = 1_000;
-pub(crate) const FEATURES: &[&str] = &["cards", "tasks", "calendar", "assistant", "semanticSearch"];
+pub(crate) const FEATURES: &[&str] = &["cards", "tasks", "calendar", "assistant", "semanticSearch", "knowledgeBase"];
 pub(crate) fn valid_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128

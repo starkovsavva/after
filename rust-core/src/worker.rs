@@ -158,7 +158,15 @@ pub fn application_contents(executable: &Path) -> Option<&Path> {
 /// ordinary engine binary supports the same private entry point for developers.
 fn native_host_path(engine: &Path) -> PathBuf {
     application_contents(engine)
-        .map(|contents| contents.join("Helpers/После Распознавание.app/Contents/MacOS/После Речь"))
+        .map(|contents| {
+            let directory = contents.join("Helpers/После Распознавание.app/Contents/MacOS");
+            let current = directory.join("After Speech");
+            let legacy = directory.join("После Речь");
+            // A process from an earlier version may still see the old bundle
+            // while an update is being applied. Never prefer the legacy file
+            // when the current helper is present.
+            if !current.is_file() && legacy.is_file() { legacy } else { current }
+        })
         .unwrap_or_else(|| engine.to_owned())
 }
 
@@ -172,9 +180,22 @@ fn setup_spec(root: &Path, backend: &Path) -> Result<WorkerSpec> {
     })
 }
 
-/// A missing, malformed, oversized or linked settings file never authorizes a
-/// secret. Read a bounded regular file, without following a replacement symlink.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SpeechSelection {
+    speech_mode: Option<String>,
+}
+
+/// Match the worker's explicit job snapshot before consulting global settings.
+/// A supplied invalid snapshot must not gain authority from a different disk
+/// selection. Legacy calls without a snapshot use only a bounded regular file,
+/// without following a replacement symlink.
 fn cloud_speech_selected(root: &Path) -> bool {
+    if let Some(snapshot) = std::env::var_os("POSLE_JOB_SETTINGS") {
+        return snapshot.to_str()
+            .and_then(|raw| crate::ai::snapshot_settings::<SpeechSelection>(raw).ok())
+            .is_some_and(|settings| settings.speech_mode.as_deref() == Some("cloud"));
+    }
     let Ok(file) = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(root.join("settings.json")) else { return false; };
     let Ok(metadata) = file.metadata() else { return false; };
@@ -467,11 +488,21 @@ mod tests {
 
     #[test]
     fn production_selects_branded_helper_and_development_keeps_native_engine() {
-        let bundled = Path::new("/Applications/После.app/Contents/MacOS/posle-engine");
-        assert_eq!(native_host_path(bundled), Path::new("/Applications/После.app/Contents/Helpers/После Распознавание.app/Contents/MacOS/После Речь"));
-        let processing = Path::new("/Applications/После.app/Contents/Helpers/После Обработка.app/Contents/MacOS/После Обработка");
-        assert_eq!(native_host_path(processing), native_host_path(bundled));
-        assert_eq!(application_contents(processing), Some(Path::new("/Applications/После.app/Contents")));
+        let fixture = tempfile::tempdir().unwrap();
+        let contents = fixture.path().join("After.app/Contents");
+        let bundled = contents.join("MacOS/posle-engine");
+        let directory = contents.join("Helpers/После Распознавание.app/Contents/MacOS");
+        let current = directory.join("After Speech");
+        let legacy = directory.join("После Речь");
+        std::fs::create_dir_all(&directory).unwrap();
+        assert_eq!(native_host_path(&bundled), current);
+        std::fs::write(&legacy, b"legacy").unwrap();
+        assert_eq!(native_host_path(&bundled), legacy);
+        std::fs::write(&current, b"current").unwrap();
+        assert_eq!(native_host_path(&bundled), current);
+        let processing = contents.join("Helpers/После Обработка.app/Contents/MacOS/After Processing");
+        assert_eq!(native_host_path(&processing), current);
+        assert_eq!(application_contents(&processing), Some(contents.as_path()));
         let development = Path::new("/tmp/build/debug/posle-engine");
         assert_eq!(native_host_path(development), development);
         assert!(application_contents(development).is_none());
@@ -539,6 +570,74 @@ mod tests {
         std::fs::write(&target, r#"{"speechMode":"cloud"}"#).unwrap();
         std::os::unix::fs::symlink(&target, root.path().join("settings.json")).unwrap();
         assert!(!cloud_speech_selected(root.path()));
+    }
+
+    #[test]
+    fn queued_speech_credentials_follow_the_validated_snapshot_in_isolated_children() {
+        use std::os::unix::ffi::OsStringExt;
+        const CHILD_ROOT: &str = "POSLE_TEST_WORKER_SNAPSHOT_ROOT";
+        const EXPECT_KEY: &str = "POSLE_TEST_WORKER_EXPECT_SPEECH_KEY";
+        const OVERSIZED: &str = "POSLE_TEST_WORKER_OVERSIZED_SNAPSHOT";
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let root = Path::new(&root);
+            let expected = std::env::var(EXPECT_KEY).unwrap() == "true";
+            // Linux limits each exec environment string. Construct the rejected
+            // snapshot after entering this isolated test process, preserving
+            // the real environment-based authorization check without E2BIG.
+            if std::env::var_os(OVERSIZED).is_some() {
+                std::env::set_var("POSLE_JOB_SETTINGS", format!(r#"{{"speechMode":"cloud","focus":"{}"}}"#, "x".repeat(256 * 1024)));
+            }
+            for name in ["prepare", "transcribe", "diarize", "finalize", "install-local"] {
+                let spec = worker_spec(root, Path::new("/tmp/backend"), name, Some(Path::new("/tmp/meeting")), 0, true).unwrap();
+                let authorized = name == "transcribe" && expected;
+                assert_eq!(spec.accepts_speech_key, authorized, "{name}");
+                let variables: Vec<(OsString, OsString)> = [
+                    ("POSLE_SPEECH_API_KEY", "synthetic-speech-key"),
+                    ("POSLE_API_KEY", "synthetic-text-key"),
+                    ("OPENAI_API_KEY", "synthetic-other-key"),
+                ].into_iter().map(|(key,value)| (key.into(),value.into())).collect();
+                let mut child = Command::new("/usr/bin/env");
+                child.env_clear().envs(variables.clone());
+                sanitize_environment(&mut child, spec.accepts_speech_key, variables);
+                let output = child.output().unwrap();
+                assert!(output.status.success());
+                let text = String::from_utf8(output.stdout).unwrap();
+                assert_eq!(text.contains("POSLE_SPEECH_API_KEY=synthetic-speech-key"), authorized);
+                assert!(!text.contains("POSLE_API_KEY="));
+                assert!(!text.contains("OPENAI_API_KEY="));
+                assert!(!strings(&spec).iter().any(|arg| arg.contains("synthetic-speech-key") || arg.contains("speechMode")));
+            }
+            assert!(!setup_spec(root, Path::new("/tmp/backend")).unwrap().accepts_speech_key);
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let mut cases = vec![
+            (Some(OsString::from(r#"{"speechMode":"cloud"}"#)), "local", true),
+            (Some(OsString::from(r#"{"speechMode":"local"}"#)), "cloud", false),
+            (None, "cloud", true),
+            (None, "local", false),
+        ];
+        for raw in ["", "broken", "null", "[]", r#"["cloud"]"#, "{}", r#"{"mode":"cloud"}"#,
+                    r#"{"speechMode":true}"#, r#"{"speechMode":null}"#] {
+            cases.push((Some(raw.into()), "cloud", false));
+        }
+        cases.push((Some(format!(r#"{{"speechMode":"cloud","focus":"{}"}}"#, "x".repeat(256 * 1024)).into()), "cloud", false));
+        cases.push((Some(OsString::from_vec(vec![0xff])), "cloud", false));
+        for (index, (snapshot, disk_mode, expected)) in cases.into_iter().enumerate() {
+            std::fs::write(root.path().join("settings.json"), json!({"speechMode":disk_mode}).to_string()).unwrap();
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "worker::tests::queued_speech_credentials_follow_the_validated_snapshot_in_isolated_children", "--nocapture"])
+                .env(CHILD_ROOT, root.path()).env(EXPECT_KEY, expected.to_string()).env_remove("POSLE_JOB_SETTINGS").env_remove(OVERSIZED);
+            if let Some(snapshot) = snapshot {
+                if snapshot.to_str().is_some_and(|raw| raw.len() > 256 * 1024) {
+                    child.env(OVERSIZED, "1");
+                } else {
+                    child.env("POSLE_JOB_SETTINGS", snapshot);
+                }
+            }
+            let output = child.output().unwrap();
+            assert!(output.status.success(), "isolated case {index}: {}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        }
     }
 
     #[test]

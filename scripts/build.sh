@@ -4,7 +4,11 @@ umask 022
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="${POSLE_BUILD_DIR:-$PROJECT/.build}"
 cd "$PROJECT"
-# A caller must explicitly select a valid Apple certificate before any build work.
+# Refuse ignored Swift implementation files: a local build must not succeed
+# with inputs that a clean checkout and the published source archive omit.
+python3 "$PROJECT/scripts/check_platform_boundaries.py"
+# Validate a requested Apple identity before building. An unset identity keeps
+# the existing ad-hoc development signature.
 python3 "$PROJECT/scripts/signing.py" --check
 SOURCE_REVISION="$(git rev-parse --verify HEAD)"
 SOURCE_STATUS="$(git status --porcelain)"
@@ -58,19 +62,22 @@ python3 "$PROJECT/scripts/signing.py" --library "$CORE_LIBRARY" --digest-file "$
 swift build --scratch-path "$BUILD" -c release --disable-automatic-resolution \
     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __posle_core -Xlinker "$CORE_DIGEST"
 SWIFT_BIN="$(swift build --scratch-path "$BUILD" -c release --show-bin-path)"
-cp "$SWIFT_BIN/Posle" "$APP/Contents/MacOS/Posle"
-cp "$RUST_RELEASE/posle-engine" "$APP/Contents/MacOS/posle-engine"
-# Helpers are real native processes. The speech helper embeds the private
-# CPython runtime in-process; it never execs a Python interpreter.
+cp "$SWIFT_BIN/After" "$APP/Contents/MacOS/After"
+cp "$RUST_RELEASE/posle-engine" "$APP/Contents/MacOS/After Engine"
+# Previously copied MCP configurations refer to posle-engine. A signed native
+# shim keeps that path usable and execs the newly named engine without a shell.
+/usr/bin/clang -Os -std=c11 -Wall -Wextra -Werror "$PROJECT/packaging/LegacyEngineShim.c" -o "$APP/Contents/MacOS/posle-engine"
+# Keep helper bundle paths and identifiers stable for existing installations.
+# Their executable names are user-visible in Activity Monitor.
 python3 - "$APP" "$RUST_RELEASE/posle-engine" "$PROJECT/packaging/Info.plist" <<'PYHELPERS'
 import plistlib, shutil, sys
 from pathlib import Path
 app, engine, version_file = map(Path, sys.argv[1:])
 with version_file.open("rb") as stream: version = plistlib.load(stream)
-# Keep helper bundle paths and executable names stable for runtime integrity checks.
+# Keep helper bundle paths and identifiers stable for runtime integrity checks.
 for title, executable, identifier, display in [
-    ("После Распознавание", "После Речь", "app.posle.meetings.speech", "After Speech"),
-    ("После Обработка", "После Обработка", "app.posle.meetings.processing", "After Processing"),
+    ("После Распознавание", "After Speech", "app.posle.meetings.speech", "After Speech"),
+    ("После Обработка", "After Processing", "app.posle.meetings.processing", "After Processing"),
 ]:
     helper = app / "Contents/Helpers" / (title + ".app") / "Contents"
     (helper / "MacOS").mkdir(parents=True, exist_ok=True)
@@ -109,8 +116,16 @@ codesign --verify --deep --strict "$SPARKLE"
 ditto --noextattr --norsrc --noqtn "$SPARKLE" "$APP/Contents/Frameworks/Sparkle.framework"
 codesign --verify --deep --strict "$APP/Contents/Frameworks/Sparkle.framework"
 cp "$PROJECT/backend/engine.py" "$PROJECT/backend/models.py" "$PROJECT/backend/media_runtime.py" "$PROJECT/backend/cloud_speech.py" "$PROJECT/backend/embedded_bridge.py" "$PROJECT/backend/short_speech.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$PROJECT/backend/python-runtime.json" "$APP/Contents/Resources/backend/"
+# SwiftPM owns the shared translation catalog. Keep its resource bundle beside
+# the executable's resources so Bundle.module also resolves after distribution.
+LOCALIZATION_BUNDLE="$SWIFT_BIN/After_AfterLocalization.bundle"
+if [[ ! -d "$LOCALIZATION_BUNDLE" ]]; then
+    echo "Missing AfterLocalization resource bundle: $LOCALIZATION_BUNDLE" >&2
+    exit 1
+fi
+ditto --noextattr --norsrc --noqtn "$LOCALIZATION_BUNDLE" "$APP/Contents/Resources/After_AfterLocalization.bundle"
 mkdir -p "$APP/Contents/Resources/Localization"
-cp "$PROJECT/Sources/PosleApp/Resources/Localization/en.json" "$APP/Contents/Resources/Localization/en.json"
+cp "$PROJECT/Sources/AfterLocalization/Resources/en.json" "$APP/Contents/Resources/Localization/en.json"
 cp -R "$PROJECT/packaging/en.lproj" "$PROJECT/packaging/ru.lproj" "$APP/Contents/Resources/"
 cp "$PROJECT/THIRD_PARTY.md" "$APP/Contents/Resources/THIRD_PARTY.md"
 cp "$PROJECT/LICENSE" "$APP/Contents/Resources/LICENSE"

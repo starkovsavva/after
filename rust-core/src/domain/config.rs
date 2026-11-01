@@ -30,6 +30,7 @@ pub struct AppFeatures {
     pub calendar: bool,
     pub assistant: bool,
     pub semantic_search: bool,
+    pub knowledge_base: bool,
 }
 impl Default for Settings {
     fn default() -> Self {

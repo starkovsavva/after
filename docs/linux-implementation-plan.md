@@ -35,6 +35,11 @@
   canonical queue реализованы ([ADR](decisions/scoped-executors.md)). Lifetime queue lease реализован
   ([ADR](decisions/import-executor-lease.md)); worker lifetime coverage, receipt
   reconciliation и автоматический desktop executor остаются следующими срезами; [ADR](decisions/live-job-coordinator.md).
+- Main 0.18.2 интегрирован: Swift разбит на AfterCore/Platform/Localization/macOS/App;
+  новые knowledge SQL/rebuild modules сохраняют canonical transaction в infrastructure.
+  Optional semantic/agent cleanup выбираются через native boundaries; Tauri UI
+  новых Swift-сценариев и Linux model/capture runtime ещё требуют переноса.
+  [Интеграция и проверки](decisions/main-0182-integration.md).
 - Команды и ограничения актуальны в [Linux-инструкции](linux.md).
 
 ## Правила выполнения

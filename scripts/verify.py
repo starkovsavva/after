@@ -23,6 +23,7 @@ PROFILES = {
 NATIVE = (
     "folders", "localization", "folder-jobs", "meeting-rename", "responsiveness", "contexts", "feature-ui", "pipeline", "chatgpt-auth", "chatgpt-ui", "recording", "recording-start", "recording-sessions", "corrections", "tasks", "task-workspace", "integrations", "trash", "themes", "typography", "guidance", "voice", "bug-report", "copy-transcript", "updates",
     "release-notes", "calendar", "calendar-workspace", "notes", "overview", "jobs", "navigation", "cards", "queue", "source-playback", "source-popover",
+    "assistant-read", "knowledge-links", "knowledge-topics", "agent-snapshot",
 )
 
 
@@ -124,8 +125,8 @@ class Verification:
         # Compile the same contracts, rather than silently skipping core tests.
         with tempfile.TemporaryDirectory(prefix="posle-core-check-", dir="/private/tmp") as temporary:
             root = Path(temporary)
-            sources = sorted((PROJECT / "Sources/PosleCore").glob("*.swift"))
-            for name in ("CoreChecks", "CalendarLayoutChecks", "TaskDueDateChecks"):
+            sources = sorted((PROJECT / "Sources/AfterCore").glob("*.swift"))
+            for name in ("CoreChecks", "CalendarLayoutChecks", "TaskDueDateChecks", "AssistantReadChecks"):
                 output = root / name
                 self.run("Standalone " + name, ["swiftc", "-module-cache-path", root / "module-cache",
                     "-parse-as-library", *sources, PROJECT / "Tests" / (name + ".swift"), "-o", output])
@@ -143,6 +144,8 @@ class Verification:
         self.build_rust()
         self.run("CLI, C ABI and localhost HTTP", [self.python, "scripts/e2e.py", "--engine", self.engine, "--library", self.library])
         self.run("MCP task lifecycle over stdio", [self.python, "scripts/check_mcp.py", "--engine", self.engine, "--library", self.library])
+        self.run("Approved snapshots over real MCP", [self.python, "scripts/check_snapshot_agent.py", "--engine", self.engine, "--library", self.library])
+        self.run("Reviewable knowledge reorganization", [self.python, "scripts/check_knowledge_rebuild.py", "--engine", self.engine, "--library", self.library])
         self.run("Recording through native worker", [self.python, "scripts/e2e_media.py", "--python", self.python, "--engine", self.engine],
                  env=self.env | {"POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"})
         self.run("Long, delayed and idle recording tracks", [self.python, "scripts/check_media.py"],
@@ -150,12 +153,15 @@ class Verification:
         self.run("Imported listening quality and source timeline", [self.python, "scripts/check_import_playback.py"])
         self.run("Search corpus and index rebuild", [self.python, "scripts/check_search.py", "--library", self.library])
         self.run("Owned model runtime migration", [self.python, "scripts/check_managed_identity.py"])
+        self.run("Worker cancellation and bounded protocol", [self.python, "scripts/check_process_runner.py"])
+        self.run("Managed model startup ownership", [self.python, "scripts/check_local_service.py"])
+        self.run("Request credentials and vault failures", [self.python, "scripts/check_worker_credentials.py"])
         self.run("Native library integrity before constructors", [self.python, "scripts/check_native_integrity.py"])
 
     def native(self):
         self.build_swift()
         self.build_rust()
-        binary = self.swift / "debug/Posle"
+        binary = self.swift / "debug/After"
         for scenario in NATIVE:
             self.native_scenario(scenario)
         with tempfile.TemporaryDirectory(prefix="posle-ui-check-", dir="/private/tmp") as fixture:
@@ -172,7 +178,7 @@ class Verification:
     def native_scenario(self, scenario):
         if scenario not in NATIVE:
             raise RuntimeError("Unknown native verification scenario")
-        binary = self.swift / "debug/Posle"
+        binary = self.swift / "debug/After"
         with tempfile.TemporaryDirectory(prefix="posle-native-check-", dir="/private/tmp") as fixture:
             if scenario not in ("folders", "folder-jobs", "meeting-rename", "responsiveness", "contexts", "feature-ui", "recording"):
                 Path(fixture, "settings.json").write_text(json.dumps({"features": {key: True for key in ("cards", "tasks", "calendar", "assistant", "semanticSearch")}}))
