@@ -6,6 +6,7 @@ on:
     paths:
       - 'desktop/**'
       - 'rust-core/**'
+      - 'process-runtime/**'
       - 'scripts/*desktop*'
       - '.github/workflows/desktop.yml'
       - 'scripts/verify.py'
@@ -62,6 +63,7 @@ jobs:
       - name: Canonical core regression and engine (Unix)
         if: runner.os != 'Windows'
         run: |
+          cargo test --manifest-path process-runtime/Cargo.toml --locked --target-dir .build/rust
           cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust
           cargo build --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust
           python3 scripts/stage-desktop-engine.py

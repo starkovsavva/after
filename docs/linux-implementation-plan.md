@@ -24,6 +24,11 @@
   clock/identity — в `application/job_ports.rs`. SQLite больше не содержит scheduler
   или JSON dispatch. Claim-транзакции и прежний API сохранены;
   [границы](decisions/job-queue-boundaries.md). Общий executor и Tauri queue API ещё не завершены.
+- `process-runtime/` подключён к metadata Tauri bridge и ASR worker: общий scoped
+  supervisor, Unix groups и Windows Job Object adapters. На Linux проверяются
+  отмена/Drop/normal-parent-exit с настоящими потомками. Windows/macOS пока не
+  проверены локально; crash/escape ограничения описаны в [ADR](decisions/process-supervision.md).
+  Общий coordinator живых attempts остаётся следующим срезом этапа 4.
 - Команды и ограничения актуальны в [Linux-инструкции](linux.md).
 
 ## Правила выполнения

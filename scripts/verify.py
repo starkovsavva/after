@@ -89,6 +89,7 @@ class Verification:
                 raise RuntimeError("Linux host requires WebKitGTK 4.1 and GTK3 development libraries. On Arch: sudo pacman -S --needed webkit2gtk-4.1")
         self.run("Domain layer boundaries", [self.python, "scripts/check_layers.py"])
         self.run("Architecture guard contracts", [self.python, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_layers.py"])
+        self.process_tests()
         self.run("Rust domain contracts", self.cargo_command("test"))
         self.build_rust()
         frontend = ["npm.cmd" if os.name == "nt" else "npm", "--prefix", PROJECT / "desktop"]
@@ -103,11 +104,15 @@ class Verification:
 
     def quick(self):
         self.run("Domain layer boundaries", [self.python, "scripts/check_layers.py"])
+        self.process_tests()
         self.build_swift()
         self.core_tests()
         self.run("Python backend contracts", [self.python, "-m", "unittest", "discover", "-s", "backend", "-v"])
         self.run("Release tooling contracts", [self.python, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py", "-v"])
         self.run("Rust domain contracts", self.cargo_command("test"))
+
+    def process_tests(self):
+        self.run("Scoped process-tree contracts", [self.cargo, "test", "--manifest-path", PROJECT / "process-runtime/Cargo.toml", "--locked", "--target-dir", self.rust])
 
     def core_tests(self):
         probe = subprocess.run(["xcrun", "--find", "xctest"], capture_output=True, check=False)

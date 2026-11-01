@@ -50,6 +50,16 @@ class LayerBoundaryTests(unittest.TestCase):
                 (root / layer / "queue.rs").write_text("use crate::jobs;\n")
             self.assertEqual(len(list(outer_layer_violations(root))), 2)
 
+    def test_process_supervisor_is_an_outer_adapter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "domain").mkdir()
+            (root / "application").mkdir()
+            for layer in ("domain", "application"):
+                (root / layer / "worker.rs").write_text("use after_process_runtime::ProcessTree;\n")
+            self.assertEqual(len(list(violations(root / "domain"))), 1)
+            self.assertEqual(len(list(outer_layer_violations(root))), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

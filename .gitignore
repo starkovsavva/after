@@ -5,6 +5,7 @@ __pycache__/
 .test-data/
 .toolchain/
 rust-core/target/
+process-runtime/target/
 .env
 .env.*
 !.env.example

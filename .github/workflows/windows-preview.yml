@@ -5,6 +5,7 @@ on:
     paths:
       - 'desktop/**'
       - 'rust-core/**'
+      - 'process-runtime/**'
       - 'scripts/*desktop*'
       - 'scripts/*windows*'
       - '.github/workflows/windows-preview.yml'
@@ -60,6 +61,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run test:e2e
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows process-tree contracts
+        run: cargo test --manifest-path process-runtime/Cargo.toml --locked --target-dir .build/rust --target x86_64-pc-windows-msvc
       - name: Canonical Windows library contracts
         run: cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust --target x86_64-pc-windows-msvc --lib
       - name: Build canonical Windows engine with static CRT

@@ -1,6 +1,7 @@
 //! Typed, bounded IPC to the canonical library. The webview never supplies a
 //! process, command-line argument, root directory, filename or engine operation.
 use crate::models::*;
+use after_process_runtime::ProcessTree;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -422,16 +423,11 @@ fn execute(
             command.env(name, value);
         }
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    let mut child = command.spawn().map_err(|_| process_error())?;
+    let mut child = ProcessTree::spawn(&mut command).map_err(|_| process_error())?;
     let (sender, receiver) = mpsc::channel();
-    let mut stdin = child.stdin.take().ok_or_else(process_error)?;
-    let stdout = child.stdout.take().ok_or_else(process_error)?;
-    let stderr = child.stderr.take().ok_or_else(process_error)?;
+    let mut stdin = child.take_stdin().ok_or_else(process_error)?;
+    let stdout = child.take_stdout().ok_or_else(process_error)?;
+    let stderr = child.take_stderr().ok_or_else(process_error)?;
     let tx = sender.clone();
     thread::spawn(move || {
         let result = stdin.write_all(&input).map_err(|_| process_error());
@@ -459,8 +455,6 @@ fn execute(
                 PipeEvent::Stdout(Err(error))
                 | PipeEvent::Stderr(Err(error))
                 | PipeEvent::Input(Err(error)) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
                     return Err(error);
                 }
             }
@@ -483,10 +477,7 @@ fn execute(
         }
         thread::sleep(Duration::from_millis(5));
     };
-    if result.is_err() {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
+    // ProcessTree also covers missing pipes, reader failures and unwinding.
     result
 }
 
@@ -596,5 +587,17 @@ mod tests {
             .code,
             "engine_failure"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exited_engine_cannot_leave_a_descendant_holding_transport_pipes() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let process = temp.path().join("process");
+        fs::write(&process, "#!/bin/sh\n/bin/cat >/dev/null\n/bin/sleep 30 &\nprintf 'complete\\n'\nexit 0\n").unwrap();
+        fs::set_permissions(&process, fs::Permissions::from_mode(0o700)).unwrap();
+        let output = execute(&process, temp.path(), b"{}".to_vec(), Duration::from_secs(2)).unwrap();
+        assert_eq!(output, b"complete\n");
     }
 }

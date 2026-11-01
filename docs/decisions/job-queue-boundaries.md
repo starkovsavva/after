@@ -71,7 +71,8 @@ guard tests, frontend build + 7 tests, 19 host + 2 real-engine + 1 real Tauri IP
 `check-desktop-linux.py` подтвердил реальный WebView и создание canonical library
 на временных данных. Это startup smoke, не проверка всех операций очереди через UI.
 
-Это ещё не общий исполнитель. Следующий срез переносит lifecycle живых attempts
-за WorkerHost/ProcessSupervisor и общий coordinator. Swift JobCoordinator пока
-управляет handles, progress, recording admission и shutdown.
-Tauri queue API, ProcessSupervisor и Linux speech runtime ещё не реализованы.
+Это ещё не общий исполнитель. Scoped ProcessTree уже подключён к engine worker
+и Tauri bridge: [process supervision](process-supervision.md). Следующий срез —
+WorkerHost и общий coordinator живых attempts. Swift JobCoordinator пока управляет
+handles, progress, recording admission и shutdown. Tauri queue API и Linux speech
+runtime ещё не реализованы.

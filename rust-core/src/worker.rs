@@ -9,9 +9,10 @@ use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::io::{self, Read, Write};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+use after_process_runtime::ProcessTree;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -250,27 +251,6 @@ impl Drop for SignalGuard {
     }
 }
 
-struct ChildGroup {
-    child: Child,
-    group: libc::pid_t,
-}
-
-impl ChildGroup {
-    fn signal(&self, signal: libc::c_int) {
-        // A negative PID addresses the private group, never the UI's group.
-        unsafe { libc::kill(-self.group, signal) };
-    }
-}
-
-impl Drop for ChildGroup {
-    fn drop(&mut self) {
-        // Also handles early Rust errors/panics after spawn. wait() reaps the
-        // direct child; killing the group prevents orphan ASR/GPU processes.
-        self.signal(libc::SIGKILL);
-        let _ = self.child.wait();
-    }
-}
-
 fn sensitive_key(name: &str) -> bool {
     let name = name.to_ascii_uppercase();
     ["API_KEY", "ACCESS_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "COOKIE"]
@@ -328,13 +308,10 @@ fn run(root: &Path, spec: WorkerSpec) -> Result<()> {
         .env("HF_HOME", root.join("cache/huggingface"))
         .env("HF_HUB_DISABLE_TELEMETRY", "1")
         .env("PYTHONUNBUFFERED", "1")
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .process_group(0);
+        .env("PYTHONDONTWRITEBYTECODE", "1");
     sanitize_environment(&mut command, spec.accepts_speech_key, std::env::vars_os());
-    let child = command.spawn().map_err(|_| anyhow!("Не удалось запустить модуль распознавания. Проверьте установку моделей."))?;
-    let group = libc::pid_t::try_from(child.id()).map_err(|_| anyhow!("Не удалось подготовить процесс распознавания."))?;
-    let mut child = ChildGroup { child, group };
-    let stdout = child.child.stdout.take().ok_or_else(|| anyhow!("Не удалось прочитать прогресс обработки."))?;
+    let mut child = ProcessTree::spawn(&mut command).map_err(|_| anyhow!("Не удалось запустить модуль распознавания. Проверьте установку моделей."))?;
+    let stdout = child.take_stdout().ok_or_else(|| anyhow!("Не удалось прочитать прогресс обработки."))?;
     let pipe_failed = Arc::new(AtomicBool::new(false));
     let reported_error = Arc::new(AtomicBool::new(false));
     let failed_for_reader = Arc::clone(&pipe_failed);
@@ -357,25 +334,25 @@ fn run(root: &Path, spec: WorkerSpec) -> Result<()> {
         if CANCEL_SIGNAL.load(Ordering::Relaxed) != 0 || pipe_failed.load(Ordering::Acquire) || parent_gone {
             cancelled |= CANCEL_SIGNAL.load(Ordering::Relaxed) != 0;
             if termination_started.is_none() {
-                child.signal(libc::SIGTERM);
+                let _ = child.request_stop();
                 termination_started = Some(Instant::now());
             }
         }
         if !killed && termination_started.is_some_and(|start| start.elapsed() >= TERMINATE_GRACE) {
-            child.signal(libc::SIGKILL);
+            let _ = child.kill();
             killed = true;
         }
-        if let Some(status) = child.child.try_wait().map_err(|_| anyhow!("Не удалось дождаться завершения обработки."))? {
+        if let Some(status) = child.try_wait().map_err(|_| anyhow!("Не удалось дождаться завершения обработки."))? {
             break status;
         }
         thread::sleep(Duration::from_millis(25));
     };
     // A failed shell/Python may have left descendants keeping stdout open.
-    child.signal(libc::SIGTERM);
+    let _ = child.request_stop();
     let output = match receiver.recv_timeout(TERMINATE_GRACE) {
         Ok(result) => result,
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            child.signal(libc::SIGKILL);
+            let _ = child.kill();
             receiver.recv_timeout(TERMINATE_GRACE)
                 .map_err(|_| anyhow!("Не удалось завершить модуль распознавания."))?
         }
@@ -466,6 +443,8 @@ fn forward_stdout(mut input: impl Read, plain_progress: bool, redactor: &Redacto
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use std::process::Child;
 
     fn strings(spec: &WorkerSpec) -> Vec<String> {
         spec.arguments.iter().map(|argument| argument.to_string_lossy().into_owned()).collect()

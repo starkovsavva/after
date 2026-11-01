@@ -12,6 +12,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "after-desktop"
 version = "0.1.2"
 dependencies = [
+ "after-process-runtime",
  "base64 0.22.1",
  "rfd",
  "serde",
@@ -24,6 +25,14 @@ dependencies = [
  "wasapi",
  "webkit2gtk",
  "windows",
+]
+
+[[package]]
+name = "after-process-runtime"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

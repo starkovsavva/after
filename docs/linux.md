@@ -32,7 +32,7 @@ cd desktop
 AFTER_DATA_DIR=/absolute/path/to/disposable-library npm run tauri dev
 ```
 
-Профиль `desktop` не запускает Swift: Rust-регрессия, build движка, frontend build/tests,
+Профиль `desktop` не запускает Swift: реальные process-tree тесты, Rust-регрессия, build движка, frontend build/tests,
 host tests и ignored интеграции настоящего engine через transport и Tauri IPC.
 Он не заменяет графический smoke и не захватывает устройства. В CI Ubuntu также
 проходят browser-интеграции; это отдельный уровень проверки от Linux WebView.
@@ -70,13 +70,13 @@ UI-сценарий и не проверка нормального закрыт
 
 ## Подтверждённый срез
 
-Локально на Arch прошли portable-профиль (434 core + 4 CLI теста, frontend build/test,
-host-тесты, 2 real-engine интеграции и настоящий Tauri IPC-сценарий) и native
-WebView startup smoke с bundled engine. Сценарий IPC также импортирует синтетический
-файл и проверяет чтение диапазона медиа. После исправления resource locator добавлен
-отдельный регрессионный тест; финально 20 host-тестов, включая настоящий IPC, прошли. Диалог выбора файла, кодеки и физические устройства
-этим не проверены. Ubuntu/Arch/Windows workflows настроены, их удалённый прогон
-не выполнялся в этой сессии.
+Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
+и helper), 434 core + 4 CLI, frontend build + 7 tests, 20 host + 2 real-engine
+интеграции + 1 настоящий Tauri IPC-сценарий. Проверен native WebView startup с
+bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
+host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
+кодеки и физические устройства этим не проверены. Удалённые workflows настроены,
+но их прогон в этой сессии не выполнялся.
 
 Workspace use cases теперь координируются в `application/workspace.rs` через
 `WorkspaceRepository`, `WorkspaceLocks`, `WorkspaceRecovery`. SQLite, файловые lock
@@ -92,3 +92,9 @@ Workspace use cases теперь координируются в `application/wo
 читает jobs/count/account pauses в одной read-транзакции. Swift пока управляет
 живыми заданиями; подключение общего executor и очереди к
 Tauri — следующие шаги. Подробности: [границы очереди](decisions/job-queue-boundaries.md).
+
+Engine worker и Tauri transport используют общий `process-runtime/` для владения
+дочерними процессами. Linux timeout/error/Drop и normal parent exit останавливают
+остаток приватной process group; потомки больше не удерживают transport pipes.
+Это не полный queue executor и не sandbox; ограничения описаны в
+[process supervision ADR](decisions/process-supervision.md).

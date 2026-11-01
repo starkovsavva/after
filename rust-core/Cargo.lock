@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "after-process-runtime"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1078,6 +1086,7 @@ dependencies = [
 name = "posle-engine"
 version = "0.17.6"
 dependencies = [
+ "after-process-runtime",
  "anyhow",
  "base64 0.22.1",
  "chrono",

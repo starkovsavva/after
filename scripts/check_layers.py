@@ -9,7 +9,7 @@ def violations(root):
     rules = (
         (r"\bcrate\s*::\s*(?!domain\b)\w+", "domain depends on an outer module"),
         (r"\bstd\s*::\s*(?:fs|os|process|net|env|path|thread)\b", "domain depends on OS/I/O"),
-        (r"\b(?:reqwest|rusqlite|tokio|tauri|libc)\s*::", "domain depends on an infrastructure library"),
+        (r"\b(?:reqwest|rusqlite|tokio|tauri|libc|after_process_runtime)\s*::", "domain depends on an infrastructure library"),
         (r"\bcfg!?\s*\([^)]*\b(?:windows|unix|target_os|target_arch|target_family)\b", "domain selects an OS implementation"),
     )
     graph = {}
@@ -62,7 +62,7 @@ def outer_layer_violations(src):
             source = re.sub(r"/\*.*?\*/|//[^\n]*", lambda m: "\n" * m[0].count("\n"), source, flags=re.S)
             forbidden = r"\bcrate\s*::\s*(?:notes|folders|corrections|workspace_repository|jobs)\b"
             if layer == "application":
-                forbidden = r"\bcrate\s*::\s*(?:infrastructure|notes|folders|storage|corrections|workspace_repository|platform_fs|jobs)\b|\b(?:reqwest|rusqlite|libc|tauri)\s*::|\bstd\s*::\s*(?:fs|os|process|net|env)\b"
+                forbidden = r"\bcrate\s*::\s*(?:infrastructure|notes|folders|storage|corrections|workspace_repository|platform_fs|jobs)\b|\b(?:reqwest|rusqlite|libc|tauri|after_process_runtime)\s*::|\bstd\s*::\s*(?:fs|os|process|net|env)\b"
             for match in re.finditer(forbidden, source):
                 yield f"{path}:{source[:match.start()].count(chr(10)) + 1}: {layer} depends on a concrete outer implementation/facade"
 

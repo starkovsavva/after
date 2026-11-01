@@ -12,6 +12,19 @@ import e2e_media
 
 
 class VerifyIsolationTests(unittest.TestCase):
+    def setUp(self):
+        # These tests mock all Apple tool invocations. Keep their real temporary
+        # fixtures portable without changing native verification's Mac paths.
+        if verify.sys.platform != 'darwin':
+            temporary_directory = tempfile.TemporaryDirectory
+            def portable_directory(*args, **kwargs):
+                if kwargs.get('dir') == '/private/tmp':
+                    kwargs['dir'] = tempfile.gettempdir()
+                return temporary_directory(*args, **kwargs)
+            patch = mock.patch.object(tempfile, 'TemporaryDirectory', side_effect=portable_directory)
+            patch.start()
+            self.addCleanup(patch.stop)
+
     def arguments(self):
         return argparse.Namespace(
             python=Path('/usr/bin/python3'), swift_build_dir=Path('/private/tmp/posle-verify-swift'),
@@ -36,6 +49,7 @@ class VerifyIsolationTests(unittest.TestCase):
             controller.desktop()
         commands = [command for _, command, _ in calls]
         self.assertFalse(any('swift' in Path(command[0]).name for command in commands))
+        self.assertTrue(any(str(verify.PROJECT / 'process-runtime/Cargo.toml') in command for command in commands))
         integrations = [(command, kwargs) for _, command, kwargs in calls if '--ignored' in command]
         self.assertEqual(len(integrations), 2)
         for command, kwargs in integrations:

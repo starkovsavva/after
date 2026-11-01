@@ -7,6 +7,7 @@ macOS client and cross-platform preview; internal names retain `Posle`.
 - `desktop/src/`: React/TypeScript UI, translations, styles, tests; `desktop/e2e/`: Playwright scenarios.
 - `desktop/src-tauri/`: Rust host, typed IPC, Windows capture/media adapters, and `tests/real_engine.rs`.
 - `rust-core/src/`: storage, search, tasks, cards, jobs, CLI, platform adapters. Keep domain rules here.
+- `process-runtime/`: scoped child processes shared by engine/host; Unix groups and Windows Job Objects stay in adapters.
 - `Sources/PosleApp/`, `Sources/PosleCore/`, `Tests/`: SwiftUI/AppKit client, Swift models, and core checks.
 - `backend/`: Python speech runtime. `scripts/`: verification/build tooling. `packaging/` and desktop icons contain assets.
 - `docs/desktop.md`: desktop setup and limitations; `docs/development.md`: macOS workflow. `docs/specs/` contains plans; verify descriptions against code.
@@ -29,7 +30,7 @@ In `desktop/`: `npm run build` checks TypeScript/builds Vite; `npm test` runs mo
 
 Run `cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked` for host tests; substitute `rust-core/Cargo.toml` for core tests. Real-engine/installer checks: `docs/desktop.md`, `.github/workflows/windows-preview.yml`.
 
-`python3 scripts/verify.py desktop` checks core/frontend/host/real IPC without Swift. Pure models/validation: `rust-core/src/domain/`; check with `python3 scripts/check_layers.py`; native adapters/debug resource lookup: host `platform.rs`.
+`python3 scripts/verify.py desktop` checks process-runtime/core/frontend/host/real IPC without Swift. Run process tests alone with `cargo test --manifest-path process-runtime/Cargo.toml --locked --target-dir .build/rust`. Pure models/validation: `rust-core/src/domain/`; boundaries: `python3 scripts/check_layers.py`; native adapters/resource lookup: host `platform.rs`.
 
 For macOS, `python3 scripts/verify.py quick` builds/tests Swift, Python, and Rust; `native` requires a graphical Mac session. `bash scripts/build.sh` requires an Apple signing certificate.
 
