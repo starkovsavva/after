@@ -3,3 +3,4 @@ pub(crate) mod corrections;
 pub(crate) mod workspace_adapters;
 pub(crate) mod workspace_files;
 pub(crate) mod workspace_repository;
+pub(crate) mod job_queue;

@@ -18,7 +18,10 @@
   `scripts/check_layers.py`. Циклы между notes/repository/corrections устранены: application-координатор
   использует контракты repository/locks/recovery, реализации находятся в infrastructure.
   Старые публичные API сохранены. См. [ADR](decisions/workspace-boundaries.md).
-  Общий scheduler и остальные этапы ещё не завершены.
+  Очередь: модель, resource/secret/quota policies выделены в `domain/jobs.rs`,
+  SQLite adapter использует `platform_fs` и включён также в Windows-сборку.
+  Claim-транзакции и прежний API сохранены; [границы](decisions/job-queue-boundaries.md).
+  Общий executor, application queue-контракты и Tauri queue API ещё не завершены.
 - Команды и ограничения актуальны в [Linux-инструкции](linux.md).
 
 ## Правила выполнения

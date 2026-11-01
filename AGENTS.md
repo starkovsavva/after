@@ -47,7 +47,7 @@ Commit every completed, verified milestone separately before starting the next o
 
 ## Architecture & Portability
 
-Target full Arch support while preserving macOS/Windows; tasks/cards/import are connected, Linux capture/ASR remain pending. Follow SOLID: UI → application → domain, narrow infrastructure contracts, no cyclic dependencies. Keep OS details in adapters; preserve transactional guarantees. Workspace orchestration is in `application/workspace.rs`; contracts in `application/ports.rs`; SQL/files/recovery in `infrastructure/`. Root facades wire adapters. Defer destructive actions and Swift removal for later approval after parity verification. Audit: `docs/linux-portability-audit.md`; implementation stages: `docs/linux-implementation-plan.md`.
+Target full Arch support while preserving macOS/Windows; tasks/cards/import are connected, Linux capture/ASR remain pending. Follow SOLID: UI → application → domain, narrow infrastructure contracts, no cyclic dependencies. Keep OS details in adapters; preserve transactional guarantees. Workspace orchestration: `application/workspace.rs`; contracts: `application/ports.rs`; SQL/files/recovery: `infrastructure/`. Queue models/policies: `domain/jobs.rs`; portable SQLite queue: `infrastructure/job_queue.rs` via `platform_fs`; shared executor/Tauri queue remain pending. Root facades preserve APIs. Defer destructive actions and Swift removal until approved after parity verification. Audit: `docs/linux-portability-audit.md`; stages: `docs/linux-implementation-plan.md`.
 
 ## Agent Maintenance
 

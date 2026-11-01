@@ -5,3 +5,4 @@ pub mod tasks;
 pub(crate) mod profiles;
 pub(crate) mod task_validation;
 pub(crate) mod workspace_validation;
+pub mod jobs;

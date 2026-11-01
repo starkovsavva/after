@@ -39,7 +39,6 @@ pub mod tracker_sync;
 pub mod knowledge;
 #[cfg(unix)]
 pub mod worker;
-#[cfg(unix)]
 pub mod jobs;
 pub mod corrections;
 #[cfg(unix)]
