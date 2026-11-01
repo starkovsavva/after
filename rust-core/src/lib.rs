@@ -40,6 +40,7 @@ pub mod knowledge;
 #[cfg(unix)]
 pub mod worker;
 pub mod jobs;
+pub mod desktop_worker;
 pub mod corrections;
 #[cfg(unix)]
 pub mod source_snapshot;

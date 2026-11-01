@@ -113,6 +113,13 @@ fn run(args: Args) -> Result<Value> {
 }
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("desktop-import-worker")) {
+        let args: Vec<_> = std::env::args_os().skip(2).collect();
+        if args.len() != 2 || args[0] != "--root" || posle_core::desktop_worker::run_stdio(Path::new(&args[1])).is_err() {
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("desktop-bridge")) {
         let args: Vec<_> = std::env::args_os().skip(2).collect();
         if args.len() != 2 || args[0] != "--root" {

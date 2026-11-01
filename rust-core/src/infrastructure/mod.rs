@@ -5,3 +5,4 @@ pub(crate) mod workspace_files;
 pub(crate) mod workspace_repository;
 pub(crate) mod job_queue;
 pub(crate) mod job_context;
+pub(crate) mod import_source;

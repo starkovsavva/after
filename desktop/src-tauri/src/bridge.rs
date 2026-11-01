@@ -1,10 +1,12 @@
 //! Typed, bounded IPC to the canonical library. The webview never supplies a
 //! process, command-line argument, root directory, filename or engine operation.
 use crate::models::*;
+use crate::worker_host::{ImportProgress, ImportWork, WorkerHost};
 use after_process_runtime::ProcessTree;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::sync::atomic::AtomicBool;
 use std::{
     fs::{self, File},
     io::{Read, Write},
@@ -22,7 +24,6 @@ const MAX_INPUT: usize = 256 * 1024;
 const MAX_OUTPUT: usize = 8 * 1_048_576;
 const MAX_STDERR: usize = 64 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(12);
-const IMPORT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_PARALLEL: usize = 4;
 
 #[derive(Clone)]
@@ -102,12 +103,44 @@ impl LibraryBridge {
         if !source.is_absolute() {
             return Err(HostError::invalid());
         }
-        let path = source.to_str().ok_or_else(HostError::invalid)?;
-        self.call_with_timeout(
-            "import_meeting",
-            json!({"sourcePath": path, "focus": "", "title": title}),
-            IMPORT_TIMEOUT,
-        )
+        let work = ImportWork {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            attempt_token: uuid::Uuid::new_v4().to_string(),
+            source: source.to_owned(),
+            title: title.map(str::to_owned),
+        };
+        self.import_work(&work, &AtomicBool::new(false), &mut |_| {})
+    }
+    pub fn import_work(
+        &self,
+        work: &ImportWork,
+        cancelled: &AtomicBool,
+        progress: &mut dyn FnMut(ImportProgress),
+    ) -> Result<Meeting, HostError> {
+        let count = self.running.fetch_add(1, Ordering::AcqRel);
+        let _permit = Permit(&self.running);
+        if count >= MAX_PARALLEL {
+            return Err(HostError::new(
+                "busy",
+                "The library is busy. Try again in a moment.",
+            ));
+        }
+        self.engine.verify()?;
+        let result = crate::process_worker::ProcessWorker {
+            engine: &self.engine.path,
+            root: &self.root,
+        }
+        .import(work, cancelled, progress);
+        drop(_permit);
+        if result.is_err() {
+            if let Ok(Some(meeting)) = self.call::<Option<Meeting>>(
+                "get_import_result",
+                json!({"operationId":work.operation_id,"attemptToken":work.attempt_token}),
+            ) {
+                return Ok(meeting);
+            }
+        }
+        result
     }
     pub(crate) fn media_chunk(
         &self,
@@ -595,9 +628,19 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let process = temp.path().join("process");
-        fs::write(&process, "#!/bin/sh\n/bin/cat >/dev/null\n/bin/sleep 30 &\nprintf 'complete\\n'\nexit 0\n").unwrap();
+        fs::write(
+            &process,
+            "#!/bin/sh\n/bin/cat >/dev/null\n/bin/sleep 30 &\nprintf 'complete\\n'\nexit 0\n",
+        )
+        .unwrap();
         fs::set_permissions(&process, fs::Permissions::from_mode(0o700)).unwrap();
-        let output = execute(&process, temp.path(), b"{}".to_vec(), Duration::from_secs(2)).unwrap();
+        let output = execute(
+            &process,
+            temp.path(),
+            b"{}".to_vec(),
+            Duration::from_secs(2),
+        )
+        .unwrap();
         assert_eq!(output, b"complete\n");
     }
 }

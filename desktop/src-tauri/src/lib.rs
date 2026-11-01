@@ -1,4 +1,7 @@
 pub mod bridge;
+pub mod worker_host;
+mod process_worker;
+mod imports;
 mod capture;
 mod media;
 mod platform;
@@ -68,15 +71,25 @@ async fn get_meeting(
 #[tauri::command]
 async fn choose_and_import(
     state: tauri::State<'_, LibraryBridge>,
+    imports: tauri::State<'_, Arc<imports::Imports>>,
 ) -> Result<Option<Meeting>, HostError> {
     let bridge = state.inner().clone();
+    let mut session = imports.begin()?;
     background(move || {
-        platform::choose_media_file()
-            .map(|path| bridge.import_meeting(&path, None))
-            .transpose()
+        let Some(path) = platform::choose_media_file() else { session.finish("cancelled"); return Ok(None); };
+        let result = bridge.import_work(&session.work(path), &session.cancelled, &mut |value| session.progress(value));
+        match result {
+            Ok(meeting) => { session.finish("completed"); Ok(Some(meeting)) },
+            Err(error) if error.code == "cancelled" => { session.finish("cancelled"); Ok(None) },
+            Err(error) => { session.finish("failed"); Err(error) },
+        }
     })
     .await
 }
+#[tauri::command]
+fn import_status(state: tauri::State<'_, Arc<imports::Imports>>) -> imports::ImportStatus { state.status() }
+#[tauri::command]
+fn cancel_import(state: tauri::State<'_, Arc<imports::Imports>>, operation_id: String) -> Result<imports::ImportStatus, HostError> { state.cancel(&operation_id) }
 #[tauri::command]
 async fn start_recording(
     state: tauri::State<'_, Arc<capture::Recorder>>,
@@ -232,6 +245,8 @@ fn library_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bui
             get_workspace,
             get_meeting,
             choose_and_import,
+            import_status,
+            cancel_import,
             start_recording,
             recording_status,
             stop_recording,
@@ -258,6 +273,7 @@ pub fn run() {
                 bridge.data_root(),
             )));
             app.manage(Arc::new(RecordingGate(AtomicBool::new(false))));
+            app.manage(Arc::new(imports::Imports::default()));
             app.manage(bridge);
             let window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -281,7 +297,8 @@ pub fn run() {
                 let recording_active = window
                     .try_state::<Arc<capture::Recorder>>()
                     .is_some_and(|recorder| recorder.status().session_id.is_some());
-                if operation_running || recording_active {
+                let import_active = window.try_state::<Arc<imports::Imports>>().is_some_and(|imports| imports.active());
+                if operation_running || recording_active || import_active {
                     api.prevent_close();
                 }
             }
@@ -357,6 +374,7 @@ mod ipc_tests {
     fn application(bridge: LibraryBridge) -> tauri::App<MockRuntime> {
         library_commands(mock_builder())
             .manage(bridge)
+            .manage(Arc::new(imports::Imports::default()))
             .build(application_context())
             .unwrap()
     }
@@ -401,11 +419,22 @@ mod ipc_tests {
         )
         .unwrap_err();
         assert_eq!(invalid["code"], "invalid_request");
+        assert_eq!(request(&main, "import_status", json!({}), local_origin()).unwrap()["phase"], "idle");
+        assert_eq!(request(&main, "cancel_import", json!({"operationId":"unrelated"}), local_origin()).unwrap_err()["code"], "invalid_request");
+        let mut session = app.state::<Arc<imports::Imports>>().begin().unwrap();
+        let id = app.state::<Arc<imports::Imports>>().status().operation_id.unwrap();
+        assert_eq!(request(&main, "cancel_import", json!({"operationId":id}), local_origin()).unwrap()["cancelRequested"], true);
+        assert!(session.cancelled.load(Ordering::Acquire));
+        session.finish("cancelled");
         for (window, origin, command) in [
             (&main, "https://example.org", "get_workspace"),
             (&untrusted, local_origin(), "get_workspace"),
             (&main, "https://example.org", "feature_operation"),
             (&untrusted, local_origin(), "feature_operation"),
+            (&untrusted, local_origin(), "import_status"),
+            (&main, "https://example.org", "cancel_import"),
+            (&main, local_origin(), "import_work"),
+            (&main, local_origin(), "get_import_result"),
             (&main, local_origin(), "read_file"),
             (&main, local_origin(), "plugin:fs|read_text_file"),
             (&main, local_origin(), "plugin:shell|execute"),

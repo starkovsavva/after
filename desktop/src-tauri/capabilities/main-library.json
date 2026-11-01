@@ -9,6 +9,8 @@
     "allow-get-workspace",
     "allow-get-meeting",
     "allow-choose-and-import",
+    "allow-import-status",
+    "allow-cancel-import",
     "allow-start-recording",
     "allow-recording-status",
     "allow-stop-recording",

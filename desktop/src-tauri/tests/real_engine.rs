@@ -10,6 +10,73 @@ use std::path::PathBuf;
 
 #[test]
 #[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
+fn streaming_import_preserves_sources_and_recovers_only_its_exact_commit_receipt() {
+    use after_desktop::worker_host::{ImportPhase, ImportWork};
+    use std::sync::atomic::AtomicBool;
+    let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("worker-library");
+    let bridge = LibraryBridge::for_development(engine, root.clone()).unwrap();
+    bridge.workspace().unwrap();
+    let source = fixture.path().join("literal source ; unicode После.wav");
+    let bytes = vec![42; 700_000];
+    std::fs::write(&source, &bytes).unwrap();
+    let work = ImportWork {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        attempt_token: uuid::Uuid::new_v4().to_string(),
+        source: source.clone(),
+        title: Some("Worker import".into()),
+    };
+    let mut progress = Vec::new();
+    let meeting = bridge
+        .import_work(&work, &AtomicBool::new(false), &mut |value| {
+            progress.push(value)
+        })
+        .unwrap();
+    assert_eq!(meeting.id, work.operation_id);
+    assert!(progress
+        .iter()
+        .any(|value| value.phase == ImportPhase::Copying));
+    assert_eq!(progress.last().unwrap().phase, ImportPhase::Committing);
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    assert_eq!(
+        std::fs::read(root.join("meetings").join(&meeting.id).join("source.wav")).unwrap(),
+        bytes
+    );
+    // Simulate cancellation after publication / a lost final reply. No duplicate
+    // import is created and a different token cannot adopt someone else's result.
+    let recovered = bridge
+        .import_work(&work, &AtomicBool::new(true), &mut |_| {})
+        .unwrap();
+    assert_eq!(recovered.id, meeting.id);
+    let mut wrong = work;
+    wrong.attempt_token = uuid::Uuid::new_v4().to_string();
+    assert_eq!(
+        bridge
+            .import_work(&wrong, &AtomicBool::new(true), &mut |_| {})
+            .unwrap_err()
+            .code,
+        "cancelled"
+    );
+    assert_eq!(bridge.workspace().unwrap().meetings.len(), 1);
+    let cancelled = ImportWork {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        attempt_token: uuid::Uuid::new_v4().to_string(),
+        source,
+        title: None,
+    };
+    assert_eq!(
+        bridge
+            .import_work(&cancelled, &AtomicBool::new(true), &mut |_| {})
+            .unwrap_err()
+            .code,
+        "cancelled"
+    );
+    assert!(!root.join("meetings").join(cancelled.operation_id).exists());
+}
+
+#[test]
+#[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
 fn canonical_engine_persists_scoped_notes_and_rejects_stale_edits() {
     let engine = PathBuf::from(
         std::env::var_os("AFTER_TEST_ENGINE_PATH")

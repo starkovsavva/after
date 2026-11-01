@@ -204,3 +204,35 @@ test('recording stays visible after interface reload and stops without discardin
   await expect(page.getByText('Recording saved.', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /Windows meeting/ })).toBeVisible();
 });
+
+
+test('an in-flight import can be cancelled without creating a meeting', async ({ page }) => {
+  await page.goto('/?demo=1&fixture=empty&import=slow');
+  await page.getByRole('button', { name: 'Import recording', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Choose or import a recording…' });
+  await expect(dialog.getByRole('progressbar')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByText('Imported fixture', { exact: true })).not.toBeVisible();
+});
+
+test('a reloaded interface reconnects to the host-owned import and can cancel it', async ({ page }) => {
+  await page.addInitScript(() => {
+    let cancelled = false;
+    const status = () => ({ operationId: '11111111-1111-4111-8111-111111111111', phase: cancelled ? 'cancelled' : 'copying', copiedBytes: 25, totalBytes: 100, cancelRequested: cancelled });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke: async (command: string) => {
+      if (command === 'get_workspace') return { folders: [], meetings: [], notes: [], capabilities: { library: true, import: true, recording: false, calendar: false, assistant: false, cards: false, tasks: false } };
+      if (command === 'import_status') return status();
+      if (command === 'cancel_import') { cancelled = true; return status(); }
+      throw { code: 'unsupported_operation' };
+    } } });
+  });
+  await page.goto('/');
+  const dialog = page.getByRole('dialog', { name: 'Choose or import a recording…' });
+  await expect(dialog.getByRole('progressbar')).toBeVisible();
+  await page.reload();
+  await expect(dialog.getByRole('progressbar')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No meetings here yet', exact: true })).toBeVisible();
+});

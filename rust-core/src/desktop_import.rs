@@ -1,5 +1,6 @@
 //! Desktop-only import: the native host selects the source; the renderer cannot
 //! invoke this operation with a path. Only a completed copy receives metadata.
+use crate::application::imports::{ImportObserver, ImportPhase, ImportProgress};
 use crate::{platform_fs, storage};
 use anyhow::{ensure, Context, Result};
 use chrono::Utc;
@@ -201,6 +202,22 @@ pub(crate) fn import(
     focus: &str,
     requested_title: Option<&str>,
 ) -> Result<Value> {
+    import_observed(root, source, focus, requested_title, None)
+}
+
+pub(crate) struct ImportControl<'a> {
+    pub operation: &'a str,
+    pub token: &'a str,
+    pub observer: &'a mut dyn ImportObserver,
+}
+
+pub(crate) fn import_observed(
+    root: &Path,
+    source: &Path,
+    focus: &str,
+    requested_title: Option<&str>,
+    mut control: Option<ImportControl<'_>>,
+) -> Result<Value> {
     ensure!(source.is_absolute(), "Expected an absolute source path");
     let source = source.canonicalize().context("Cannot open source")?;
     let extension = source
@@ -212,18 +229,27 @@ pub(crate) fn import(
         EXTENSIONS.contains(&extension.as_str()),
         "Unsupported media format"
     );
-    let input = File::open(&source)?;
+    let input = crate::infrastructure::import_source::open(&source)?;
     let initial = input.metadata()?;
     ensure!(
         initial.is_file() && initial.len() > 0,
         "Expected a nonempty regular source file"
     );
+    platform_fs::private_directory(root)?;
     let meetings = root.join("meetings");
     platform_fs::private_directory(&meetings)?;
     let _meetings_pin = platform_fs::pin_directory(&meetings)?;
     let setup = imports_lock(&meetings)?;
     clean_abandoned(&meetings)?;
-    let id = Uuid::new_v4().to_string();
+    let id = if let Some(control) = &control {
+        ensure!(
+            valid_import_id(control.operation) && valid_import_id(control.token),
+            "Invalid import identity"
+        );
+        control.operation.to_owned()
+    } else {
+        Uuid::new_v4().to_string()
+    };
     let directory = meetings.join(&id);
     platform_fs::create_private_directory(&directory)?;
     let lock = platform_fs::open_private(&directory.join(MARKER), true)?;
@@ -232,7 +258,16 @@ pub(crate) fn import(
     let result = (|| -> Result<Value> {
         let filename = format!("source.{extension}");
         let mut output = platform_fs::open_private(&directory.join(&filename), true)?;
-        let copied = std::io::copy(&mut (&input).take(initial.len()), &mut output)?;
+        let copied = if let Some(control) = &mut control {
+            crate::application::imports::copy(
+                &mut &input,
+                &mut output,
+                initial.len(),
+                control.observer,
+            )?
+        } else {
+            std::io::copy(&mut (&input).take(initial.len()), &mut output)?
+        };
         let final_info = input.metadata()?;
         ensure!(
             copied == initial.len()
@@ -258,9 +293,18 @@ pub(crate) fn import(
         } else {
             title.trim()
         };
-        let meta = json!({"id":id,"title":title,"createdAt":Utc::now().timestamp_millis() as f64 / 1000.0,
+        let mut meta = json!({"id":id,"title":title,"createdAt":Utc::now().timestamp_millis() as f64 / 1000.0,
             "source":filename,"status":"imported","duration":duration.unwrap_or(0.0),"speakerNames":{},"completedTasks":[],"focus":focus,
             "recordingTracks":false,"hasVideo":false});
+        if let Some(control) = &mut control {
+            control.observer.checkpoint(ImportProgress {
+                phase: ImportPhase::Committing,
+                copied_bytes: copied,
+                total_bytes: initial.len(),
+            })?;
+            meta["importOperationID"] = json!(control.operation);
+            meta["importAttemptToken"] = json!(control.token);
+        }
         storage::atomic_json(&directory.join("meta.json"), &meta)?;
         Ok(meta)
     })();
@@ -273,10 +317,126 @@ pub(crate) fn import(
     result
 }
 
+pub(crate) fn valid_import_id(value: &str) -> bool {
+    value.len() == 36 && Uuid::parse_str(value).is_ok()
+}
+
+pub(crate) fn committed(root: &Path, operation: &str, token: &str) -> Result<Option<Value>> {
+    ensure!(
+        valid_import_id(operation) && valid_import_id(token),
+        "Invalid import identity"
+    );
+    let directory = crate::storage::meeting_directory(root, operation)?;
+    let path = directory.join("meta.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let meta = crate::storage::regular_json_limited(&path, 1_048_576)?;
+    if meta["id"] != operation
+        || meta["importOperationID"] != operation
+        || meta["importAttemptToken"] != token
+    {
+        return Ok(None);
+    }
+    Ok(Some(meta))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    struct CancelAt {
+        phase: ImportPhase,
+        observed: Vec<ImportProgress>,
+    }
+    impl ImportObserver for CancelAt {
+        fn checkpoint(&mut self, value: ImportProgress) -> Result<()> {
+            self.observed.push(value);
+            if value.phase == self.phase
+                && (value.copied_bytes > 0 || value.phase == ImportPhase::Committing)
+            {
+                return Err(crate::application::imports::ImportCancelled.into());
+            }
+            Ok(())
+        }
+    }
+    #[test]
+    fn controlled_cancel_cleans_only_unpublished_imports_and_preserves_source() {
+        for phase in [ImportPhase::Copying, ImportPhase::Committing] {
+            let base = tempfile::tempdir().unwrap();
+            let root = base.path().join("library");
+            let source = base.path().join("synthetic.wav");
+            let bytes = vec![42; 800_000];
+            fs::write(&source, &bytes).unwrap();
+            let id = Uuid::new_v4().to_string();
+            let token = Uuid::new_v4().to_string();
+            let mut observer = CancelAt {
+                phase,
+                observed: Vec::new(),
+            };
+            let error = import_observed(
+                &root,
+                &source,
+                "",
+                None,
+                Some(ImportControl {
+                    operation: &id,
+                    token: &token,
+                    observer: &mut observer,
+                }),
+            )
+            .unwrap_err();
+            assert!(error.is::<crate::application::imports::ImportCancelled>());
+            assert!(!root.join("meetings").join(&id).exists());
+            assert!(storage::list_meetings(&root).unwrap().is_empty());
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+        }
+    }
+    #[test]
+    fn published_import_has_an_exact_receipt_and_never_runs_a_late_checkpoint() {
+        struct Observer {
+            committing: bool,
+        }
+        impl ImportObserver for Observer {
+            fn checkpoint(&mut self, value: ImportProgress) -> Result<()> {
+                assert!(
+                    !self.committing,
+                    "No callback may invalidate published metadata"
+                );
+                self.committing = value.phase == ImportPhase::Committing;
+                Ok(())
+            }
+        }
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("library");
+        let source = base.path().join("synthetic.wav");
+        fs::write(&source, synthetic_wav()).unwrap();
+        let id = Uuid::new_v4().to_string();
+        let token = Uuid::new_v4().to_string();
+        let mut observer = Observer { committing: false };
+        let meta = import_observed(
+            &root,
+            &source,
+            "",
+            Some("Published"),
+            Some(ImportControl {
+                operation: &id,
+                token: &token,
+                observer: &mut observer,
+            }),
+        )
+        .unwrap();
+        assert!(observer.committing);
+        assert_eq!(meta["duration"], 2.0);
+        assert_eq!(
+            committed(&root, &id, &token).unwrap().unwrap()["title"],
+            "Published"
+        );
+        assert!(committed(&root, &id, &Uuid::new_v4().to_string())
+            .unwrap()
+            .is_none());
+    }
 
     fn synthetic_wav() -> Vec<u8> {
         let mut wav = Vec::new();

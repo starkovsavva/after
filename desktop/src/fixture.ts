@@ -1,5 +1,6 @@
 // Explicit development preview only. Production builds cannot select this transport.
-import type { Folder, LibraryAPI, MeetingDetail, Note, RecordingStatus, Workspace } from './types';
+import type { Folder, ImportStatus, LibraryAPI, MeetingDetail, Note, RecordingStatus, Workspace } from './types';
+let importState: ImportStatus = { operationId: null, phase: 'idle', copiedBytes: 0, totalBytes: 0, cancelRequested: false };
 const storageKey = 'posle.demo.workspace.v1';
 const capabilities = { library: true, import: true, recording: new URLSearchParams(location.search).get('recording') === '1', calendar: false, assistant: false, cards: false, tasks: false };
 const sample: Workspace = {
@@ -46,11 +47,19 @@ export const fixtureAPI: LibraryAPI = {
   async stopRecording(title) { await delay(); if (!fixtureRecording().sessionId) throw { code: 'recording_error' }; sessionStorage.removeItem('posle.demo.recording'); const meeting = { id: crypto.randomUUID(), title, startedAt: Date.now() / 1000, durationSeconds: 1, folderId: null, hasTranscript: false, hasSummary: false }; workspace.meetings = [meeting, ...workspace.meetings]; persist(); return { meeting, interrupted: false }; },
   async recoverableRecordings() { return []; },
   async recoverRecording() { throw { code: 'unsupported_platform' }; },
+  async importStatus() { return clone(importState); },
+  async cancelImport(operationId) {
+    if (importState.operationId !== operationId) throw { code: 'invalid_request' };
+    importState.cancelRequested = true; return clone(importState);
+  },
   async chooseAndImport() {
     const scenario = new URLSearchParams(location.search).get('import');
+    importState = { operationId: crypto.randomUUID(), phase: 'copying', copiedBytes: 10, totalBytes: 100, cancelRequested: false };
     await delay(scenario === 'slow' ? 500 : 80);
-    if (scenario === 'fail') throw { code: 'import_failed' };
-    if (scenario !== 'success' && scenario !== 'slow') return null;
+    if (importState.cancelRequested) { importState.phase = 'cancelled'; return null; }
+    importState.phase = 'completed'; importState.copiedBytes = 100;
+    if (scenario === 'fail') { importState.phase = 'failed'; throw { code: 'import_failed' }; }
+    if (scenario !== 'success' && scenario !== 'slow') { importState.phase = 'cancelled'; return null; }
     const meeting = { id: crypto.randomUUID(), title: 'Imported fixture', startedAt: Date.now() / 1000, durationSeconds: 0, folderId: null, hasTranscript: false, hasSummary: false };
     workspace.meetings = [meeting, ...workspace.meetings]; persist(); return clone(meeting);
   },

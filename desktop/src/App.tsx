@@ -7,7 +7,7 @@ import { copy, resolveLanguage } from './i18n';
 import type { LanguagePreference } from './i18n';
 import { draftFromNote, errorMessage, formatDate, formatDuration, isDirty, noteInput } from './model';
 import type { Draft } from './model';
-import type { Folder, MeetingDetail, Note, RecordingStatus, RecoverableRecording, SearchResult, Workspace } from './types';
+import type { Folder, ImportStatus, MeetingDetail, Note, RecordingStatus, RecoverableRecording, SearchResult, Workspace } from './types';
 import Icon from './Icon';
 import { isPrimaryShortcut } from './shortcuts';
 import TasksView from './TasksView';
@@ -77,6 +77,9 @@ export default function App() {
   const [original, setOriginal] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
+  const importOwned = useRef(false);
+  const importAttached = useRef(false);
   const [recordDialog, setRecordDialog] = useState(false);
   const [recordTitle, setRecordTitle] = useState(() => { try { return sessionStorage.getItem('posle.recording.title') || ''; } catch { return ''; } });
   const [recordMode, setRecordMode] = useState<'microphone' | 'microphone_and_system'>('microphone_and_system');
@@ -221,9 +224,45 @@ export default function App() {
     if (featureDirty && !window.confirm(t.discardFeature)) return;
     if (dirty) setPendingAction(() => action); else action();
   };
+  useEffect(() => {
+    let active = true;
+    void api.importStatus().then(value => {
+      if (active && !importOwned.current && ['choosing', 'copying', 'committing'].includes(value.phase)) {
+        importAttached.current = true; setImportStatus(value); setImporting(true);
+      }
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!importing) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const value = await api.importStatus();
+        if (active) {
+          setImportStatus(value);
+          if (importAttached.current && !['choosing', 'copying', 'committing'].includes(value.phase)) {
+            importAttached.current = false; setImporting(false);
+            if (value.phase === 'completed' && value.operationId) {
+              setFolderId(undefined); setSection('meetings'); setSelection({ kind: 'meeting', id: value.operationId }); setTab('summary');
+            }
+            await loadWorkspace();
+            if (value.phase === 'failed') setError(copyRef.current.importFailed);
+          }
+        }
+      } catch { /* The import promise reports failures. */ }
+      if (active) timer = setTimeout(() => { void poll(); }, 200);
+    };
+    void poll();
+    return () => { active = false; clearTimeout(timer); };
+  }, [importing]);
+
   const importMeeting = () => requestNavigation(() => {
     if (importing) return;
-    setImporting(true); setError(null);
+    importOwned.current = true; importAttached.current = false;
+    setImportStatus(null); setImporting(true); setError(null);
     void (async () => {
       try {
         const meeting = await api.chooseAndImport();
@@ -235,7 +274,7 @@ export default function App() {
         // A timeout can happen after the engine published the meeting; refresh
         // before the user retries so an existing result is not hidden.
         await loadWorkspace(); setError(copyRef.current.importFailed);
-      } finally { setImporting(false); }
+      } finally { importOwned.current = false; setImporting(false); }
     })();
   });
   const startRecording = async () => {
@@ -411,7 +450,13 @@ export default function App() {
           </section></article> : <EmptyState icon={section} title={section === 'meetings' ? (meetings.length ? t.chooseMeeting : t.noMeetings) : (notes.length ? t.chooseNote : t.noNotes)} hint={section === 'meetings' ? (meetings.length ? t.chooseMeetingHint : t.noMeetingsHint) : t.noNotesHint} action={workspace && (section === 'notes' || !meetings.length) ? <button className="button primary" onClick={() => newNote()}><Icon name="plus" size={16}/>{t.newNote}</button> : undefined}/>}
       </main></>}
     </div>
-    {importing && <Dialog title={t.importing}><p className="dialog-description" role="status">{t.importHint}</p></Dialog>}
+    {importing && <Dialog title={t.importing}>
+      <p className="dialog-description" role="status">{importStatus?.cancelRequested ? t.importStopping : t.importHint}</p>
+      {!!importStatus?.totalBytes && <progress aria-label={t.importing} max={importStatus.totalBytes} value={importStatus.copiedBytes} style={{ width: '100%' }}/>}
+      {importStatus?.operationId && ['choosing', 'copying', 'committing'].includes(importStatus.phase) && <button className="button" disabled={importStatus.cancelRequested} onClick={() => {
+        void api.cancelImport(importStatus.operationId!).then(setImportStatus).catch(() => setError(t.importFailed));
+      }}>{t.cancel}</button>}
+    </Dialog>}
     {recordDialog && <Dialog title={t.record} close={recordingBusy ? undefined : () => setRecordDialog(false)} closeLabel={t.close}>
       <form onSubmit={event => { event.preventDefault(); void startRecording(); }}>
         <label className="field-label" htmlFor="record-title">{t.recordTitle}</label><input id="record-title" className="text-input" value={recordTitle} onChange={event => { const title = event.target.value; setRecordTitle(title); try { sessionStorage.setItem('posle.recording.title', title); } catch { /* Optional draft metadata. */ } }} placeholder={t.recordingName} maxLength={200} disabled={recordingBusy}/>

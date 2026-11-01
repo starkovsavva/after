@@ -30,8 +30,8 @@
   проверены локально; crash/escape ограничения описаны в [ADR](decisions/process-supervision.md).
   Правила live coordinator выделены в чистый `domain/job_runtime.rs` и подключены
   к Swift через `NativeJobRuntime`: admission/progress/finish/shutdown decisions.
-  SQL остаётся authoritative; state transient и не сохраняется. WorkerHost и
-  Tauri queue API остаются следующими срезами; [ADR](decisions/live-job-coordinator.md).
+  SQL остаётся authoritative; state transient и не сохраняется. Import WorkerHost реализован с progress/cancel и commit receipts
+  ([ADR](decisions/worker-host-import.md)); durable Tauri queue API остаётся следующим срезом; [ADR](decisions/live-job-coordinator.md).
 - Команды и ограничения актуальны в [Linux-инструкции](linux.md).
 
 ## Правила выполнения

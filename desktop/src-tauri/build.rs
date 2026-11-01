@@ -35,6 +35,8 @@ fn main() {
             "get_workspace",
             "get_meeting",
             "choose_and_import",
+            "import_status",
+            "cancel_import",
             "start_recording",
             "recording_status",
             "stop_recording",

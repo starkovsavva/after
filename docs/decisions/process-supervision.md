@@ -64,5 +64,5 @@ recovery или поддержку Linux speech/capture.
 в общий runtime не выполнен.
 
 Общие правила live coordinator уже подключены к Swift через [reducer](live-job-coordinator.md).
-Следующий шаг — WorkerHost и Tauri queue. Python/model paths, установщик runtime,
+Для импорта подключён [WorkerHost](worker-host-import.md); следующий шаг — durable Tauri queue. Python/model paths, установщик runtime,
 credentials и аппаратные сценарии ещё требуют переноса; Swift пока остаётся.

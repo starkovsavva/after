@@ -97,6 +97,8 @@ export interface LibraryAPI {
   getWorkspace(): Promise<Workspace>;
   getMeeting(meetingId: string): Promise<MeetingDetail>;
   chooseAndImport(): Promise<Meeting | null>;
+  importStatus(): Promise<ImportStatus>;
+  cancelImport(operationId: string): Promise<ImportStatus>;
   startRecording(mode: 'microphone' | 'microphone_and_system'): Promise<RecordingStatus>;
   recordingStatus(): Promise<RecordingStatus>;
   stopRecording(title: string): Promise<SavedRecording>;
@@ -105,4 +107,11 @@ export interface LibraryAPI {
   saveNote(input: NoteInput): Promise<Note>;
   saveFolder(input: FolderInput): Promise<Folder>;
   searchLibrary(query: string, folderId?: string): Promise<SearchResponse>;
+}
+export interface ImportStatus {
+  operationId: string | null;
+  phase: 'idle' | 'choosing' | 'copying' | 'committing' | 'completed' | 'cancelled' | 'failed';
+  copiedBytes: number;
+  totalBytes: number;
+  cancelRequested: boolean;
 }

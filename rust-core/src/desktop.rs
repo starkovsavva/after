@@ -119,6 +119,9 @@ struct MediaArguments { meeting_id: String, offset: u64, length: u32 }
 struct ImportArguments { source_path: String, #[serde(default)] focus: String, title: Option<String> }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ImportResultArguments { operation_id: String, attempt_token: String }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MeetingArguments {
     meeting_id: String,
 }
@@ -246,9 +249,12 @@ fn import_meeting(root: &Path, args: ImportArguments) -> Result<Value> {
     let meta = crate::desktop_import::import(root, source, &args.focus, args.title.as_deref()).map_err(|_| BridgeError {
         code: "import_failed", message: "Could not import this file. The original was preserved. Check the format, available disk space and file access."
     })?;
+    Ok(import_dto(root, &meta))
+}
+pub(crate) fn import_dto(root: &Path, meta: &Value) -> Value {
     let media_kind = meta["id"].as_str().and_then(|id| crate::desktop_media::kind(root, id));
-    Ok(json!({"id":meta["id"],"title":meta["title"],"startedAt":meta["createdAt"],"durationSeconds":meta["duration"].as_f64().filter(|duration| *duration > 0.0),
-        "folderId":null,"hasTranscript":false,"hasSummary":false,"hasMedia":media_kind.is_some(),"mediaKind":media_kind}))
+    json!({"id":meta["id"],"title":meta["title"],"startedAt":meta["createdAt"],"durationSeconds":meta["duration"].as_f64().filter(|duration| *duration > 0.0),
+        "folderId":null,"hasTranscript":false,"hasSummary":false,"hasMedia":media_kind.is_some(),"mediaKind":media_kind})
 }
 fn meeting(root: &Path, args: MeetingArguments) -> Result<Value> {
     identifier(&args.meeting_id)?;
@@ -428,6 +434,12 @@ fn dispatch(root: &Path, request: Value) -> Result<Value> {
         .and_then(|_|crate::platform_fs::pin_directory(root)).map_err(|_|BridgeError::library())?;
     match request.command.as_str() {
         "import_meeting" => import_meeting(root, parse(request.arguments)?),
+        "get_import_result" => {
+            let args: ImportResultArguments = parse(request.arguments)?;
+            identifier(&args.operation_id)?;
+            identifier(&args.attempt_token)?;
+            Ok(domain(crate::desktop_import::committed(root, &args.operation_id, &args.attempt_token))?.map(|meta| import_dto(root, &meta)).unwrap_or(Value::Null))
+        },
         "read_media_chunk" => {
             let args: MediaArguments = parse(request.arguments)?;
             identifier(&args.meeting_id)?;

@@ -65,6 +65,7 @@ frontend build + 7 tests, 20 host + 2 real-engine + 1 real Tauri IPC. Отдел
 Финальный engine заново staged, host пересобран с `custom-protocol`; Linux native
 smoke подтвердил WebView и временную canonical library с актуальным digest.
 
-Следующие срезы: WorkerHost, Tauri queue transport/UI, общая политика подписчиков
+Import [WorkerHost](worker-host-import.md) реализован отдельно; durable очередь пока не подключена.
+Следующие срезы: Tauri queue transport/UI, общая политика подписчиков
 и retry presentation, platform resource locator/sleep inhibitor, Linux speech runtime.
 Перенос reducer не подтверждает весь функциональный паритет приложения.

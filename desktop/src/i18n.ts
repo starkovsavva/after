@@ -2,6 +2,7 @@ export type Language = 'en' | 'ru';
 export type LanguagePreference = 'system' | Language;
 
 const en = {
+  importStopping: 'Stopping import…',
   appName: 'After', meetings: 'Meetings', notes: 'Notes', tasks: 'Tasks', cards: 'Cards', discardFeature: 'Discard unsaved changes?', folders: 'Folders', allFolders: 'All folders',
   newFolder: 'New folder', newNote: 'New note', settings: 'Settings', search: 'Search library',
   searchPlaceholder: 'Find a meeting or note', searchResults: 'Search results', noResults: 'No results',
@@ -23,7 +24,7 @@ const en = {
   chooseMeeting: 'Choose a meeting', chooseMeetingHint: 'Open a meeting to read its notes, summary, and transcript.',
   chooseNote: 'Choose a note', chooseNoteHint: 'Open a note or create a new one.',
   summary: 'Summary', transcript: 'Transcript', meetingNotes: 'Meeting notes',
-  playRecording: 'Play recording', mediaUnavailable: 'This recording cannot be played here. The file remains in your library; this format may not be supported by Windows.',
+  playRecording: 'Play recording', mediaUnavailable: 'This recording cannot be played here. The file remains in your library; this system may not support the format.',
   noSummary: 'No summary yet', noSummaryHint: 'This meeting does not have a saved summary.',
   noTranscript: 'No transcript yet', noTranscriptHint: 'This meeting does not have a saved transcript.',
   noMeetingNotes: 'No notes for this meeting', noMeetingNotesHint: 'Add your thoughts or a decision you want to remember.',
@@ -46,6 +47,7 @@ const en = {
 };
 export type Copy = typeof en;
 const ru: Copy = {
+  importStopping: 'Останавливаем импорт…',
   appName: 'After', meetings: 'Встречи', notes: 'Заметки', tasks: 'Задачи', cards: 'Карточки', discardFeature: 'Отменить несохранённые изменения?', folders: 'Папки', allFolders: 'Все папки',
   newFolder: 'Новая папка', newNote: 'Новая заметка', settings: 'Настройки', search: 'Поиск по библиотеке',
   searchPlaceholder: 'Найти встречу или заметку', searchResults: 'Результаты поиска', noResults: 'Ничего не найдено',
@@ -67,7 +69,7 @@ const ru: Copy = {
   chooseMeeting: 'Выберите встречу', chooseMeetingHint: 'Откройте встречу, чтобы прочитать заметки, конспект и транскрипт.',
   chooseNote: 'Выберите заметку', chooseNoteHint: 'Откройте заметку или создайте новую.',
   summary: 'Конспект', transcript: 'Транскрипт', meetingNotes: 'Заметки встречи',
-  playRecording: 'Воспроизвести запись', mediaUnavailable: 'Не удалось воспроизвести запись. Файл остаётся в библиотеке; возможно, Windows не поддерживает этот формат.',
+  playRecording: 'Воспроизвести запись', mediaUnavailable: 'Не удалось воспроизвести запись. Файл остаётся в библиотеке; возможно, система не поддерживает этот формат.',
   noSummary: 'Конспекта пока нет', noSummaryHint: 'У этой встречи нет сохранённого конспекта.',
   noTranscript: 'Транскрипта пока нет', noTranscriptHint: 'У этой встречи нет сохранённого транскрипта.',
   noMeetingNotes: 'Заметок по встрече пока нет', noMeetingNotesHint: 'Добавьте мысли или решение, которое хотите запомнить.',
