@@ -1,6 +1,7 @@
 //! Native-only composition root for the desktop import executor. This transport
 //! is deliberately not registered as a renderer command. Recovery requires an
 //! exclusive executor lease; callers must not recover another live host.
+use crate::application::import_ports::{ImportInput, IMPORT_JOB_KIND as KIND};
 use crate::application::jobs::{ClaimRequest, JobCommand, JobQueue, JobReply};
 use crate::domain::jobs::{Job, JobDefinition, JobMutation, JobResource, JobUpdate, UpdateField};
 use crate::infrastructure::{
@@ -10,9 +11,7 @@ use crate::infrastructure::{
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
-
-const KIND: &str = "desktop-import";
+use std::path::Path;
 
 #[derive(Deserialize)]
 #[serde(
@@ -27,6 +26,9 @@ pub(crate) enum Request {
     },
     List {},
     Get {
+        job_id: String,
+    },
+    Run {
         job_id: String,
     },
     Claim {
@@ -49,17 +51,6 @@ pub(crate) enum Request {
     Recover {},
 }
 
-/// The grant and receipt stay inside the private native queue. No provider
-/// credentials, arbitrary CLI flags, executable path or environment is accepted.
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ImportInput {
-    operation_id: String,
-    attempt_token: String,
-    source_path: PathBuf,
-    title: Option<String>,
-}
-
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
@@ -70,7 +61,7 @@ pub(crate) enum State {
     Interrupted,
 }
 
-fn id(value: &str) -> Result<()> {
+pub(crate) fn id(value: &str) -> Result<()> {
     ensure!(
         crate::desktop_import::valid_import_id(value),
         "Invalid queue identifier"
@@ -81,27 +72,7 @@ fn id(value: &str) -> Result<()> {
 pub(crate) fn execute(root: &Path, request: Request) -> Result<Value> {
     let command = match request {
         Request::Enqueue { input } => {
-            id(&input.operation_id)?;
-            id(&input.attempt_token)?;
-            ensure!(
-                input.source_path.is_absolute(),
-                "Import source must be absolute"
-            );
-            let source = input
-                .source_path
-                .to_str()
-                .ok_or_else(|| anyhow::anyhow!("Invalid source"))?;
-            ensure!(
-                source.len() <= 32760 && !source.contains('\0'),
-                "Invalid source"
-            );
-            ensure!(
-                input
-                    .title
-                    .as_ref()
-                    .is_none_or(|s| s.len() <= 2000 && !s.contains('\0')),
-                "Invalid title"
-            );
+            input.validate()?;
             JobCommand::Enqueue {
                 definition: JobDefinition {
                     kind: KIND.into(),
@@ -116,6 +87,7 @@ pub(crate) fn execute(root: &Path, request: Request) -> Result<Value> {
                 follow_ups: Vec::new(),
             }
         }
+        Request::Run { .. } => anyhow::bail!("Import run requires its live executor"),
         Request::List {} => JobCommand::List,
         Request::Get { job_id } => {
             id(&job_id)?;
@@ -176,13 +148,7 @@ pub(crate) fn execute(root: &Path, request: Request) -> Result<Value> {
         }
         Request::Recover {} => JobCommand::Recover,
     };
-    let reply = JobQueue {
-        repository: SqliteJobQueue { root },
-        clock: SystemJobClock,
-        ids: RandomJobIds,
-        kind: Some(KIND),
-    }
-    .execute(command)?;
+    let reply = queue(root).execute(command)?;
     Ok(match reply {
         JobReply::Enqueued {
             job, deduplicated, ..
@@ -196,6 +162,15 @@ pub(crate) fn execute(root: &Path, request: Request) -> Result<Value> {
             json!({"recovered":recovered,"jobs":jobs.iter().map(summary).collect::<Vec<_>>()})
         }
     })
+}
+
+pub(crate) fn queue(root: &Path) -> JobQueue<SqliteJobQueue<'_>, SystemJobClock, RandomJobIds> {
+    JobQueue {
+        repository: SqliteJobQueue { root },
+        clock: SystemJobClock,
+        ids: RandomJobIds,
+        kind: Some(KIND),
+    }
 }
 
 /// List/recovery is a small read model, never a bulk export of native grants.
@@ -213,7 +188,8 @@ mod tests {
         let lease = crate::infrastructure::executor_lease::try_acquire(root)
             .unwrap()
             .unwrap();
-        desktop::import_queue_envelope(&lease, arguments)
+        let mut executor = crate::desktop_queue_executor::Executor::new(lease);
+        desktop::import_queue_envelope(&mut executor, arguments)
     }
     fn call(root: &Path, arguments: Value) -> Value {
         let reply = request(root, arguments);

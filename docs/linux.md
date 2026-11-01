@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 603 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 29 host + 5 real-engine
+и helper), 613 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 29 host + 6 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 13 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -91,8 +91,8 @@ Workspace use cases теперь координируются в `application/wo
 через transaction/clock/ID порты; `jobs.rs` сохраняет Swift/CLI JSON API. Snapshot
 читает jobs/count/account pauses в одной read-транзакции. Swift пока управляет
 живыми заданиями. Native Tauri queue port использует scoped `desktop-import` очередь;
-lifetime queue lease реализован; автоматический executor ожидает покрытия
-живых workers и receipt reconciliation
+native `Run` выполняет import внутри lifetime lease; UI binding и автоматический
+startup receipt reconciliation ещё не подключены
 ([ADR](decisions/scoped-executors.md)). Подробности: [границы очереди](decisions/job-queue-boundaries.md).
 
 Engine worker и Tauri transport используют общий `process-runtime/` для владения
@@ -118,3 +118,7 @@ Native queue соединение удерживает [kernel lease](decisions/
 и knowledge rebuild проверены через реальные CLI/C ABI на синтетических данных.
 Swift-компилятор и Windows target здесь отсутствуют: source checks не заменяют
 native сборку этих платформ.
+
+[Owned import execution](decisions/owned-import-execution.md) связывает queue claim,
+worker thread, cancellation/join и точный receipt. Проверен повтор после publication
+без исходного файла: копия не создаётся заново, чужой receipt token отклоняется.

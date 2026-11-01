@@ -67,6 +67,7 @@ smoke подтвердил WebView и временную canonical library с а
 
 Import [WorkerHost](worker-host-import.md) реализован отдельно; durable очередь пока не подключена.
 Native [queue port](scoped-executors.md) реализован. Lifetime [queue lease](import-executor-lease.md) реализован.
-Следующие срезы: worker lifetime coverage и Tauri queue executor/UI, общая политика подписчиков
+Native import [Run владеет worker lifetime](owned-import-execution.md).
+Следующие срезы: Tauri queue UI binding и startup reconciliation, общая политика подписчиков
 и retry presentation, platform resource locator/sleep inhibitor, Linux speech runtime.
 Перенос reducer не подтверждает весь функциональный паритет приложения.

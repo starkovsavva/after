@@ -59,6 +59,10 @@ pub enum QueueCommand {
     Get {
         job_id: String,
     },
+    /// Starts one admitted import inside the process owning the queue lease.
+    Run {
+        job_id: String,
+    },
     Claim {
         job_id: Option<String>,
     },

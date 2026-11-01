@@ -33,8 +33,9 @@
   SQL остаётся authoritative; state transient и не сохраняется. Import WorkerHost реализован с progress/cancel и commit receipts
   ([ADR](decisions/worker-host-import.md)); typed native queue port и scoped
   canonical queue реализованы ([ADR](decisions/scoped-executors.md)). Lifetime queue lease реализован
-  ([ADR](decisions/import-executor-lease.md)); worker lifetime coverage, receipt
-  reconciliation и автоматический desktop executor остаются следующими срезами; [ADR](decisions/live-job-coordinator.md).
+  ([ADR](decisions/import-executor-lease.md)); explicit native Run теперь
+  [владеет worker lifetime и проверяет receipts](decisions/owned-import-execution.md).
+  UI binding и автоматический startup reconciliation остаются следующими срезами; [ADR](decisions/live-job-coordinator.md).
 - Main 0.18.2 интегрирован: Swift разбит на AfterCore/Platform/Localization/macOS/App;
   новые knowledge SQL/rebuild modules сохраняют canonical transaction в infrastructure.
   Optional semantic/agent cleanup выбираются через native boundaries; Tauri UI

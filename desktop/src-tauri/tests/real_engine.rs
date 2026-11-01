@@ -10,6 +10,155 @@ use std::path::PathBuf;
 
 #[test]
 #[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
+fn leased_queue_executes_import_and_reconciles_a_published_attempt_without_its_source() {
+    use after_desktop::{
+        import_queue::{ImportInput, ImportJob, ImportQueue, JobState, QueueCommand},
+        worker_host::ImportWork,
+    };
+    use std::{
+        sync::atomic::AtomicBool,
+        time::{Duration, Instant},
+    };
+    fn wait(queue: &dyn ImportQueue, id: &str, expected: JobState) -> ImportJob {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let job = queue
+                .execute(QueueCommand::Get { job_id: id.into() })
+                .unwrap()
+                .job
+                .unwrap();
+            if job.state == expected {
+                return job;
+            }
+            assert_eq!(job.state, JobState::Running, "unexpected terminal state");
+            assert!(Instant::now() < deadline, "queued import did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("owned-import-library");
+    let bridge = LibraryBridge::for_development(engine, root.clone()).unwrap();
+    let queue = bridge.open_import_queue().unwrap();
+    let source = fixture.path().join("source После ; literal.wav");
+    let bytes = vec![42; 900_000];
+    std::fs::write(&source, &bytes).unwrap();
+    let work = ImportWork {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        attempt_token: uuid::Uuid::new_v4().to_string(),
+        source: source.clone(),
+        title: Some("Owned queue import".into()),
+    };
+    let job = queue
+        .execute(QueueCommand::Enqueue {
+            input: ImportInput::from(&work),
+        })
+        .unwrap()
+        .job
+        .unwrap();
+    assert_eq!(
+        queue
+            .execute(QueueCommand::Run {
+                job_id: job.id.clone()
+            })
+            .unwrap()
+            .job
+            .unwrap()
+            .attempt,
+        1
+    );
+    assert_eq!(wait(&queue, &job.id, JobState::Succeeded).progress, 1.0);
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    assert_eq!(
+        std::fs::read(
+            root.join("meetings")
+                .join(&work.operation_id)
+                .join("source.wav")
+        )
+        .unwrap(),
+        bytes
+    );
+
+    // Seed the publication/completion gap using a real import worker: the old
+    // attempt published its exact receipt but never saved queue completion.
+    let pending_source = fixture.path().join("lost acknowledgement.wav");
+    std::fs::write(&pending_source, &bytes).unwrap();
+    let pending = ImportWork {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        attempt_token: uuid::Uuid::new_v4().to_string(),
+        source: pending_source.clone(),
+        title: None,
+    };
+    let pending_job = queue
+        .execute(QueueCommand::Enqueue {
+            input: ImportInput::from(&pending),
+        })
+        .unwrap()
+        .job
+        .unwrap();
+    queue
+        .execute(QueueCommand::Claim {
+            job_id: Some(pending_job.id.clone()),
+        })
+        .unwrap()
+        .job
+        .unwrap();
+    bridge
+        .import_work(&pending, &AtomicBool::new(false), &mut |_| {})
+        .unwrap();
+    drop(queue);
+    std::fs::remove_file(&pending_source).unwrap();
+    let successor = bridge.open_import_queue().unwrap();
+    assert_eq!(
+        successor.execute(QueueCommand::Recover).unwrap().recovered,
+        Some(1)
+    );
+    successor
+        .execute(QueueCommand::Retry {
+            job_id: pending_job.id.clone(),
+            expected_attempt: 1,
+        })
+        .unwrap();
+    successor
+        .execute(QueueCommand::Run {
+            job_id: pending_job.id.clone(),
+        })
+        .unwrap()
+        .job
+        .unwrap();
+    let recovered = wait(&successor, &pending_job.id, JobState::Succeeded);
+    assert_eq!(recovered.attempt, 2);
+    assert!(!pending_source.exists());
+    assert_eq!(
+        std::fs::read(
+            root.join("meetings")
+                .join(&pending.operation_id)
+                .join("source.wav")
+        )
+        .unwrap(),
+        bytes
+    );
+
+    // A different receipt token must not adopt that published meeting.
+    let mut wrong = ImportInput::from(&pending);
+    wrong.attempt_token = uuid::Uuid::new_v4().to_string();
+    let foreign = successor
+        .execute(QueueCommand::Enqueue { input: wrong })
+        .unwrap()
+        .job
+        .unwrap();
+    successor
+        .execute(QueueCommand::Run {
+            job_id: foreign.id.clone(),
+        })
+        .unwrap();
+    wait(&successor, &foreign.id, JobState::Failed);
+    assert_eq!(bridge.workspace().unwrap().meetings.len(), 2);
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+}
+
+#[test]
+#[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
 fn import_owner_kernel_lease_is_released_after_abnormal_process_exit() {
     use after_desktop::import_queue::{ImportQueue, QueueCommand};
     use after_process_runtime::ProcessTree;

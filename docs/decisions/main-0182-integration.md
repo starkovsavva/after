@@ -34,7 +34,7 @@ feed branch, not an application-code branch; it is not merged or published here.
 
 ## Evidence and remaining limits
 
-The Arch desktop profile covers 603 core tests plus two CLI tests, 29 host tests,
+At the main integration milestone, the Arch profile passed 603 core tests plus two CLI tests, 29 host tests,
 five real-engine scenarios, real Tauri IPC and process-runtime contracts. The
 upstream synthetic topic performance probe remains intentionally ignored.
 Portable knowledge regressions cover migration/backup, legacy edits, source
@@ -50,5 +50,5 @@ Swift source boundaries and verification tooling are checked locally. Swift and
 Windows target toolchains are absent on this Arch machine; native Mac/Windows and
 the real Swift package graph remain CI checks, not locally verified results.
 The Tauri UI still lacks several new Swift product workflows; Linux capture,
-speech/model runtime and durable worker lifetime/reconciliation remain pending.
+speech/model runtime, Tauri queue UI binding and automatic startup reconciliation remain pending.
 Swift is retained. No release, push or personal-data migration is performed.

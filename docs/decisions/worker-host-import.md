@@ -1,6 +1,7 @@
 # Import WorkerHost
 
-Статус: реализован для импорта; durable Tauri queue ещё не подключена.
+Статус: standalone import WorkerHost используется UI; durable native
+[Run](owned-import-execution.md) реализован отдельно, UI binding ещё не подключён.
 
 ## Границы
 

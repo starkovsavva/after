@@ -1,5 +1,6 @@
 //! Private streaming import transport for the native WorkerHost. No renderer
 //! command forwarding, provider configuration or arbitrary executable is accepted.
+use crate::application::import_ports::ImportInput;
 use crate::application::imports::{ImportCancelled, ImportObserver, ImportPhase, ImportProgress};
 use anyhow::{ensure, Result};
 use serde::Deserialize;
@@ -76,21 +77,14 @@ pub fn run_stdio(root: &Path) -> Result<()> {
     ensure!(root.is_absolute(), "Invalid library root");
     let mut input = BufReader::new(io::stdin());
     let request: Request = serde_json::from_slice(&line(&mut input, 256 * 1024)?)?;
-    ensure!(
-        request.version == 1
-            && request.source_path.is_absolute()
-            && request
-                .source_path
-                .to_str()
-                .is_some_and(|path| path.len() <= 32760 && !path.contains('\0'))
-            && request
-                .title
-                .as_ref()
-                .is_none_or(|title| title.len() <= 2000 && !title.contains('\0'))
-            && crate::desktop_import::valid_import_id(&request.operation_id)
-            && crate::desktop_import::valid_import_id(&request.attempt_token),
-        "Invalid import request"
-    );
+    ensure!(request.version == 1, "Invalid import request version");
+    ImportInput {
+        operation_id: request.operation_id.clone(),
+        attempt_token: request.attempt_token.clone(),
+        source_path: request.source_path.clone(),
+        title: request.title.clone(),
+    }
+    .validate()?;
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancellation = cancelled.clone();
     std::thread::Builder::new()

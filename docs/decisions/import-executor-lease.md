@@ -1,8 +1,8 @@
 # Lifetime lease and native queue connection
 
-Статус: реализованы kernel lease и persistent queue service. Подключение durable
-worker execution и startup reconciliation ещё не завершено; UI пока использует
-transient import session.
+Статус: kernel lease и persistent queue service реализованы; explicit native Run
+[владеет worker lifetime](owned-import-execution.md). Startup reconciliation и UI
+binding ещё не подключены; UI пока использует standalone import session.
 
 ## Владение
 
@@ -38,12 +38,11 @@ reaps; соединение больше не используется. Обыч
 
 ## Следующая граница
 
-Сейчас service защищает queue commands, не существующий отдельный import worker.
-Перед автоматическим исполнением lifetime lease должен охватывать **все** живые
-workers и их остановку: разместить их под владельцем service или добавить барьер
-участников. Нельзя освободить lock, пока старый worker ещё может опубликовать данные.
-Затем нужны receipt reconciliation и явный retry interrupted jobs; сам lease не
-делает повтор внешнего эффекта идемпотентным.
+Explicit Run уже размещает import worker внутри owner-процесса и joins его
+до освобождения lease. Существующий standalone UI import пока остаётся отдельным
+путём. Нужны UI/controller binding и startup receipt reconciliation; явный retry
+проверяет receipt до нового копирования. Сам lease не делает внешний эффект
+идемпотентным: [политика выполнения](owned-import-execution.md) описывает эту границу.
 
 ## Проверки
 

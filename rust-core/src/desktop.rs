@@ -50,6 +50,9 @@ fn domain<T>(value: anyhow::Result<T>) -> Result<T> {
     value.map_err(|error| {
         // Never serialize the underlying error: it can contain local paths,
         // source content or settings. Match only known canonical CAS failures.
+        if error.is::<crate::desktop_queue_executor::ExecutorBusy>() {
+            return BridgeError { code: "busy", message: "An import is still running. Cancel it or wait for completion." };
+        }
         let message = error.to_string();
         if message.contains("Заметка уже изменена")
             || message.contains("Папка уже изменилась")
@@ -475,9 +478,9 @@ fn envelope(result: Result<Value>) -> Value {
 }
 /// Import queue operations require a lifetime lease capability, not a renderer
 /// command or a caller-selected root. Only the persistent queue service uses it.
-pub(crate) fn import_queue_envelope(lease: &crate::infrastructure::executor_lease::ImportExecutorLease, arguments: Value) -> Value {
+pub(crate) fn import_queue_envelope(executor: &mut crate::desktop_queue_executor::Executor, arguments: Value) -> Value {
     let result = (|| {
-        let value = domain(crate::desktop_queue::execute(lease.root(), parse(arguments)?))?;
+        let value = domain(executor.command(parse(arguments)?))?;
         if serde_json::to_vec(&value).map_err(|_| BridgeError::library())?.len() > MAX_RESPONSE_BYTES - 256 {
             return Err(BridgeError::large());
         }

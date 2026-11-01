@@ -1,5 +1,6 @@
 //! One leased native queue connection. EOF releases ownership; the persistent
-//! helper is supervised by the host. No automatic recovery or worker spawning.
+//! helper is supervised by the host. Explicit run requests own their worker
+//! threads until cancellation/join; no automatic recovery or retries.
 use anyhow::{ensure, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -47,6 +48,7 @@ pub fn run_stdio(root: &Path, reader: impl Read, mut writer: impl Write) -> Resu
             return Ok(());
         }
     };
+    let mut executor = crate::desktop_queue_executor::Executor::new(lease);
     frame(&mut writer, json!({"version":1,"event":"ready"}))?;
     let mut input = BufReader::new(reader);
     loop {
@@ -66,7 +68,7 @@ pub fn run_stdio(root: &Path, reader: impl Read, mut writer: impl Write) -> Resu
             request.version == 1 && crate::desktop_import::valid_import_id(&request.id),
             "Invalid queue request"
         );
-        let envelope = crate::desktop::import_queue_envelope(&lease, request.request);
+        let envelope = crate::desktop::import_queue_envelope(&mut executor, request.request);
         frame(
             &mut writer,
             json!({"version":1,"event":"reply","id":request.id,"envelope":envelope}),

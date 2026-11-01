@@ -49,7 +49,7 @@ import session, не durable executor.
 
 Scope — граница ответственности, **не lease процесса**. Перед production recovery
 реализован [lifetime lock](import-executor-lease.md), исключающий второй queue owner.
-Покрытие живых workers этим lease ещё требуется. После получения lease coordinator должен сверить atomic publication receipts до
+Для explicit import Run [worker lifetime покрыт lease](owned-import-execution.md); UI binding ещё требуется. После получения lease coordinator должен сверить atomic publication receipts до
 решения о повторном запуске. Публикация и запись queue completion разделены;
 повторное выполнение нельзя считать безопасным только потому, что job interrupted.
 Это соответствует требованиям к идемпотентным Activities в

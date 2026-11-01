@@ -6,6 +6,7 @@ mod ai_config;
 pub mod desktop;
 mod desktop_import;
 mod desktop_queue;
+mod desktop_queue_executor;
 pub mod desktop_queue_service;
 mod desktop_media;
 pub mod desktop_platform;

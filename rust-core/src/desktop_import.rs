@@ -328,8 +328,10 @@ pub(crate) fn committed(root: &Path, operation: &str, token: &str) -> Result<Opt
     );
     let directory = crate::storage::meeting_directory(root, operation)?;
     let path = directory.join("meta.json");
-    if !path.exists() {
-        return Ok(None);
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {},
     }
     let meta = crate::storage::regular_json_limited(&path, 1_048_576)?;
     if meta["id"] != operation
@@ -344,6 +346,19 @@ pub(crate) fn committed(root: &Path, operation: &str, token: &str) -> Result<Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_receipt_is_not_evidence_that_publication_never_happened() {
+        let root = tempfile::tempdir().unwrap();
+        let operation = Uuid::new_v4().to_string();
+        let token = Uuid::new_v4().to_string();
+        let directory = root.path().join("meetings").join(&operation);
+        fs::create_dir_all(&directory).unwrap();
+        std::os::unix::fs::symlink(directory.join("missing-receipt"), directory.join("meta.json")).unwrap();
+        assert!(committed(root.path(), &operation, &token).is_err());
+        assert!(fs::symlink_metadata(directory.join("meta.json")).unwrap().file_type().is_symlink());
+    }
     use std::io::Write;
 
     struct CancelAt {
