@@ -1,5 +1,6 @@
 pub mod bridge;
 pub mod worker_host;
+pub mod import_queue;
 mod process_worker;
 mod imports;
 mod capture;
@@ -434,6 +435,7 @@ mod ipc_tests {
             (&untrusted, local_origin(), "import_status"),
             (&main, "https://example.org", "cancel_import"),
             (&main, local_origin(), "import_work"),
+            (&main, local_origin(), "import_queue"),
             (&main, local_origin(), "get_import_result"),
             (&main, local_origin(), "read_file"),
             (&main, local_origin(), "plugin:fs|read_text_file"),

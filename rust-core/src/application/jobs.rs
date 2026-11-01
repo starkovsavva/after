@@ -53,17 +53,26 @@ pub(crate) struct JobQueue<R, C, I> {
     pub repository: R,
     pub clock: C,
     pub ids: I,
+    /// Composition-root ownership boundary. None preserves the native legacy API.
+    /// This is not a process lease: recovery still requires exclusive ownership
+    /// of the selected executor kind.
+    pub kind: Option<&'static str>,
 }
 
 impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
     pub fn execute(&self, command: JobCommand) -> Result<JobReply> {
         match command {
-            JobCommand::List => Ok(JobReply::Snapshot(self.repository.snapshot()?)),
-            JobCommand::Get { id } => Ok(JobReply::Job(self.repository.get(&id)?)),
+            JobCommand::List => Ok(JobReply::Snapshot(self.repository.snapshot(self.kind)?)),
+            JobCommand::Get { id } => {
+                let job = self.repository.get(&id)?;
+                self.owned(&job)?;
+                Ok(JobReply::Job(job))
+            }
             JobCommand::Enqueue {
                 definition,
                 follow_ups,
             } => {
+                self.owned_kind(&definition.kind)?;
                 definition.validate()?;
                 ensure!(
                     follow_ups.len() <= 16,
@@ -75,6 +84,7 @@ impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
                         self.insert(transaction, parent, JobMatchScope::Pending)?;
                     let mut children = Vec::new();
                     for definition in follow_ups {
+                        self.owned_kind(&definition.kind)?;
                         definition.validate()?;
                         let mut child = definition.into_job(self.ids.next(), self.clock.now());
                         ensure!(
@@ -109,7 +119,8 @@ impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
                     .map(str::to_owned)
                     .collect();
                 for job in jobs.iter().filter(|job| job.state == "queued") {
-                    if request.job_id.as_ref().is_some_and(|id| id != &job.id)
+                    if self.kind.is_some_and(|kind| kind != job.kind)
+                        || request.job_id.as_ref().is_some_and(|id| id != &job.id)
                         || chatgpt_execution_account(&job.config)
                             .is_some_and(|account| paused.contains(account))
                         || chatgpt_execution_account(&job.config).is_some_and(|account| {
@@ -153,6 +164,7 @@ impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
             } => {
                 self.repository.transaction(|transaction| {
                     let mut job = transaction.get(&id)?;
+                    self.owned(&job)?;
                     let previous_state = job.state.clone();
                     if let Some(attempt) = expected_attempt {
                         ensure!(attempt == job.attempt, "Попытка задания уже изменилась");
@@ -182,6 +194,10 @@ impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
             JobCommand::Recover => {
                 let recovered = self.repository.transaction(|transaction| {
                     let jobs = transaction.selected(JobSelection::Running)?;
+                    let jobs: Vec<_> = jobs
+                        .into_iter()
+                        .filter(|job| self.kind.is_none_or(|kind| kind == job.kind))
+                        .collect();
                     let recovered = jobs.len();
                     for mut job in jobs {
                         job.state = "interrupted".into();
@@ -195,10 +211,22 @@ impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
                 })?;
                 Ok(JobReply::Recovered {
                     recovered,
-                    jobs: self.repository.snapshot()?.jobs,
+                    jobs: self.repository.snapshot(self.kind)?.jobs,
                 })
             }
         }
+    }
+
+    fn owned_kind(&self, kind: &str) -> Result<()> {
+        ensure!(
+            self.kind.is_none_or(|owned| owned == kind),
+            "Задание принадлежит другому исполнителю"
+        );
+        Ok(())
+    }
+
+    fn owned(&self, job: &Job) -> Result<()> {
+        self.owned_kind(&job.kind)
     }
 
     fn insert(
@@ -211,7 +239,7 @@ impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
             return Ok((existing, true));
         }
         for dependency in &job.dependencies {
-            transaction.get(dependency)?;
+            self.owned(&transaction.get(dependency)?)?;
         }
         ensure!(
             transaction.active_count()? < 256,
@@ -238,6 +266,9 @@ impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
         loop {
             let mut changed = false;
             for mut job in transaction.selected(JobSelection::WaitingDependencies)? {
+                if self.kind.is_some_and(|kind| kind != job.kind) {
+                    continue;
+                }
                 let states = self.dependency_states(transaction, &job)?;
                 let blocked = states.iter().any(|state| {
                     state.as_ref().is_none_or(|state| {
@@ -297,16 +328,28 @@ mod tests {
         fail_save: Option<usize>,
     }
     impl JobQueueRepository for MemoryRepository {
-        fn snapshot(&self) -> Result<JobQueueSnapshot> {
+        fn snapshot(&self, kind: Option<&str>) -> Result<JobQueueSnapshot> {
             let state = self.state.borrow();
             Ok(JobQueueSnapshot {
-                jobs: state.jobs.clone(),
-                total: state.jobs.len() as u64,
+                jobs: state
+                    .jobs
+                    .iter()
+                    .filter(|job| kind.is_none_or(|kind| kind == job.kind))
+                    .cloned()
+                    .collect(),
+                total: state
+                    .jobs
+                    .iter()
+                    .filter(|job| kind.is_none_or(|kind| kind == job.kind))
+                    .count() as u64,
                 paused_chatgpt_failures: state
                     .pauses
                     .values()
                     .map(|id| self.get(id))
-                    .collect::<Result<_>>()?,
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .filter(|job| kind.is_none_or(|kind| kind == job.kind))
+                    .collect(),
             })
         }
         fn get(&self, id: &str) -> Result<Job> {
@@ -429,6 +472,7 @@ mod tests {
             repository: MemoryRepository::default(),
             clock: Clock::default(),
             ids: Ids::default(),
+            kind: None,
         }
     }
     fn definition(object: &str) -> JobDefinition {
@@ -467,6 +511,123 @@ mod tests {
             JobReply::Claimed(job) => job,
             _ => panic!("expected claim"),
         }
+    }
+
+    #[test]
+    fn scoped_executor_cannot_read_mutate_enqueue_or_recover_foreign_jobs() {
+        let mut queue = queue();
+        let foreign = submit(&queue, definition("foreign"));
+        claim(&queue, &foreign.id).unwrap();
+        let mut own_definition = definition("owned");
+        own_definition.kind = "desktop-import".into();
+        let own = submit(&queue, own_definition);
+        claim(&queue, &own.id).unwrap();
+        let before = to_value(queue.repository.get(&foreign.id).unwrap()).unwrap();
+        queue.kind = Some("desktop-import");
+        assert!(queue
+            .execute(JobCommand::Get {
+                id: foreign.id.clone()
+            })
+            .is_err());
+        assert!(queue
+            .execute(JobCommand::Mutate {
+                id: foreign.id.clone(),
+                expected_attempt: Some(1),
+                mutation: JobMutation::Cancel,
+            })
+            .is_err());
+        let ticks = queue.clock.0.get();
+        let identities = queue.ids.0.get();
+        assert!(queue
+            .execute(JobCommand::Enqueue {
+                definition: definition("forbidden"),
+                follow_ups: Vec::new(),
+            })
+            .is_err());
+        assert_eq!(queue.clock.0.get(), ticks);
+        assert_eq!(queue.ids.0.get(), identities);
+        match queue.execute(JobCommand::Recover).unwrap() {
+            JobReply::Recovered { recovered, jobs } => {
+                assert_eq!(recovered, 1);
+                assert_eq!(jobs.len(), 1);
+                assert_eq!(jobs[0].id, own.id);
+                assert_eq!(jobs[0].state, "interrupted");
+            }
+            _ => panic!("expected recovery"),
+        }
+        assert_eq!(
+            to_value(queue.repository.get(&foreign.id).unwrap()).unwrap(),
+            before
+        );
+        assert!(claim(&queue, &foreign.id).is_none());
+        assert!(claim(&queue, &own.id).is_none());
+    }
+
+    #[test]
+    fn scoped_claim_observes_foreign_resource_usage_and_does_not_propagate_foreign_dependencies() {
+        let mut queue = queue();
+        let mut input = definition("foreign-heavy");
+        input.resource = JobResource::LocalHeavy;
+        let foreign = submit(&queue, input);
+        claim(&queue, &foreign.id).unwrap();
+        let mut input = definition("own-heavy");
+        input.kind = "desktop-import".into();
+        input.resource = JobResource::LocalHeavy;
+        let own = submit(&queue, input);
+        let parent = submit(&queue, definition("parent"));
+        let mut child = definition("child");
+        child.dependencies = vec![parent.id.clone()];
+        let child = submit(&queue, child);
+        // Simulate a previously failed dependency without propagating it yet.
+        queue
+            .repository
+            .state
+            .borrow_mut()
+            .jobs
+            .iter_mut()
+            .find(|job| job.id == parent.id)
+            .unwrap()
+            .state = "failed".into();
+        queue.kind = Some("desktop-import");
+        assert!(claim(&queue, &own.id).is_none());
+        assert_eq!(queue.repository.get(&child.id).unwrap().state, "queued");
+        queue
+            .repository
+            .state
+            .borrow_mut()
+            .jobs
+            .iter_mut()
+            .find(|job| job.id == foreign.id)
+            .unwrap()
+            .state = "succeeded".into();
+        assert_eq!(claim(&queue, &own.id).unwrap().attempt, 1);
+        assert_eq!(queue.repository.get(&child.id).unwrap().state, "queued");
+    }
+
+    #[test]
+    fn scoped_chains_reject_foreign_follow_ups_and_dependencies_atomically() {
+        let mut queue = queue();
+        let foreign = submit(&queue, definition("foreign"));
+        queue.kind = Some("desktop-import");
+        let mut input = definition("parent");
+        input.kind = "desktop-import".into();
+        assert!(queue
+            .execute(JobCommand::Enqueue {
+                definition: input,
+                follow_ups: vec![definition("parent")],
+            })
+            .is_err());
+        assert_eq!(queue.repository.state.borrow().jobs.len(), 1);
+        let mut input = definition("child");
+        input.kind = "desktop-import".into();
+        input.dependencies.push(foreign.id);
+        assert!(queue
+            .execute(JobCommand::Enqueue {
+                definition: input,
+                follow_ups: Vec::new(),
+            })
+            .is_err());
+        assert_eq!(queue.repository.state.borrow().jobs.len(), 1);
     }
 
     #[test]

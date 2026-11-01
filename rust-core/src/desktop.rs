@@ -434,6 +434,7 @@ fn dispatch(root: &Path, request: Value) -> Result<Value> {
         .and_then(|_|crate::platform_fs::pin_directory(root)).map_err(|_|BridgeError::library())?;
     match request.command.as_str() {
         "import_meeting" => import_meeting(root, parse(request.arguments)?),
+        "import_queue" => domain(crate::desktop_queue::execute(root, parse(request.arguments)?)),
         "get_import_result" => {
             let args: ImportResultArguments = parse(request.arguments)?;
             identifier(&args.operation_id)?;

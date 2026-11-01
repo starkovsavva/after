@@ -87,15 +87,20 @@ fn query_jobs(connection: &Connection, sql: &str) -> Result<Vec<Job>> {
     let rows = query.query_map([], |row| row.get::<_, String>(0))?;
     rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
 }
-fn listed(connection: &Connection) -> Result<Vec<Job>> {
-    let mut jobs = query_jobs(
-        connection,
-        "SELECT payload FROM jobs WHERE state IN ('queued','running') ORDER BY created_at,rowid",
-    )?;
-    jobs.extend(query_jobs(connection,"SELECT payload FROM jobs WHERE state NOT IN ('queued','running') ORDER BY updated_at DESC,rowid DESC LIMIT 50")?);
+fn listed(connection: &Connection, kind: Option<&str>) -> Result<Vec<Job>> {
+    fn rows(connection: &Connection, sql: &str, kind: Option<&str>) -> Result<Vec<Job>> {
+        let mut query = connection.prepare(sql)?;
+        let rows = query.query_map([kind], |row| row.get::<_, String>(0))?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+    let mut jobs = rows(connection,
+        "SELECT payload FROM jobs WHERE state IN ('queued','running') AND (?1 IS NULL OR json_extract(payload,'$.kind')=?1) ORDER BY created_at,rowid", kind)?;
+    jobs.extend(rows(connection,
+        "SELECT payload FROM jobs WHERE state NOT IN ('queued','running') AND (?1 IS NULL OR json_extract(payload,'$.kind')=?1) ORDER BY updated_at DESC,rowid DESC LIMIT 50", kind)?);
     jobs.sort_by(|a, b| a.created_at.total_cmp(&b.created_at));
     Ok(jobs)
 }
+
 fn paused_chatgpt_jobs(connection: &Connection) -> Result<Vec<Job>> {
     query_jobs(connection, "SELECT jobs.payload FROM job_chatgpt_pauses JOIN jobs ON jobs.id=job_chatgpt_pauses.job_id ORDER BY jobs.created_at,jobs.rowid")
 }
@@ -119,14 +124,20 @@ pub(crate) struct SqliteJobQueue<'a> {
 }
 
 impl JobQueueRepository for SqliteJobQueue<'_> {
-    fn snapshot(&self) -> Result<JobQueueSnapshot> {
+    fn snapshot(&self, kind: Option<&str>) -> Result<JobQueueSnapshot> {
         let mut connection = open(self.root)?;
         // One read snapshot keeps jobs, counts and admission pauses consistent.
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let jobs = listed(&transaction)?;
-        let total: i64 =
-            transaction.query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get(0))?;
-        let paused_chatgpt_failures = paused_chatgpt_jobs(&transaction)?;
+        let jobs = listed(&transaction, kind)?;
+        let total: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE ?1 IS NULL OR json_extract(payload,'$.kind')=?1",
+            [kind],
+            |row| row.get(0),
+        )?;
+        let paused_chatgpt_failures = paused_chatgpt_jobs(&transaction)?
+            .into_iter()
+            .filter(|job| kind.is_none_or(|kind| kind == job.kind))
+            .collect();
         transaction.commit()?;
         Ok(JobQueueSnapshot {
             jobs,
@@ -245,7 +256,7 @@ mod tests {
             anyhow::bail!("injected callback failure")
         });
         assert!(result.is_err());
-        let reopened = SqliteJobQueue { root: root.path() }.snapshot().unwrap();
+        let reopened = SqliteJobQueue { root: root.path() }.snapshot(None).unwrap();
         assert!(reopened.paused_chatgpt_failures.is_empty());
         assert_eq!(serde_json::to_value(&reopened.jobs[0]).unwrap(), initial);
     }

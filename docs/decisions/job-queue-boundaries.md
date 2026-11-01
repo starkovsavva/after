@@ -1,6 +1,7 @@
 # Очередь: прикладные сценарии и переносимое хранилище
 
-Статус: реализованы storage и application-срезы этапа 4, 1 ноября 2026.
+Статус: реализованы storage и application-срезы этапа 4.
+Scoped executors и native import queue port: [ADR](scoped-executors.md).
 
 ## Границы
 

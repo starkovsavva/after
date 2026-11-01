@@ -19,6 +19,7 @@ pub fn dispatch(root: &Path, value: &Value) -> Result<Value> {
         repository: SqliteJobQueue { root },
         clock: SystemJobClock,
         ids: RandomJobIds,
+        kind: None,
     };
     Ok(encode(queue.execute(command)?))
 }

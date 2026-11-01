@@ -5,6 +5,7 @@ pub mod platform_fs;
 mod ai_config;
 pub mod desktop;
 mod desktop_import;
+mod desktop_queue;
 mod desktop_media;
 pub mod desktop_platform;
 #[cfg(unix)]

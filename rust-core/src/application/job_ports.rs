@@ -35,7 +35,8 @@ pub(crate) trait JobQueueRepository {
     /// All active jobs plus the latest 50 terminal/history rows, sorted by
     /// creation time. Count and paused failures use the same read snapshot;
     /// admission pauses must not disappear when a job leaves visible history.
-    fn snapshot(&self) -> Result<JobQueueSnapshot>;
+    /// Filter before history pagination; counts and rows share one snapshot.
+    fn snapshot(&self, kind: Option<&str>) -> Result<JobQueueSnapshot>;
     fn get(&self, id: &str) -> Result<Job>;
     /// Serializes competing claims before reading admission state. The adapter
     /// must not split this callback into independently committed operations.

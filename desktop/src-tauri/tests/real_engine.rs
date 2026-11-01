@@ -10,6 +10,115 @@ use std::path::PathBuf;
 
 #[test]
 #[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
+fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing() {
+    use after_desktop::{
+        import_queue::{ImportInput, ImportQueue, JobState, QueueCommand},
+        worker_host::ImportWork,
+    };
+    let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("queue-library");
+    let bridge = LibraryBridge::for_development(engine.clone(), root.clone()).unwrap();
+    let work = ImportWork {
+        operation_id: uuid::Uuid::new_v4().to_string(),
+        attempt_token: uuid::Uuid::new_v4().to_string(),
+        source: fixture.path().join("native source ü ;.wav"),
+        title: None,
+    };
+    let enqueued = bridge
+        .execute(QueueCommand::Enqueue {
+            input: ImportInput::from(&work),
+        })
+        .unwrap();
+    assert_eq!(enqueued.deduplicated, Some(false));
+    let job = enqueued.job.unwrap();
+    assert_eq!(job.state, JobState::Queued);
+    let claimed = bridge
+        .execute(QueueCommand::Claim {
+            job_id: Some(job.id.clone()),
+        })
+        .unwrap()
+        .job
+        .unwrap();
+    assert_eq!(claimed.attempt, 1);
+    assert_eq!(claimed.config.work().source, work.source);
+    drop(bridge);
+    let bridge = LibraryBridge::for_development(engine, root).unwrap();
+    let persisted = bridge
+        .execute(QueueCommand::Get {
+            job_id: job.id.clone(),
+        })
+        .unwrap()
+        .job
+        .unwrap();
+    assert_eq!(persisted.state, JobState::Running);
+    assert_eq!(persisted.config.attempt_token, work.attempt_token);
+    // This synthetic test is the only owner; production recovery is not enabled
+    // until an exclusive executor lease is installed.
+    let recovery = bridge.execute(QueueCommand::Recover).unwrap();
+    assert_eq!(recovery.recovered, Some(1));
+    assert_eq!(recovery.jobs[0].state, JobState::Interrupted);
+    assert!(bridge
+        .execute(QueueCommand::Claim {
+            job_id: Some(job.id.clone())
+        })
+        .unwrap()
+        .job
+        .is_none());
+    bridge
+        .execute(QueueCommand::Retry {
+            job_id: job.id.clone(),
+            expected_attempt: 1,
+        })
+        .unwrap();
+    assert_eq!(
+        bridge
+            .execute(QueueCommand::Claim {
+                job_id: Some(job.id.clone())
+            })
+            .unwrap()
+            .job
+            .unwrap()
+            .attempt,
+        2
+    );
+    assert!(bridge
+        .execute(QueueCommand::Update {
+            job_id: job.id.clone(),
+            expected_attempt: 1,
+            state: JobState::Succeeded,
+            progress: 1.0
+        })
+        .is_err());
+    assert_eq!(
+        bridge
+            .execute(QueueCommand::Cancel {
+                job_id: job.id.clone(),
+                expected_attempt: 2
+            })
+            .unwrap()
+            .job
+            .unwrap()
+            .cancel_requested,
+        true
+    );
+    bridge
+        .execute(QueueCommand::Update {
+            job_id: job.id,
+            expected_attempt: 2,
+            state: JobState::Cancelled,
+            progress: 0.0,
+        })
+        .unwrap();
+    let snapshot = bridge.execute(QueueCommand::List).unwrap();
+    assert_eq!(snapshot.total, Some(1));
+    assert_eq!(snapshot.has_more, Some(false));
+    assert_eq!(snapshot.jobs[0].state, JobState::Cancelled);
+    assert!(bridge.workspace().unwrap().meetings.is_empty());
+}
+
+#[test]
+#[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
 fn streaming_import_preserves_sources_and_recovers_only_its_exact_commit_receipt() {
     use after_desktop::worker_host::{ImportPhase, ImportWork};
     use std::sync::atomic::AtomicBool;

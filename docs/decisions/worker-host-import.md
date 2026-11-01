@@ -40,5 +40,6 @@ Native `imports.rs` владеет transient session. UI показывает pr
 проверки progress, отмены, изоляции и receipts. Диалог выбора, физические устройства
 и кодеки не покрыты этими проверками. Windows/macOS локально не запускались.
 
-Очередь и retry/recovery после перезапуска host, ASR/model workers, ResourceLocator
+Native [scoped queue port](scoped-executors.md) реализован отдельно. Подключение
+исполнителя и retry/recovery после перезапуска host, ASR/model workers, ResourceLocator
 и SleepInhibitor остаются следующими этапами. Swift сохраняется до проверки паритета.
