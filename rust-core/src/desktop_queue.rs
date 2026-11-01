@@ -210,10 +210,10 @@ mod tests {
     use crate::{desktop, jobs};
 
     fn request(root: &Path, arguments: Value) -> Value {
-        desktop::handle_bytes(
-            root,
-            &serde_json::to_vec(&json!({"command":"import_queue","arguments":arguments})).unwrap(),
-        )
+        let lease = crate::infrastructure::executor_lease::try_acquire(root)
+            .unwrap()
+            .unwrap();
+        desktop::import_queue_envelope(&lease, arguments)
     }
     fn call(root: &Path, arguments: Value) -> Value {
         let reply = request(root, arguments);

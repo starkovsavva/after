@@ -32,8 +32,9 @@
   к Swift через `NativeJobRuntime`: admission/progress/finish/shutdown decisions.
   SQL остаётся authoritative; state transient и не сохраняется. Import WorkerHost реализован с progress/cancel и commit receipts
   ([ADR](decisions/worker-host-import.md)); typed native queue port и scoped
-  canonical queue реализованы ([ADR](decisions/scoped-executors.md)). Lifetime lease,
-  receipt reconciliation и автоматический desktop executor остаются следующими срезами; [ADR](decisions/live-job-coordinator.md).
+  canonical queue реализованы ([ADR](decisions/scoped-executors.md)). Lifetime queue lease реализован
+  ([ADR](decisions/import-executor-lease.md)); worker lifetime coverage, receipt
+  reconciliation и автоматический desktop executor остаются следующими срезами; [ADR](decisions/live-job-coordinator.md).
 - Команды и ограничения актуальны в [Linux-инструкции](linux.md).
 
 ## Правила выполнения

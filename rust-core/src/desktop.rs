@@ -434,7 +434,6 @@ fn dispatch(root: &Path, request: Value) -> Result<Value> {
         .and_then(|_|crate::platform_fs::pin_directory(root)).map_err(|_|BridgeError::library())?;
     match request.command.as_str() {
         "import_meeting" => import_meeting(root, parse(request.arguments)?),
-        "import_queue" => domain(crate::desktop_queue::execute(root, parse(request.arguments)?)),
         "get_import_result" => {
             let args: ImportResultArguments = parse(request.arguments)?;
             identifier(&args.operation_id)?;
@@ -474,6 +473,19 @@ fn envelope(result: Result<Value>) -> Value {
         Err(error) => json!({"ok":false,"error":{"code":error.code,"message":error.message}}),
     }
 }
+/// Import queue operations require a lifetime lease capability, not a renderer
+/// command or a caller-selected root. Only the persistent queue service uses it.
+pub(crate) fn import_queue_envelope(lease: &crate::infrastructure::executor_lease::ImportExecutorLease, arguments: Value) -> Value {
+    let result = (|| {
+        let value = domain(crate::desktop_queue::execute(lease.root(), parse(arguments)?))?;
+        if serde_json::to_vec(&value).map_err(|_| BridgeError::library())?.len() > MAX_RESPONSE_BYTES - 256 {
+            return Err(BridgeError::large());
+        }
+        Ok(value)
+    })();
+    envelope(result)
+}
+
 /// One request per isolated helper process. Both directions are bounded; errors
 /// are stable DTOs and never include the underlying library or provider error.
 pub fn handle_bytes(root: &Path, input: &[u8]) -> Value {

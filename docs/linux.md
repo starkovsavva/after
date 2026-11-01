@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 463 core + 4 CLI, frontend build + 7 tests, 24 host + 4 real-engine
+и helper), 470 core + 4 CLI, frontend build + 7 tests, 29 host + 5 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 13 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -91,7 +91,8 @@ Workspace use cases теперь координируются в `application/wo
 через transaction/clock/ID порты; `jobs.rs` сохраняет Swift/CLI JSON API. Snapshot
 читает jobs/count/account pauses в одной read-транзакции. Swift пока управляет
 живыми заданиями. Native Tauri queue port использует scoped `desktop-import` очередь;
-автоматический executor ожидает lifetime lease и receipt reconciliation
+lifetime queue lease реализован; автоматический executor ожидает покрытия
+живых workers и receipt reconciliation
 ([ADR](decisions/scoped-executors.md)). Подробности: [границы очереди](decisions/job-queue-boundaries.md).
 
 Engine worker и Tauri transport используют общий `process-runtime/` для владения
@@ -108,3 +109,6 @@ executor: native Swift suite запускается только на Mac (`veri
 
 Импорт использует [WorkerHost](decisions/worker-host-import.md): progress, отмена до
 публикации и восстановление панели после reload WebView. Это ещё не durable queue.
+
+Native queue соединение удерживает [kernel lease](decisions/import-executor-lease.md).
+Проверены конкурирующие owner-процессы и освобождение lock после аварийного exit.

@@ -32,15 +32,6 @@ pub struct LibraryBridge {
     root: PathBuf,
     running: Arc<AtomicUsize>,
 }
-impl crate::import_queue::ImportQueue for LibraryBridge {
-    fn execute(
-        &self,
-        command: crate::import_queue::QueueCommand,
-    ) -> Result<crate::import_queue::QueueReply, HostError> {
-        let arguments = serde_json::to_value(command).map_err(|_| HostError::invalid())?;
-        self.call("import_queue", arguments)
-    }
-}
 
 #[derive(Clone)]
 struct Engine {
@@ -48,6 +39,12 @@ struct Engine {
     digest: Option<String>,
 }
 impl LibraryBridge {
+    /// Acquires lifetime ownership before any queue recovery or execution.
+    pub fn open_import_queue(&self) -> Result<crate::queue_connection::QueueConnection, HostError> {
+        self.engine.verify()?;
+        crate::queue_connection::QueueConnection::open(&self.engine.path, &self.root)
+    }
+
     pub(crate) fn data_root(&self) -> PathBuf {
         self.root.clone()
     }

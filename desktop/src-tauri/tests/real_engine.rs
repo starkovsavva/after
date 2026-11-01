@@ -10,6 +10,64 @@ use std::path::PathBuf;
 
 #[test]
 #[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
+fn import_owner_kernel_lease_is_released_after_abnormal_process_exit() {
+    use after_desktop::import_queue::{ImportQueue, QueueCommand};
+    use after_process_runtime::ProcessTree;
+    use std::{
+        io::{BufRead, BufReader},
+        process::{Command, Stdio},
+        sync::mpsc,
+        time::Duration,
+    };
+    let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("crash-library");
+    let bridge = LibraryBridge::for_development(engine.clone(), root.clone()).unwrap();
+    let mut command = Command::new(&engine);
+    command
+        .args(["desktop-import-queue", "--root"])
+        .arg(&root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut owner = ProcessTree::spawn(&mut command).unwrap();
+    let stdout = owner.take_stdout().unwrap();
+    let (send, receive) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
+        let _ = send.send(result);
+    });
+    let ready = receive
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&ready).unwrap()["event"],
+        "ready"
+    );
+    assert_eq!(bridge.open_import_queue().err().unwrap().code, "busy");
+    let other =
+        LibraryBridge::for_development(engine, fixture.path().join("independent-library")).unwrap();
+    let independent = other.open_import_queue().unwrap();
+    assert_eq!(
+        independent.execute(QueueCommand::List).unwrap().total,
+        Some(0)
+    );
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    let successor = bridge.open_import_queue().unwrap();
+    assert_eq!(
+        successor.execute(QueueCommand::List).unwrap().total,
+        Some(0)
+    );
+    drop(successor);
+    assert!(bridge.open_import_queue().is_ok());
+    assert!(root.join(".desktop-import-executor.lock").is_file());
+}
+
+#[test]
+#[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
 fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing() {
     use after_desktop::{
         import_queue::{ImportInput, ImportQueue, JobState, QueueCommand},
@@ -19,13 +77,15 @@ fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing(
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("queue-library");
     let bridge = LibraryBridge::for_development(engine.clone(), root.clone()).unwrap();
+    let queue = bridge.open_import_queue().unwrap();
+    assert_eq!(bridge.open_import_queue().err().unwrap().code, "busy");
     let work = ImportWork {
         operation_id: uuid::Uuid::new_v4().to_string(),
         attempt_token: uuid::Uuid::new_v4().to_string(),
         source: fixture.path().join("native source ü ;.wav"),
         title: None,
     };
-    let enqueued = bridge
+    let enqueued = queue
         .execute(QueueCommand::Enqueue {
             input: ImportInput::from(&work),
         })
@@ -33,7 +93,7 @@ fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing(
     assert_eq!(enqueued.deduplicated, Some(false));
     let job = enqueued.job.unwrap();
     assert_eq!(job.state, JobState::Queued);
-    let claimed = bridge
+    let claimed = queue
         .execute(QueueCommand::Claim {
             job_id: Some(job.id.clone()),
         })
@@ -42,9 +102,11 @@ fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing(
         .unwrap();
     assert_eq!(claimed.attempt, 1);
     assert_eq!(claimed.config.work().source, work.source);
+    drop(queue);
     drop(bridge);
     let bridge = LibraryBridge::for_development(engine, root).unwrap();
-    let persisted = bridge
+    let queue = bridge.open_import_queue().unwrap();
+    let persisted = queue
         .execute(QueueCommand::Get {
             job_id: job.id.clone(),
         })
@@ -53,26 +115,25 @@ fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing(
         .unwrap();
     assert_eq!(persisted.state, JobState::Running);
     assert_eq!(persisted.config.attempt_token, work.attempt_token);
-    // This synthetic test is the only owner; production recovery is not enabled
-    // until an exclusive executor lease is installed.
-    let recovery = bridge.execute(QueueCommand::Recover).unwrap();
+    // The persistent helper holds the exclusive lifetime lease across requests.
+    let recovery = queue.execute(QueueCommand::Recover).unwrap();
     assert_eq!(recovery.recovered, Some(1));
     assert_eq!(recovery.jobs[0].state, JobState::Interrupted);
-    assert!(bridge
+    assert!(queue
         .execute(QueueCommand::Claim {
             job_id: Some(job.id.clone())
         })
         .unwrap()
         .job
         .is_none());
-    bridge
+    queue
         .execute(QueueCommand::Retry {
             job_id: job.id.clone(),
             expected_attempt: 1,
         })
         .unwrap();
     assert_eq!(
-        bridge
+        queue
             .execute(QueueCommand::Claim {
                 job_id: Some(job.id.clone())
             })
@@ -82,7 +143,7 @@ fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing(
             .attempt,
         2
     );
-    assert!(bridge
+    assert!(queue
         .execute(QueueCommand::Update {
             job_id: job.id.clone(),
             expected_attempt: 1,
@@ -91,7 +152,7 @@ fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing(
         })
         .is_err());
     assert_eq!(
-        bridge
+        queue
             .execute(QueueCommand::Cancel {
                 job_id: job.id.clone(),
                 expected_attempt: 2
@@ -102,7 +163,7 @@ fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing(
             .cancel_requested,
         true
     );
-    bridge
+    queue
         .execute(QueueCommand::Update {
             job_id: job.id,
             expected_attempt: 2,
@@ -110,7 +171,7 @@ fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing(
             progress: 0.0,
         })
         .unwrap();
-    let snapshot = bridge.execute(QueueCommand::List).unwrap();
+    let snapshot = queue.execute(QueueCommand::List).unwrap();
     assert_eq!(snapshot.total, Some(1));
     assert_eq!(snapshot.has_more, Some(false));
     assert_eq!(snapshot.jobs[0].state, JobState::Cancelled);

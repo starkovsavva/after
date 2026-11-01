@@ -34,21 +34,22 @@ total и admission pauses читаются в одной read-транзакци
 ## Native boundary
 
 `desktop_queue.rs` собирает application service и SQLite/clock/ID adapters.
-Закрытый `import_queue` engine command принимает typed enqueue/list/get/claim/
+Закрытый `desktop-import-queue` service принимает typed enqueue/list/get/claim/
 cancel/retry/update/recover. Путь, title и receipt сохраняются в private queue;
 API не принимает kind, environment, executable или произвольную команду.
 List/recovery возвращают компактные summaries без config, путей и receipt tokens;
 полный private input получают отдельно через native get/claim.
-Host зависит от порта `import_queue::ImportQueue`; `LibraryBridge` реализует его
-через существующий bounded subprocess transport. Порт не зарегистрирован в Tauri
+Host зависит от порта `import_queue::ImportQueue`; `LibraryBridge.open_import_queue()`
+возвращает leased `QueueConnection` через bounded persistent transport.
+Обычный metadata transport больше не принимает `import_queue`. Порт не зарегистрирован в Tauri
 ACL, private DTO нельзя выдавать WebView. Текущий UI пока использует transient
 import session, не durable executor.
 
 ## Следующий обязательный шаг
 
 Scope — граница ответственности, **не lease процесса**. Перед production recovery
-нужен lifetime lock исполнителя, исключающий второй живой host того же kind.
-После получения lease coordinator должен сверить atomic publication receipts до
+реализован [lifetime lock](import-executor-lease.md), исключающий второй queue owner.
+Покрытие живых workers этим lease ещё требуется. После получения lease coordinator должен сверить atomic publication receipts до
 решения о повторном запуске. Публикация и запись queue completion разделены;
 повторное выполнение нельзя считать безопасным только потому, что job interrupted.
 Это соответствует требованиям к идемпотентным Activities в

@@ -6,3 +6,5 @@ pub(crate) mod workspace_repository;
 pub(crate) mod job_queue;
 pub(crate) mod job_context;
 pub(crate) mod import_source;
+
+pub(crate) mod executor_lease;

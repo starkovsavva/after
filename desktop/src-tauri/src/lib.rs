@@ -1,6 +1,7 @@
 pub mod bridge;
 pub mod worker_host;
 pub mod import_queue;
+pub mod queue_connection;
 mod process_worker;
 mod imports;
 mod capture;

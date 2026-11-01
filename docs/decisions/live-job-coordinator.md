@@ -66,7 +66,7 @@ frontend build + 7 tests, 20 host + 2 real-engine + 1 real Tauri IPC. Отдел
 smoke подтвердил WebView и временную canonical library с актуальным digest.
 
 Import [WorkerHost](worker-host-import.md) реализован отдельно; durable очередь пока не подключена.
-Native [queue port](scoped-executors.md) реализован. Следующие срезы: lifetime lease,
-Tauri queue executor/UI, общая политика подписчиков
+Native [queue port](scoped-executors.md) реализован. Lifetime [queue lease](import-executor-lease.md) реализован.
+Следующие срезы: worker lifetime coverage и Tauri queue executor/UI, общая политика подписчиков
 и retry presentation, platform resource locator/sleep inhibitor, Linux speech runtime.
 Перенос reducer не подтверждает весь функциональный паритет приложения.
