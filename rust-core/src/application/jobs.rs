@@ -4,8 +4,8 @@ use super::job_ports::{
     JobClock, JobIds, JobMatchScope, JobQueueRepository, JobQueueTransaction, JobSelection,
 };
 use crate::domain::jobs::{
-    chatgpt_account, reached_chatgpt_limit, resource_available, Job, JobDefinition, JobMutation,
-    JobQueueSnapshot, JobResource,
+    chatgpt_account, chatgpt_execution_account, reached_chatgpt_limit, resource_available, Job,
+    JobDefinition, JobMutation, JobQueueSnapshot, JobResource,
 };
 use anyhow::{ensure, Result};
 use std::collections::HashSet;
@@ -13,6 +13,7 @@ use std::collections::HashSet;
 pub(crate) struct ClaimRequest {
     pub job_id: Option<String>,
     pub allowed_resources: Option<Vec<JobResource>>,
+    pub excluded_accounts: Vec<String>,
 }
 
 pub(crate) enum JobCommand {
@@ -109,7 +110,14 @@ impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
                     .collect();
                 for job in jobs.iter().filter(|job| job.state == "queued") {
                     if request.job_id.as_ref().is_some_and(|id| id != &job.id)
-                        || chatgpt_account(job).is_some_and(|account| paused.contains(account))
+                        || chatgpt_execution_account(&job.config)
+                            .is_some_and(|account| paused.contains(account))
+                        || chatgpt_execution_account(&job.config).is_some_and(|account| {
+                            request
+                                .excluded_accounts
+                                .iter()
+                                .any(|excluded| excluded == account)
+                        })
                         || request.allowed_resources.as_ref().is_some_and(|resources| {
                             !resources
                                 .iter()
@@ -450,6 +458,7 @@ mod tests {
     fn claim(queue: &JobQueue<MemoryRepository, Clock, Ids>, id: &str) -> Option<Job> {
         match queue
             .execute(JobCommand::Claim(ClaimRequest {
+                excluded_accounts: Vec::new(),
                 job_id: Some(id.into()),
                 allowed_resources: None,
             }))

@@ -20,11 +20,13 @@ bash scripts/build.sh
 - `quick`: сборка SwiftUI, SwiftPM core tests, Python contracts, Rust tests.
 - `integration`: Rust CLI/C ABI, локальные HTTP-стенды, синтетическое аудио/видео, поиск и миграция модельной среды.
 - `native`: SwiftUI и NSApplication в отдельных временных библиотеках. Нужна активная графическая сессия Mac; сценарии запускаются последовательно.
+- `queue`: только Swift/Rust coordinator и queue UI checks с синтетическими executors; нужна графическая Mac-сессия, модели и аккаунты не используются.
 - `release`: все перечисленные проверки и настоящий Sparkle SDK на одноразовых подписанных приложениях. Ничего не публикует и не использует ключ подписи «After».
 
 ```bash
 python3 scripts/verify.py integration
 python3 scripts/verify.py native
+python3 scripts/verify.py queue
 python3 scripts/verify.py release --sparkle-root .build/artifacts/sparkle/Sparkle
 ```
 

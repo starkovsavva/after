@@ -65,6 +65,24 @@ class VerifyIsolationTests(unittest.TestCase):
                 controller.desktop()
         run.assert_not_called()
 
+    def test_queue_profile_runs_only_native_queue_with_owned_engine_and_root(self):
+        controller = self.controller()
+        controller.build_swift = mock.Mock()
+        controller.build_rust = mock.Mock()
+        calls = []
+        def record(label, command, *, env=None, timeout=1200):
+            root = Path(env['POSLE_DATA_DIR'])
+            self.assertTrue(root.is_dir())
+            self.assertEqual(env['POSLE_RUST_LIBRARY'], str(controller.library))
+            self.assertEqual(env['POSLE_RUST_ENGINE'], str(controller.engine))
+            calls.append((list(map(str, command)), root))
+        controller.run = record
+        controller.queue()
+        self.assertEqual(len(calls), 1)
+        self.assertIn('--check-queue', calls[0][0])
+        self.assertIn('--preview', calls[0][0])
+        self.assertFalse(calls[0][1].exists())
+
     def test_child_environment_does_not_inherit_real_data_root_or_provider_keys(self):
         with mock.patch.dict(os.environ, {'POSLE_DATA_DIR': '/fixture/private-library', 'OPENAI_API_KEY': 'not-a-real-key', 'PROVIDER_SECRET': 'not-a-real-secret', 'POSLE_JOB_SETTINGS': '{"mode":"cloud"}', 'PYTHONPATH': '/fixture/foreign-modules', 'PYTHONHOME': '/fixture/foreign-home', 'POSLE_RUST_LIBRARY': '/fixture/foreign.dylib', 'POSLE_RUST_ENGINE': '/fixture/foreign-engine', 'POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS': '1'}):
             controller = self.controller()

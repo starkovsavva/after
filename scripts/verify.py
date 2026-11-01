@@ -17,6 +17,7 @@ PROFILES = {
     "quick": "Swift build/core tests, Python contracts and Rust unit tests",
     "integration": "Rust CLI/FFI/HTTP, generated media, search and runtime migration",
     "native": "Sequential SwiftUI/NSApplication scenarios in disposable libraries",
+    "queue": "Native Swift/Rust queue contracts with synthetic executors (graphical Mac)",
     "release": "All profiles plus the real Sparkle SDK on signed disposable fixtures",
 }
 NATIVE = (
@@ -156,22 +157,32 @@ class Verification:
         self.build_rust()
         binary = self.swift / "debug/Posle"
         for scenario in NATIVE:
-            with tempfile.TemporaryDirectory(prefix="posle-native-check-", dir="/private/tmp") as fixture:
-                if scenario not in ("folders", "folder-jobs", "meeting-rename", "responsiveness", "contexts", "feature-ui", "recording"):
-                    # Existing scenarios exercise optional workflows deliberately.
-                    Path(fixture, "settings.json").write_text(json.dumps({"features": {key: True for key in ("cards", "tasks", "calendar", "assistant", "semanticSearch")}}))
-                env = self.env | {"POSLE_DATA_DIR": fixture, "POSLE_RUST_ENGINE": str(self.engine), "POSLE_RUST_LIBRARY": str(self.library),
-                                  "POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"}
-                self.run(f"Native {scenario}", [binary, "--preview", "--check-" + scenario], env=env, timeout=240)
-                if scenario == "recording-sessions":
-                    self.run("Native capture writer through real finalize", [self.python, "scripts/e2e_media.py",
-                        "--python", self.python, "--engine", self.engine, "--native-capture",
-                        Path(fixture) / "capture-writer/static"], env=self.env | {"POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"}, timeout=240)
+            self.native_scenario(scenario)
         with tempfile.TemporaryDirectory(prefix="posle-ui-check-", dir="/private/tmp") as fixture:
             self.run("Synthetic UI fixture", [self.python, "scripts/preview.py", fixture])
             env = self.env | {"POSLE_DATA_DIR": fixture, "POSLE_RUST_ENGINE": str(self.engine), "POSLE_RUST_LIBRARY": str(self.library),
                                   "POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"}
             self.run("UI geometry and interactions", [binary, "--preview", "--check-ui-consistency"], env=env, timeout=300)
+
+    def queue(self):
+        self.build_swift()
+        self.build_rust()
+        self.native_scenario("queue")
+
+    def native_scenario(self, scenario):
+        if scenario not in NATIVE:
+            raise RuntimeError("Unknown native verification scenario")
+        binary = self.swift / "debug/Posle"
+        with tempfile.TemporaryDirectory(prefix="posle-native-check-", dir="/private/tmp") as fixture:
+            if scenario not in ("folders", "folder-jobs", "meeting-rename", "responsiveness", "contexts", "feature-ui", "recording"):
+                Path(fixture, "settings.json").write_text(json.dumps({"features": {key: True for key in ("cards", "tasks", "calendar", "assistant", "semanticSearch")}}))
+            env = self.env | {"POSLE_DATA_DIR": fixture, "POSLE_RUST_ENGINE": str(self.engine), "POSLE_RUST_LIBRARY": str(self.library),
+                              "POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"}
+            self.run(f"Native {scenario}", [binary, "--preview", "--check-" + scenario], env=env, timeout=240)
+            if scenario == "recording-sessions":
+                self.run("Native capture writer through real finalize", [self.python, "scripts/e2e_media.py",
+                    "--python", self.python, "--engine", self.engine, "--native-capture",
+                    Path(fixture) / "capture-writer/static"], env=self.env | {"POSLE_UNVERIFIED_PYTHON_RUNTIME_FOR_TESTS": "1"}, timeout=240)
 
     def release(self):
         self.quick()

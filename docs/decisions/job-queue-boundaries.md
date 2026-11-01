@@ -72,7 +72,7 @@ guard tests, frontend build + 7 tests, 19 host + 2 real-engine + 1 real Tauri IP
 на временных данных. Это startup smoke, не проверка всех операций очереди через UI.
 
 Это ещё не общий исполнитель. Scoped ProcessTree уже подключён к engine worker
-и Tauri bridge: [process supervision](process-supervision.md). Следующий срез —
-WorkerHost и общий coordinator живых attempts. Swift JobCoordinator пока управляет
-handles, progress, recording admission и shutdown. Tauri queue API и Linux speech
-runtime ещё не реализованы.
+и Tauri bridge: [process supervision](process-supervision.md). Общие правила live
+attempts уже выделены в [reducer](live-job-coordinator.md), подключённый к Swift.
+Swift actor интерпретирует decisions и владеет handles/subscribers. WorkerHost,
+Tauri queue API и Linux speech runtime ещё не реализованы.

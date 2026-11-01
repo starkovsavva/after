@@ -63,6 +63,6 @@ recovery или поддержку Linux speech/capture.
 Встроенный Python bridge пока отдельно владеет своей FFmpeg session; его перенос
 в общий runtime не выполнен.
 
-Следующий шаг — общий coordinator живых attempts, WorkerHost, progress/cancel
-и подключение Tauri queue. Swift JobCoordinator пока остаётся; Python/model paths,
-установщик runtime, credentials и аппаратные сценарии ещё требуют переноса.
+Общие правила live coordinator уже подключены к Swift через [reducer](live-job-coordinator.md).
+Следующий шаг — WorkerHost и Tauri queue. Python/model paths, установщик runtime,
+credentials и аппаратные сценарии ещё требуют переноса; Swift пока остаётся.

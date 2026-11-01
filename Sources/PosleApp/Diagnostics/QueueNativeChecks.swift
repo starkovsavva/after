@@ -19,6 +19,7 @@ enum QueueNativeChecks {
         try expect((existingJSON?["jobs"] as? [Any])?.isEmpty == true, "Queue checks need an empty library")
         try BackgroundJobPresentationChecks.run()
         let watchdog = QueueCheckWatchdog(); watchdog.start(); defer { watchdog.finish() }
+        try runtimeBridge(root.appendingPathComponent("runtime-bridge"))
         try await limits(root.appendingPathComponent("limits"))
         try await subscriptions(root.appendingPathComponent("subscriptions"))
         try await restartChain(root.appendingPathComponent("chain"))
@@ -32,7 +33,29 @@ enum QueueNativeChecks {
         try await chatGPTSignOut(root.appendingPathComponent("chatgpt-signout"))
         try await historyRetry(root.appendingPathComponent("history-retry"))
         try await BackgroundJobsUINativeChecks.run(root: root.appendingPathComponent("history-ui"))
-        print("14 native durable queue groups passed"); fflush(stdout)
+        print("15 native durable queue groups passed"); fflush(stdout)
+    }
+    private static func runtimeBridge(_ root: URL) throws {
+        var bridge = NativeJobRuntime(root: root)
+        try expect(try bridge.transition(["type": "start"]).recover, "Runtime startup must request recovery")
+        _ = try bridge.transition(["type": "ready"])
+        try expect(!(try bridge.transition(["type": "start"]).recover), "A second connection cannot recover live attempts")
+        _ = try bridge.transition(["type": "recording", "recording": true])
+        try expect(try bridge.transition(["type": "claim"]).claim?.allowedResources == ["cloud", "light"], "Recording admission must come from Rust")
+        let key: [String: Any] = ["jobID": "synthetic-runtime", "attempt": 1]
+        _ = try bridge.transition(["type": "claimed", "key": key])
+        let progress = try bridge.transition(["type": "progress", "key": key, "nowMs": 100, "isProgress": true, "fraction": 2.0])
+        try expect(progress.update?.arguments["progress"] as? Double == 1, "Runtime progress must be normalized")
+        let shutdown = try bridge.transition(["type": "shutdown"])
+        try expect(bridge.stopping && shutdown.cancel.count == 1, "Runtime shutdown lost its owned attempt")
+        let finish = try bridge.transition(["type": "finish", "key": key, "outcome": ["type": "committed"], "cancelled": true])
+        try expect(finish.update?.state == "succeeded" && !finish.deliverCancelled, "Late cancellation changed a committed result")
+        let late = try bridge.transition(["type": "progress", "key": key, "nowMs": 500, "isProgress": false])
+        try expect(!late.accepted && late.update == nil, "A completed runtime accepted late progress")
+        var fresh = NativeJobRuntime(root: root)
+        try expect(try fresh.transition(["type": "start"]).recover, "A new process must start with fresh runtime state")
+        try expect(!FileManager.default.fileExists(atPath: root.path), "Pure runtime transitions opened a library")
+        print("PASS: Swift/Rust runtime decisions roundtrip without SQLite; admission, shutdown and committed cancellation stay shared")
     }
     private static func historyRetry(_ root: URL) async throws {
         let queue = JobCoordinator(root: root, changed: { _ in })

@@ -32,7 +32,7 @@ Run `cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked` for host 
 
 `python3 scripts/verify.py desktop` checks process-runtime/core/frontend/host/real IPC without Swift. Run process tests alone with `cargo test --manifest-path process-runtime/Cargo.toml --locked --target-dir .build/rust`. Pure models/validation: `rust-core/src/domain/`; boundaries: `python3 scripts/check_layers.py`; native adapters/resource lookup: host `platform.rs`.
 
-For macOS, `python3 scripts/verify.py quick` builds/tests Swift, Python, and Rust; `native` requires a graphical Mac session. `bash scripts/build.sh` requires an Apple signing certificate.
+For macOS, `python3 scripts/verify.py quick` builds/tests Swift, Python, and Rust; `native` requires a graphical Mac session; `queue` runs only synthetic Swift/Rust queue checks. `bash scripts/build.sh` requires an Apple signing certificate.
 
 ## Coding Style & Naming Conventions
 
@@ -48,7 +48,7 @@ Commit every completed, verified milestone separately before starting the next o
 
 ## Architecture & Portability
 
-Target full Arch support while preserving macOS/Windows; tasks/cards/import are connected, Linux capture/ASR remain pending. Follow SOLID: UI → application → domain; OS details stay in adapters. Workspace: `application/workspace.rs`, contracts in `application/ports.rs`. Queue: `application/jobs.rs`, transaction/clock/ID ports in `application/job_ports.rs`, models/transitions in `domain/jobs.rs`. SQL/files/recovery/time/identity adapters live in `infrastructure/`; root facades preserve JSON APIs. Keep claim/admission/dependencies and chain writes in one transaction. Shared executor/Tauri queue remain pending. Defer destructive actions and Swift removal until approved after parity verification. Stages: `docs/linux-implementation-plan.md`; queue ADR: `docs/decisions/job-queue-boundaries.md`.
+Target full Arch support while preserving macOS/Windows; Linux capture/ASR remain pending. Follow SOLID: UI → application → domain; OS details stay in adapters. Workspace: `application/workspace.rs`, contracts in `application/ports.rs`. Queue: `application/jobs.rs`, transaction/clock/ID ports in `application/job_ports.rs`, models/transitions in `domain/jobs.rs`. Live rules: `domain/job_runtime.rs`; Swift `NativeJobRuntime` owns transient state and interprets decisions; never persist/reuse this state. SQL/files/time/identity adapters live in `infrastructure/`. Keep claim/admission/dependencies and chain writes transactional. WorkerHost/Tauri queue remain pending. Defer destructive actions and Swift removal until approved after parity. Stages: `docs/linux-implementation-plan.md`; coordinator ADR: `docs/decisions/live-job-coordinator.md`.
 
 ## Agent Maintenance
 

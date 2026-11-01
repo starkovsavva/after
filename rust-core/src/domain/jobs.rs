@@ -248,11 +248,21 @@ fn bounded(text: &str, max: usize, label: &str) -> Result<()> {
 }
 
 pub(crate) fn chatgpt_account(job: &Job) -> Option<&str> {
-    let settings = &job.config["settings"];
+    // A failure may create a quota pause only for a matching typed operation.
+    if job.config["command"] != job.kind {
+        return None;
+    }
+    chatgpt_execution_account(&job.config)
+}
+
+/// Admission follows the actual saved execution route, as the native executor
+/// does. A mismatched legacy kind must not bypass an existing pause/sign-out.
+pub(crate) fn chatgpt_execution_account(config: &Value) -> Option<&str> {
+    let settings = &config["settings"];
     if settings["mode"] != "cloud"
         || settings["cloudProvider"] != "chatgpt"
-        || job.config["command"] != job.kind
-        || !["summarize", "example", "expand-notes", "voice-plan"].contains(&job.kind.as_str())
+        || !["summarize", "example", "expand-notes", "voice-plan"]
+            .contains(&config["command"].as_str().unwrap_or(""))
     {
         return None;
     }

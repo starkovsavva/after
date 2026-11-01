@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 434 core + 4 CLI, frontend build + 7 tests, 20 host + 2 real-engine
+и helper), 448 core + 4 CLI, frontend build + 7 tests, 20 host + 2 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -98,3 +98,9 @@ Engine worker и Tauri transport используют общий `process-runtim
 остаток приватной process group; потомки больше не удерживают transport pipes.
 Это не полный queue executor и не sandbox; ограничения описаны в
 [process supervision ADR](decisions/process-supervision.md).
+
+Общие правила live coordinator находятся в `domain/job_runtime.rs`: transient state
+и events возвращают decisions без I/O. Swift actor подключён через `NativeJobRuntime`;
+проверены Rust state machine, SQL effects и настоящий JSON C ABI. Это ещё не Tauri
+executor: native Swift suite запускается только на Mac (`verify.py queue`), локально
+он не выполнен. Контракт и оставшиеся этапы: [ADR](decisions/live-job-coordinator.md).

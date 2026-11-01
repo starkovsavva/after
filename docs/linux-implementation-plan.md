@@ -28,7 +28,10 @@
   supervisor, Unix groups и Windows Job Object adapters. На Linux проверяются
   отмена/Drop/normal-parent-exit с настоящими потомками. Windows/macOS пока не
   проверены локально; crash/escape ограничения описаны в [ADR](decisions/process-supervision.md).
-  Общий coordinator живых attempts остаётся следующим срезом этапа 4.
+  Правила live coordinator выделены в чистый `domain/job_runtime.rs` и подключены
+  к Swift через `NativeJobRuntime`: admission/progress/finish/shutdown decisions.
+  SQL остаётся authoritative; state transient и не сохраняется. WorkerHost и
+  Tauri queue API остаются следующими срезами; [ADR](decisions/live-job-coordinator.md).
 - Команды и ограничения актуальны в [Linux-инструкции](linux.md).
 
 ## Правила выполнения

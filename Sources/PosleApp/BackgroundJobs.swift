@@ -111,7 +111,8 @@ final class JobCancellation: @unchecked Sendable {
     }
 }
 
-/// SQLite is authoritative; this actor owns live handles and admission only.
+/// Rust owns portable coordinator rules; this actor serializes decisions and
+/// effects, owns OS handles/subscribers, and never persists runtime state.
 /// CPU inference stays in the existing native/background executors.
 actor JobCoordinator {
     typealias Executor = @Sendable (BackgroundJob, JobCancellation, @escaping @Sendable (WorkerEvent) -> Void) async throws -> WorkerEvent?
@@ -124,19 +125,17 @@ actor JobCoordinator {
     private let failed: @Sendable (String) -> Void
     private let admissionChanged: @Sendable ([String: BackgroundJob]) -> Void
     private var pausedChatGPTFailures: [String: BackgroundJob] = [:]
-    private var signingOutChatGPTAccounts: Set<String> = []
     private var executor: Executor?
     private var running: [String: RunningAttempt] = [:]
     private var waiters: [String: [UUID: CheckedContinuation<WorkerEvent?, Error>]] = [:]
-    private var recording = false
-    private var stopping = false
-    private var started = false
+    private var runtime: NativeJobRuntime
+    private var stopping: Bool { runtime.stopping }
     private var queueFailure: String?
-    private var lastProgress: [String: Date] = [:]
 
     init(root: URL, changed: @escaping @Sendable ([BackgroundJob]) -> Void,
          failed: @escaping @Sendable (String) -> Void = { _ in },
          admissionChanged: @escaping @Sendable ([String: BackgroundJob]) -> Void = { _ in }) {
+        self.runtime = NativeJobRuntime(root: root)
         self.root = root; self.changed = changed; self.failed = failed; self.admissionChanged = admissionChanged
     }
     private func request(_ command: String, _ arguments: [String: Any] = [:]) throws -> Data {
@@ -154,6 +153,9 @@ actor JobCoordinator {
         let message = LF("Не удалось обновить очередь. Операции сохранены; перезапустите приложение. {0}", arguments: [String(describing: error.localizedDescription)])
         if queueFailure != message { failed(message) }
         queueFailure = message
+        // Failure to reach Rust must also close admission locally. This is a
+        // physical transport failure flag, not an alternate scheduling policy.
+        runtime.transportFailed()
         let pendingIDs = waiters.keys.filter { running[$0] == nil }
         for id in pendingIDs {
             for continuation in waiters.removeValue(forKey: id)?.values ?? Dictionary<UUID, CheckedContinuation<WorkerEvent?, Error>>().values {
@@ -168,22 +170,32 @@ actor JobCoordinator {
             changed(jobs)
         } catch { failQueue(error) }
     }
-    private func admissionPaused(_ job: BackgroundJob) -> Bool {
-        job.config.chatGPTPlanAccountID.map { pausedChatGPTFailures[$0] != nil || signingOutChatGPTAccounts.contains($0) } == true
+    private func transition(_ event: [String: Any]) throws -> NativeJobRuntime.Decision {
+        try runtime.transition(event)
     }
-    func start(executor: @escaping Executor) throws {
-        // A second UI connection must never recover an attempt still executing.
-        guard !started else { return }
-        _ = try request("job-recover")
-        // Dictation audio is an ephemeral capture draft. Its caller removes it
-        // on exit, so a new process must never upload/replay a stale path.
-        for job in try snapshot() where job.kind == "dictate" && ["queued", "interrupted", "blocked"].contains(job.state) {
+    private func cancelHandles(_ keys: [NativeJobRuntime.Key]) {
+        for key in keys where running[key.jobID]?.number == key.attempt { running[key.jobID]?.cancellation.cancel() }
+    }
+    private func discard(_ filter: NativeJobRuntime.Discard?) throws {
+        guard let filter else { return }
+        for job in try snapshot() where job.kind == filter.kind && filter.states.contains(job.state) {
             _ = try request("job-cancel", ["jobID": job.id])
         }
-        self.executor = executor; started = true
+    }
+    func start(executor: @escaping Executor) throws {
+        let decision = try transition(["type": "start"])
+        // Ready is acknowledged after recovery, never for a failed start.
+        guard decision.recover else { return }
+        _ = try request("job-recover")
+        try discard(decision.discard)
+        _ = try transition(["type": "ready"])
+        self.executor = executor
         publish(); pump()
     }
-    func setRecording(_ value: Bool) { recording = value; pump() }
+    func setRecording(_ value: Bool) {
+        do { _ = try transition(["type": "recording", "recording": value]) } catch { failQueue(error) }
+        pump()
+    }
     func submit(_ config: JobConfiguration, resource: String, revision: String, title: String, paid: Bool) async throws -> WorkerEvent? {
         try Task.checkCancellation()
         guard !stopping else { throw CancellationError() }
@@ -224,23 +236,12 @@ actor JobCoordinator {
         do {
             while true {
                 struct Claim: Decodable { var job: BackgroundJob? }
-                let allowed = recording ? ["cloud", "light"] : ["local-heavy", "cloud", "light"]
-                let job: BackgroundJob?
-                if pausedChatGPTFailures.isEmpty && signingOutChatGPTAccounts.isEmpty {
-                    job = try JSONDecoder().decode(Claim.self, from: request("job-claim", ["allowedResources": allowed])).job
-                } else {
-                    // Keep paused rows durably queued. Asking SQLite to claim
-                    // an exact eligible ID still enforces dependencies, object
-                    // exclusion and resource capacity atomically.
-                    var eligible: BackgroundJob?
-                    for candidate in try snapshot() where candidate.state == "queued"
-                        && allowed.contains(candidate.resource) && !admissionPaused(candidate) {
-                        let claim = try JSONDecoder().decode(Claim.self, from: request("job-claim", ["allowedResources": allowed, "jobID": candidate.id]))
-                        if let claimed = claim.job { eligible = claimed; break }
-                    }
-                    job = eligible
-                }
+                guard let admission = try transition(["type": "claim"]).claim else { break }
+                let job = try JSONDecoder().decode(Claim.self, from: request("job-claim", [
+                    "allowedResources": admission.allowedResources, "excludedAccounts": admission.excludedAccounts
+                ])).job
                 guard let job else { break }
+                _ = try transition(["type": "claimed", "key": ["jobID": job.id, "attempt": job.attempt]])
                 let cancellation = JobCancellation()
                 running[job.id] = RunningAttempt(number: job.attempt, cancellation: cancellation)
                 Task {
@@ -256,34 +257,38 @@ actor JobCoordinator {
         } catch { failQueue(error); publish() }
     }
     private func progress(_ job: BackgroundJob, _ event: WorkerEvent) {
-        guard queueFailure == nil, running[job.id]?.number == job.attempt else { return }
-        let now = Date()
-        if event.event == "progress", now.timeIntervalSince(lastProgress[job.id] ?? .distantPast) < 0.15 { return }
-        lastProgress[job.id] = now
-        var arguments: [String: Any] = ["jobID": job.id, "expectedAttempt": job.attempt, "state": "running"]
-        if let message = event.message { arguments["message"] = message }
-        if let fraction = event.fraction, fraction.isFinite, fraction >= 0 { arguments["progress"] = min(fraction, 1) }
-        do { _ = try request("job-update", arguments); publish() } catch { failQueue(error) }
+        guard queueFailure == nil else { return }
+        var value: [String: Any] = ["type": "progress", "key": ["jobID": job.id, "attempt": job.attempt],
+            "nowMs": UInt64(ProcessInfo.processInfo.systemUptime * 1000), "isProgress": event.event == "progress"]
+        if let message = event.message { value["message"] = message }
+        // JSON cannot encode NaN/infinity. Clamping/filtering policy is in Rust.
+        if let fraction = event.fraction, fraction.isFinite { value["fraction"] = fraction }
+        do {
+            if let update = try transition(value).update { _ = try request("job-update", update.arguments); publish() }
+        } catch { failQueue(error) }
     }
     private func finish(_ job: BackgroundJob, result: Result<WorkerEvent?, Error>) {
         guard let attempt = running[job.id], attempt.number == job.attempt else { return }
-        let cancelled = attempt.cancellation.isCancelled
-        var arguments: [String: Any] = ["jobID": job.id, "expectedAttempt": job.attempt]
+        let outcome: [String: Any]
         switch result {
-        case .success:
-            // Success means the executor committed its result. A cancellation
-            // arriving immediately after publication cannot make that unsaved.
-            arguments["state"] = "succeeded"; arguments["message"] = L("Готово")
-        case .failure(let error):
-            let interrupted = stopping && (cancelled || error is CancellationError)
-            arguments["state"] = interrupted ? "interrupted" : cancelled || error is CancellationError ? "cancelled" : "failed"
-            arguments["message"] = interrupted ? L("Работа прервалась при закрытии приложения.") : cancelled || error is CancellationError ? L("Отменено") : String(error.localizedDescription.prefix(1000))
+        case .success: outcome = ["type": "committed"]
+        case .failure(let error) where error is CancellationError: outcome = ["type": "cancelled"]
+        case .failure(let error): outcome = ["type": "failed", "message": error.localizedDescription]
         }
         var delivery = result
-        if case .failure(let error) = result, cancelled || error is CancellationError { delivery = .failure(CancellationError()) }
-        do { _ = try request("job-update", arguments) }
-        catch { failQueue(error); delivery = .failure(AppError.message(L("Результат операции сохранён отдельно, но статус очереди обновить не удалось. Перезапустите приложение."))) }
-        running.removeValue(forKey: job.id); lastProgress.removeValue(forKey: job.id)
+        do {
+            let decision = try transition(["type": "finish", "key": ["jobID": job.id, "attempt": job.attempt],
+                "outcome": outcome, "cancelled": attempt.cancellation.isCancelled])
+            guard decision.accepted, let update = decision.update else {
+                throw AppError.message(L("Некорректный ответ Rust-ядра"))
+            }
+            if decision.deliverCancelled { delivery = .failure(CancellationError()) }
+            _ = try request("job-update", update.arguments)
+        } catch {
+            failQueue(error)
+            delivery = .failure(AppError.message(L("Результат операции сохранён отдельно, но статус очереди обновить не удалось. Перезапустите приложение.")))
+        }
+        running.removeValue(forKey: job.id)
         for continuation in waiters.removeValue(forKey: job.id)?.values ?? Dictionary<UUID, CheckedContinuation<WorkerEvent?, Error>>().values {
             continuation.resume(with: delivery)
         }
@@ -297,7 +302,8 @@ actor JobCoordinator {
     }
     func cancel(_ id: String) {
         do { _ = try request("job-cancel", ["jobID": id]) } catch { failQueue(error) }
-        running[id]?.cancellation.cancel()
+        do { cancelHandles(try transition(["type": "cancel", "jobID": id]).cancel) }
+        catch { failQueue(error); running[id]?.cancellation.cancel() }
         if running[id] == nil {
             for continuation in waiters.removeValue(forKey: id)?.values ?? Dictionary<UUID, CheckedContinuation<WorkerEvent?, Error>>().values { continuation.resume(throwing: CancellationError()) }
         }
@@ -307,8 +313,13 @@ actor JobCoordinator {
         guard !accountID.isEmpty else { return }
         // Admission closes before the first cancellation: cancel() may pump
         // other routes, but cannot start the next job belonging to this account.
-        signingOutChatGPTAccounts.insert(accountID)
-        defer { signingOutChatGPTAccounts.remove(accountID); publish(); pump() }
+        do { _ = try transition(["type": "signOut", "account": accountID, "closing": true]) }
+        catch { failQueue(error); return }
+        defer {
+            do { _ = try transition(["type": "signOut", "account": accountID, "closing": false]) }
+            catch { failQueue(error) }
+            publish(); pump()
+        }
         do {
             for job in try snapshot() where job.active && job.config.chatGPTPlanAccountID == accountID { cancel(job.id) }
         } catch { failQueue(error) }
@@ -346,17 +357,22 @@ actor JobCoordinator {
         }
     }
     func shutdown() {
-        stopping = true
-        if let values = try? snapshot() {
-            for job in values where job.kind == "dictate" && ["queued", "blocked", "interrupted"].contains(job.state) {
-                do { _ = try request("job-cancel", ["jobID": job.id]) } catch { failQueue(error) }
-            }
+        let cancellation: [NativeJobRuntime.Key]
+        do {
+            let decision = try transition(["type": "shutdown"])
+            cancellation = decision.cancel
+            do { try discard(decision.discard) } catch { failQueue(error) }
+        } catch {
+            // Record host shutdown even when the bridge itself is unavailable.
+            runtime.shutdownUnreachable()
+            failQueue(error)
+            cancellation = running.map { NativeJobRuntime.Key(jobID: $0.key, attempt: $0.value.number) }
         }
         // Persist queued work for next launch, but don't strand callers which
         // are awaiting it in the process that is now closing.
         for subscribers in waiters.values { for continuation in subscribers.values { continuation.resume(throwing: CancellationError()) } }
         waiters.removeAll()
-        for attempt in running.values { attempt.cancellation.cancel() }
+        cancelHandles(cancellation)
     }
     func isDrained() -> Bool { running.isEmpty }
     #if DEBUG
