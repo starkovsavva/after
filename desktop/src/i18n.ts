@@ -2,6 +2,10 @@ export type Language = 'en' | 'ru';
 export type LanguagePreference = 'system' | Language;
 
 const en = {
+  importHistory: 'Import history', importHistoryHint: 'Unfinished imports stay on this computer. Resume explicitly to read the original file again. Keep After open until the import finishes.',
+  refreshImports: 'Refresh imports', importHistoryFailed: 'Could not load import history. Another import may be running. Refresh before trying again.', noImports: 'No imports yet.',
+  importHistoryLimited: 'Showing the latest imports', importItem: 'Import', importAttempt: 'Attempt', resumeImport: 'Resume import', openImport: 'Open meeting',
+  importQueued: 'Queued', importRunning: 'Running', importSucceeded: 'Completed', importFailedState: 'Failed', importCancelled: 'Cancelled', importInterrupted: 'Interrupted', importBlocked: 'Blocked',
   importStopping: 'Stopping import…',
   appName: 'After', meetings: 'Meetings', notes: 'Notes', tasks: 'Tasks', cards: 'Cards', discardFeature: 'Discard unsaved changes?', folders: 'Folders', allFolders: 'All folders',
   newFolder: 'New folder', newNote: 'New note', settings: 'Settings', search: 'Search library',
@@ -47,6 +51,10 @@ const en = {
 };
 export type Copy = typeof en;
 const ru: Copy = {
+  importHistory: 'История импорта', importHistoryHint: 'Незавершённые импорты сохраняются на этом компьютере. Продолжите явно, чтобы снова прочитать исходный файл. Не закрывайте After до завершения импорта.',
+  refreshImports: 'Обновить историю', importHistoryFailed: 'Не удалось загрузить историю импорта. Возможно, другой импорт ещё выполняется. Обновите историю перед повтором.', noImports: 'Импортов пока нет.',
+  importHistoryLimited: 'Показаны последние импорты', importItem: 'Импорт', importAttempt: 'Попытка', resumeImport: 'Продолжить импорт', openImport: 'Открыть встречу',
+  importQueued: 'В очереди', importRunning: 'Выполняется', importSucceeded: 'Завершён', importFailedState: 'Ошибка', importCancelled: 'Отменён', importInterrupted: 'Прерван', importBlocked: 'Заблокирован',
   importStopping: 'Останавливаем импорт…',
   appName: 'After', meetings: 'Встречи', notes: 'Заметки', tasks: 'Задачи', cards: 'Карточки', discardFeature: 'Отменить несохранённые изменения?', folders: 'Папки', allFolders: 'Все папки',
   newFolder: 'Новая папка', newNote: 'Новая заметка', settings: 'Настройки', search: 'Поиск по библиотеке',

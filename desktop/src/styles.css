@@ -186,3 +186,9 @@ kbd { font-size: 11px; font-family: inherit; color: var(--muted); white-space: n
 .meeting-player p { color: var(--error); font-size: 13px; margin-top: 8px; }
 .feature-container { flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .feature-container .feature-view { height: 100%; }
+
+.import-history-list { list-style: none; padding: 0; max-height: 55vh; overflow-y: auto; }
+.import-history-list li { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.import-history-list p { margin: 4px 0 12px; }
+.import-history-list progress { width: 100%; }
+.import-history-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }

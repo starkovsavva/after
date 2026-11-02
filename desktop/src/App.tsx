@@ -1,3 +1,4 @@
+import { ImportHistoryPanel } from './ImportHistoryPanel';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { api, connected, demoMode, featureCommand } from './api';
@@ -7,7 +8,7 @@ import { copy, resolveLanguage } from './i18n';
 import type { LanguagePreference } from './i18n';
 import { draftFromNote, errorMessage, formatDate, formatDuration, isDirty, noteInput } from './model';
 import type { Draft } from './model';
-import type { Folder, ImportStatus, MeetingDetail, Note, RecordingStatus, RecoverableRecording, SearchResult, Workspace } from './types';
+import type { Folder, ImportHistoryEntry, ImportStatus, MeetingDetail, Note, RecordingStatus, RecoverableRecording, SearchResult, Workspace } from './types';
 import Icon from './Icon';
 import { isPrimaryShortcut } from './shortcuts';
 import TasksView from './TasksView';
@@ -77,6 +78,7 @@ export default function App() {
   const [original, setOriginal] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
   const importOwned = useRef(false);
   const importAttached = useRef(false);
@@ -226,6 +228,7 @@ export default function App() {
   };
   useEffect(() => {
     let active = true;
+    void api.importHistory().catch(() => {}); // Reconcile on app startup; never resumes work.
     void api.importStatus().then(value => {
       if (active && !importOwned.current && ['choosing', 'copying', 'committing'].includes(value.phase)) {
         importAttached.current = true; setImportStatus(value); setImporting(true);
@@ -259,6 +262,22 @@ export default function App() {
     return () => { active = false; clearTimeout(timer); };
   }, [importing]);
 
+  const resumeImport = (job: ImportHistoryEntry) => requestNavigation(() => {
+    if (importing) return;
+    setHistoryOpen(false); importOwned.current = true; importAttached.current = false;
+    setImportStatus(null); setImporting(true); setError(null);
+    void (async () => {
+      try {
+        const meeting = await api.resumeImport(job.jobId, job.attempt);
+        if (meeting) {
+          setFolderId(undefined); setSection('meetings'); setSearchOpen(false); setSearch('');
+          setDraft(null); setOriginal(null); setSelection({ kind: 'meeting', id: meeting.id }); setTab('summary');
+        }
+        await loadWorkspace();
+      } catch { await loadWorkspace(); setError(copyRef.current.importFailed); }
+      finally { importOwned.current = false; setImporting(false); }
+    })();
+  });
   const importMeeting = () => requestNavigation(() => {
     if (importing) return;
     importOwned.current = true; importAttached.current = false;
@@ -388,6 +407,7 @@ export default function App() {
     <header className="titlebar">
       <div className="brand"><img src="/logo.svg" alt=""/><span>{t.appName}</span><span className="demo-label" title={demoMode ? t.demoHint : t.previewHint}>{demoMode ? t.demo : t.preview}</span></div>
       <div className="titlebar-context"><Icon name="folder" size={16}/><select aria-label={t.activeFolder} value={folderId || ''} onChange={event => chooseFolder(event.target.value || undefined)} disabled={!workspace || saving}>{folderOptions}</select></div>
+      {workspace?.capabilities.import && <button className="button" onClick={() => setHistoryOpen(true)} disabled={importing || saving}>{t.importHistory}</button>}
       {workspace?.capabilities.import && <button className="button" onClick={importMeeting} disabled={importing || saving} title={t.importMeeting}><Icon name="import" size={16}/>{t.importMeeting}</button>}
       {workspace?.capabilities.recording && (recordingActive
         ? <button className="button primary" onClick={() => void stopRecording()} disabled={recordingBusy || recordingSyncing}>{t.stopRecording} · {formatDuration((recording?.elapsedMs || 0) / 1000)}</button>
@@ -450,12 +470,18 @@ export default function App() {
           </section></article> : <EmptyState icon={section} title={section === 'meetings' ? (meetings.length ? t.chooseMeeting : t.noMeetings) : (notes.length ? t.chooseNote : t.noNotes)} hint={section === 'meetings' ? (meetings.length ? t.chooseMeetingHint : t.noMeetingsHint) : t.noNotesHint} action={workspace && (section === 'notes' || !meetings.length) ? <button className="button primary" onClick={() => newNote()}><Icon name="plus" size={16}/>{t.newNote}</button> : undefined}/>}
       </main></>}
     </div>
+    {historyOpen && <Dialog title={t.importHistory} close={() => setHistoryOpen(false)} closeLabel={t.close} wide>
+      <ImportHistoryPanel language={language} onResume={resumeImport} onOpen={id => requestNavigation(() => {
+        setHistoryOpen(false); setFolderId(undefined); setSection('meetings'); setDraft(null); setOriginal(null);
+        setSelection({ kind: 'meeting', id }); setTab('summary');
+      })}/>
+    </Dialog>}
     {importing && <Dialog title={t.importing}>
       <p className="dialog-description" role="status">{importStatus?.cancelRequested ? t.importStopping : t.importHint}</p>
       {importStatus?.progress != null && <progress aria-label={t.importing} max={1} value={importStatus.progress} style={{ width: '100%' }}/>}
       {importStatus?.progress == null && !!importStatus?.totalBytes && <progress aria-label={t.importing} max={importStatus.totalBytes} value={importStatus.copiedBytes} style={{ width: '100%' }}/>}
-      {importStatus?.operationId && ['choosing', 'copying', 'committing'].includes(importStatus.phase) && <button className="button" disabled={importStatus.cancelRequested} onClick={() => {
-        void api.cancelImport(importStatus.operationId!).then(setImportStatus).catch(() => setError(t.importFailed));
+      {importStatus?.operationId && importStatus.controlId && ['choosing', 'copying', 'committing'].includes(importStatus.phase) && <button className="button" disabled={importStatus.cancelRequested} onClick={() => {
+        void api.cancelImport(importStatus.operationId!, importStatus.controlId!).then(setImportStatus).catch(() => setError(t.importFailed));
       }}>{t.cancel}</button>}
     </Dialog>}
     {recordDialog && <Dialog title={t.record} close={recordingBusy ? undefined : () => setRecordDialog(false)} closeLabel={t.close}>

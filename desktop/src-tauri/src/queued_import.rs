@@ -70,7 +70,7 @@ fn stopped(cancelled: &AtomicBool) -> HostError {
         HostError::new("engine_timeout", "The import exceeded its time limit.")
     }
 }
-fn validate(job: &ImportJob, work: &ImportWork) -> Result<(), HostError> {
+pub(crate) fn validate(job: &ImportJob, work: &ImportWork) -> Result<(), HostError> {
     if uuid::Uuid::parse_str(&job.id).is_err()
         || job.object_id != work.operation_id
         || job.config.operation_id != work.operation_id
@@ -107,13 +107,8 @@ fn run(
     if cancelled.load(Ordering::Acquire) {
         return Err(stopped(cancelled));
     }
-    let budget = Budget {
-        cancelled,
-        end: Instant::now() + policy.deadline,
-        grace: policy.cancel_grace,
-        stopping: Cell::new(None),
-    };
-    let mut job = queue
+    let budget = budget(cancelled, &policy);
+    let job = queue
         .execute_with_budget(
             QueueCommand::Enqueue {
                 input: ImportInput::from(work),
@@ -122,6 +117,71 @@ fn run(
         )?
         .job
         .ok_or_else(invalid)?;
+    supervise(queue, work, job, cancelled, progress, policy, &budget)
+}
+fn budget<'a>(cancelled: &'a AtomicBool, policy: &Policy) -> Budget<'a> {
+    Budget {
+        cancelled,
+        end: Instant::now() + policy.deadline,
+        grace: policy.cancel_grace,
+        stopping: Cell::new(None),
+    }
+}
+/// Explicit user action only; never enqueue a replacement or change receipt IDs.
+pub(crate) fn resume(
+    queue: &dyn ImportQueueSession,
+    job: ImportJob,
+    expected_attempt: u64,
+    cancelled: &AtomicBool,
+    progress: &mut dyn FnMut(f64),
+    policy: Policy,
+) -> Result<(), HostError> {
+    let result = (|| {
+        let work = job.config.work();
+        validate(&job, &work)?;
+        if job.attempt != expected_attempt {
+            return Err(HostError::new(
+                "conflict",
+                "The import changed. Refresh its history.",
+            ));
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Err(stopped(cancelled));
+        }
+        let budget = budget(cancelled, &policy);
+        let original_id = job.id.clone();
+        let queued = match job.state {
+            JobState::Queued => job,
+            JobState::Failed | JobState::Cancelled | JobState::Interrupted => queue
+                .execute_with_budget(
+                    QueueCommand::Retry {
+                        job_id: job.id,
+                        expected_attempt,
+                    },
+                    &budget,
+                )?
+                .job
+                .ok_or_else(invalid)?,
+            JobState::Succeeded => return Ok(()),
+            _ => return Err(HostError::new("busy", "This import cannot be resumed.")),
+        };
+        if queued.id != original_id || queued.attempt != expected_attempt {
+            return Err(invalid());
+        }
+        supervise(queue, &work, queued, cancelled, progress, policy, &budget)
+    })();
+    queue.shutdown();
+    result
+}
+fn supervise(
+    queue: &dyn ImportQueueSession,
+    work: &ImportWork,
+    mut job: ImportJob,
+    cancelled: &AtomicBool,
+    progress: &mut dyn FnMut(f64),
+    policy: Policy,
+    budget: &Budget<'_>,
+) -> Result<(), HostError> {
     validate(&job, work)?;
     if job.state == JobState::Succeeded {
         return Ok(());
@@ -131,6 +191,7 @@ fn run(
         return Err(failed());
     }
     let id = job.id.clone();
+    let next_attempt = job.attempt.checked_add(1).ok_or_else(invalid)?;
     budget.deadline();
     if budget.stopping.get().is_some() {
         queue.execute_with_budget(
@@ -138,18 +199,18 @@ fn run(
                 job_id: id,
                 expected_attempt: job.attempt,
             },
-            &budget,
+            budget,
         )?;
         return Err(stopped(cancelled));
     }
     job = queue
-        .execute_with_budget(QueueCommand::Run { job_id: id.clone() }, &budget)?
+        .execute_with_budget(QueueCommand::Run { job_id: id.clone() }, budget)?
         .job
         .ok_or_else(|| {
             HostError::new("busy", "The import is queued. Resources are unavailable.")
         })?;
     validate(&job, work)?;
-    if job.id != id || job.state != JobState::Running || job.attempt == 0 {
+    if job.id != id || job.state != JobState::Running || job.attempt != next_attempt {
         return Err(invalid());
     }
     let attempt = job.attempt;
@@ -185,7 +246,7 @@ fn run(
                         job_id: id.clone(),
                         expected_attempt: attempt,
                     },
-                    &budget,
+                    budget,
                 )?
                 .job
                 .ok_or_else(invalid)?;
@@ -203,7 +264,7 @@ fn run(
             continue;
         }
         job = queue
-            .execute_with_budget(QueueCommand::Get { job_id: id.clone() }, &budget)?
+            .execute_with_budget(QueueCommand::Get { job_id: id.clone() }, budget)?
             .job
             .ok_or_else(invalid)?;
     }
@@ -277,6 +338,54 @@ mod tests {
             poll: Duration::ZERO,
             ..Default::default()
         }
+    }
+    #[test]
+    fn explicit_resume_retries_the_same_job_and_increments_attempt_once() {
+        let work = work();
+        let observed: crate::import_queue::QueueReply =
+            serde_json::from_value(job(&work, "interrupted", 1, 0.4)).unwrap();
+        let queue = Queue::new(vec![
+            job(&work, "queued", 1, 0.0),
+            job(&work, "running", 2, 0.0),
+            job(&work, "succeeded", 2, 1.0),
+        ]);
+        resume(
+            &queue,
+            observed.job.unwrap(),
+            1,
+            &AtomicBool::new(false),
+            &mut |_| {},
+            policy(),
+        )
+        .unwrap();
+        let commands = queue.commands.lock().unwrap();
+        assert_eq!(commands[0]["action"], "retry");
+        assert_eq!(commands[0]["expectedAttempt"], 1);
+        assert_eq!(commands[1]["action"], "run");
+        assert!(commands.iter().all(|value| value["action"] != "enqueue"));
+        assert!(queue.stopped.load(Ordering::Acquire));
+    }
+    #[test]
+    fn stale_resume_is_rejected_before_retry_or_execution() {
+        let work = work();
+        let observed: crate::import_queue::QueueReply =
+            serde_json::from_value(job(&work, "interrupted", 2, 0.4)).unwrap();
+        let queue = Queue::new(vec![]);
+        assert_eq!(
+            resume(
+                &queue,
+                observed.job.unwrap(),
+                1,
+                &AtomicBool::new(false),
+                &mut |_| {},
+                policy()
+            )
+            .unwrap_err()
+            .code,
+            "conflict"
+        );
+        assert!(queue.commands.lock().unwrap().is_empty());
+        assert!(queue.stopped.load(Ordering::Acquire));
     }
     #[test]
     fn published_attempt_wins_late_cancel_and_owner_stops_before_receipt_lookup() {

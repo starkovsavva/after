@@ -1,7 +1,7 @@
 # Native import queue startup reconciliation
 
 Статус: реализовано при открытии native queue connection. Выбор файла в Tauri UI использует
-[durable controller](queued-import-controller.md); история/retry после перезапуска host ещё не подключены.
+[durable controller](queued-import-controller.md); [история/retry](import-history-and-resume.md) после перезапуска host подключены.
 
 ## Границы и порядок
 
@@ -42,4 +42,4 @@ Application tests проверяют приоритет publication, неопр�
 повторное открытие, receipt за первой страницей, durable cancel и повреждённый
 receipt без повторного импорта. Windows/macOS локально не проверены.
 
-Recovery не включает автоматический запуск/retry. File-picker controller сохраняет deadline/grace и восстанавливает соединение после ошибки без запуска работы. Следующий срез — persistent history/retry UI и app-startup recovery.
+Recovery не включает автоматический запуск/retry. File-picker controller сохраняет deadline/grace и восстанавливает соединение после ошибки без запуска работы. Startup probe вызывает grant-free history и выполняет reconciliation без Run; явный retry доступен в панели истории.

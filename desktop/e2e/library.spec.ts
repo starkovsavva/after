@@ -219,7 +219,7 @@ test('an in-flight import can be cancelled without creating a meeting', async ({
 test('a reloaded interface reconnects to the host-owned import and can cancel it', async ({ page }) => {
   await page.addInitScript(() => {
     let cancelled = false;
-    const status = () => ({ operationId: '11111111-1111-4111-8111-111111111111', phase: cancelled ? 'cancelled' : 'copying', copiedBytes: 0, totalBytes: 0, progress: 0.25, cancelRequested: cancelled });
+    const status = () => ({ operationId: '11111111-1111-4111-8111-111111111111', controlId: '22222222-2222-4222-8222-222222222222', phase: cancelled ? 'cancelled' : 'copying', copiedBytes: 0, totalBytes: 0, progress: 0.25, cancelRequested: cancelled });
     Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke: async (command: string) => {
       if (command === 'get_workspace') return { folders: [], meetings: [], notes: [], capabilities: { library: true, import: true, recording: false, calendar: false, assistant: false, cards: false, tasks: false } };
       if (command === 'import_status') return status();
@@ -236,4 +236,68 @@ test('a reloaded interface reconnects to the host-owned import and can cancel it
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(dialog).not.toBeVisible();
   await expect(page.getByRole('heading', { name: 'No meetings here yet', exact: true })).toBeVisible();
+});
+
+test('saved imports remain interrupted after reload until an explicit resume', async ({ page }) => {
+  await page.addInitScript(() => {
+    const jobId = '33333333-3333-4333-8333-333333333333';
+    const operationId = '44444444-4444-4444-8444-444444444444';
+    const complete = () => sessionStorage.getItem('import-resumed') === '1';
+    const meeting = () => ({ id: operationId, title: 'Recovered import', startedAt: null, durationSeconds: null, folderId: null, hasTranscript: false, hasSummary: false });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke: async (command: string, args: Record<string, unknown>) => {
+      if (command === 'get_workspace') return { folders: [], notes: [], meetings: complete() ? [meeting()] : [], capabilities: { library: true, import: true, recording: false, calendar: false, assistant: false, cards: false, tasks: false } };
+      if (command === 'import_status') return { operationId: null, controlId: null, phase: 'idle', copiedBytes: 0, totalBytes: 0, progress: null, cancelRequested: false };
+      if (command === 'import_history') return { jobs: [{ jobId, operationId, state: complete() ? 'succeeded' : 'interrupted', attempt: complete() ? 2 : 1, progress: complete() ? 1 : 0.4, cancelRequested: false }], total: 1, hasMore: false };
+      if (command === 'resume_import') {
+        if (args.jobId !== jobId || args.expectedAttempt !== 1 || Object.keys(args).length !== 2) throw { code: 'invalid_request' };
+        sessionStorage.setItem('import-resumed', '1'); return meeting();
+      }
+      if (command === 'get_meeting') return { meeting: meeting(), notes: [], transcript: [], summary: null };
+      throw { code: 'unsupported_operation' };
+    } } });
+  });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Import history', exact: true })).toBeVisible();
+  await page.reload();
+  expect(await page.evaluate(() => sessionStorage.getItem('import-resumed'))).toBeNull();
+  await page.getByRole('button', { name: 'Import history', exact: true }).click();
+  const history = page.getByRole('dialog', { name: 'Import history', exact: true });
+  await expect(history.getByText('Interrupted · Attempt 1')).toBeVisible();
+  await page.screenshot({ path: '../.build/import-history.png' });
+  await history.getByRole('button', { name: 'Resume import', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Recovered import/ })).toBeVisible();
+  await page.getByRole('button', { name: 'Import history', exact: true }).click();
+  await expect(history.getByText('Completed · Attempt 2')).toBeVisible();
+  await expect(history.getByRole('button', { name: 'Resume import', exact: true })).toHaveCount(0);
+});
+
+test('import history failures stay visible and queued cancellation uses the observed attempt', async ({ page }) => {
+  await page.addInitScript(() => {
+    let available = false;
+    let cancelled = false;
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke: async (command: string, args: Record<string, unknown>) => {
+      if (command === 'get_workspace') return { folders: [], notes: [], meetings: [], capabilities: { library: true, import: true, recording: false, calendar: false, assistant: false, cards: false, tasks: false } };
+      if (command === 'import_status') return { phase: 'idle', operationId: null, controlId: null, copiedBytes: 0, totalBytes: 0, cancelRequested: false };
+      if (command === 'import_history') {
+        if (!available) { throw { code: 'busy' }; }
+        return { jobs: [{ jobId: '55555555-5555-4555-8555-555555555555', operationId: '66666666-6666-4666-8666-666666666666', state: cancelled ? 'cancelled' : 'queued', attempt: 0, progress: 0, cancelRequested: false }], total: 1, hasMore: false };
+      }
+      if (command === 'test_enable_history') { available = true; return null; }
+      if (command === 'cancel_queued_import') {
+        if (args.expectedAttempt !== 0 || args.jobId !== '55555555-5555-4555-8555-555555555555') throw { code: 'conflict' };
+        cancelled = true; return null;
+      }
+      throw { code: 'unsupported_operation' };
+    } } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Import history', exact: true }).click();
+  const history = page.getByRole('dialog', { name: 'Import history', exact: true });
+  await expect(history.getByRole('alert')).toContainText('Could not load import history');
+  await expect(history.getByText('No imports yet.', { exact: true })).toHaveCount(0);
+  await page.evaluate(() => (window as unknown as { __TAURI_INTERNALS__: { invoke(command: string): Promise<unknown> } }).__TAURI_INTERNALS__.invoke('test_enable_history'));
+  await history.getByRole('button', { name: 'Refresh imports', exact: true }).click();
+  await expect(history.getByText('Queued · Attempt 0')).toBeVisible();
+  await history.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(history.getByText('Cancelled · Attempt 0')).toBeVisible();
 });

@@ -4,6 +4,7 @@ pub mod import_queue;
 pub mod queue_connection;
 mod process_worker;
 mod queued_import;
+pub mod import_history;
 mod imports;
 mod capture;
 mod media;
@@ -92,7 +93,48 @@ async fn choose_and_import(
 #[tauri::command]
 fn import_status(state: tauri::State<'_, Arc<imports::Imports>>) -> imports::ImportStatus { state.status() }
 #[tauri::command]
-fn cancel_import(state: tauri::State<'_, Arc<imports::Imports>>, operation_id: String) -> Result<imports::ImportStatus, HostError> { state.cancel(&operation_id) }
+fn cancel_import(state: tauri::State<'_, Arc<imports::Imports>>, operation_id: String, control_id: String) -> Result<imports::ImportStatus, HostError> { state.cancel(&operation_id, &control_id) }
+#[tauri::command]
+async fn import_history(
+    state: tauri::State<'_, LibraryBridge>, imports: tauri::State<'_, Arc<imports::Imports>>,
+) -> Result<import_history::ImportHistory, HostError> {
+    let bridge = state.inner().clone();
+    let reservation = imports.reserve()?;
+    background(move || { let _reservation = reservation; bridge.import_history() }).await
+}
+#[tauri::command]
+async fn resume_import(
+    state: tauri::State<'_, LibraryBridge>, imports: tauri::State<'_, Arc<imports::Imports>>,
+    job_id: String, expected_attempt: u64,
+) -> Result<Option<Meeting>, HostError> {
+    validate_id(&job_id)?;
+    let bridge = state.inner().clone();
+    let reservation = imports.reserve()?;
+    background(move || {
+        use import_queue::{ImportQueue, QueueCommand};
+        let queue = bridge.open_import_queue()?;
+        let job = queue.execute(QueueCommand::Get { job_id })?.job.ok_or_else(HostError::invalid)?;
+        if job.attempt != expected_attempt { return Err(HostError::new("conflict", "The import changed. Refresh its history.")); }
+        let work = job.config.work();
+        let mut session = reservation.start(work.operation_id.clone(), work.attempt_token.clone(), "copying")?;
+        let result = bridge.resume_queued_import(&queue, job, expected_attempt, &session.cancelled, &mut |value| session.fraction(value));
+        match result {
+            Ok(meeting) => { session.finish("completed"); Ok(Some(meeting)) },
+            Err(error) if error.code == "cancelled" => { session.finish("cancelled"); Ok(None) },
+            Err(error) => { session.finish("failed"); Err(error) },
+        }
+    }).await
+}
+#[tauri::command]
+async fn cancel_queued_import(
+    state: tauri::State<'_, LibraryBridge>, imports: tauri::State<'_, Arc<imports::Imports>>,
+    job_id: String, expected_attempt: u64,
+) -> Result<(), HostError> {
+    validate_id(&job_id)?;
+    let bridge = state.inner().clone();
+    let reservation = imports.reserve()?;
+    background(move || { let _reservation = reservation; bridge.cancel_queued_import(job_id, expected_attempt) }).await
+}
 #[tauri::command]
 async fn start_recording(
     state: tauri::State<'_, Arc<capture::Recorder>>,
@@ -250,6 +292,9 @@ fn library_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bui
             choose_and_import,
             import_status,
             cancel_import,
+            import_history,
+            resume_import,
+            cancel_queued_import,
             start_recording,
             recording_status,
             stop_recording,
@@ -423,10 +468,10 @@ mod ipc_tests {
         .unwrap_err();
         assert_eq!(invalid["code"], "invalid_request");
         assert_eq!(request(&main, "import_status", json!({}), local_origin()).unwrap()["phase"], "idle");
-        assert_eq!(request(&main, "cancel_import", json!({"operationId":"unrelated"}), local_origin()).unwrap_err()["code"], "invalid_request");
+        assert_eq!(request(&main, "cancel_import", json!({"operationId":"unrelated","controlId":"unrelated"}), local_origin()).unwrap_err()["code"], "invalid_request");
         let mut session = app.state::<Arc<imports::Imports>>().begin().unwrap();
         let id = app.state::<Arc<imports::Imports>>().status().operation_id.unwrap();
-        assert_eq!(request(&main, "cancel_import", json!({"operationId":id}), local_origin()).unwrap()["cancelRequested"], true);
+        assert_eq!(request(&main, "cancel_import", json!({"operationId":id,"controlId":app.state::<Arc<imports::Imports>>().status().control_id.unwrap()}), local_origin()).unwrap()["cancelRequested"], true);
         assert!(session.cancelled.load(Ordering::Acquire));
         session.finish("cancelled");
         for (window, origin, command) in [
@@ -435,6 +480,12 @@ mod ipc_tests {
             (&main, "https://example.org", "feature_operation"),
             (&untrusted, local_origin(), "feature_operation"),
             (&untrusted, local_origin(), "import_status"),
+            (&untrusted, local_origin(), "import_history"),
+            (&main, "https://example.org", "import_history"),
+            (&untrusted, local_origin(), "resume_import"),
+            (&main, "https://example.org", "resume_import"),
+            (&untrusted, local_origin(), "cancel_queued_import"),
+            (&main, "https://example.org", "cancel_queued_import"),
             (&main, "https://example.org", "cancel_import"),
             (&main, local_origin(), "import_work"),
             (&main, local_origin(), "import_queue"),
@@ -516,6 +567,26 @@ mod ipc_tests {
         let bytes: Vec<u8> = (0..1_048_600).map(|n| (n % 251) as u8).collect();
         std::fs::write(&source, &bytes).unwrap();
         let bridge = app.state::<LibraryBridge>();
+        // Real renderer-facing history/resume: only opaque IDs/attempts cross IPC.
+        use crate::import_queue::{ImportInput, ImportQueue, QueueCommand};
+        let work = crate::worker_host::ImportWork {
+            operation_id: uuid::Uuid::new_v4().to_string(), attempt_token: uuid::Uuid::new_v4().to_string(),
+            source: source.clone(), title: None,
+        };
+        let queue = bridge.open_import_queue().unwrap();
+        let job = queue.execute(QueueCommand::Enqueue { input: ImportInput::from(&work) }).unwrap().job.unwrap();
+        queue.execute(QueueCommand::Claim { job_id: Some(job.id.clone()) }).unwrap();
+        drop(queue);
+        let history = request(&main,"import_history",json!({}),local_origin()).unwrap();
+        assert_eq!(history["jobs"][0]["state"],"interrupted");
+        assert_eq!(history["jobs"][0]["attempt"],1);
+        for secret in ["sourcePath", "attemptToken", work.attempt_token.as_str()] { assert!(!history.to_string().contains(secret)); }
+        assert_eq!(request(&main,"resume_import",json!({"jobId":job.id,"expectedAttempt":0}),local_origin()).unwrap_err()["code"],"conflict");
+        let resumed = request(&main,"resume_import",json!({"jobId":job.id,"expectedAttempt":1}),local_origin()).unwrap();
+        assert_eq!(resumed["id"],work.operation_id);
+        let history = request(&main,"import_history",json!({}),local_origin()).unwrap();
+        assert_eq!(history["jobs"][0]["state"],"succeeded");
+        assert_eq!(history["jobs"][0]["attempt"],2);
         let meeting = bridge
             .import_meeting(&source, Some("Synthetic media"))
             .unwrap();

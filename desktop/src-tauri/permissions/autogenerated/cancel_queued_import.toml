@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-queued-import"
+description = "Enables the cancel_queued_import command without any pre-configured scope."
+commands.allow = ["cancel_queued_import"]
+
+[[permission]]
+identifier = "deny-cancel-queued-import"
+description = "Denies the cancel_queued_import command without any pre-configured scope."
+commands.deny = ["cancel_queued_import"]

@@ -48,7 +48,7 @@ ACL, private DTO нельзя выдавать WebView. File-picker UI испо�
 
 Scope — граница ответственности, **не lease процесса**. Перед production recovery
 реализован [lifetime lock](import-executor-lease.md), исключающий второй queue owner.
-Для explicit import Run [worker lifetime покрыт lease](owned-import-execution.md); file-picker UI подключён, persistent history/retry UI ещё требуется. После получения lease native connection [сверяет atomic publication receipts](import-startup-recovery.md) до возврата caller; повторный запуск остаётся явным. Публикация и запись queue completion разделены;
+Для explicit import Run [worker lifetime покрыт lease](owned-import-execution.md); file-picker UI подключён, [history/retry UI](import-history-and-resume.md) последних 50 jobs подключён. После получения lease native connection [сверяет atomic publication receipts](import-startup-recovery.md) до возврата caller; повторный запуск остаётся явным. Публикация и запись queue completion разделены;
 повторное выполнение нельзя считать безопасным только потому, что job interrupted.
 Это соответствует требованиям к идемпотентным Activities в
 [Temporal](https://github.com/temporalio/documentation/blob/main/docs/encyclopedia/activities/activity-definition.mdx).

@@ -98,7 +98,10 @@ export interface LibraryAPI {
   getMeeting(meetingId: string): Promise<MeetingDetail>;
   chooseAndImport(): Promise<Meeting | null>;
   importStatus(): Promise<ImportStatus>;
-  cancelImport(operationId: string): Promise<ImportStatus>;
+  importHistory(): Promise<ImportHistory>;
+  resumeImport(jobId: string, expectedAttempt: number): Promise<Meeting | null>;
+  cancelQueuedImport(jobId: string, expectedAttempt: number): Promise<void>;
+  cancelImport(operationId: string, controlId: string): Promise<ImportStatus>;
   startRecording(mode: 'microphone' | 'microphone_and_system'): Promise<RecordingStatus>;
   recordingStatus(): Promise<RecordingStatus>;
   stopRecording(title: string): Promise<SavedRecording>;
@@ -108,7 +111,18 @@ export interface LibraryAPI {
   saveFolder(input: FolderInput): Promise<Folder>;
   searchLibrary(query: string, folderId?: string): Promise<SearchResponse>;
 }
+export type ImportJobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'blocked';
+export interface ImportHistoryEntry {
+  jobId: string;
+  operationId: string;
+  state: ImportJobState;
+  progress: number;
+  attempt: number;
+  cancelRequested: boolean;
+}
+export interface ImportHistory { jobs: ImportHistoryEntry[]; total: number; hasMore: boolean; }
 export interface ImportStatus {
+  controlId: string | null;
   progress?: number | null;
   operationId: string | null;
   phase: 'idle' | 'choosing' | 'copying' | 'committing' | 'completed' | 'cancelled' | 'failed';

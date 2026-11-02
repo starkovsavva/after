@@ -177,6 +177,43 @@ impl LibraryBridge {
         result?;
         Err(HostError::new("import_interrupted", "Import completion could not be confirmed."))
     }
+    pub fn import_history(&self) -> Result<crate::import_history::ImportHistory, HostError> {
+        use crate::import_queue::{ImportQueue, QueueCommand};
+        let queue = self.open_import_queue()?;
+        queue.execute(QueueCommand::List)?.try_into()
+    }
+    pub fn resume_queued_import(
+        &self, queue: &dyn crate::import_queue::ImportQueueSession,
+        job: crate::import_queue::ImportJob, expected_attempt: u64,
+        cancelled: &AtomicBool, progress: &mut dyn FnMut(f64),
+    ) -> Result<Meeting, HostError> {
+        if job.attempt != expected_attempt { return Err(HostError::new("conflict", "The import changed. Refresh its history.")); }
+        let work = job.config.work();
+        crate::queued_import::validate(&job, &work)?;
+        if let Some(meeting) = self.call::<Option<Meeting>>("get_import_result",
+            json!({"operationId":work.operation_id,"attemptToken":work.attempt_token}))? { return Ok(meeting); }
+        let result = crate::queued_import::resume(queue, job, expected_attempt, cancelled, progress, Default::default());
+        if result.is_err() { let _ = self.open_import_queue(); }
+        let receipt: Option<Meeting> = self.call("get_import_result",
+            json!({"operationId":work.operation_id,"attemptToken":work.attempt_token}))?;
+        if let Some(meeting) = receipt { return Ok(meeting); }
+        result?;
+        Err(HostError::new("import_interrupted", "Import completion could not be confirmed."))
+    }
+    pub fn cancel_queued_import(&self, job_id: String, expected_attempt: u64) -> Result<(), HostError> {
+        use crate::import_queue::{ImportQueue, JobState, QueueCommand};
+        let queue = self.open_import_queue()?;
+        let job = queue.execute(QueueCommand::Get { job_id: job_id.clone() })?.job.ok_or_else(HostError::invalid)?;
+        if job.attempt != expected_attempt { return Err(HostError::new("conflict", "The import changed. Refresh its history.")); }
+        let work = job.config.work();
+        crate::queued_import::validate(&job, &work)?;
+        let receipt: Option<Meeting> = self.call("get_import_result",
+            json!({"operationId":work.operation_id,"attemptToken":work.attempt_token}))?;
+        if receipt.is_some() || job.state == JobState::Succeeded { return Ok(()); }
+        if !matches!(job.state, JobState::Queued | JobState::Interrupted | JobState::Blocked) { return Err(HostError::invalid()); }
+        queue.execute(QueueCommand::Cancel { job_id, expected_attempt })?;
+        Ok(())
+    }
     pub(crate) fn media_chunk(
         &self,
         id: &str,

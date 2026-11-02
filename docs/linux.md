@@ -71,8 +71,8 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 620 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 36 host + 8 real-engine
-интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 13 Playwright-сценариев. Проверен native WebView startup с
+и helper), 620 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 42 host + 9 real-engine
+интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 15 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
 кодеки и физические устройства этим не проверены. Удалённые workflows настроены,
@@ -108,7 +108,9 @@ executor: native Swift suite запускается только на Mac (`veri
 
 Выбор файла использует [durable controller](decisions/queued-import-controller.md):
 progress, отмена до публикации и восстановление панели после reload WebView.
-История/retry после перезапуска host ещё не показаны в UI; сохранение recordings
+Панель истории показывает последние 50 импортов и явный retry/cancel после
+перезапуска host; startup probe сверяет receipts без запуска работы
+([ADR](decisions/import-history-and-resume.md)). Полная пагинация ещё не подключена. Сохранение recordings
 пока использует standalone [WorkerHost](decisions/worker-host-import.md).
 
 Native queue соединение удерживает [kernel lease](decisions/import-executor-lease.md).

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Folder, FolderInput, LibraryAPI, Meeting, MeetingDetail, Note, NoteInput, SearchResponse, Workspace } from './types';
+import type { Folder, FolderInput, ImportHistory, LibraryAPI, Meeting, MeetingDetail, Note, NoteInput, SearchResponse, Workspace } from './types';
 
 export const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).get('demo') === '1';
 const native = '__TAURI_INTERNALS__' in window;
@@ -23,12 +23,22 @@ export function featureCommand<T>(operation: string, args: Record<string, unknow
   if (!features.has(operation)) return Promise.reject({ code: 'invalid_request' });
   return command<T>('feature_operation', { operation, args });
 }
+// Share only an in-flight read: StrictMode/startup and the history dialog may
+// request the same leased snapshot together. Never cache completed history.
+let historyRequest: Promise<ImportHistory> | null = null;
+function importHistory(): Promise<ImportHistory> {
+  historyRequest ??= command<ImportHistory>('import_history').finally(() => { historyRequest = null; });
+  return historyRequest;
+}
 const desktop: LibraryAPI = {
   getWorkspace: () => command<Workspace>('get_workspace'),
   getMeeting: meetingId => command<MeetingDetail>('get_meeting', { meetingId }),
   chooseAndImport: () => command<Meeting | null>('choose_and_import'),
   importStatus: () => command('import_status'),
-  cancelImport: operationId => command('cancel_import', { operationId }),
+  cancelImport: (operationId, controlId) => command('cancel_import', { operationId, controlId }),
+  importHistory,
+  resumeImport: (jobId, expectedAttempt) => command('resume_import', { jobId, expectedAttempt }),
+  cancelQueuedImport: (jobId, expectedAttempt) => command('cancel_queued_import', { jobId, expectedAttempt }),
   startRecording: mode => command('start_recording', { mode }),
   recordingStatus: () => command('recording_status'),
   stopRecording: title => command('stop_recording', { title }),

@@ -785,3 +785,65 @@ fn queued_file_import_persists_success_and_reuses_exact_receipt_without_source()
     let wrong = ImportWork { attempt_token: uuid::Uuid::new_v4().to_string(), ..work };
     assert!(bridge.import_queued_work(&wrong,&AtomicBool::new(false),&mut |_| {}).is_err());
 }
+
+#[test]
+#[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
+fn import_history_reopens_and_explicit_resume_preserves_receipts_and_attempt_fencing() {
+    use after_desktop::{import_queue::{ImportInput, ImportQueue, JobState, QueueCommand}, worker_host::ImportWork};
+    use std::sync::atomic::AtomicBool;
+    let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("resume-library");
+    let bridge = LibraryBridge::for_development(engine.clone(), root.clone()).unwrap();
+    let source = fixture.path().join("original.wav");
+    std::fs::write(&source,b"untouched original").unwrap();
+    let work = ImportWork { operation_id: uuid::Uuid::new_v4().to_string(),attempt_token:uuid::Uuid::new_v4().to_string(),source:source.clone(),title:None };
+    let queue = bridge.open_import_queue().unwrap();
+    let job = queue.execute(QueueCommand::Enqueue { input: ImportInput::from(&work) }).unwrap().job.unwrap();
+    queue.execute(QueueCommand::Claim { job_id: Some(job.id.clone()) }).unwrap();
+    drop(queue); drop(bridge);
+    let bridge = LibraryBridge::for_development(engine,root.clone()).unwrap();
+    let history = bridge.import_history().unwrap();
+    assert_eq!(history.jobs[0].state,JobState::Interrupted);
+    let queue = bridge.open_import_queue().unwrap();
+    let observed = queue.execute(QueueCommand::Get { job_id: job.id.clone() }).unwrap().job.unwrap();
+    let meeting = bridge.resume_queued_import(&queue,observed,1,&AtomicBool::new(false),&mut |_| {}).unwrap();
+    assert_eq!(meeting.id,work.operation_id);
+    drop(queue);
+    let history = bridge.import_history().unwrap();
+    assert_eq!(history.jobs[0].state,JobState::Succeeded);
+    assert_eq!(history.jobs[0].attempt,2);
+    assert_eq!(std::fs::read(&source).unwrap(),b"untouched original");
+
+    let queue = bridge.open_import_queue().unwrap();
+    let mut pending = ImportInput::from(&work);
+    pending.operation_id = uuid::Uuid::new_v4().to_string();
+    pending.attempt_token = uuid::Uuid::new_v4().to_string();
+    let pending = queue.execute(QueueCommand::Enqueue { input: pending }).unwrap().job.unwrap();
+    drop(queue);
+    assert_eq!(bridge.cancel_queued_import(pending.id.clone(),1).unwrap_err().code,"conflict");
+    bridge.cancel_queued_import(pending.id.clone(),0).unwrap();
+    let history = bridge.import_history().unwrap();
+    assert_eq!(history.jobs.iter().find(|row|row.job_id==pending.id).unwrap().state,JobState::Cancelled);
+
+    let queue = bridge.open_import_queue().unwrap();
+    let mut uncertain = ImportInput::from(&work);
+    uncertain.operation_id = uuid::Uuid::new_v4().to_string();
+    uncertain.attempt_token = uuid::Uuid::new_v4().to_string();
+    let uncertain = queue.execute(QueueCommand::Enqueue { input: uncertain }).unwrap().job.unwrap();
+    queue.execute(QueueCommand::Claim { job_id: Some(uncertain.id.clone()) }).unwrap();
+    drop(queue);
+    let corrupt = root.join("meetings").join(&uncertain.object_id).join("meta.json");
+    std::fs::create_dir_all(&corrupt).unwrap();
+    assert!(bridge.cancel_queued_import(uncertain.id.clone(),1).is_err());
+    let queue = bridge.open_import_queue().unwrap();
+    let observed = queue.execute(QueueCommand::Get { job_id: uncertain.id.clone() }).unwrap().job.unwrap();
+    assert!(bridge.resume_queued_import(&queue,observed,1,&AtomicBool::new(false),&mut |_| {}).is_err());
+    drop(queue);
+    let history = bridge.import_history().unwrap();
+    let unchanged = history.jobs.iter().find(|row|row.job_id==uncertain.id).unwrap();
+    assert_eq!(unchanged.state,JobState::Interrupted);
+    assert_eq!(unchanged.attempt,1);
+    assert!(corrupt.is_dir());
+    assert_eq!(std::fs::read(source).unwrap(),b"untouched original");
+}

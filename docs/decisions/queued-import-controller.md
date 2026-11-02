@@ -1,7 +1,7 @@
 # Supervised durable imports from the file picker
 
 Статус: выбор файла в Tauri UI использует durable queue. Recording import пока
-остаётся standalone; история и явный retry после перезапуска host ещё не показаны.
+остаётся standalone; [история и явный retry](import-history-and-resume.md) после перезапуска host подключены.
 
 ## Разделение ответственности
 
@@ -38,13 +38,14 @@ transient session для reload WebView и отмены. Старый byte-progr
 
 ## Проверки и следующие шаги
 
-На Arch прошли 36 host tests, 8 real-engine integrations, настоящий Tauri IPC,
-frontend build/model checks и 13 Playwright scenarios. Проверены изменение budget
+На Arch прошли 42 host tests, 9 real-engine integrations, настоящий Tauri IPC,
+frontend build/model checks и 15 Playwright scenarios. Проверены изменение budget
 внутри зависшего RPC, grace, stale attempts, отмена до enqueue, published success,
 неизменность source и повторный receipt lookup без исходного файла.
 Системный file picker и Windows/macOS локально не проверены.
 
-Следующий этап — grant-free history и явный retry/cancel pending jobs, recovery
-при запуске приложения и перенос recording import. Сейчас connection открывается
-на выбранный импорт; queued job при отказе admission сохраняется, но ещё не
-представлен отдельной панелью. Платные и model workers не запускаются автоматически.
+Grant-free history и явный retry/cancel pending jobs подключены; startup probe
+открывает queue для reconciliation без выполнения работы. Connection используется
+на одну native операцию; reservation сериализует чтение и запуск. UI показывает
+последние 50 jobs и сообщает о truncation. Следующие этапы — полная пагинация
+и перенос recording import. Платные и model workers не запускаются автоматически.
