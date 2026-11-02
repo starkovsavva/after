@@ -102,6 +102,53 @@ def main():
             raise RuntimeError('Installation altered an unrelated interrupted candidate')
         if not Path(first['interpreter']).is_file():
             raise RuntimeError('Replacement removed the previous generation')
+        def check_active(expected=True):
+            result = subprocess.run([str(engine), '--posle-check-python-runtime', '--root', str(library)],
+                                    env=runtime_env, capture_output=True, text=True, timeout=30)
+            if (result.returncode == 0) != expected:
+                raise RuntimeError('Active-generation selection returned an unexpected result: ' + result.stderr[-2000:])
+            return json.loads(result.stdout) if expected else None
+        if check_active() != second:
+            raise RuntimeError('Verified active selection does not match publication')
+        # Pointer/config/alias values cannot grant execution of a different base.
+        active_bytes = active.read_bytes()
+        redirected = dict(second, interpreter='/usr/bin/python3')
+        active.write_text(json.dumps(redirected))
+        check_active(False)
+        active.write_bytes(active_bytes)
+        config = Path(second['interpreter']).parent.parent / 'pyvenv.cfg'
+        config_bytes = config.read_bytes()
+        config.write_bytes(config_bytes + b'HOME = /outside\n')
+        check_active(False)
+        config.write_bytes(config_bytes)
+        interpreter_alias = Path(second['interpreter'])
+        alias_target = interpreter_alias.readlink()
+        interpreter_alias.unlink()
+        interpreter_alias.symlink_to('/usr/bin/python3')
+        check_active(False)
+        interpreter_alias.unlink()
+        interpreter_alias.symlink_to(alias_target)
+        if check_active() != second:
+            raise RuntimeError('Restored active generation failed validation')
+        # Keep a real selected guard alive while atomically changing the pointer.
+        (root / 'runtime-fixture-only').write_text('disposable runtime generations only\n')
+        (root / 'first-runtime-receipt.json').write_text(json.dumps(first))
+        build_env = os.environ.copy()
+        build_env['CARGO_TARGET_DIR'] = str(PROJECT / '.build/rust')
+        build = subprocess.run(['cargo', 'test', '--manifest-path', str(PROJECT / 'rust-core/Cargo.toml'), '--locked',
+                                '--lib', '--features', 'linux-runtime-fixture', '--no-run', '--message-format=json'],
+                               env=build_env, capture_output=True, text=True, timeout=300)
+        if build.returncode:
+            raise RuntimeError(build.stderr[-4000:])
+        binary = next(json.loads(line)['executable'] for line in build.stdout.splitlines()
+                      if json.loads(line).get('reason') == 'compiler-artifact' and json.loads(line).get('executable')
+                      and json.loads(line)['target']['name'] == 'posle_core')
+        held_test = subprocess.run([binary, '--exact', 'platform::linux::runtime_active::real_fixture::selected_generation_survives_atomic_activation_of_a_different_generation'],
+                                  env=runtime_env | {'AFTER_TEST_ACTIVE_RUNTIME_ROOT': str(library)}, capture_output=True, text=True, timeout=30)
+        if held_test.returncode or '1 passed' not in held_test.stdout:
+            raise RuntimeError(held_test.stdout[-4000:] + held_test.stderr[-2000:])
+        if check_active() != second:
+            raise RuntimeError('Selection fixture failed to restore activation')
         # Check the published environment, not only the pre-publication probe.
         for installed in (first, second):
             subprocess.run([installed['interpreter'], '-B', '-I', '-c', 'import ssl,sys; assert sys.version.split()[0] == "3.12.16"'],
@@ -123,7 +170,8 @@ def main():
                           'archiveAndTreeVerifiedBeforeExecution': True, 'isolatedVenv': True,
                           'tamperRejected': True, 'systemPythonUsedAsRuntime': False,
                           'speechDependenciesInstalled': False, 'nativeGenerationInstall': True,
-                          'failedInstallPreservedActive': True, 'previousGenerationPreserved': True}, indent=2))
+                          'failedInstallPreservedActive': True, 'previousGenerationPreserved': True, 'activeGenerationValidated': True,
+                          'pointerConfigAndAliasRedirectRejected': True, 'heldGenerationSurvivesActivation': True}, indent=2))
 
 
 if __name__ == '__main__':

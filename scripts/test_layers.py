@@ -26,6 +26,16 @@ class LayerBoundaryTests(unittest.TestCase):
             source.write_text('#[cfg(test)] mod tests { let library = "lib/libpython3.12.dylib"; }')
             self.assertEqual(list(runtime_boundary_violations(root)), [])
 
+    def test_shared_venv_binding_cannot_depend_on_a_platform_loader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "infrastructure").mkdir()
+            source = root / "infrastructure/runtime_venv.rs"
+            source.write_text("use crate::platform::python_runtime;\n")
+            self.assertTrue(list(runtime_boundary_violations(root)))
+            source.write_text("use super::runtime_tree::open;\n")
+            self.assertEqual(list(runtime_boundary_violations(root)), [])
+
     def test_capture_lifecycle_takes_a_port_without_selecting_the_os(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

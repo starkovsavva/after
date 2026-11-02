@@ -76,8 +76,9 @@ alerts and URLs that the application does not own.
 `rust-core/src/platform/mod.rs` selects implementations under `platform/macos/`:
 
 - `python_runtime.rs`: compiled macOS distribution/layout selection, venv binding
-  and loaded image/version verification; complete inventory hashing and held file
-  descriptors live in shared `infrastructure/runtime_tree.rs`;
+  and loaded image/version verification; inventory hashing/descriptors live in
+  shared `infrastructure/runtime_tree.rs`, venv config/alias binding in
+  `infrastructure/runtime_venv.rs`;
 - `embedded_speech.rs`: the persistent in-process CPython host and existing C ABI;
 - `managed_embedding_transport.rs`: bounded Unix-socket requests to the verified
   live child, including peer identity, cancellation and timeout checks;
@@ -168,3 +169,11 @@ The Ubuntu CI job checks the installed Swift 6 toolchain, builds `AfterCore` and
 The macOS job checks the native graph and the application build. Local validation
 of this refactor was performed on macOS; adding the Ubuntu job is not evidence of
 an executed Linux pass, and neither job establishes a Linux or Windows UI/runtime.
+
+Linux `runtime_active.rs` selects one fully verified generation from a bounded
+activation record. UUID, target, version and interpreter location are checked
+before reading the distribution or following venv aliases. Its guard pins scope
+identities, base inventory and venv binding; it never treats the active pointer as
+an execution grant. Atomic pointer updates affect future selections. The real
+archive fixture retains a selected guard while switching to another generation.
+This validates selection, not third-party package provenance or Linux speech launch.

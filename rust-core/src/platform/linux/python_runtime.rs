@@ -1,5 +1,6 @@
 //! Pinned Linux CPython composition and generation installation. This does not
 //! attest third-party packages, embedded ABI compatibility, models or ASR readiness.
+pub use super::runtime_active::{validate_active, VerifiedRuntime};
 pub use super::runtime_install::{install, InstalledRuntime};
 use crate::infrastructure::runtime_tree::{Layout, Policy, Tree};
 use anyhow::{bail, Context, Result};
@@ -15,6 +16,7 @@ pub(super) struct Artifact {
     pub archive_size: u64,
 }
 
+pub const CHECK_MODE: &str = "--posle-check-python-runtime";
 pub const INSTALL_MODE: &str = "--posle-install-python-runtime";
 pub const VERIFY_MODE: &str = "--posle-verify-python-runtime";
 const LAYOUT: Layout<'static> = Layout {
@@ -48,9 +50,12 @@ pub(super) fn artifact() -> Result<&'static Artifact> {
 /// Used before executing even venv/ensurepip. Only the compiled inventory is a
 /// trust root; an on-disk manifest cannot authorize different runtime contents.
 pub fn verify_distribution(base: &Path) -> Result<()> {
+    verified_tree(base)?.recheck()
+}
+
+pub(super) fn verified_tree(base: &Path) -> Result<Tree> {
     Tree::verify(base, &artifact()?.policy, LAYOUT)
-        .context("Linux CPython inventory verification failed")?
-        .recheck()
+        .context("Linux CPython inventory verification failed")
 }
 
 #[cfg(test)]

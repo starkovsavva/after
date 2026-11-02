@@ -15,3 +15,6 @@ pub(crate) mod agent_store_layout;
 #[cfg(unix)]
 #[allow(dead_code)]
 pub(crate) mod runtime_tree;
+
+#[cfg(unix)]
+pub(crate) mod runtime_venv;

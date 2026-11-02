@@ -1,17 +1,14 @@
 //! macOS CPython composition, venv binding and descriptor-based dynamic loading.
 //! Complete file verification is shared through the Unix runtime-tree adapter.
-use crate::infrastructure::runtime_tree::{
-    absolute, open, relative, stamp, Layout, Policy, Stamp, Tree, ERROR,
-};
+use crate::infrastructure::runtime_tree::{absolute, open, relative, Layout, Policy, Tree, ERROR};
 #[cfg(test)]
 use crate::infrastructure::runtime_tree::{secure, ExpectedFile, ExpectedLink};
+use crate::infrastructure::runtime_venv::VenvBinding;
 use anyhow::{bail, Context, Result};
 #[cfg(test)]
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::fs::{self, File};
-use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -49,7 +46,7 @@ pub struct VerifiedRuntime {
     pub venv: PathBuf,
     pub library: PathBuf,
     tree: Option<Tree>,
-    config: Option<(File, Stamp)>,
+    venv_binding: Option<VenvBinding>,
     fixture_library: Option<File>,
     version: String,
 }
@@ -58,13 +55,8 @@ impl VerifiedRuntime {
         if let Some(tree) = &self.tree {
             tree.recheck()?;
         }
-        if let Some((file, expected)) = &self.config {
-            if stamp(&file.metadata().context(ERROR)?) != *expected
-                || stamp(&fs::symlink_metadata(self.venv.join("pyvenv.cfg")).context(ERROR)?)
-                    != *expected
-            {
-                bail!(ERROR);
-            }
+        if let Some(binding) = &self.venv_binding {
+            binding.recheck()?;
         }
         Ok(())
     }
@@ -189,7 +181,7 @@ pub fn validate(root: &Path, interpreter: &Path) -> Result<VerifiedRuntime> {
             venv,
             library,
             tree: None,
-            config: None,
+            venv_binding: None,
             fixture_library,
             version: String::new(),
         });
@@ -211,79 +203,9 @@ fn validate_pinned(
     if fs::canonicalize(interpreter).context(ERROR)? != real || !real.is_file() {
         bail!(ERROR);
     }
-    // Only ordinary venv aliases are accepted, never directory links or an
-    // interpreter redirected outside the pinned distribution.
-    let mut link = venv.join("bin/python");
-    let mut complete = false;
-    for _ in 0..4 {
-        if fs::canonicalize(&link).context(ERROR)? != real {
-            bail!(ERROR);
-        }
-        let info = fs::symlink_metadata(&link).context(ERROR)?;
-        if info.file_type().is_symlink() {
-            if info.uid() != unsafe { libc::geteuid() } {
-                bail!(ERROR);
-            }
-            let target = fs::read_link(&link).context(ERROR)?;
-            let next = if target.is_absolute() {
-                target
-            } else {
-                link.parent().context(ERROR)?.join(target)
-            };
-            if next == real {
-                complete = true;
-                break;
-            }
-            if ![
-                venv.join("bin/python"),
-                venv.join("bin/python3"),
-                venv.join("bin/python3.12"),
-            ]
-            .contains(&next)
-            {
-                bail!(ERROR);
-            }
-            link = next;
-        } else {
-            bail!(ERROR);
-        }
-    }
-    if !complete {
-        bail!(ERROR);
-    }
+    let venv_binding = VenvBinding::verify(&venv, &base, &policy.version)?;
     let library = base.join("lib/libpython3.12.dylib");
     if tree.library.is_none() {
-        bail!(ERROR);
-    }
-    let mut config_file = open(&venv.join("pyvenv.cfg"), false)?;
-    let config_stamp = stamp(&config_file.metadata().context(ERROR)?);
-    let mut text = String::new();
-    Read::by_ref(&mut config_file)
-        .take(16 * 1024 + 1)
-        .read_to_string(&mut text)
-        .context(ERROR)?;
-    if text.len() > 16 * 1024 {
-        bail!(ERROR);
-    }
-    let mut values = BTreeMap::new();
-    for line in text.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            if values
-                .insert(key.trim().to_lowercase(), value.trim())
-                .is_some()
-            {
-                bail!(ERROR);
-            }
-        }
-    }
-    if values.get("include-system-site-packages") != Some(&"false")
-        || values.get("version").copied() != Some(policy.version.as_str())
-        || values
-            .get("home")
-            .map(Path::new)
-            .and_then(|path| fs::canonicalize(path).ok())
-            != Some(base.join("bin"))
-    {
         bail!(ERROR);
     }
     let runtime = VerifiedRuntime {
@@ -293,7 +215,7 @@ fn validate_pinned(
         venv,
         library,
         tree: Some(tree),
-        config: Some((config_file, config_stamp)),
+        venv_binding: Some(venv_binding),
         fixture_library: None,
         version: policy.version.clone(),
     };

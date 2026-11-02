@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 655 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
+и helper), 661 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 18 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -212,3 +212,25 @@ venv, созданный сразу по окончательному пути. 
 archive install, отказ повреждённого архива, сохранение предыдущего executable и
 повторную активацию. Установщик не пишет `ready-v2`, не ставит pip/packages/models
 и не означает готовность ASR. [Протокол установки](decisions/linux-runtime-generations.md).
+
+## Выбор активного поколения перед обработкой
+
+```sh
+.build/rust/debug/posle-engine --posle-check-python-runtime --root "$AFTER_RUNTIME_TEST_ROOT"
+```
+
+Команда читает ограниченный `active.json`, проверяет canonical UUID v4, target,
+точную версию и фиксированный путь interpreter внутри поколения. Затем проверяет
+полный base inventory и `pyvenv.cfg`/alias chain через общий Unix `runtime_venv.rs`.
+Путь из receipt не становится разрешением запустить произвольный Python.
+
+Native `validate_active()` возвращает guard с `recheck()`; его нужно держать до
+завершения процесса. Новый active pointer влияет на последующие выборы и не
+обесценивает уже выбранное поколение. Real fixture теперь проверяет pointer/config/
+alias redirect и удержание настоящего поколения во время atomic pointer update.
+Он запускает opt-in Rust contract с feature `linux-runtime-fixture`.
+
+Проверка не подтверждает происхождение third-party packages и не запускает ASR.
+Текущий `worker.rs` ещё использует старый Darwin launch path: подключение Linux
+execution adapter и speech-зависимостей остаётся следующим этапом.
+[Решение](decisions/active-runtime-selection.md).

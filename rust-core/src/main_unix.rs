@@ -160,6 +160,18 @@ fn main() {
         return;
     }
     #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(posle_core::python_runtime::CHECK_MODE)) {
+        let args: Vec<_> = std::env::args_os().skip(2).collect();
+        let result = if args.len() == 2 && args[0] == "--root" {
+            posle_core::python_runtime::validate_active(Path::new(&args[1]))
+        } else { Err(anyhow::anyhow!("Usage: --posle-check-python-runtime --root /absolute/private/root")) };
+        match result {
+            Ok(runtime) => println!("{}", serde_json::to_string(runtime.installation()).unwrap()),
+            Err(error) => { eprintln!("{error:#}"); std::process::exit(1); }
+        }
+        return;
+    }
+    #[cfg(target_os = "linux")]
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(posle_core::python_runtime::INSTALL_MODE)) {
         let args: Vec<_> = std::env::args_os().skip(2).collect();
         let result = if args.len() == 3 && args[0] == "--root" && args[2] == "--download" {

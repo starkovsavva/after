@@ -44,6 +44,6 @@ executes both retained interpreters. The network fixture also exercises the nati
 Rust downloader. All data is disposable; source/materials are never uploaded.
 
 This installs CPython and a clean venv only. It does not write `ready-v2`, install
-packages/models, load the macOS PyConfig ABI, or enable ASR. Next: backend-specific
-dependencies, verified active-generation selection/execution, queue integration,
+packages/models, load the macOS PyConfig ABI, or enable ASR. Verified [active-generation selection](active-runtime-selection.md) is now available.
+Next: backend-specific dependencies, Linux speech execution and queue integration,
 cancellation and admission against live processing. Existing macOS setup is unchanged.

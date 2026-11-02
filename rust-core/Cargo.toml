@@ -20,6 +20,7 @@ path = "experiments/managed_embedding_helper.rs"
 required-features = ["embedding-helper-experiment"]
 
 [features]
+linux-runtime-fixture = []
 embedding-helper-experiment = []
 
 [dependencies]
