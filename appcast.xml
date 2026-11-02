@@ -6,43 +6,43 @@
     <description>Обновления After для macOS</description>
     <language>ru</language>
     <item>
-      <title>After 0.18.2</title>
-      <sparkle:version>39</sparkle:version>
-      <sparkle:shortVersionString>0.18.2</sparkle:shortVersionString>
+      <title>After 0.18.3</title>
+      <sparkle:version>40</sparkle:version>
+      <sparkle:shortVersionString>0.18.3</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
       <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-      <pubDate>Sun, 01 Nov 2026 10:50:27 GMT</pubDate>
-      <description sparkle:format="markdown"># After 0.18.2
+      <pubDate>Mon, 02 Nov 2026 11:32:40 GMT</pubDate>
+      <description sparkle:format="markdown"># After 0.18.3
 
 ## Русский
 
-Обновлённые элементы управления и исправления доски задач.
+Удобнее отбирать заметки и карточки, сохраняя порядок в библиотеке.
 
-- **Единый стиль.** Мягкие кнопки с лёгкой тенью, раздельные варианты выбора и компактные селекторы. Улучшены отступы, переносы фильтров и сообщения в настройках.
-- **Выбор заметок.** Карточки показывают текст, папку и дату; полную заметку можно прочитать перед добавлением. Выбор сохраняется при поиске и смене папки, карточки в ряду выровнены по высоте.
-- **Сохранение подборки.** При ошибке окно остаётся открытым, название и выбранные заметки сохраняются для повторной попытки.
-- **Доска задач.** Карточки переносятся между статусами левой кнопкой мыши. Прокрутка у края помогает добраться до скрытой колонки; новый статус сохраняется после переноса.
-- **Смена языка.** Служебные статусы пересборки базы знаний обновляются вместе с интерфейсом, сохраняя предложение и введённые инструкции.
+- **Строки поиска.** Спокойный фон без яркой нативной рамки, высота не меньше 36 pt и больше места для текста. Единое оформление в библиотеке, карточках, базе знаний, подборках и вспомогательных панелях.
+- **Единые фильтры.** Добавляйте условия по происхождению, готовой теме и типу материала. Активные условия можно сочетать и удалять по отдельности; выбор сохраняется между открытиями.
+- **Карточки.** Фильтры работают вместе с поиском, выбором колоды и режимом повторения. Тема источника отбирает карточки из встреч, входящих в выбранную тему.
+- **Происхождение материалов.** Два варианта: «Создано мной» и «Создано ИИ». Импорт входит в «Создано мной». Правки и восстановление копии сохраняют происхождение.
+- **Сохранность правок.** Обновление тем сохраняет открытый редактор, фокус и отмену правок. При конфликте сохранения фильтр не скрывает несохранённый черновик.
 
 ## English
 
-Refreshed controls and task board fixes.
+Find the notes and flashcards you need while keeping your library organized.
 
-- **Consistent controls.** Soft buttons with subtle shadows, separate choices, and compact selectors. Improved spacing, filter wrapping, and settings messages.
-- **Choosing notes.** Cards show text, folder, and date; read a full note before adding it. Selection survives searches and folder changes, and cards align within each row.
-- **Saving collections.** A failed save keeps the window open and preserves the name and selected notes for another attempt.
-- **Task board.** Drag cards between statuses with the left mouse button. Edge scrolling reveals hidden columns, and the new status is saved after a move.
-- **Language changes.** Knowledge reorganization status messages follow the interface language while preserving your proposal and instructions.
+- **Search fields.** A softer background, no bright native bezel, a minimum height of 36 pt, and more room for text. Consistent styling across the library, flashcards, knowledge base, collections, and supporting panels.
+- **Unified filters.** Add conditions for origin, an existing topic, and material type. Combine conditions or remove them individually; your selection is saved between visits.
+- **Flashcards.** Filters work with search, deck selection, and review mode. Source topics select cards from meetings included in the chosen topic.
+- **Material origin.** Choose between personal and AI-created materials; imports count as personal. Edits and copy recovery preserve their origin.
+- **Preserved edits.** Topic refreshes preserve the open editor, focus, and Undo. A save conflict keeps your unsaved draft visible when changing filters.
 </description>
-      <posle:sourceRevision>9a082ba63426e909cdb52a27c651db96ebb8de16</posle:sourceRevision>
-      <posle:archiveSHA256>1627574216de74cc33b0b8e473ca926f8badb690bd61c889a7cddea03b368002</posle:archiveSHA256>
-      <posle:sourceSHA256>9b40df0572f5e421a41e88a7d7905ded0fe3234903cf1a3d607e5134dafcf9ac</posle:sourceSHA256>
-      <posle:packageSHA256>8a1770a2abb0124e9e0260c6fde208ee332918f1c30136fdb3f80571258dbc96</posle:packageSHA256>
-      <enclosure url="https://github.com/starkovsavva/after/releases/download/v0.18.2/After-Mac-AppleSilicon.zip" sparkle:edSignature="+mWE1m889yLGhUFxu1oNXrZ99gK0NI7kb+QdjEclbcRO+8aT9eev033EofVxTPzQ7UVx6wV92PR+s5hW60m3Cg==" length="29350764" type="application/octet-stream" />
+      <posle:sourceRevision>333286e11950b9d74f7b18b5576c2cdee21aec53</posle:sourceRevision>
+      <posle:archiveSHA256>a56903d9ef30fdd8158c15300a5bff096caf46814e4bdcc3cb3c5a7fbfe43148</posle:archiveSHA256>
+      <posle:sourceSHA256>7db1b6083bebb36a7658c8d65f6747aa6d82eb27b76139d7d2a002190306628e</posle:sourceSHA256>
+      <posle:packageSHA256>aead44b606625b50407f3824d2dc6862f8b8d10137e0f1dc6f890bdd4fc23e86</posle:packageSHA256>
+      <enclosure url="https://github.com/starkovsavva/after/releases/download/v0.18.3/After-Mac-AppleSilicon.zip" sparkle:edSignature="ZgkRNP/5uD2zzC2v1RwMSQp2OcAsxTjlf06NOTsjrxCwWlEyd8triVlxuC7B+rpX0KChLLFY4oT++An4F3lTDQ==" length="29637458" type="application/octet-stream" />
     </item>
   </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: BWYq+mFy+xHPMFi0uyI/NXE9z7Qu5aTVQS3scpMLxc04BhNfrofUQIwM1lwA4nNthzESjH5Y29oBFjVWM2FZBQ==
-length: 3937
+edSignature: bKW59sfyCRA+vEj1a/qW6Qi0W0Q3tN7PTMHwd91NzlzPYB7H99V7OeLliaFON4VFprMTyvnbsPxMZ8hisNAYAA==
+length: 4212
 -->
