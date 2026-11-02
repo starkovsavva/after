@@ -2,6 +2,17 @@ import AfterCore
 import AfterLocalization
 import SwiftUI
 
+extension MaterialCreationOrigin {
+    /// Display categories are narrower than the canonical provenance values.
+    var badgeTitleKey: String? {
+        switch self {
+        case .manual, .imported: "Создано мной"
+        case .ai: "Создано ИИ"
+        case .unknown: nil
+        }
+    }
+}
+
 /// One extensible entry point for library conditions. Editing a popover draft
 /// never changes the library until its owner accepts the complete selection.
 struct MaterialFiltersControl: View {
@@ -118,7 +129,7 @@ struct MaterialFiltersControl: View {
         switch field {
         case .origin:
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(MaterialCreationOrigin.allCases, id: \.self) { origin in
+                ForEach(MaterialCreationOrigin.selectableOrigins, id: \.self) { origin in
                     Toggle(L(origin.titleKey), isOn: Binding(get: { draft.origins.contains(origin) }, set: { enabled in
                         if enabled { draft.origins.insert(origin) } else { draft.origins.remove(origin) }
                     })).toggleStyle(.checkbox).accessibilityIdentifier(identifier + ".origin." + origin.rawValue)
@@ -194,7 +205,7 @@ struct MaterialFiltersControl: View {
     private func chipTitle(_ field: Field) -> String {
         let value: String
         switch field {
-        case .origin: value = MaterialCreationOrigin.allCases.filter { selection.origins.contains($0) }.map { L($0.titleKey) }.joined(separator: ", ")
+        case .origin: value = MaterialCreationOrigin.selectableOrigins.filter { selection.origins.contains($0) }.map { L($0.titleKey) }.joined(separator: ", ")
         case .topic: value = selection.topicIDs.sorted().map { id in availableTopics.first { $0.id == id }?.title ?? L("Тема сейчас недоступна") }.joined(separator: ", ")
         case .kind: value = selection.kinds.sorted().map(kindTitle).joined(separator: ", ")
         }

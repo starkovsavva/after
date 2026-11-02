@@ -189,7 +189,9 @@ struct CardsWorkspaceView: View {
                             if entry.suspended { Image(systemName: "pause.circle").foregroundStyle(.secondary).accessibilityLabel(L("Не повторяется")) }
                         }
                         Text(entry.card.back).font(AppTypography.control).foregroundStyle(.secondary).lineLimit(2)
-                        Text(L(entry.card.creationOrigin.titleKey)).font(AppTypography.caption).foregroundStyle(.secondary)
+                        if let title = entry.card.creationOrigin.badgeTitleKey {
+                            Text(L(title)).font(AppTypography.caption).foregroundStyle(.secondary)
+                        }
                         if !embedded { Text(entry.meeting.title).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1) }
                     }.padding(.vertical, 6).tag(entry.id)
                 }
@@ -242,10 +244,6 @@ struct CardsWorkspaceView: View {
             } else if filters.activeCount > 0 && matching.isEmpty {
                 Text(L("Нет карточек по выбранным фильтрам")).font(AppTypography.heading)
                     .accessibilityIdentifier("cards.empty.filters")
-                if !filters.origins.isEmpty && scopedEntries.contains(where: { (deck.isEmpty || $0.meeting.id == deck) && $0.card.creationOrigin == .unknown }) {
-                    Text(L("У старых материалов происхождение может быть не указано. Они доступны без фильтра по происхождению."))
-                        .font(AppTypography.body).foregroundStyle(.secondary)
-                }
                 Button(L("Сбросить фильтры")) { filtersBinding.wrappedValue = MaterialFilterSet() }
                     .buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("cards.filters.clear-all")
             } else if !query.isEmpty {

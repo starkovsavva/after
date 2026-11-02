@@ -112,7 +112,7 @@ enum NotesOriginNativeChecks {
         try expect(!MaterialFilterNativeNavigation.contains("notes.filters.origin.ai", host: host),
                    "Origin choices must live inside the unified filter editor")
         try capture(host, at: root.appendingPathComponent("notes-origin-all.png"))
-        try await choose(.manual, count: 2)
+        try await choose(.manual, count: 3)
         try expect(document.draft?.creationOrigin == .manual, "Origin changes must select a visible matching note")
         try capture(host, at: root.appendingPathComponent("notes-origin-manual.png"))
         try await choose(.ai, count: 1)
@@ -129,14 +129,14 @@ enum NotesOriginNativeChecks {
             try capture(popup, at: root.appendingPathComponent("notes-filters-editor.png"))
         }
         try MaterialFilterNativeNavigation.press("notes.filters.apply", host: host)
-        try await wait(host, window) { count(3) }
+        try await wait(host, window) { count(4) }
         let multiple = OriginFilterPreferences(); multiple.configure(root: root)
         try expect(multiple.notesFilters.origins == [.manual, .ai], "Multiple origins must combine with OR inside one condition")
         try MaterialFilterNativeNavigation.press("notes.filters.button", host: host)
         try await wait(host, window) { MaterialFilterNativeNavigation.contains("notes.filters.origin.manual", host: host) }
         try MaterialFilterNativeNavigation.press("notes.filters.origin.manual", host: host)
         try MaterialFilterNativeNavigation.press("notes.filters.cancel", host: host)
-        try await wait(host, window) { !MaterialFilterNativeNavigation.contains("notes.filters.popover", host: host) && count(3) }
+        try await wait(host, window) { !MaterialFilterNativeNavigation.contains("notes.filters.popover", host: host) && count(4) }
         try await choose(.ai, count: 1)
         try MaterialFilterNativeNavigation.press("notes.filters.button", host: host)
         try await wait(host, window) { MaterialFilterNativeNavigation.contains("notes.filters.popover", host: host) }
@@ -190,7 +190,12 @@ enum NotesOriginNativeChecks {
         try MaterialFilterNativeNavigation.press("notes.filters.remove.origin", host: host)
         try await wait(host, window) { count(1) && NativePickerChecks.value("notes.section", in: [host]) == L("Корзина") }
         notes.selectedNoteID = "origin-legacy"
-        try await wait(host, window) { count(6) && document.selectedID == "origin-legacy" && hasOrigin(.all, root: root) }
+        try await wait(host, window) {
+            count(6) && document.selectedID == "origin-legacy" && hasOrigin(.all, root: root)
+                && !NativeTabNavigation.contains("notes.editor.origin", in: host)
+        }
+        try expect(!NativeTabNavigation.contains("notes.editor.origin", in: host),
+                   "Legacy notes must remain available without an unknown-origin badge")
         try await choose(.ai, count: 1)
         notes.reload()
         try await wait(host, window) { count(1) && hasOrigin(.ai, root: root) }
@@ -343,7 +348,7 @@ enum NotesOriginNativeChecks {
                    "Opening meeting notes with an old hidden highlight must retain persisted filters and composer draft")
         try capture(host, at: root.appendingPathComponent("notes-filters-meeting-ai.png"))
         try await setOrigin(.manual, prefix: "notes.meeting.filters", host: host, window: window)
-        try await wait(host, window) { count(1) && hasOrigin(.manual, root: root) }
+        try await wait(host, window) { count(2) && hasOrigin(.manual, root: root) }
         try expect(notes.captureDrafts[meeting.id] == "Meeting draft remains while filtering",
                    "Filtering meeting notes must retain the unfinished composer text")
         try MaterialFilterNativeNavigation.press("notes.meeting.filters.remove.origin", host: host)

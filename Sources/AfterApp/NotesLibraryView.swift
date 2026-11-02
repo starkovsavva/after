@@ -202,10 +202,6 @@ struct NotesLibraryView: View {
                 if let error = filterController.error {
                     Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning).accessibilityIdentifier("notes.filters.error")
                 }
-                if visibleNotes.isEmpty && !originFilters.notesFilters.origins.isEmpty && notes.workspace.notes.contains(where: { $0.creationOrigin == .unknown }) {
-                    Text(L("У старых материалов происхождение может быть не указано. Они доступны без фильтра по происхождению."))
-                        .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
                 if let error = originFilters.error {
                     Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning)
                         .fixedSize(horizontal: false, vertical: true)
@@ -372,8 +368,10 @@ struct NotesLibraryView: View {
                 if !note.attachments.isEmpty { Image(systemName: "paperclip").font(AppTypography.caption).foregroundStyle(.secondary) }
                 if note.meetingID != nil { Image(systemName: "waveform").font(AppTypography.caption).foregroundStyle(.secondary) }
             }
-            Text(L(note.creationOrigin.titleKey)).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
-                .help(L(note.creationOrigin.titleKey)).accessibilityIdentifier("notes.origin.badge." + note.id)
+            if let title = note.creationOrigin.badgeTitleKey {
+                Text(L(title)).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .help(L(title)).accessibilityIdentifier("notes.origin.badge." + note.id)
+            }
             let snippet = note.text.split(separator: "\n").dropFirst(note.title.isEmpty ? 1 : 0).joined(separator: " ")
             if !snippet.isEmpty { Text(snippet).font(AppTypography.control).foregroundStyle(.secondary).lineLimit(2) }
             let folderName = notes.folder(noteFolderID(note))?.name ?? note.folder
@@ -434,8 +432,10 @@ struct NotesLibraryView: View {
                     .accessibilityLabel(L("Заголовок заметки"))
                 HStack(spacing: 10) {
                     Text(Date(timeIntervalSince1970: draft.updatedAt), style: .date).font(AppTypography.caption).foregroundStyle(.secondary)
-                    Text(L(draft.creationOrigin.titleKey)).font(AppTypography.caption).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("notes.editor.origin")
+                    if let title = draft.creationOrigin.badgeTitleKey {
+                        Text(L(title)).font(AppTypography.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("notes.editor.origin")
+                    }
                     if let meetingID = draft.meetingID {
                         if let meeting = app.allNoteMeetings.first(where: { $0.id == meetingID }) {
                             Button { if document.flush() { app.openMeeting(meetingID, tab: "notes") } } label: { Label(meeting.title, systemImage: "waveform").lineLimit(1) }.buttonStyle(.link).font(AppTypography.caption)

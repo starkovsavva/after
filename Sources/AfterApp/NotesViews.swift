@@ -71,10 +71,6 @@ struct NotesWorkspaceView: View {
                     if let error = originFilters.error {
                         Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning)
                     }
-                    if visibleNotes.isEmpty && !originFilters.notesFilters.origins.isEmpty && meetingNotes.contains(where: { $0.creationOrigin == .unknown }) {
-                        Text(L("У старых материалов происхождение может быть не указано. Они доступны без фильтра по происхождению."))
-                            .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
                     if visibleNotes.isEmpty && notes.error == nil {
                         if meetingNotes.isEmpty { NotesEmpty(title: L("Заметок пока нет"), text: "", icon: "pencil.and.outline") }
                         else {
@@ -267,8 +263,9 @@ private struct NoteRow: View {
                     .menuStyle(.borderlessButton).frame(width: 26).accessibilityLabel(L("Действия с заметкой"))
             }
             HStack(spacing: 10) {
-                Text(L(note.creationOrigin.titleKey)).lineLimit(1)
-                    .accessibilityIdentifier("notes.row.origin." + note.id)
+                if let title = note.creationOrigin.badgeTitleKey {
+                    Text(L(title)).lineLimit(1).accessibilityIdentifier("notes.row.origin." + note.id)
+                }
                 if let timestamp = note.timestamp, note.meetingID != nil, !meetingUnavailable {
                     Button(Exporter.timestamp(timestamp)) { open() }.monospacedDigit().buttonStyle(.borderless).help(L("Открыть момент без воспроизведения"))
                 }

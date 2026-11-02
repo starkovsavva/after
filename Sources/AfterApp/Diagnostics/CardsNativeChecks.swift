@@ -25,6 +25,18 @@ enum MaterialFilterNativeNavigation {
         }
         try NativeTabNavigation.press(identifier, in: root)
     }
+    private static func controlRoot(_ identifier: String, host: NSView) -> NSView? {
+        // A host's AX children can include its attached popover. Prefer that
+        // popover's own smaller window for native activation coordinates.
+        roots(host).filter { root in
+            root.window?.isVisible == true && NativeTabNavigation.nodes(in: root).contains {
+                $0.identifier == identifier && $0.enabled && $0.frame?.isEmpty == false
+            }
+        }.min { first, second in
+            guard let a = first.window?.frame, let b = second.window?.frame else { return false }
+            return a.width * a.height < b.width * b.height
+        }
+    }
     static func add(_ title: String, prefix: String, host: NSView) async throws {
         // A popover can publish its Apply node before the action Menu mounts.
         // SwiftUI may expose that Menu as a virtual menu button rather than an
@@ -50,7 +62,7 @@ enum MaterialFilterNativeNavigation {
                 }
             }
         }
-        let owner = roots(host).first { NativeTabNavigation.contains(identifier, in: $0) }?.window ?? host.window
+        let owner = controlRoot(identifier, host: host)?.window ?? host.window
         guard let owner else { throw AppError.message("Material filter menu window missing: " + identifier) }
         let driver = MenuActionDriver(title: title, window: owner)
         let timer = Timer(fireAt: Date().addingTimeInterval(0.2), interval: 0.05,
@@ -60,7 +72,28 @@ enum MaterialFilterNativeNavigation {
         RunLoop.main.add(timer, forMode: .eventTracking)
         RunLoop.main.add(timer, forMode: .default)
         defer { timer.invalidate() }
-        guard candidates.contains(where: { $0.press() }) else { throw AppError.message("Material filter menu AX press failed: " + identifier) }
+        var opened = false
+        for _ in 0..<40 {
+            // Removing a criterion rebuilds SwiftUI's virtual menu node. Never
+            // activate the cached AX object collected before that transition.
+            let liveRoots = roots(host)
+            liveRoots.forEach { $0.layoutSubtreeIfNeeded(); $0.window?.displayIfNeeded() }
+            let live = liveRoots.flatMap { NativeTabNavigation.nodes(in: $0) }.filter {
+                $0.identifier == identifier && $0.enabled && $0.frame?.isEmpty == false
+            }
+            if live.contains(where: { $0.press() }) || driver.sentSelection { opened = true; break }
+            if let liveRoot = controlRoot(identifier, host: host), let liveWindow = liveRoot.window {
+                // A virtual AX menu can reject Press while AppKit attaches it.
+                // Use the actual freshly measured control's native mouse path.
+                try NativeTabNavigation.click(identifier, in: liveRoot, window: liveWindow)
+                try await Task.sleep(for: .milliseconds(50))
+                if driver.sentSelection || NSApp.windows.contains(where: { $0.isVisible && $0.level == .popUpMenu }) {
+                    opened = true; break
+                }
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard opened else { throw AppError.message("Material filter menu did not accept native activation: " + identifier) }
         for _ in 0..<150 {
             if driver.finished { break }
             try await Task.sleep(for: .milliseconds(20))
@@ -344,6 +377,10 @@ enum CardsNativeChecks {
         try await wait(host, window) { MaterialFilterNativeNavigation.contains("cards.filters.apply", host: host) }
         try await MaterialFilterNativeNavigation.add(L("Происхождение"), prefix: "cards.filters", host: host)
         try await wait(host, window) { MaterialFilterNativeNavigation.contains("cards.filters.origin.manual", host: host) }
+        try expect(MaterialFilterNativeNavigation.contains("cards.filters.origin.ai", host: host)
+                   && !MaterialFilterNativeNavigation.contains("cards.filters.origin.imported", host: host)
+                   && !MaterialFilterNativeNavigation.contains("cards.filters.origin.unknown", host: host),
+                   "Origin editor must expose only AI and created-by-me choices")
         try MaterialFilterNativeNavigation.press("cards.filters.origin.manual", host: host)
         try MaterialFilterNativeNavigation.press("cards.filters.cancel", host: host)
         try await wait(host, window) { hasOrigin(.all) && hasCount(5) && !MaterialFilterNativeNavigation.contains("cards.filters.apply", host: host) }
@@ -364,7 +401,7 @@ enum CardsNativeChecks {
         } else { throw AppError.message("Filter builder native capture unavailable") }
         try MaterialFilterNativeNavigation.press("cards.filters.apply", host: host)
         try await wait(host, window) {
-            hasCount(2) && NativeTabNavigation.contains("cards.filters.chip.origin", in: host)
+            hasCount(3) && NativeTabNavigation.contains("cards.filters.chip.origin", in: host)
                 && !MaterialFilterNativeNavigation.contains("cards.filters.apply", host: host)
         }
         try NativeTabNavigation.press("cards.filters.button", in: host)
@@ -374,11 +411,17 @@ enum CardsNativeChecks {
         try MaterialFilterNativeNavigation.press("cards.filters.kind.concept", host: host)
         try MaterialFilterNativeNavigation.press("cards.filters.apply", host: host)
         try await wait(host, window) {
-            hasCount(0) && NativeTabNavigation.contains("cards.filters.chip.kind", in: host)
+            hasCount(1) && NativeTabNavigation.contains("cards.filters.chip.kind", in: host)
                 && !MaterialFilterNativeNavigation.contains("cards.filters.apply", host: host)
         }
+        try await wait(host, window) {
+            NativeTabNavigation.nodes(in: host).contains {
+                $0.identifier == "cards.detail.origin" &&
+                    ($0.value == L("Создано мной") || ($0.object as? any NSAccessibilityProtocol)?.accessibilityLabel() == L("Создано мной"))
+            }
+        }
         try NativeTabNavigation.press("cards.filters.remove.kind", in: host)
-        try await wait(host, window) { hasCount(2) && !NativeTabNavigation.contains("cards.filters.chip.kind", in: host) }
+        try await wait(host, window) { hasCount(3) && !NativeTabNavigation.contains("cards.filters.chip.kind", in: host) }
         try NativeTabNavigation.press("cards.filters.remove.origin", in: host)
         try await wait(host, window) { hasOrigin(.all) && hasCount(5) }
         try await snapshot("all-light", origin: .all, count: 5)
@@ -395,7 +438,7 @@ enum CardsNativeChecks {
         try await search("", count: 5)
         try NativeTabNavigation.press("cards.mode.study", in: host)
         try await wait(host, window) { NativeTabNavigation.isSelected("cards.mode.study", in: host) && hasCount(4) }
-        try await chooseOrigin(.manual, count: 0)
+        try await chooseOrigin(.manual, count: 1)
         try await chooseOrigin(.ai, count: 1)
         try NativeTabNavigation.press("cards.mode.all", in: host)
         try await wait(host, window) { hasCount(1) && descendants(host, as: NSTableView.self).contains { $0.numberOfRows == 1 && $0.selectedRow == 0 } }
@@ -403,7 +446,10 @@ enum CardsNativeChecks {
         try await wait(host, window) {
             hasOrigin(.all) && hasCount(5)
                 && descendants(host, as: NSTableView.self).contains { $0.numberOfRows == 5 && $0.selectedRow == 3 }
+                && !NativeTabNavigation.contains("cards.detail.origin", in: host)
         }
+        try expect(!NativeTabNavigation.contains("cards.detail.origin", in: host),
+                   "A legacy card must remain available in the general list without an unknown-origin badge")
         try await chooseOrigin(.ai, count: 1)
         app.navigationTarget = nil
         let reopened = OriginFilterPreferences(); reopened.configure(root: root)
