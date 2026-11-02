@@ -80,16 +80,32 @@ def install(source: Path, root: Path) -> Path:
     return target
 
 
-def configure(root: Path) -> Path:
-    for directory in (root / "runtime", root / "runtime/venv", root / "runtime/venv/bin"):
-        if directory.is_symlink():
+def private_venv(root: Path, venv: Path) -> Path:
+    """Bind a host-selected venv to owned runtime directories, independent of layout."""
+    runtime = root.resolve(strict=True) / "runtime"
+    if not venv.is_absolute() or ".." in venv.parts:
+        raise RuntimeError("Нужен абсолютный путь собственной среды After.")
+    try:
+        relative = venv.relative_to(runtime)
+    except ValueError as exc:
+        raise RuntimeError("Среда распознавания должна находиться в собственной папке After.") from exc
+    current = runtime
+    for part in (None, *relative.parts, "bin"):
+        if part is not None:
+            current = current / part
+        info = current.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
             raise RuntimeError("Среда распознавания должна находиться в собственной папке After. Подготовьте её в настройках.")
+    return venv.resolve(strict=True)
+
+
+def configure(root: Path, venv: Path) -> Path:
+    venv = private_venv(root, venv)
     import imageio_ffmpeg
     # Only the dependency installed in this private runtime is copied. Ambient
     # overrides must not redirect app-owned executable setup to another app.
     os.environ.pop("IMAGEIO_FFMPEG_EXE", None)
     source = Path(imageio_ffmpeg.get_ffmpeg_exe()).resolve(strict=True)
-    venv = (root / "runtime/venv").resolve(strict=True)
     if not source.is_relative_to(venv):
         raise RuntimeError("Не найден собственный движок аудио. Подготовьте распознавание в настройках.")
     target = install(source, root)

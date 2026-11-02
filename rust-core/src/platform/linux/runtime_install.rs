@@ -3,14 +3,15 @@
 use super::python_runtime::{artifact, verify_distribution};
 use crate::{
     application::runtime_install::{self, RuntimeInstallation},
-    infrastructure::runtime_tree::{absolute, open},
+    infrastructure::generation_store::{
+        owned_directory, seal_distribution, Candidate, GenerationStore,
+    },
 };
-use anyhow::{ensure, Context, Result};
+use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File},
+    fs,
     io::Read,
-    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -27,99 +28,20 @@ pub struct InstalledRuntime {
     pub interpreter: PathBuf,
 }
 struct Installer {
-    directory: PathBuf,
-    pinned: File,
-    lock: File,
+    store: GenerationStore,
     archive: Option<PathBuf>,
     cpu: bool,
     wheelhouse: Option<PathBuf>,
 }
-impl Drop for Installer {
-    fn drop(&mut self) {
-        let _ = self.lock.unlock();
-    }
-}
-struct Candidate {
-    directory: PathBuf,
-    preserve: bool,
-    pinned: File,
-}
-impl Candidate {
-    fn recheck(&self) -> Result<()> {
-        let held = self.pinned.metadata()?;
-        let actual = fs::symlink_metadata(&self.directory)?;
-        ensure!(
-            actual.is_dir() && actual.dev() == held.dev() && actual.ino() == held.ino(),
-            "Runtime candidate directory changed"
-        );
-        Ok(())
-    }
-}
-impl Drop for Candidate {
-    fn drop(&mut self) {
-        if !self.preserve && self.recheck().is_ok() {
-            let _ = remove_candidate(&self.directory);
-        }
-    }
-}
-fn remove_candidate(path: &Path) -> Result<()> {
-    // Never follow venv aliases or distribution symlinks during cleanup.
-    let directory = open(path, true)?;
-    directory.set_permissions(fs::Permissions::from_mode(
-        directory.metadata()?.mode() | 0o700,
-    ))?;
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            remove_candidate(&entry.path())?;
-        } else {
-            fs::remove_file(entry.path())?;
-        }
-    }
-    fs::remove_dir(path)?;
-    Ok(())
-}
-fn owned_directory(path: &Path) -> Result<File> {
-    match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::DirBuilder::new().mode(0o700).create(path)?;
-        }
-        Err(error) => return Err(error.into()),
-        Ok(_) => {}
-    }
-    open(path, true)
-}
 impl Installer {
     fn new(root: &Path, archive: Option<&Path>) -> Result<Self> {
-        artifact()?; // Refuse unsupported targets before creating anything.
-        absolute(root)?;
-        let _root = open(root, true)?;
-        let root = root.canonicalize()?;
-        let _runtime = owned_directory(&root.join("runtime"))?;
-        let directory = root.join("runtime/linux-python");
-        let pinned = owned_directory(&directory)?;
-        let lock_path = directory.join(".install.lock");
-        crate::platform_fs::ordinary_single_file(&lock_path)?;
-        let lock = crate::platform_fs::open_private(&lock_path, false)?;
-        lock.try_lock()
-            .context("A Python runtime installation is already active")?;
+        artifact()?;
         Ok(Self {
-            directory,
-            pinned,
-            lock,
+            store: GenerationStore::open(root, "runtime/linux-python")?,
             archive: archive.map(Path::to_owned),
             cpu: false,
             wheelhouse: None,
         })
-    }
-    fn recheck(&self) -> Result<()> {
-        let held = self.pinned.metadata()?;
-        let actual = fs::symlink_metadata(&self.directory)?;
-        ensure!(
-            actual.is_dir() && actual.dev() == held.dev() && actual.ino() == held.ino(),
-            "Runtime installation directory changed"
-        );
-        Ok(())
     }
     fn run(
         &self,
@@ -127,7 +49,7 @@ impl Installer {
         program: &Path,
         arguments: &[&std::ffi::OsStr],
     ) -> Result<()> {
-        self.recheck()?;
+        self.store.recheck()?;
         candidate.recheck()?;
         let mut command = Command::new(program);
         command
@@ -160,14 +82,7 @@ impl RuntimeInstallation for Installer {
     type Candidate = Candidate;
     type Installed = InstalledRuntime;
     fn stage(&mut self) -> Result<Candidate> {
-        self.recheck()?;
-        let path = self.directory.join(uuid::Uuid::new_v4().to_string());
-        crate::platform_fs::create_private_directory(&path)?;
-        let candidate = Candidate {
-            pinned: open(&path, true)?,
-            directory: path,
-            preserve: false,
-        };
+        let candidate = self.store.create_candidate()?;
         owned_directory(&candidate.directory.join("tmp"))?;
         let spec = artifact()?;
         let archive = candidate.directory.join("python.tar.gz");
@@ -195,7 +110,7 @@ impl RuntimeInstallation for Installer {
         Ok(candidate)
     }
     fn verify_distribution(&mut self, candidate: &Candidate) -> Result<()> {
-        self.recheck()?;
+        self.store.recheck()?;
         candidate.recheck()?;
         verify_distribution(&candidate.directory.join("python"))
     }
@@ -249,7 +164,7 @@ impl RuntimeInstallation for Installer {
         self.verify_distribution(candidate)
     }
     fn activate(&mut self, candidate: &mut Candidate) -> Result<InstalledRuntime> {
-        self.recheck()?;
+        self.store.recheck()?;
         candidate.recheck()?;
         let spec = artifact()?;
         let installed = InstalledRuntime {
@@ -265,60 +180,10 @@ impl RuntimeInstallation for Installer {
             version: spec.policy.version.clone(),
             interpreter: candidate.directory.join("venv/bin/python"),
         };
-        // Flush the complete generation before publishing the pointer. Existing
-        // generations remain available to readers and are never merged/deleted.
-        sync_tree(&candidate.directory)?;
-        let active = self.directory.join("active.json");
-        crate::platform_fs::ordinary_single_file(&active)?;
-        let pending = candidate.directory.join("activation.json");
-        let mut file = crate::platform_fs::open_private(&pending, true)?;
-        serde_json::to_writer(&mut file, &installed)?;
-        file.sync_all()?;
-        // Retain the candidate if rename succeeds but a later fsync/ack fails.
-        self.recheck()?;
-        candidate.recheck()?;
-        candidate.preserve = true;
-        fs::rename(&pending, &active)?;
-        self.pinned
-            .sync_all()
-            .context("Runtime activation may be published; both generations were retained")?;
+        self.store.publish(candidate, &installed)?;
         Ok(installed)
     }
 }
-fn seal_distribution(path: &Path) -> Result<()> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            seal_distribution(&entry.path())?;
-        } else if kind.is_file() {
-            let file = crate::platform_fs::open_read(&entry.path())?;
-            file.set_permissions(fs::Permissions::from_mode(file.metadata()?.mode() & !0o222))?;
-        }
-    }
-    let directory = open(path, true)?;
-    directory.set_permissions(fs::Permissions::from_mode(
-        directory.metadata()?.mode() & !0o222,
-    ))?;
-    Ok(())
-}
-
-fn sync_tree(path: &Path) -> Result<()> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            sync_tree(&entry.path())?;
-        } else if kind.is_file() {
-            crate::platform_fs::open_read(&entry.path())?.sync_all()?;
-        } else {
-            ensure!(kind.is_symlink(), "Unexpected runtime filesystem entry");
-        }
-    }
-    open(path, true)?.sync_all()?;
-    Ok(())
-}
-
 /// Installs only CPython and a clean venv. Does not publish speech readiness or
 /// install packages/models. The caller explicitly chooses network or an archive.
 pub fn install(root: &Path, archive: Option<&Path>) -> Result<InstalledRuntime> {
@@ -329,19 +194,15 @@ pub fn install(root: &Path, archive: Option<&Path>) -> Result<InstalledRuntime> 
 mod tests {
     use super::*;
     fn candidate(installer: &Installer) -> Candidate {
-        let directory = installer.directory.join(uuid::Uuid::new_v4().to_string());
-        crate::platform_fs::create_private_directory(&directory).unwrap();
+        let candidate = installer.store.create_candidate().unwrap();
         fs::write(
-            directory.join("verified-placeholder"),
+            candidate.directory.join("verified-placeholder"),
             b"synthetic; never executed",
         )
         .unwrap();
-        Candidate {
-            pinned: open(&directory, true).unwrap(),
-            directory,
-            preserve: false,
-        }
+        candidate
     }
+
     #[test]
     fn publication_preserves_previous_generations_and_releases_the_fixed_lease() {
         let root = tempfile::tempdir().unwrap();
@@ -355,13 +216,15 @@ mod tests {
         drop(two);
         assert_ne!(first.generation, second.generation);
         assert!(installer
+            .store
             .directory
             .join(&first.generation)
             .join("verified-placeholder")
             .is_file());
-        let active: InstalledRuntime =
-            serde_json::from_slice(&fs::read(installer.directory.join("active.json")).unwrap())
-                .unwrap();
+        let active: InstalledRuntime = serde_json::from_slice(
+            &fs::read(installer.store.directory.join("active.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(active.generation, second.generation);
         drop(installer);
         assert!(Installer::new(root.path(), None).is_ok());
@@ -374,7 +237,7 @@ mod tests {
     fn failed_activation_preserves_active_bytes_and_discards_its_own_candidate() {
         let root = tempfile::tempdir().unwrap();
         let mut installer = Installer::new(root.path(), None).unwrap();
-        let active = installer.directory.join("active.json");
+        let active = installer.store.directory.join("active.json");
         fs::write(&active, b"previous activation").unwrap();
         let mut candidate = candidate(&installer);
         let path = candidate.directory.clone();
@@ -405,7 +268,7 @@ mod tests {
         let installer = Installer::new(root.path(), None).unwrap();
         let candidate = candidate(&installer);
         let path = candidate.directory.clone();
-        let moved = installer.directory.join("moved-original");
+        let moved = installer.store.directory.join("moved-original");
         fs::rename(&path, &moved).unwrap();
         fs::create_dir(&path).unwrap();
         fs::write(path.join("keep"), b"replacement; not owned by candidate").unwrap();
@@ -425,7 +288,7 @@ mod tests {
         assert!(Installer::new(root.path(), None).is_err());
         fs::remove_file(root.path().join("runtime")).unwrap();
         let installer = Installer::new(root.path(), None).unwrap();
-        let lock = installer.directory.join(".install.lock");
+        let lock = installer.store.directory.join(".install.lock");
         drop(installer);
         fs::remove_file(&lock).unwrap();
         let source = outside.path().join("keep");

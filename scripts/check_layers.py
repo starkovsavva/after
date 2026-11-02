@@ -101,7 +101,7 @@ def speech_boundary_violations(src):
 
 
 def runtime_boundary_violations(src):
-    for name in ("runtime_tree.rs", "runtime_venv.rs"):
+    for name in ("runtime_tree.rs", "runtime_venv.rs", "generation_store.rs"):
         path = src / "infrastructure" / name
         if not path.exists():
             continue

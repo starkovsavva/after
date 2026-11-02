@@ -147,7 +147,9 @@ generation installer CPython/venv реализован с atomic activation и �
 проверяемый active-generation selector и общий Unix venv binding подключены;
 Linux worker launch теперь использует verified standalone CPython через общий supervisor;
 CPU speech dependency profile подключён через pinned wheel lock и проверен на настоящем
-ONNX inference/FFmpeg; модели, очередь ASR и настоящее распознавание ещё не подключены; [ADR](decisions/runtime-inventory-boundary.md).
+ONNX inference/FFmpeg; managed Parakeet установлен через общий Unix generation store,
+реальная CLI ASR проверена на синтетической английской речи. Очередь Tauri и диаризация
+ещё не подключены; [ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,
 requirements, manifests, managed model host.

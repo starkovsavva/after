@@ -25,7 +25,7 @@ const LAYOUT: Layout<'static> = Layout {
         "lib/libpython3.12.so.1.0",
         "lib/python3.12/encodings/__init__.py",
     ],
-    library: "lib/libpython3.12.so.1.0",
+    library: Some("lib/libpython3.12.so.1.0"),
 };
 
 #[cfg(all(target_arch = "x86_64", target_env = "gnu"))]

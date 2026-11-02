@@ -89,12 +89,21 @@ class MediaRuntimeChecks(unittest.TestCase):
             legacy = binary_dir / "ffmpeg"; legacy.symlink_to(dependency)
             mock = types.SimpleNamespace(get_ffmpeg_exe=lambda: str(dependency))
             with patch.dict("sys.modules", {"imageio_ffmpeg": mock}), patch.dict(os.environ, {}, clear=True):
-                target = media_runtime.configure(root)
+                target = media_runtime.configure(root, root / "runtime/venv")
                 self.assertEqual(legacy.resolve(), dependency.resolve())
                 self.assertEqual((root / "runtime/media/bin/ffmpeg").resolve(), target.resolve())
                 self.assertEqual(os.environ["IMAGEIO_FFMPEG_EXE"], str(target))
                 self.assertEqual(os.environ["PATH"].split(os.pathsep)[0], str(root / "runtime/media/bin"))
             self.assertEqual(dependency.read_bytes(), b"signed-native")
+
+    def test_host_selected_generation_is_accepted_without_a_legacy_venv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            venv = root / "runtime/generations/example/venv"
+            (venv / "bin").mkdir(parents=True)
+            self.assertEqual(media_runtime.private_venv(root, venv), venv.resolve())
+            with self.assertRaises(RuntimeError):
+                media_runtime.private_venv(root, root / "outside")
 
     def test_configure_cannot_modify_a_foreign_symlinked_venv(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -103,6 +112,6 @@ class MediaRuntimeChecks(unittest.TestCase):
             dependency = foreign / "ffmpeg"; dependency.write_bytes(b"untouched")
             alias = foreign / "bin/ffmpeg"; alias.symlink_to(dependency)
             (root / "runtime").mkdir(); (root / "runtime/venv").symlink_to(foreign)
-            with self.assertRaises(RuntimeError): media_runtime.configure(root)
+            with self.assertRaises(RuntimeError): media_runtime.configure(root, root / "runtime/venv")
             self.assertEqual(os.readlink(alias), str(dependency))
             self.assertEqual(dependency.read_bytes(), b"untouched")

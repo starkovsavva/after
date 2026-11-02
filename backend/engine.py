@@ -1024,7 +1024,7 @@ def main():
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     if args.command in ("prepare", "transcribe", "finalize", "diarize"):
         from media_runtime import configure
-        configure(args.root)
+        configure(args.root, Path(sys.prefix))
     if args.command == "prepare":
         prepare(args.root)
     elif args.command == "install-local":

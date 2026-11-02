@@ -1,7 +1,7 @@
 # Разработка на Arch Linux
 
 Текущий Linux-срез Tauri: библиотека, заметки, папки, задачи/карточки и импорт медиа.
-Микрофон Linux реализован через локальный PulseAudio/PipeWire-Pulse. Системное аудио, ASR, конспектирование, календарь и полный паритет со Swift-клиентом
+Микрофон Linux реализован через локальный PulseAudio/PipeWire-Pulse. CLI ASR на CPU с явно выбранной managed-моделью проверен на синтетической английской речи. Системное аудио, ASR через Tauri, конспектирование, календарь и полный паритет со Swift-клиентом
 ещё находятся в плане: [этапы](linux-implementation-plan.md), [аудит](linux-portability-audit.md).
 
 ## Подготовка
@@ -232,8 +232,7 @@ alias redirect и удержание настоящего поколения в�
 
 Проверка не подтверждает происхождение third-party packages и не запускает ASR.
 Worker теперь выбирает launch через platform composition и исполняет проверенный
-Linux CPython. Optional Linux CPU dependency profile теперь доступен; настоящая ASR-обработка
-и подготовка моделей остаются следующим этапом.
+Linux CPython. Optional Linux CPU dependency profile теперь доступен; managed Parakeet и настоящая CLI ASR-обработка реализованы ниже. Интеграция очереди Tauri остаётся следующим этапом.
 [Решение](decisions/active-runtime-selection.md).
 
 ## Speech launch и общий supervisor
@@ -275,3 +274,32 @@ onnxruntime, numpy, protobuf, packaging и flatbuffers. MLX/Torch/GPU не вх�
 Это не ASR-модель, не проверка качества речи и не attestation всех installed files.
 `RECORD` не используется как trust root; models и `ready-v2` не публикуются.
 [Политика и ограничения](decisions/linux-cpu-speech-profile.md).
+
+
+## Managed Parakeet и настоящая CLI ASR
+
+После установки CPU profile в ту же disposable-библиотеку:
+
+```sh
+.build/rust/debug/posle-engine --posle-install-asr-model --root "$AFTER_RUNTIME_TEST_ROOT" --download
+# Offline: вместо --download используйте --archive /absolute/path/parakeet.tar.bz2
+```
+
+Receipt содержит `directory`: явно укажите его в `settings.json` как `asrModelPath`,
+с `speechMode: "local"`, `asrModelFormat: "onnx"`, `diarization: false`.
+Установка не меняет настройки и не публикует `ready-v2`. Native guard проверяет
+полный managed inventory до запуска backend и удерживается до завершения worker;
+замороженный job snapshot имеет приоритет над текущими настройками.
+
+Opt-in проверка требует espeak/espeak-ng и около 3 ГБ свободного места:
+
+```sh
+python3 scripts/check-linux-asr.py --python-archive /absolute/path/python.tar.gz --model-archive /absolute/path/parakeet.tar.bz2 --wheelhouse /absolute/path/wheels
+```
+
+Она устанавливает настоящий runtime/model в временную Unicode-библиотеку,
+импортирует синтетическую английскую речь и сохраняет canonical transcript.
+Проверяет отказ при повреждении архива/модели, frozen selection и сохранность
+предыдущего результата/источника. Микрофон и личные записи не используются.
+Качество других языков, диаризация и Tauri speech queue этим не подтверждены.
+[Артефакты и архитектура](decisions/managed-parakeet-model.md).

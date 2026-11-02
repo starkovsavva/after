@@ -15,7 +15,7 @@ pub(crate) const ERROR: &str = "Целостность компонентов Py
 #[derive(Clone, Copy)]
 pub(crate) struct Layout<'a> {
     pub required_files: &'a [&'a str],
-    pub library: &'a str,
+    pub library: Option<&'a str>,
 }
 #[derive(Deserialize)]
 pub(crate) struct Policy {
@@ -258,7 +258,9 @@ impl Tree {
             bail!(ERROR);
         }
         if layout.required_files.is_empty()
-            || !layout.required_files.contains(&layout.library)
+            || layout
+                .library
+                .is_some_and(|library| !layout.required_files.contains(&library))
             || layout
                 .required_files
                 .iter()
@@ -297,7 +299,7 @@ impl Tree {
         files: &BTreeMap<PathBuf, &ExpectedFile>,
         links: &BTreeMap<PathBuf, PathBuf>,
         dirs: &BTreeSet<PathBuf>,
-        library: &str,
+        library: Option<&str>,
     ) -> Result<()> {
         for name in names(directory)? {
             let path = prefix.join(&name);
@@ -310,7 +312,7 @@ impl Tree {
             } else if let Some(expected) = files.get(&path) {
                 let file = child(directory, &name, false)?;
                 self.files.insert(path.clone(), hash_file(&file, expected)?);
-                if path == Path::new(library) {
+                if library.is_some_and(|library| path == Path::new(library)) {
                     self.library = Some(file);
                 }
             } else if let Some(target) = links.get(&path) {
@@ -387,7 +389,7 @@ mod tests {
             "lib/libpython3.12.so.1.0",
             "lib/python3.12/encodings/__init__.py",
         ],
-        library: "lib/libpython3.12.so.1.0",
+        library: Some("lib/libpython3.12.so.1.0"),
     };
     fn verify_tree(base: &Path, policy: &Policy) -> Result<Tree> {
         Tree::verify(base, policy, LAYOUT)
@@ -449,6 +451,22 @@ mod tests {
         assert!(tree.directories.contains(Path::new("empty")));
     }
     #[test]
+    fn verified_data_inventory_can_omit_a_dynamic_library_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = distribution(root.path());
+        let tree = Tree::verify(
+            root.path(),
+            &policy,
+            Layout {
+                required_files: &["bin/python3.12"],
+                library: None,
+            },
+        )
+        .unwrap();
+        assert!(tree.library.is_none());
+        tree.recheck().unwrap();
+    }
+    #[test]
     fn caller_layout_must_bind_a_declared_library_and_required_bootstrap_files() {
         let tmp = tempfile::tempdir().unwrap();
         let mut policy = distribution(tmp.path());
@@ -463,7 +481,7 @@ mod tests {
             },
             Layout {
                 required_files: &["not-in-inventory"],
-                library: "not-in-inventory",
+                library: Some("not-in-inventory"),
             },
         ] {
             assert!(Tree::verify(tmp.path(), &policy, layout).is_err());

@@ -21,7 +21,7 @@ const LAYOUT: Layout<'static> = Layout {
         "lib/libpython3.12.dylib",
         "lib/python3.12/encodings/__init__.py",
     ],
-    library: "lib/libpython3.12.dylib",
+    library: Some("lib/libpython3.12.dylib"),
 };
 fn verify_tree(base: &Path, policy: &Policy) -> Result<Tree> {
     Tree::verify(base, policy, LAYOUT)

@@ -169,6 +169,28 @@ fn main() {
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
         return;
     }
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new("--posle-install-asr-model"))
+    {
+        let args: Vec<_> = std::env::args_os().skip(2).collect();
+        let result = if args.len() == 3 && args[0] == "--root" && args[2] == "--download" {
+            posle_core::asr_model::install(Path::new(&args[1]), None)
+        } else if args.len() == 4 && args[0] == "--root" && args[2] == "--archive" {
+            posle_core::asr_model::install(Path::new(&args[1]), Some(Path::new(&args[3])))
+        } else {
+            Err(anyhow::anyhow!(
+                "Usage: --posle-install-asr-model --root /owned/root (--download | --archive /model.tar.bz2)"
+            ))
+        };
+        match result {
+            Ok(model) => println!("{}", serde_json::to_string(&model).unwrap()),
+            Err(error) => {
+                eprintln!("{error:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     #[cfg(target_os = "linux")]
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(posle_core::python_runtime::CHECK_MODE)) {
         let args: Vec<_> = std::env::args_os().skip(2).collect();

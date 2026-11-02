@@ -37,9 +37,9 @@ def _media(root: Path):
     """Locate only the dependency inside this runtime, ignoring ambient overrides."""
     import imageio_ffmpeg
     from imageio_ffmpeg._definitions import FNAME_PER_PLATFORM, get_platform
-    from media_runtime import install
+    from media_runtime import install, private_venv
     source = Path(imageio_ffmpeg.__file__).resolve().parent / "binaries" / FNAME_PER_PLATFORM[get_platform()]
-    venv = (root / "runtime/venv").resolve(strict=True)
+    venv = private_venv(root, Path(sys.prefix))
     if not source.resolve(strict=True).is_relative_to(venv):
         raise RuntimeError("Не найдены собственные компоненты обработки аудио.")
     return install(source, root)

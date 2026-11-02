@@ -65,7 +65,17 @@ pub fn run_worker(
     if !backend.join("engine.py").is_file() {
         bail!("В приложении отсутствует модуль распознавания. Повторите установку приложения.");
     }
-    let spec = request.with_launch(crate::platform::speech_launch(root)?);
+    let mut launch = crate::platform::speech_launch(root)?;
+    if let Some(model) = crate::asr_model::selected_guard(root)? {
+        let mut guards = vec![model];
+        if let Some(runtime) = launch.guard.take() {
+            guards.insert(0, runtime);
+        }
+        launch.guard = Some(Box::new(
+            crate::application::speech_launch::RuntimeGuards(guards),
+        ));
+    }
+    let spec = request.with_launch(launch);
     if !spec.executable.is_file() {
         bail!("В приложении отсутствует движок распознавания. Повторите установку приложения.");
     }

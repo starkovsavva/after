@@ -16,3 +16,14 @@ pub(crate) struct SpeechLaunch {
     pub arguments: Vec<OsString>,
     pub guard: Option<Box<dyn RuntimeGuard>>,
 }
+
+#[derive(Debug)]
+pub(crate) struct RuntimeGuards(pub Vec<Box<dyn RuntimeGuard>>);
+impl RuntimeGuard for RuntimeGuards {
+    fn recheck(&self) -> Result<()> {
+        for guard in &self.0 {
+            guard.recheck()?;
+        }
+        Ok(())
+    }
+}

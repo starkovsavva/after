@@ -15,6 +15,9 @@ on:
       - 'scripts/test_python_runtime_policy.py'
       - 'backend/python-runtime*.json'
       - 'backend/python-wheels*.json'
+      - 'backend/asr-model*.json'
+      - 'backend/*media*'
+      - 'scripts/*asr*'
       - 'backend/requirements-linux-cpu.txt'
       - 'backend/probe_linux_cpu.py'
       - 'scripts/*linux*speech*'
@@ -86,7 +89,9 @@ jobs:
           cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --lib -- --ignored
       - name: Pinned Python inventory generator contracts
         if: runner.os != 'Windows'
-        run: python3 -m unittest discover -s scripts -p test_python_runtime_policy.py
+        run: |
+          python3 -m unittest discover -s scripts -p test_python_runtime_policy.py
+          python3 -m unittest discover -s scripts -p test_asr_model_policy.py
       - name: Real pinned Linux CPython and isolated venv
         if: runner.os == 'Linux'
         run: python3 scripts/check-linux-python-runtime.py --download
