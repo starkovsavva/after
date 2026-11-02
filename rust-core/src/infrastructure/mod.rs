@@ -10,3 +10,9 @@ pub(crate) mod import_source;
 pub(crate) mod executor_lease;
 
 pub(crate) mod agent_store_layout;
+
+// Production consumer is currently macOS; Linux exercises the same verifier
+// before a platform-specific pinned distribution/installer is introduced.
+#[cfg(unix)]
+#[allow(dead_code)]
+pub(crate) mod runtime_tree;

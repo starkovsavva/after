@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 626 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
+и helper), 647 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 18 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -150,3 +150,19 @@ Fixture создаёт отдельный сервер и виртуальный
 проверяет PCM и canonical queued import, сохранение после отключения и отказ
 monitor. Физический микрофон, задержка и конкретные desktop-сессии требуют
 отдельной проверки с разрешением пользователя. [Решение](decisions/linux-microphone.md).
+
+## Подготовка переносимого Python runtime
+
+`infrastructure/runtime_tree.rs` проверяет полный trusted inventory на Unix:
+SHA-256, ownership/mode, отсутствие лишнего кода, symlink substitution и metadata
+recheck. Layout и manifest выбирает вызывающий адаптер. macOS сохраняет свой pinned
+CPython и загрузчик; тесты Linux не исполняют скачанный или системный Python.
+
+```sh
+cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust --lib runtime_tree
+```
+
+21 synthetic contract покрывает ELF-style inventory и существующий macOS
+venv/descriptor binding. Это не подтверждение Linux ASR: отдельный pinned runtime,
+installer, speech dependencies и сквозная очередь обработки ещё нужны.
+[Граница verifier/loader](decisions/runtime-inventory-boundary.md).

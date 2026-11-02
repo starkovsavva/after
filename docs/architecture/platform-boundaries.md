@@ -75,8 +75,9 @@ alerts and URLs that the application does not own.
 
 `rust-core/src/platform/mod.rs` selects implementations under `platform/macos/`:
 
-- `python_runtime.rs`: pinned distribution inventory, held descriptors and loaded
-  image/version verification;
+- `python_runtime.rs`: compiled macOS distribution/layout selection, venv binding
+  and loaded image/version verification; complete inventory hashing and held file
+  descriptors live in shared `infrastructure/runtime_tree.rs`;
 - `embedded_speech.rs`: the persistent in-process CPython host and existing C ABI;
 - `managed_embedding_transport.rs`: bounded Unix-socket requests to the verified
   live child, including peer identity, cancellation and timeout checks;
@@ -84,6 +85,11 @@ alerts and URLs that the application does not own.
   streamed-copy path and is never reported as a successful installation;
 - `python_host.rs`: a separate binary-only entry point included by `main.rs`, before
   worker threads start. It is not another in-process host in the library.
+
+The Unix inventory verifier receives required bootstrap files and the library path
+from its caller. It never chooses a distribution or loads Python. Linux synthetic
+fixtures verify ELF-style inventory names and also compile/run the existing
+macOS venv/descriptor contracts; they do not prove a working Linux CPython runtime.
 
 The established crate paths `python_runtime` and `embedded_speech` are re-exported
 for compatibility. The `posle_request`, `posle_free_string`, `posle_speech_run` and

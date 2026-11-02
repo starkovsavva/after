@@ -136,6 +136,11 @@ Mac/Windows проверки остаются доступными. Нативн
 
 ## Этап 5. Linux media, Python и модели
 
+Общая descriptor-based проверка полного CPython inventory выделена в
+`infrastructure/runtime_tree.rs`; macOS сохраняет выбор pinned policy/layout и loader.
+На Linux выполняются ELF-style inventory и synthetic macOS venv contracts.
+Linux-артефакт, installer и ASR ещё не подключены; [ADR](decisions/runtime-inventory-boundary.md).
+
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,
 requirements, manifests, managed model host.
 

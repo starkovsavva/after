@@ -1,387 +1,47 @@
-//! Trusted CPython distribution policy, compiled into both native entry points.
-//! This verifies CPython itself. Third-party venv packages remain a separate
-//! dependency-installation trust boundary; their local RECORD is not a trust root.
+//! macOS CPython composition, venv binding and descriptor-based dynamic loading.
+//! Complete file verification is shared through the Unix runtime-tree adapter.
+use crate::infrastructure::runtime_tree::{
+    absolute, open, relative, stamp, Layout, Policy, Stamp, Tree, ERROR,
+};
+#[cfg(test)]
+use crate::infrastructure::runtime_tree::{secure, ExpectedFile, ExpectedLink};
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+#[cfg(test)]
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
-use std::fs::{self, File, Metadata, OpenOptions};
-use std::io::{Read, Seek};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::fs::{self, File};
+use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Component, Path, PathBuf};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-
 pub const VERIFY_MODE: &str = "--posle-verify-python-runtime";
-const ERROR: &str = "Целостность компонентов Python не подтверждена. Переустановите компоненты распознавания в настройках.";
-
-#[derive(Deserialize)]
-struct Policy {
-    version: String,
-    directory: String,
-    files: Vec<ExpectedFile>,
-    links: Vec<ExpectedLink>,
-    #[serde(default)]
-    directories: Vec<String>,
-}
-#[derive(Deserialize)]
-struct ExpectedFile {
-    path: String,
-    sha256: String,
-    size: u64,
-}
-#[derive(Deserialize)]
-struct ExpectedLink {
-    path: String,
-    target: String,
+const LAYOUT: Layout<'static> = Layout {
+    required_files: &[
+        "bin/python3.12",
+        "lib/libpython3.12.dylib",
+        "lib/python3.12/encodings/__init__.py",
+    ],
+    library: "lib/libpython3.12.dylib",
+};
+fn verify_tree(base: &Path, policy: &Policy) -> Result<Tree> {
+    Tree::verify(base, policy, LAYOUT)
 }
 fn policy() -> Result<&'static Policy> {
     static POLICY: OnceLock<std::result::Result<Policy, String>> = OnceLock::new();
     match POLICY.get_or_init(|| {
-        serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../backend/python-runtime.json")))
-            .map_err(|_| ERROR.to_owned())
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../backend/python-runtime.json"
+        )))
+        .map_err(|_| ERROR.to_owned())
     }) {
         Ok(policy) => Ok(policy),
         Err(_) => bail!(ERROR),
     }
 }
-fn relative(path: &str) -> Result<&Path> {
-    let path = Path::new(path);
-    if path.as_os_str().is_empty()
-        || path
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
-    {
-        bail!(ERROR);
-    }
-    Ok(path)
-}
-fn absolute(path: &Path) -> Result<()> {
-    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
-        bail!(ERROR);
-    }
-    Ok(())
-}
-fn secure(info: &Metadata) -> Result<()> {
-    if info.uid() != unsafe { libc::geteuid() } || info.mode() & 0o022 != 0 {
-        bail!(ERROR);
-    }
-    Ok(())
-}
-fn open(path: &Path, directory: bool) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(
-            libc::O_NOFOLLOW | libc::O_NONBLOCK | if directory { libc::O_DIRECTORY } else { 0 },
-        )
-        .open(path)
-        .context(ERROR)?;
-    let info = file.metadata().context(ERROR)?;
-    secure(&info)?;
-    if directory != info.is_dir() || (!directory && !info.is_file()) {
-        bail!(ERROR);
-    }
-    Ok(file)
-}
-fn child(parent: &File, name: &std::ffi::OsStr, directory: bool) -> Result<File> {
-    let name = CString::new(name.as_bytes()).context(ERROR)?;
-    let fd = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY
-                | libc::O_CLOEXEC
-                | libc::O_NOFOLLOW
-                | libc::O_NONBLOCK
-                | if directory { libc::O_DIRECTORY } else { 0 },
-        )
-    };
-    if fd < 0 {
-        bail!(ERROR);
-    }
-    let file = unsafe { File::from_raw_fd(fd) };
-    let info = file.metadata().context(ERROR)?;
-    secure(&info)?;
-    if directory != info.is_dir() || (!directory && !info.is_file()) {
-        bail!(ERROR);
-    }
-    Ok(file)
-}
-#[derive(PartialEq, Eq)]
-struct Stamp {
-    device: u64,
-    inode: u64,
-    size: u64,
-    modified: (i64, i64),
-    changed: (i64, i64),
-    mode: u32,
-    uid: u32,
-}
-fn stamp(info: &Metadata) -> Stamp {
-    Stamp {
-        device: info.dev(),
-        inode: info.ino(),
-        size: info.len(),
-        modified: (info.mtime(), info.mtime_nsec()),
-        changed: (info.ctime(), info.ctime_nsec()),
-        mode: info.mode(),
-        uid: info.uid(),
-    }
-}
-fn hash_file(mut file: &File, expected: &ExpectedFile) -> Result<Stamp> {
-    let before = file.metadata().context(ERROR)?;
-    secure(&before)?;
-    if !before.is_file() || before.len() != expected.size {
-        bail!(ERROR);
-    }
-    let mut hash = Sha256::new();
-    let copied = std::io::copy(
-        &mut Read::by_ref(&mut file).take(expected.size + 1),
-        &mut hash,
-    )
-    .context(ERROR)?;
-    let after = file.metadata().context(ERROR)?;
-    if copied != expected.size
-        || stamp(&before) != stamp(&after)
-        || format!("{:x}", hash.finalize()) != expected.sha256
-    {
-        bail!(ERROR);
-    }
-    // /dev/fd duplicates the held descriptor on macOS. Leave its read offset
-    // at the start rather than at EOF after hashing.
-    file.rewind().context(ERROR)?;
-    Ok(stamp(&after))
-}
-/// Enumerate via the held directory descriptor, not a re-opened path. Symlink
-/// entries are inspected separately and never traversed by this walk.
-fn names(directory: &File) -> Result<Vec<std::ffi::OsString>> {
-    let duplicate = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
-    if duplicate < 0 {
-        bail!(ERROR);
-    }
-    let stream = unsafe { libc::fdopendir(duplicate) };
-    if stream.is_null() {
-        unsafe {
-            libc::close(duplicate);
-        }
-        bail!(ERROR);
-    }
-    struct Stream(*mut libc::DIR);
-    impl Drop for Stream {
-        fn drop(&mut self) {
-            unsafe {
-                libc::closedir(self.0);
-            }
-        }
-    }
-    let stream = Stream(stream);
-    let mut result = Vec::new();
-    loop {
-        let entry = unsafe { libc::readdir(stream.0) };
-        if entry.is_null() {
-            break;
-        }
-        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
-        if name != b"." && name != b".." {
-            result.push(std::ffi::OsStr::from_bytes(name).to_owned());
-        }
-    }
-    Ok(result)
-}
-struct Tree {
-    base: PathBuf,
-    directory: File,
-    files: BTreeMap<PathBuf, Stamp>,
-    links: BTreeMap<PathBuf, PathBuf>,
-    directories: BTreeSet<PathBuf>,
-    directory_stamps: BTreeMap<PathBuf, Stamp>,
-    library: Option<File>,
-}
-impl Tree {
-    fn verify(base: &Path, policy: &Policy) -> Result<Self> {
-        absolute(base)?;
-        // Reject a linked final directory; /tmp's system alias in an ancestor
-        // is normalized before the descriptor-based traversal begins.
-        let directory = open(base, true)?;
-        let base = fs::canonicalize(base).context(ERROR)?;
-        let mut tree = Self {
-            base,
-            directory,
-            files: BTreeMap::new(),
-            links: BTreeMap::new(),
-            directories: BTreeSet::new(),
-            directory_stamps: BTreeMap::new(),
-            library: None,
-        };
-        tree.directory_stamps.insert(
-            PathBuf::new(),
-            stamp(&tree.directory.metadata().context(ERROR)?),
-        );
-        let mut expected_files = BTreeMap::new();
-        let mut expected_links = BTreeMap::new();
-        let mut expected_dirs = BTreeSet::new();
-        for item in &policy.files {
-            let path = relative(&item.path)?.to_owned();
-            if item.sha256.len() != 64
-                || !item.sha256.bytes().all(|b| b.is_ascii_hexdigit())
-                || item.size == u64::MAX
-                || expected_files.insert(path.clone(), item).is_some()
-            {
-                bail!(ERROR);
-            }
-            for parent in path
-                .ancestors()
-                .skip(1)
-                .filter(|p| !p.as_os_str().is_empty())
-            {
-                expected_dirs.insert(parent.to_owned());
-            }
-        }
-        for item in &policy.links {
-            let path = relative(&item.path)?.to_owned();
-            if Path::new(&item.target).is_absolute()
-                || item.target.is_empty()
-                || expected_links
-                    .insert(path.clone(), PathBuf::from(&item.target))
-                    .is_some()
-            {
-                bail!(ERROR);
-            }
-            for parent in path
-                .ancestors()
-                .skip(1)
-                .filter(|p| !p.as_os_str().is_empty())
-            {
-                expected_dirs.insert(parent.to_owned());
-            }
-        }
-        for path in &policy.directories {
-            expected_dirs.insert(relative(path)?.to_owned());
-        }
-        if expected_files
-            .keys()
-            .any(|p| expected_links.contains_key(p) || expected_dirs.contains(p))
-            || expected_links.keys().any(|p| expected_dirs.contains(p))
-        {
-            bail!(ERROR);
-        }
-        if !expected_files.contains_key(Path::new("bin/python3.12"))
-            || !expected_files.contains_key(Path::new("lib/libpython3.12.dylib"))
-            || !expected_files.contains_key(Path::new("lib/python3.12/encodings/__init__.py"))
-        {
-            bail!(ERROR);
-        }
-        let dir = tree.directory.try_clone().context(ERROR)?;
-        tree.walk(
-            &dir,
-            Path::new(""),
-            &expected_files,
-            &expected_links,
-            &expected_dirs,
-        )?;
-        if tree.files.len() != expected_files.len()
-            || tree.links != expected_links
-            || tree.directories != expected_dirs
-        {
-            bail!(ERROR);
-        }
-        // Every declared alias must resolve inside this verified distribution.
-        for path in tree.links.keys() {
-            let target = fs::canonicalize(tree.base.join(path)).context(ERROR)?;
-            if !target.starts_with(&tree.base) || (!target.is_dir() && !target.is_file()) {
-                bail!(ERROR);
-            }
-        }
-        Ok(tree)
-    }
-    fn walk(
-        &mut self,
-        directory: &File,
-        prefix: &Path,
-        files: &BTreeMap<PathBuf, &ExpectedFile>,
-        links: &BTreeMap<PathBuf, PathBuf>,
-        dirs: &BTreeSet<PathBuf>,
-    ) -> Result<()> {
-        for name in names(directory)? {
-            let path = prefix.join(&name);
-            if dirs.contains(&path) {
-                let next = child(directory, &name, true)?;
-                self.directory_stamps
-                    .insert(path.clone(), stamp(&next.metadata().context(ERROR)?));
-                self.directories.insert(path.clone());
-                self.walk(&next, &path, files, links, dirs)?;
-            } else if let Some(expected) = files.get(&path) {
-                let file = child(directory, &name, false)?;
-                self.files.insert(path.clone(), hash_file(&file, expected)?);
-                if path == Path::new("lib/libpython3.12.dylib") {
-                    self.library = Some(file);
-                }
-            } else if let Some(target) = links.get(&path) {
-                let name = CString::new(name.as_bytes()).context(ERROR)?;
-                let mut info: libc::stat = unsafe { std::mem::zeroed() };
-                if unsafe {
-                    libc::fstatat(
-                        directory.as_raw_fd(),
-                        name.as_ptr(),
-                        &mut info,
-                        libc::AT_SYMLINK_NOFOLLOW,
-                    )
-                } != 0
-                    || info.st_uid != unsafe { libc::geteuid() }
-                    || info.st_mode & libc::S_IFMT != libc::S_IFLNK
-                {
-                    bail!(ERROR);
-                }
-                let mut bytes = vec![0u8; 4096];
-                let size = unsafe {
-                    libc::readlinkat(
-                        directory.as_raw_fd(),
-                        name.as_ptr(),
-                        bytes.as_mut_ptr().cast(),
-                        bytes.len(),
-                    )
-                };
-                if size < 0 || size as usize == bytes.len() {
-                    bail!(ERROR);
-                }
-                bytes.truncate(size as usize);
-                if bytes != target.as_os_str().as_bytes() {
-                    bail!(ERROR);
-                }
-                self.links.insert(path, target.clone());
-            } else {
-                bail!(ERROR);
-            }
-        }
-        Ok(())
-    }
-    fn recheck(&self) -> Result<()> {
-        if stamp(&self.directory.metadata().context(ERROR)?)
-            != stamp(&fs::symlink_metadata(&self.base).context(ERROR)?)
-        {
-            bail!(ERROR);
-        }
-        for (path, expected) in &self.directory_stamps {
-            if stamp(&fs::symlink_metadata(self.base.join(path)).context(ERROR)?) != *expected {
-                bail!(ERROR);
-            }
-        }
-        for (path, expected) in &self.files {
-            if stamp(&fs::symlink_metadata(self.base.join(path)).context(ERROR)?) != *expected {
-                bail!(ERROR);
-            }
-        }
-        for (path, target) in &self.links {
-            if fs::read_link(self.base.join(path)).context(ERROR)? != *target {
-                bail!(ERROR);
-            }
-        }
-        Ok(())
-    }
-}
-
 pub struct VerifiedRuntime {
     pub interpreter: PathBuf,
     pub real: PathBuf,
@@ -456,7 +116,7 @@ impl VerifiedRuntime {
 /// Used by setup before any downloaded Python executable is run. A staging
 /// directory is allowed here, but the complete compiled policy is always used.
 pub fn verify_distribution(base: &Path) -> Result<()> {
-    Tree::verify(base, policy()?)?.recheck()
+    verify_tree(base, policy()?)?.recheck()
 }
 
 fn canonical_root(root: &Path) -> Result<PathBuf> {
@@ -546,7 +206,7 @@ fn validate_pinned(
     let base = root
         .join("runtime/python")
         .join(relative(&policy.directory)?);
-    let tree = Tree::verify(&base, policy)?;
+    let tree = verify_tree(&base, policy)?;
     let real = base.join("bin/python3.12");
     if fs::canonicalize(interpreter).context(ERROR)? != real || !real.is_file() {
         bail!(ERROR);
@@ -702,7 +362,7 @@ mod tests {
     fn verifies_full_policy_and_keeps_library_open_until_load() {
         let tmp = tempfile::tempdir().unwrap();
         let policy = distribution(tmp.path());
-        let tree = Tree::verify(tmp.path(), &policy).unwrap();
+        let tree = verify_tree(tmp.path(), &policy).unwrap();
         assert!(tree.library.is_some());
         assert_ne!(
             unsafe { libc::fcntl(tree.library.as_ref().unwrap().as_raw_fd(), libc::F_GETFD) }
@@ -745,13 +405,13 @@ mod tests {
         ] {
             let tmp = tempfile::tempdir().unwrap();
             let policy = distribution(tmp.path());
-            let tree = Tree::verify(tmp.path(), &policy).unwrap();
+            let tree = verify_tree(tmp.path(), &policy).unwrap();
             let path = tmp.path().join(file);
             let mut data = fs::read(&path).unwrap();
             data[0] ^= 1;
             fs::write(path, data).unwrap();
             assert!(
-                Tree::verify(tmp.path(), &policy).is_err(),
+                verify_tree(tmp.path(), &policy).is_err(),
                 "Changed bytes passed: {file}"
             );
             assert!(tree.recheck().is_err(), "Changed metadata passed: {file}");
@@ -767,7 +427,7 @@ mod tests {
                 b"not part of trusted compiled policy",
             )
             .unwrap();
-            assert!(Tree::verify(tmp.path(), &policy).is_err());
+            assert!(verify_tree(tmp.path(), &policy).is_err());
         }
     }
     #[test]
@@ -776,11 +436,11 @@ mod tests {
         let policy = distribution(tmp.path());
         let library = tmp.path().join("lib/libpython3.12.dylib");
         fs::remove_file(&library).unwrap();
-        assert!(Tree::verify(tmp.path(), &policy).is_err());
+        assert!(verify_tree(tmp.path(), &policy).is_err());
         let outside = tempfile::NamedTempFile::new().unwrap();
         fs::write(outside.path(), b"synthetic library").unwrap();
         symlink(outside.path(), &library).unwrap();
-        assert!(Tree::verify(tmp.path(), &policy).is_err());
+        assert!(verify_tree(tmp.path(), &policy).is_err());
     }
     #[test]
     fn rejects_link_changes_directory_links_and_declared_escapes() {
@@ -788,17 +448,17 @@ mod tests {
         let mut policy = distribution(tmp.path());
         fs::remove_file(tmp.path().join("bin/python3")).unwrap();
         symlink("other", tmp.path().join("bin/python3")).unwrap();
-        assert!(Tree::verify(tmp.path(), &policy).is_err());
+        assert!(verify_tree(tmp.path(), &policy).is_err());
         let outside = tempfile::tempdir().unwrap();
         fs::remove_dir(tmp.path().join("empty")).unwrap();
         symlink(outside.path(), tmp.path().join("empty")).unwrap();
-        assert!(Tree::verify(tmp.path(), &policy).is_err());
+        assert!(verify_tree(tmp.path(), &policy).is_err());
         fs::remove_file(tmp.path().join("empty")).unwrap();
         fs::create_dir(tmp.path().join("empty")).unwrap();
         fs::remove_file(tmp.path().join("bin/python3")).unwrap();
         policy.links[0].target = outside.path().to_string_lossy().into_owned();
         symlink(outside.path(), tmp.path().join("bin/python3")).unwrap();
-        assert!(Tree::verify(tmp.path(), &policy).is_err());
+        assert!(verify_tree(tmp.path(), &policy).is_err());
     }
     #[test]
     fn rejects_group_world_writable_files_and_directories_before_loading() {
@@ -806,11 +466,11 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let policy = distribution(tmp.path());
             fs::set_permissions(tmp.path().join(name), fs::Permissions::from_mode(mode)).unwrap();
-            assert!(Tree::verify(tmp.path(), &policy).is_err());
+            assert!(verify_tree(tmp.path(), &policy).is_err());
         }
         let tmp = tempfile::tempdir().unwrap();
         let policy = distribution(tmp.path());
-        let tree = Tree::verify(tmp.path(), &policy).unwrap();
+        let tree = verify_tree(tmp.path(), &policy).unwrap();
         fs::set_permissions(tmp.path().join("lib"), fs::Permissions::from_mode(0o777)).unwrap();
         assert!(tree.recheck().is_err());
     }
@@ -915,6 +575,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut policy = distribution(tmp.path());
         policy.files[0].path = "../outside".into();
-        assert!(Tree::verify(tmp.path(), &policy).is_err());
+        assert!(verify_tree(tmp.path(), &policy).is_err());
     }
 }

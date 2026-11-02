@@ -3,10 +3,29 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from check_layers import violations, outer_layer_violations, capture_boundary_violations
+from check_layers import violations, outer_layer_violations, capture_boundary_violations, runtime_boundary_violations
 
 
 class LayerBoundaryTests(unittest.TestCase):
+    def test_runtime_inventory_cannot_choose_an_artifact_or_load_python(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "infrastructure").mkdir()
+            source = root / "infrastructure/runtime_tree.rs"
+            source.write_text("use std::fs::File;\n")
+            self.assertEqual(list(runtime_boundary_violations(root)), [])
+            for dependency in [
+                'include_str!("python-runtime.json");',
+                'libc::dlopen(path, flags);',
+                'use crate::platform::python_runtime;',
+                'let library = "lib/libpython3.12.dylib";',
+                'struct PyConfig312 {}',
+            ]:
+                source.write_text(dependency)
+                self.assertTrue(list(runtime_boundary_violations(root)), dependency)
+            source.write_text('#[cfg(test)] mod tests { let library = "lib/libpython3.12.dylib"; }')
+            self.assertEqual(list(runtime_boundary_violations(root)), [])
+
     def test_capture_lifecycle_takes_a_port_without_selecting_the_os(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

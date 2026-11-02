@@ -90,6 +90,16 @@ def capture_boundary_violations(src):
                     yield f"{path}: capture port has a grouped OS/I/O dependency"
 
 
+def runtime_boundary_violations(src):
+    path = src / "infrastructure/runtime_tree.rs"
+    if not path.exists():
+        return
+    source = re.split(r"#\[cfg\(test\)\]", path.read_text(), maxsplit=1)[0]
+    source = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.S)
+    if re.search(r"\bcrate\s*::\s*platform\b|\b(?:dlopen|dlsym|PyConfig\w*|include_str|include_bytes)\b|libpython[^\s\"]*\.dylib", source):
+        yield f"{path}: runtime inventory verifier selects an artifact, ABI or native loader"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--domain-root", type=Path, default=Path(__file__).resolve().parents[1] / "rust-core/src/domain")
@@ -97,6 +107,7 @@ def main():
     if not args.domain_root.is_dir() or not any(args.domain_root.rglob("*.rs")):
         parser.error("Domain source directory is missing or empty")
     errors = list(violations(args.domain_root)) + list(outer_layer_violations(args.domain_root.parent))
+    errors += list(runtime_boundary_violations(args.domain_root.parent))
     errors += list(capture_boundary_violations(Path(__file__).resolve().parents[1] / "desktop/src-tauri/src"))
     if errors:
         raise SystemExit("\n".join(errors))
