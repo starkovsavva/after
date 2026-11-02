@@ -54,6 +54,7 @@ fn create_apply_retry_and_undo_are_idempotent() {
     let r = applied(root.path(), &p);
     assert_eq!(applied(root.path(), &p), r);
     assert_eq!(notes::list(root.path()).unwrap().notes.len(), 1);
+    assert_eq!(notes::list(root.path()).unwrap().notes[0].creation_origin, Some(crate::creation_origin::CreationOrigin::Ai));
     let input = json!({"operationID":r["operationID"]});
     assert_eq!(undo(root.path(), &input).unwrap()["undone"], true);
     assert_eq!(undo(root.path(), &input).unwrap()["undone"], true);
@@ -75,6 +76,7 @@ fn append_preserves_previous_text_and_history_and_rejects_stale_apply_and_undo()
     let r = applied(root.path(), &p);
     let saved = notes::load_note_snapshot(root.path(), &n.id).unwrap();
     assert_eq!(saved.text, "Старый текст\n\nПроверить условия оплаты");
+    assert_eq!(saved.creation_origin, Some(crate::creation_origin::CreationOrigin::Manual));
     assert_eq!(saved.history.len(), 1);
     assert_eq!(saved.history[0]["operationID"], r["operationID"]);
     assert!(apply(
@@ -238,6 +240,7 @@ fn card_deck_uses_review_storage_and_safe_undo_rejects_reviewed_cards() {
     assert_eq!(applied(root.path(), &p), r);
     let dir = root.path().join("meetings").join(id);
     let summary = read_json(&dir.join("summary.json"), 8 * 1_048_576).unwrap();
+    assert_eq!(summary["cards"][0]["creationOrigin"], "ai");
     let card = summary["cards"][0]["id"].as_str().unwrap();
     crate::storage::review(root.path(), id, card, 3).unwrap();
     assert!(undo(root.path(), &json!({"operationID":r["operationID"]})).is_err());
@@ -392,6 +395,29 @@ fn interrupted_card_publication_recovers_exact_authorized_deck_without_network()
         .unwrap()
         .is_empty());
     assert_eq!(applied(root.path(), &p), *r);
+}
+#[test]
+fn retrying_card_publication_preserves_legacy_and_future_provenance_without_network() {
+    for origin in [None,Some("future-origin")] {
+        for published in [false,true] {
+            let root=crate::voice::enabled_test_root();
+            let mut proposal=proposed("createCards","");
+            proposal.cards=vec![ProposedCard{kind:"concept".into(),front:"RTO".into(),back:"Recovery time objective".into(),context:String::new()}];
+            let p=planned(root.path(),json!({}),proposal.clone());
+            let workspace=notes::list(root.path()).unwrap();
+            let plan=workspace.voice_plans.iter().find(|item|item["planID"]==p["planID"]).unwrap();
+            let (target,_,_)=write_deck(root.path(),plan,&proposal).unwrap();
+            let directory=root.path().join("meetings").join(target["id"].as_str().unwrap());
+            let mut summary=read_json(&directory.join("summary.json"),8*1_048_576).unwrap();
+            if let Some(origin)=origin { summary["cards"][0]["creationOrigin"]=json!(origin); }
+            else { summary["cards"][0].as_object_mut().unwrap().remove("creationOrigin"); }
+            crate::storage::atomic_json(&directory.join("summary.json"),&summary).unwrap();
+            if !published { fs::remove_file(directory.join("meta.json")).unwrap(); }
+            let (_,deck_hash,_)=write_deck(root.path(),plan,&proposal).unwrap();
+            assert_eq!(read_json(&directory.join("summary.json"),8*1_048_576).unwrap(),summary);
+            assert_eq!(deck_hash,hash(&summary));
+        }
+    }
 }
 #[test]
 fn canonical_summary_completion_checks_current_source_before_mutation() {

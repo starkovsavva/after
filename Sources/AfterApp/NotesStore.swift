@@ -108,6 +108,21 @@ final class NotesStore: ObservableObject {
         notice = kind == "important" ? L("Момент отмечен") : L("Заметка сохранена")
         return saved
     }
+    @discardableResult func captureSummaryDraft(text: String, meetingID: String) -> CapturedNote? {
+        var note = CapturedNote(text: text); note.meetingID = meetingID
+        do {
+            let data = try RustBridge.shared.get().request(root: root, command: "note-save-from-summary", arguments: ["note": try object(note)])
+            let saved = try JSONDecoder().decode(CapturedNote.self, from: data)
+            accept(saved); notice = L("Заметка сохранена"); return saved
+        } catch { self.error = error.localizedDescription; return nil }
+    }
+    @discardableResult func saveCopy(_ note: CapturedNote, sourceNoteID: String) -> CapturedNote? {
+        do {
+            let data = try RustBridge.shared.get().request(root: root, command: "note-save-copy", arguments: ["note": try object(note), "sourceNoteID": sourceNoteID])
+            let saved = try JSONDecoder().decode(CapturedNote.self, from: data)
+            accept(saved); return saved
+        } catch { self.error = error.localizedDescription; return nil }
+    }
     func delete(_ note: CapturedNote) {
         do {
             _ = try RustBridge.shared.get().request(root: root, command: "note-trash", arguments: ["id": note.id, "revision": note.revision])

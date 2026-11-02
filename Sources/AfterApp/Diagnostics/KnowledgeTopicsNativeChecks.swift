@@ -26,6 +26,7 @@ enum KnowledgeTopicsNativeChecks {
         let store = AppStore(preview: true)
         store.settings.features.knowledgeBase = true
         guard store.saveSettings() else { throw AppError.message("Could not save feature settings") }
+        try await MaterialFilterNativeChecks.run(app: store, root: root)
         store.librarySection = "knowledge"
         let host = NSHostingView(rootView: KnowledgeBaseView().environmentObject(store))
         host.sizingOptions = []; host.frame = NSRect(x: 0, y: 0, width: 900, height: 700)

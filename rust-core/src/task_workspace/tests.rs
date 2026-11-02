@@ -42,6 +42,7 @@ fn knowledge_selection_never_expands_legacy_task_material_permissions() {
     let dir = tempfile::tempdir().unwrap(); let root = dir.path();
     let task = create_task(root, "Task");
     let task = add_note(root, &task, "explicit legacy material", true);
+    assert!(notes::list(root).unwrap().notes.iter().all(|note|note.creation_origin==Some(crate::creation_origin::CreationOrigin::Manual)));
     let before = get(root, &task["id"]);
     let result = call(root, "task-material-share-notes", json!({"taskID":task["id"],
         "expectedRevision":task["revision"], "operationID":uuid(),
@@ -351,6 +352,7 @@ fn virtual_summary_tasks_materialize_once_and_old_summary_alias_survives_regener
     let updated = patch(root.path(), &d, json!({"status":"doing"}));
     assert_eq!(updated["virtual"], false);
     assert_eq!(updated["materials"][0]["kind"], "meeting");
+    assert_eq!(notes::list(root.path()).unwrap().notes[0].creation_origin, Some(crate::creation_origin::CreationOrigin::Ai));
     storage::atomic_json(&dir.join("summary.json"), &json!({"items":[]})).unwrap();
     assert_eq!(get(root.path(), &json!(id))["id"], updated["id"]);
     assert_eq!(notes::list(root.path()).unwrap().notes.len(), 1);

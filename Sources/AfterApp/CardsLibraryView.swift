@@ -11,6 +11,8 @@ struct CardsLibraryView: View { var body: some View { CardsWorkspaceView() } }
 struct CardsWorkspaceView: View {
     @EnvironmentObject private var app: AppStore
     @StateObject private var workspace = CardsWorkspace()
+    @StateObject private var originFilters = OriginFilterPreferences()
+    @StateObject private var filtering = MaterialFilterController()
     var meetingID: String? = nil
     var embedded = false
     @State private var query = ""
@@ -23,12 +25,21 @@ struct CardsWorkspaceView: View {
     @State private var showingMeetings = false
     @State private var importURL: URL?
     @State private var showingImport = false
+    @State private var revealedTargetID: UUID?
+    @State private var filterDataRevision = UUID()
+    private var filters: MaterialFilterSet { originFilters.cardsFilters }
+    private var filtersBinding: Binding<MaterialFilterSet> { $originFilters.cardsFilters }
+    private var filtersBusy: Bool {
+        filtering.topicsLoading && !filters.topicIDs.isEmpty
+    }
     private var scopedEntries: [LibraryCardEntry] {
         guard meetingID == nil, let folderID = app.folderSelection else { return workspace.entries }
         return workspace.entries.filter { app.folderID(for: $0.meeting.id) == folderID }
     }
     private var matching: [LibraryCardEntry] {
         scopedEntries.filter { entry in
+            filters.includesOrigin(entry.card.creationOrigin) && filters.includesKind(entry.card.kind) &&
+            filtering.matchesCard(meetingID: entry.meeting.id, cardID: entry.card.id, filters: filters) &&
             (deck.isEmpty || entry.meeting.id == deck) &&
             (query.isEmpty || (entry.card.front + " " + entry.card.back + " " + entry.card.context + " " + entry.meeting.title).localizedCaseInsensitiveContains(query))
         }
@@ -46,6 +57,9 @@ struct CardsWorkspaceView: View {
                 if let error = workspace.error { problem(error) }
                 if !workspace.errors.isEmpty { problem(L("Не удалось загрузить часть карточек. ") + workspace.errors.joined(separator: "\n")) }
                 if workspace.loading && !hasContent { ProgressView(L("Загружаю карточки…")).frame(maxWidth: .infinity, maxHeight: .infinity) }
+                else if filtersBusy {
+                    ProgressView(L("Загружаю темы…")).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 else if mode == "all" && !visible.isEmpty { browser }
                 else {
                     ScrollView {
@@ -55,7 +69,7 @@ struct CardsWorkspaceView: View {
                         }.appContentLayout()
                     }
                 }
-                if mode == "study", let entry = current {
+                if mode == "study", !filtersBusy, let entry = current {
                     StudyReviewBar(flipped: $flipped, enabled: !workspace.saving && !entry.suspended, review: entry.review, rate: { value in
                         Task { await workspace.rate(root: app.root, entry: entry, rating: value, meetingID: meetingID); flipped = false; picked = nil; app.refreshResults(entry.meeting.id) }
                     }, intervals: workspace.options)
@@ -70,21 +84,32 @@ struct CardsWorkspaceView: View {
             if !decks.contains(where: { $0.id == deck }) { deck = "" }
             picked = nil; flipped = false
         }
-        .onChange(of: mode) { _, _ in flipped = previewAnswer; picked = nil }
-        .onChange(of: deck) { _, _ in flipped = false; picked = nil; app.assistantCardMeetingID = meetingID ?? (deck.isEmpty ? nil : deck) }
-        .onChange(of: query) { _, _ in flipped = false; picked = nil }
+        .onChange(of: mode) { _, _ in flipped = previewAnswer; keepVisibleSelection() }
+        .onChange(of: deck) { _, _ in flipped = false; keepVisibleSelection(); app.assistantCardMeetingID = meetingID ?? (deck.isEmpty ? nil : deck) }
+        .onChange(of: query) { _, _ in flipped = false; keepVisibleSelection() }
+        .onChange(of: filters) { _, _ in flipped = false; keepVisibleSelection(); updateFilters() }
+        .onChange(of: filterRevision) { _, _ in updateFilters() }
+        .onChange(of: app.visibleFeatures) { _, _ in updateFilters() }
+        .onChange(of: filtering.resultsRevision) { _, _ in flipped = false; keepVisibleSelection() }
         .onChange(of: app.navigationTarget?.id) { _, _ in revealTarget() }
-        .onAppear { if ProcessInfo.processInfo.arguments.contains("--preview-all") { mode = "all" }; revealTarget(); app.assistantCardMeetingID = meetingID ?? (deck.isEmpty ? nil : deck) }
-        .onDisappear { app.assistantCardMeetingID = nil }
+        .onAppear {
+            originFilters.configure(root: app.root)
+            updateFilters()
+            if ProcessInfo.processInfo.arguments.contains("--preview-all") { mode = "all" }
+            revealTarget(); app.assistantCardMeetingID = meetingID ?? (deck.isEmpty ? nil : deck)
+        }
+        .onDisappear { app.assistantCardMeetingID = nil; filtering.cancel() }
         .sheet(item: $editor) { request in
             CardEditorView(request: request) { result in
+                revealFilteredCard(result.card, meetingID: result.meeting.id)
                 app.reloadLibrary(); if !embedded { deck = result.meeting.id }; mode = "all"; picked = result.meeting.id + ":" + result.card.id
-                Task { await reload() }
+                Task { await reload(); picked = result.meeting.id + ":" + result.card.id }
             }.environmentObject(app)
         }
         .sheet(isPresented: $showingImport) {
             if let url = importURL {
                 CardImportView(url: url) { meeting in
+                    filtersBinding.wrappedValue = MaterialFilterSet()
                     app.reloadLibrary(); if !embedded { deck = meeting.id }; mode = "all"; showingImport = false; Task { await reload() }
                 }.environmentObject(app)
             }
@@ -123,17 +148,33 @@ struct CardsWorkspaceView: View {
                     .menuStyle(.borderlessButton).frame(width: 28).accessibilityLabel(L("Действия с карточками"))
             }
             if hasContent {
-                HStack(spacing: 12) {
+                AfterControlFlow(spacing: 12) {
                     if !embedded && decks.count > 1 {
                         AfterCompactPicker(L("Колода"), selection: $deck, options:
                             [.init(title: L("Все колоды"), value: "")] + decks.map { .init(title: $0.title, value: $0.id) },
-                            showsLabel: false, maxWidth: 210, searchable: true)
+                            showsLabel: false, maxWidth: 210, searchable: true, identifier: "cards.deck")
                     }
-                    TextField(L("Найти карточку"), text: $query).textFieldStyle(.roundedBorder).frame(minWidth: 120, maxWidth: 320)
-                    Spacer()
+                    TextField(L("Найти карточку"), text: $query).textFieldStyle(.roundedBorder).frame(width: 220)
+                        .accessibilityIdentifier("cards.search")
+                    MaterialFiltersControl(selection: filtersBinding, target: .cards, topics: filtering.topics, topicsLoading: filtering.topicsLoading,
+                                           onLoadTopics: { filtering.loadTopics(store: app) }, identifier: "cards.filters",
+                                           canLoadMoreTopics: filtering.canLoadMoreTopics,
+                                           onLoadMoreTopics: { filtering.loadMoreTopics(store: app) })
                     Text(mode == "study" ? LF("{0} к повторению", arguments: [String(describing: (visible.count))]) : LF("Всего: {0}", arguments: [String(describing: (matching.count))])).font(AppTypography.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("cards.count")
+                        .accessibilityValue(String(visible.count))
                     if workspace.loading || workspace.saving { ProgressView().controlSize(.small) }
                 }
+            }
+            if let error = originFilters.error {
+                Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let error = filtering.error {
+                Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning).fixedSize(horizontal: false, vertical: true)
+            }
+            if let notice = filtering.notice {
+                Text(notice).font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }.padding(.horizontal, AppLayout.contentInset).padding(.vertical, embedded ? 12 : 20)
     }
@@ -147,6 +188,7 @@ struct CardsWorkspaceView: View {
                             if entry.suspended { Image(systemName: "pause.circle").foregroundStyle(.secondary).accessibilityLabel(L("Не повторяется")) }
                         }
                         Text(entry.card.back).font(AppTypography.control).foregroundStyle(.secondary).lineLimit(2)
+                        Text(L(entry.card.creationOrigin.titleKey)).font(AppTypography.caption).foregroundStyle(.secondary)
                         if !embedded { Text(entry.meeting.title).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1) }
                     }.padding(.vertical, 6).tag(entry.id)
                 }
@@ -196,6 +238,15 @@ struct CardsWorkspaceView: View {
                 if !embedded {
                     Button(L("Импортировать…")) { chooseImport() }.buttonStyle(.plain).font(AppTypography.control).foregroundStyle(.secondary)
                 }
+            } else if filters.activeCount > 0 && matching.isEmpty {
+                Text(L("Нет карточек по выбранным фильтрам")).font(AppTypography.heading)
+                    .accessibilityIdentifier("cards.empty.filters")
+                if !filters.origins.isEmpty && scopedEntries.contains(where: { (deck.isEmpty || $0.meeting.id == deck) && $0.card.creationOrigin == .unknown }) {
+                    Text(L("У старых материалов происхождение может быть не указано. Они доступны без фильтра по происхождению."))
+                        .font(AppTypography.body).foregroundStyle(.secondary)
+                }
+                Button(L("Сбросить фильтры")) { filtersBinding.wrappedValue = MaterialFilterSet() }
+                    .buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("cards.filters.clear-all")
             } else if !query.isEmpty {
                 Text(L("Ничего не найдено")).font(AppTypography.heading)
                 Button(L("Очистить поиск")) { query = "" }.buttonStyle(AfterSoftButtonStyle())
@@ -233,10 +284,35 @@ struct CardsWorkspaceView: View {
             Button(L("Повторить")) { Task { await reload() } }.buttonStyle(AfterSoftButtonStyle()).disabled(workspace.loading)
         }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(Ink.warning.opacity(0.07))
     }
-    private func reload() async { await workspace.reload(root: app.root, meetingID: meetingID); revealTarget() }
+    private func reload() async {
+        await workspace.reload(root: app.root, meetingID: meetingID)
+        filterDataRevision = UUID()
+        revealTarget()
+    }
+    private var filterRevision: String {
+        filterDataRevision.uuidString + (app.folderSelection ?? "") + workspace.entries.map { $0.id + $0.fingerprint }.joined(separator: "|")
+    }
+    private func updateFilters() { filtering.update(store: app, filters: filters, target: .cards, revision: filterRevision) }
+    private func keepVisibleSelection() {
+        if let picked, !visible.contains(where: { $0.id == picked }) { self.picked = nil }
+    }
+    private func revealFilteredCard(_ card: Flashcard, meetingID: String) {
+        var candidate = filters
+        if !candidate.includesOrigin(card.creationOrigin) { candidate.origins = [] }
+        if !candidate.includesKind(card.kind) { candidate.kinds = [] }
+        if !filtering.matchesCard(meetingID: meetingID, cardID: card.id, filters: MaterialFilterSet(topicIDs: candidate.topicIDs)) {
+            candidate.topicIDs = []
+        }
+        if candidate != filters { filtersBinding.wrappedValue = candidate }
+    }
     private func revealTarget() {
         guard let target = app.navigationTarget, target.kind == "card", let cardID = target.cardID,
-              workspace.entries.contains(where: { $0.meeting.id == target.meetingID && $0.card.id == cardID }) else { return }
+              target.id != revealedTargetID,
+              let entry = workspace.entries.first(where: { $0.meeting.id == target.meetingID && $0.card.id == cardID }) else { return }
+        revealedTargetID = target.id
+        revealFilteredCard(entry.card, meetingID: entry.meeting.id)
+        query = ""
+        if !embedded { deck = target.meetingID }
         mode = "all"; picked = target.meetingID + ":" + cardID
     }
     private var previewAnswer: Bool { ProcessInfo.processInfo.arguments.contains("--preview") && ProcessInfo.processInfo.arguments.contains("--preview-answer") }

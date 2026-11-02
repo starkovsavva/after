@@ -74,6 +74,19 @@ public struct Flashcard: Codable, Identifiable, Hashable {
     public var back: String
     public var context: String
     public var segmentIDs: [Int]
+    public var creationOrigin: MaterialCreationOrigin = .unknown
+    public init(id: String, kind: String, front: String, back: String, context: String, segmentIDs: [Int], creationOrigin: MaterialCreationOrigin = .unknown) {
+        self.id = id; self.kind = kind; self.front = front; self.back = back
+        self.context = context; self.segmentIDs = segmentIDs; self.creationOrigin = creationOrigin
+    }
+    private enum CodingKeys: String, CodingKey { case id, kind, front, back, context, segmentIDs, creationOrigin }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); kind = try c.decode(String.self, forKey: .kind)
+        front = try c.decode(String.self, forKey: .front); back = try c.decode(String.self, forKey: .back)
+        context = try c.decode(String.self, forKey: .context); segmentIDs = try c.decode([Int].self, forKey: .segmentIDs)
+        creationOrigin = try c.decodeIfPresent(MaterialCreationOrigin.self, forKey: .creationOrigin) ?? .unknown
+    }
 }
 
 public struct OverviewClaim: Codable, Hashable {

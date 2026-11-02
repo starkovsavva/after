@@ -1,4 +1,5 @@
 import AfterPlatform
+import AfterPlatformMacOS
 import AfterLocalization
 import AppKit
 import Combine
@@ -10,7 +11,7 @@ import UniformTypeIdentifiers
 /// is reopened. The registry lives only for this app session; successful saves
 /// still pass through Rust's revision checks.
 @MainActor
-private final class LibraryNoteDocument: ObservableObject {
+final class LibraryNoteDocument: ObservableObject {
     private static var documents: [String: LibraryNoteDocument] = [:]
     static func shared(notes: NotesStore) -> LibraryNoteDocument {
         let key = notes.root.standardizedFileURL.path
@@ -102,7 +103,17 @@ private final class LibraryNoteDocument: ObservableObject {
         return flush()
     }
     @discardableResult func saveCopy() -> CapturedNote? {
-        guard let session, let saved = notes.save(session.asNewNote()) else { return nil }
+        guard let session else { return nil }
+        var preserveMeeting = true
+        if let meetingID = session.draft.meetingID {
+            do {
+                struct MeetingIndex: Decodable { var meetings: [Meeting] }
+                let data = try RustBridge.shared.get().request(root: notes.root, command: "list")
+                let index = try JSONDecoder().decode(MeetingIndex.self, from: data)
+                preserveMeeting = index.meetings.contains { $0.id == meetingID && $0.libraryKind != "cards" }
+            } catch { saveError = error.localizedDescription; return nil }
+        }
+        guard let saved = notes.saveCopy(session.asNewNote(preserveMeeting: preserveMeeting), sourceNoteID: session.baseline.id) else { return nil }
         self.session = NoteEditingSession(note: saved); saveError = ""; notes.selectedNoteID = saved.id
         notes.notice = L("Копия сохранена. Вложения остались в исходной заметке.")
         return saved
@@ -114,6 +125,9 @@ struct NotesLibraryView: View {
     @ObservedObject var notes: NotesStore
     @StateObject private var document: LibraryNoteDocument
     @StateObject private var commands = RichNoteCommands()
+    @StateObject private var originFilters = OriginFilterPreferences()
+    @StateObject private var filterController: MaterialFilterController
+    @State private var pendingFilterSelection = false
     @State private var filter = "all"
     @State private var folder = ""
     @State private var query = ""
@@ -125,15 +139,39 @@ struct NotesLibraryView: View {
     @State private var linkingNote: CapturedNote?
     @State private var deleting: CapturedNote?
     @State private var confirmReload = false
-    init(notes: NotesStore) {
+    init(notes: NotesStore, filterController: MaterialFilterController? = nil) {
         self.notes = notes
         _document = StateObject(wrappedValue: LibraryNoteDocument.shared(notes: notes))
+        _filterController = StateObject(wrappedValue: filterController ?? MaterialFilterController())
     }
     private var persisted: CapturedNote? { notes.workspace.notes.first { $0.id == document.selectedID } }
     private var folders: [LibraryFolder] { notes.folders }
+    private var materialFilterBinding: Binding<MaterialFilterSet> {
+        Binding(get: { originFilters.notesFilters }, set: { value in
+            guard value != originFilters.notesFilters, document.flush() else { return }
+            pendingFilterSelection = true
+            originFilters.notesFilters = value
+            updateMaterialFilters()
+            reconcileFilterSelection()
+        })
+    }
+    private var filterResultsPending: Bool {
+        !originFilters.notesFilters.topicIDs.isEmpty && filterController.topicsLoading
+    }
+    private var nativeSelection: Binding<String?> {
+        Binding(get: { document.selectedID }, set: { id in
+            // Filtering can remove the selected row while its editor remains
+            // open. A List-generated deselection must not discard that session.
+            if id == nil, let selected = document.selectedID,
+               filterResultsPending || !visibleNotes.contains(where: { $0.id == selected }) { return }
+            document.nativeSelection.wrappedValue = id
+        })
+    }
     private var visibleNotes: [CapturedNote] {
         let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return notes.workspace.notes.filter { note in
+            guard originFilters.notesFilters.includesOrigin(note.creationOrigin), originFilters.notesFilters.includesKind(note.kind) else { return false }
+            guard filterController.matchesNote(noteID: note.id, meetingID: note.meetingID, filters: originFilters.notesFilters) else { return false }
             if filter == "trash" { guard note.trashedAt != nil else { return false } }
             else { guard note.trashedAt == nil else { return false } }
             if filter == "inbox", let meetingID = note.meetingID,
@@ -151,25 +189,61 @@ struct NotesLibraryView: View {
         }
     }
     var body: some View {
-        HStack(spacing: 0) {
-            noteList.frame(width: 236)
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                MaterialFiltersControl(selection: materialFilterBinding, target: .notes, topics: filterController.topics,
+                                       topicsLoading: filterController.topicsLoading,
+                                       onLoadTopics: { filterController.loadTopics(store: app) }, identifier: "notes.filters",
+                                       canLoadMoreTopics: filterController.canLoadMoreTopics,
+                                       onLoadMoreTopics: { filterController.loadMoreTopics(store: app) })
+                if let notice = filterController.notice {
+                    Text(notice).font(AppTypography.caption).foregroundStyle(.secondary).accessibilityIdentifier("notes.filters.notice")
+                }
+                if let error = filterController.error {
+                    Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning).accessibilityIdentifier("notes.filters.error")
+                }
+                if visibleNotes.isEmpty && !originFilters.notesFilters.origins.isEmpty && notes.workspace.notes.contains(where: { $0.creationOrigin == .unknown }) {
+                    Text(L("У старых материалов происхождение может быть не указано. Они доступны без фильтра по происхождению."))
+                        .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = originFilters.error {
+                    Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }.padding(.horizontal, 16).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
             Divider()
-            if let draft = document.draft { editor(draft) }
-            else {
-                VStack(spacing: 14) {
-                    Image(systemName: "note.text").font(.system(size: 30)).foregroundStyle(Ink.accent).accessibilityHidden(true)
-                    Text(filter == "trash" ? L("Корзина пуста") : L("Выберите заметку")).font(AppTypography.heading)
-                    if filter != "trash" { Button(L("Новая заметка")) { createNote() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill) }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 0) {
+                noteList.frame(width: 236)
+                Divider()
+                if let draft = document.draft { editor(draft) }
+                else {
+                    VStack(spacing: 14) {
+                        Image(systemName: "note.text").font(.system(size: 30)).foregroundStyle(Ink.accent).accessibilityHidden(true)
+                        Text(filter == "trash" ? L("Корзина пуста") : L("Выберите заметку")).font(AppTypography.heading)
+                        if filter != "trash" { Button(L("Новая заметка")) { createNote() }.buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill) }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }.background(Ink.paper)
             .onAppear {
+                let previousFilters = originFilters.notesFilters
+                originFilters.configure(root: notes.root)
+                if previousFilters != originFilters.notesFilters, !document.flush() {
+                    originFilters.notesFilters = previousFilters; return
+                }
+                updateMaterialFilters()
                 Task { await notes.refresh() }
-                if let id = notes.selectedNoteID, let note = notes.workspace.notes.first(where: { $0.id == id }) { select(note, reveal: true) }
-                else if document.draft == nil, let note = visibleNotes.first { select(note) }
+                if let id = notes.selectedNoteID, id != document.selectedID, let note = notes.workspace.notes.first(where: { $0.id == id }) { select(note, reveal: true) }
+                else { reconcileFilterSelection() }
                 tagsInput = document.draft?.tags.map { "#" + $0 }.joined(separator: " ") ?? ""
             }
-            .onDisappear { _ = document.flush() }
+            .onDisappear { pendingFilterSelection = false; _ = document.flush(); filterController.cancel() }
+            .onChange(of: originFilters.notesFilters) { _, _ in updateMaterialFilters() }
+            .onChange(of: notes.refreshState.revision) { _, _ in updateMaterialFilters() }
+            .onChange(of: app.settings.features) { _, _ in updateMaterialFilters() }
+            .onChange(of: filterController.resultsRevision) { _, _ in
+                reconcileFilterSelection()
+            }
             .onChange(of: notes.newLibraryNoteRequest) { _, _ in createNote() }
             .onChange(of: persisted) { _, note in document.receive(note) }
             .onChange(of: notes.selectedNoteID) { _, id in
@@ -181,6 +255,7 @@ struct NotesLibraryView: View {
                 folder = ""; selectVisibleNote()
             }
             .onChange(of: app.folderSelection) { _, _ in
+                updateMaterialFilters()
                 guard document.flush() else { return }
                 folder = ""; selectVisibleNote()
             }
@@ -237,20 +312,21 @@ struct NotesLibraryView: View {
                 HStack(spacing: 7) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField(L("Поиск заметок"), text: $query).textFieldStyle(.plain).accessibilityLabel(L("Поиск по заголовкам, тексту, тегам и вложениям"))
+                        .accessibilityIdentifier("notes.search")
                     if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel(L("Очистить поиск заметок")) }
                 }.padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 7))
                 AfterCompactPicker(L("Показать"), selection: $filter, options: [
                     .init(title: L("Все заметки"), value: "all"), .init(title: L("Без встречи"), value: "inbox"),
                     .init(title: L("Закреплённые"), value: "pinned"), .init(title: L("Корзина"), value: "trash")
-                ], showsLabel: false)
+                ], showsLabel: false, identifier: "notes.section")
                 if !folders.isEmpty && filter != "trash" && app.folderSelection == nil {
                     AfterCompactPicker(L("Папка"), selection: $folder, options:
                         [.init(title: L("Все папки"), value: "")] + folders.map { .init(title: $0.name, value: $0.id) },
-                        showsLabel: false, maxWidth: 240, searchable: true)
+                        showsLabel: false, maxWidth: 240, searchable: true, identifier: "notes.folder")
                 }
             }.padding(.horizontal, 12).padding(.bottom, 12)
             Divider()
-            List(selection: document.nativeSelection) {
+            List(selection: nativeSelection) {
                 ForEach(visibleNotes) { note in
                     row(note).tag(note.id)
                         .listRowInsets(EdgeInsets(top: 1, leading: 7, bottom: 1, trailing: 7))
@@ -269,13 +345,20 @@ struct NotesLibraryView: View {
             }.listStyle(.plain).scrollContentBackground(.hidden)
                 .overlay(alignment: .top) {
                     if visibleNotes.isEmpty {
-                        Text(query.isEmpty ? (filter == "trash" ? L("Корзина пуста") : L("Нет заметок")) : L("Ничего не найдено"))
-                            .font(AppTypography.control).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 28)
-                            .allowsHitTesting(false)
+                        VStack(spacing: 10) {
+                            Text(originFilters.notesFilters.activeCount > 0 ? L("Нет заметок с выбранными фильтрами") : query.isEmpty ? (filter == "trash" ? L("Корзина пуста") : L("Нет заметок")) : L("Ничего не найдено"))
+                                .font(AppTypography.control).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("notes.empty")
+                            if originFilters.notesFilters.activeCount > 0 {
+                                Button(L("Сбросить фильтры")) { materialFilterBinding.wrappedValue = MaterialFilterSet() }
+                                    .buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("notes.filters.clear-empty")
+                            }
+                        }.frame(maxWidth: .infinity).padding(.horizontal, 12).padding(.top, 28)
                     }
                 }
             Divider()
             Text(LF("Всего: {0}", arguments: [String(describing: (visibleNotes.count))])).font(AppTypography.caption).foregroundStyle(.secondary).padding(.horizontal, 16).frame(height: 32)
+                .accessibilityIdentifier("notes.count").accessibilityValue(String(visibleNotes.count))
         }.background(Ink.soft)
     }
     private func row(_ note: CapturedNote) -> some View {
@@ -289,6 +372,8 @@ struct NotesLibraryView: View {
                 if !note.attachments.isEmpty { Image(systemName: "paperclip").font(AppTypography.caption).foregroundStyle(.secondary) }
                 if note.meetingID != nil { Image(systemName: "waveform").font(AppTypography.caption).foregroundStyle(.secondary) }
             }
+            Text(L(note.creationOrigin.titleKey)).font(AppTypography.caption).foregroundStyle(.secondary).lineLimit(1)
+                .help(L(note.creationOrigin.titleKey)).accessibilityIdentifier("notes.origin.badge." + note.id)
             let snippet = note.text.split(separator: "\n").dropFirst(note.title.isEmpty ? 1 : 0).joined(separator: " ")
             if !snippet.isEmpty { Text(snippet).font(AppTypography.control).foregroundStyle(.secondary).lineLimit(2) }
             let folderName = notes.folder(noteFolderID(note))?.name ?? note.folder
@@ -338,7 +423,8 @@ struct NotesLibraryView: View {
                     Label(document.saveError, systemImage: "exclamationmark.circle").font(AppTypography.caption).foregroundStyle(Ink.warning).textSelection(.enabled)
                     HStack {
                         if document.session?.conflicted != true { Button(L("Повторить")) { _ = document.flush() } }
-                        Button(L("Сохранить копию")) { if let saved = document.saveCopy() { filter = "all"; folder = ""; query = ""; select(saved) } }
+                        Button(L("Сохранить копию")) { if let saved = document.saveCopy() { select(saved, reveal: true) } }
+                            .accessibilityIdentifier("notes.conflict.copy")
                         if persisted != nil { Button(L("Открыть сохранённую версию…")) { confirmReload = true } }
                     }.font(AppTypography.caption)
                 }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Ink.warning.opacity(0.06))
@@ -348,6 +434,8 @@ struct NotesLibraryView: View {
                     .accessibilityLabel(L("Заголовок заметки"))
                 HStack(spacing: 10) {
                     Text(Date(timeIntervalSince1970: draft.updatedAt), style: .date).font(AppTypography.caption).foregroundStyle(.secondary)
+                    Text(L(draft.creationOrigin.titleKey)).font(AppTypography.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("notes.editor.origin")
                     if let meetingID = draft.meetingID {
                         if let meeting = app.allNoteMeetings.first(where: { $0.id == meetingID }) {
                             Button { if document.flush() { app.openMeeting(meetingID, tab: "notes") } } label: { Label(meeting.title, systemImage: "waveform").lineLimit(1) }.buttonStyle(.link).font(AppTypography.caption)
@@ -397,7 +485,12 @@ struct NotesLibraryView: View {
     }
     @discardableResult private func select(_ note: CapturedNote, reveal: Bool = false) -> Bool {
         guard document.select(note) else { notes.selectedNoteID = document.selectedID; return false }
-        if reveal { filter = note.trashedAt == nil ? "all" : "trash"; folder = ""; query = "" }
+        if reveal {
+            pendingFilterSelection = false
+            revealMaterialFilters(for: note)
+            filter = note.trashedAt == nil ? "all" : "trash"; folder = ""; query = ""
+            if let selected = app.folderSelection, selected != noteFolderID(note) { app.folderSelection = nil }
+        }
         return true
     }
     private func selectVisibleNote() {
@@ -407,17 +500,39 @@ struct NotesLibraryView: View {
         if let id = document.selectedID, visibleNotes.contains(where: { $0.id == id }) { return }
         if let first = visibleNotes.first { select(first) } else { _ = document.clear() }
     }
+    private func reconcileFilterSelection() {
+        guard pendingFilterSelection || document.draft == nil, !filterResultsPending else { return }
+        let revision = notes.refreshState.revision
+        guard document.flush() else { return }
+        // Saving text typed while a requested filter was loading invalidates
+        // those memberships. Wait for the refreshed result before switching.
+        if notes.refreshState.revision != revision { updateMaterialFilters(); return }
+        selectVisibleNote()
+        pendingFilterSelection = false
+    }
     private func createNote(in targetFolder: String? = nil) {
         guard document.flush() else { return }
         let destinationID = targetFolder ?? (folder.isEmpty ? app.folderSelection : folder)
         let destination = notes.folder(destinationID)
         var note = CapturedNote(); note.folderID = destination?.id; note.folder = destination?.name ?? ""
         guard let saved = notes.save(note) else { return }
+        pendingFilterSelection = false
+        revealMaterialFilters(for: saved)
         filter = "all"; query = ""; folder = app.folderSelection == nil ? (destination?.id ?? "") : ""
         _ = document.select(saved)
     }
     private func noteFolderID(_ note: CapturedNote) -> String? {
         note.folderID ?? note.meetingID.flatMap { notes.context(for: $0).folderID }
+    }
+    private func revealMaterialFilters(for note: CapturedNote) {
+        var value = originFilters.notesFilters
+        if !value.includesOrigin(note.creationOrigin) { value.origins.removeAll() }
+        if !value.includesKind(note.kind) { value.kinds.removeAll() }
+        if !filterController.matchesNote(noteID: note.id, meetingID: note.meetingID, filters: MaterialFilterSet(topicIDs: value.topicIDs)) { value.topicIDs.removeAll() }
+        if value != originFilters.notesFilters { originFilters.notesFilters = value }
+    }
+    private func updateMaterialFilters() {
+        filterController.update(store: app, filters: originFilters.notesFilters, target: .notes, revision: String(notes.refreshState.revision))
     }
     private func moveNote(to destination: LibraryFolder?) {
         guard document.flush() else { return }
@@ -436,7 +551,7 @@ struct NotesLibraryView: View {
     private func restore(_ note: CapturedNote) {
         notes.restore(notes.workspace.notes.first { $0.id == note.id } ?? note)
         guard let restored = notes.workspace.notes.first(where: { $0.id == note.id }), restored.trashedAt == nil else { return }
-        _ = document.clear(); filter = "all"; folder = ""; query = ""; select(restored)
+        _ = document.clear(); select(restored, reveal: true)
     }
     private func export(_ note: CapturedNote, format: String) {
         guard document.flush() else { return }

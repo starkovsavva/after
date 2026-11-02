@@ -786,7 +786,7 @@ fn choose(root: &Path, input: &Value) -> Result<Value> {
 }
 fn empty_note(kind: &str, text: &str, title: &str, meeting: Option<&str>) -> Result<CapturedNote> {
     Ok(serde_json::from_value(
-        json!({"id":uuid(),"kind":kind,"text":text,"title":title,"createdAt":now(),"updatedAt":now(),"revision":1,"meetingID":meeting}),
+        json!({"id":uuid(),"kind":kind,"text":text,"title":title,"createdAt":now(),"updatedAt":now(),"revision":1,"meetingID":meeting,"creationOrigin":"ai"}),
     )?)
 }
 fn canonical(
@@ -892,7 +892,22 @@ fn write_deck(root: &Path, plan: &Value, proposal: &Proposal) -> Result<(Value, 
         fs::DirBuilder::new().mode(0o700).create(&directory)?;
     }
     let _deck_lock = crate::storage::meeting_lock(&directory)?;
-    let cards:Vec<_>=proposal.cards.iter().enumerate().map(|(i,c)|json!({"id":format!("voice-{}-{i}",plan["operationID"].as_str().unwrap()),"kind":c.kind,"front":c.front,"back":c.back,"context":c.context,"segmentIDs":[]})).collect();
+    let mut cards:Vec<_>=proposal.cards.iter().enumerate().map(|(i,c)|json!({"id":format!("voice-{}-{i}",plan["operationID"].as_str().unwrap()),"kind":c.kind,"front":c.front,"back":c.back,"context":c.context,"segmentIDs":[],"creationOrigin":"ai"})).collect();
+    // Recovery may finish a deck first written by an older version. Replaying
+    // the same operation must keep original provenance, including absence.
+    match fs::symlink_metadata(directory.join("summary.json")) {
+        Ok(_) => {
+            let existing=read_json(&directory.join("summary.json"),8*1_048_576)?;
+            for card in &mut cards {
+                if let Some(original)=existing["cards"].as_array().and_then(|items|items.iter().find(|item|item["id"]==card["id"])) {
+                    if let Some(origin)=original.get("creationOrigin") { card["creationOrigin"]=origin.clone(); }
+                    else { card.as_object_mut().unwrap().remove("creationOrigin"); }
+                }
+            }
+        }
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound => {},
+        Err(error) => return Err(error.into()),
+    }
     let summary = json!({"overview":"","items":[],"cards":cards,"provider":"voice","model":"voice-command","generatedAt":plan["createdAt"],"warnings":[],"overviewClaims":[]});
     let title = if proposal.title.trim().is_empty() {
         "Карточки"

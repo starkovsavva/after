@@ -465,12 +465,32 @@ fn receipt_rows(value: &Value) -> Result<BTreeMap<(String, String), Value>> {
     }
     Ok(rows)
 }
+/// Every writer, including raw workspace operations and undo, retains the
+/// original provenance. Missing legacy values and future strings are metadata
+/// too; neither editing nor adding AI content classifies an old record.
+fn preserve_note_creation_origins(previous: &Value, value: &mut Value) {
+    let origins = previous["notes"].as_array().into_iter().flatten()
+        .filter_map(|note| note["id"].as_str().map(|id| (id, note.get("creationOrigin"))))
+        .collect::<BTreeMap<_, _>>();
+    for note in value["notes"].as_array_mut().into_iter().flatten() {
+        let Some(origin) = note["id"].as_str().and_then(|id| origins.get(id)) else { continue; };
+        let Some(object) = note.as_object_mut() else { continue; };
+        match origin {
+            Some(origin) => { object.insert("creationOrigin".into(), (*origin).clone()); }
+            None => { object.remove("creationOrigin"); }
+        }
+    }
+}
+
 fn commit(
     transaction: &Transaction<'_>,
     previous: Option<&WorkspaceSnapshot>,
-    value: Value,
+    mut value: Value,
     kind: &str,
 ) -> Result<WorkspaceSnapshot> {
+    if let Some(previous) = previous {
+        preserve_note_creation_origins(&previous.value, &mut value);
+    }
     validate(&value)?;
     if let Some(previous) = previous {
         let current: (i64, String) = transaction.query_row(

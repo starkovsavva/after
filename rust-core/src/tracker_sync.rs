@@ -974,6 +974,7 @@ fn apply_remote(
         CapturedNote {
             id: local_id.into(),
             kind: "task".into(),
+            creation_origin: Some(crate::creation_origin::CreationOrigin::Imported),
             created_at: now(),
             updated_at: now(),
             revision: 0,

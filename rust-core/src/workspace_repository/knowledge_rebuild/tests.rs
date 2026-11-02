@@ -100,6 +100,7 @@ fn prepare_preview_are_read_only_and_apply_undo_preserve_unknown_rich_fields() {
     );
     let changed = note(root.path(), "a");
     assert_eq!(changed["text"], "One corrected. Two.");
+    assert_eq!(changed["creationOrigin"], "manual");
     assert_eq!(changed["unknownFuture"], old_a["unknownFuture"]);
     assert_eq!(changed["tags"], old_a["tags"]);
     let mut untouched = old_a.as_object().unwrap().clone();
@@ -124,6 +125,7 @@ fn prepare_preview_are_read_only_and_apply_undo_preserve_unknown_rich_fields() {
         let id = item["noteID"].as_str().unwrap();
         assert!(Uuid::parse_str(id).is_ok());
         assert_ne!(item["key"], item["noteID"]);
+        assert_eq!(note(root.path(), id)["creationOrigin"], "ai");
         assert!(
             !note(root.path(), id)["knowledgeRebuildOrigin"]["sourceNoteIDs"]
                 .as_array()
@@ -197,6 +199,27 @@ fn prepare_preview_are_read_only_and_apply_undo_preserve_unknown_rich_fields() {
             .unwrap(),
         1
     );
+}
+#[test]
+fn rebuild_preserves_legacy_and_future_origins_while_new_notes_are_ai() {
+    for origin in [None, Some("unknown"), Some("future-origin"), Some("imported")] {
+        let root = tempfile::tempdir().unwrap();
+        crate::storage::atomic_json(&root.path().join("settings.json"), &json!({"features":{"knowledgeBase":true}})).unwrap();
+        let mut a = json!({"id":"a","kind":"note","text":"One. Two.","title":"A","createdAt":1,"updatedAt":1,"revision":1});
+        if let Some(origin) = origin { a["creationOrigin"] = json!(origin); }
+        let directory = crate::notes::directory(root.path()).unwrap();
+        crate::storage::atomic_json(&directory.join("workspace.json"), &json!({"notes":[a,
+            {"id":"b","kind":"note","text":"Three.","title":"B","createdAt":1,"updatedAt":1,"revision":1}]})).unwrap();
+        let draft = prepared(root.path());
+        let preview = review(root.path(), &draft, proposal());
+        let result = call(root.path(), "kb-rebuild-apply", apply_request(&preview)).unwrap();
+        assert_eq!(note(root.path(), "a").get("creationOrigin").and_then(Value::as_str), origin);
+        for created in result["createdNotes"].as_array().unwrap() {
+            assert_eq!(note(root.path(), created["noteID"].as_str().unwrap())["creationOrigin"], "ai");
+        }
+        call(root.path(), "kb-rebuild-undo", json!({"operationID":result["operationID"]})).unwrap();
+        assert_eq!(note(root.path(), "a").get("creationOrigin").and_then(Value::as_str), origin);
+    }
 }
 #[test]
 fn malformed_references_unknown_fields_duplicates_and_budgets_are_rejected() {

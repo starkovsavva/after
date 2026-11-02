@@ -86,6 +86,33 @@ struct CoreChecks {
         expect(rows[0].split(separator: "\t").count == 3, "three Anki columns")
         print("PASS: Anki TSV export and escaping")
 
+        for (raw, expected) in [("manual", MaterialCreationOrigin.manual), ("ai", .ai), ("imported", .imported), ("future-origin", .unknown)] {
+            let json: [String: Any] = ["id":"origin", "kind":"phrase", "front":"front", "back":"back", "context":"", "segmentIDs":[7], "creationOrigin":raw]
+            let decoded = try JSONDecoder().decode(Flashcard.self, from: JSONSerialization.data(withJSONObject: json))
+            expect(decoded.creationOrigin == expected, "origin uses per-card metadata rather than a transcript link")
+            expect(MaterialOriginFilter.all.includes(decoded.creationOrigin), "all includes imported/future material")
+            expect(MaterialOriginFilter.manual.includes(decoded.creationOrigin) == (expected == .manual), "manual excludes unknown and generated records")
+        }
+        let legacyCard = try JSONDecoder().decode(Flashcard.self, from: Data(#"{"id":"legacy","kind":"phrase","front":"front","back":"back","context":"","segmentIDs":[7]}"#.utf8))
+        expect(legacyCard.creationOrigin == .unknown, "legacy citation does not fabricate AI origin")
+        print("PASS: legacy/future material origin and independent source semantics")
+
+        var filters = MaterialFilterSet()
+        expect(filters.activeCount == 0 && filters.includesOrigin(.unknown) && filters.includesKind("future"), "empty criteria admit every material")
+        filters.origins = [.manual, .ai]
+        filters.kinds = ["phrase"]
+        filters.topicIDs = ["collection:one", "mixed:two"]
+        expect(filters.activeCount == 3, "counter counts fields rather than values")
+        expect(filters.includesOrigin(.manual) && filters.includesOrigin(.ai) && !filters.includesOrigin(.imported), "origins are unioned inside a field")
+        expect(filters.includesKind("phrase") && !filters.includesKind("concept"), "kind condition restricts material type")
+        let restoredFilters = try JSONDecoder().decode(MaterialFilterSet.self, from: JSONEncoder().encode(filters))
+        expect(restoredFilters == filters, "complete conditions survive persistence")
+        let partialFilters = try JSONDecoder().decode(MaterialFilterSet.self, from: Data(#"{"meaning":"рабочие встречи"}"#.utf8))
+        expect(partialFilters.activeCount == 0 && partialFilters.origins.isEmpty, "removed preview phrase never becomes an invisible filter")
+        let savedFilters = String(decoding: try JSONEncoder().encode(partialFilters), as: UTF8.self)
+        expect(!savedFilters.contains("meaning"), "removed preview phrase is not saved by the current model")
+        print("PASS: composable material filter conditions and persistence")
+
         let old = ReviewState(due: "2020-01-01T00:00:00.123+00:00", count: 2, lastRating: 3)
         let future = ReviewState(due: "2090-01-01T00:00:00.123+00:00", count: 2, lastRating: 3)
         expect(old.isDue, "past review date")

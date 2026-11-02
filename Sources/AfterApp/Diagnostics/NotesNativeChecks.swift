@@ -81,7 +81,7 @@ enum NotesNativeChecks {
         editingSession.receive(externalSaved)
         try expect(editingSession.conflicted && editingSession.draft.text == "Локальный текст, который нужно сохранить" && editingSession.draft.revision == typedSaved.revision, "Real external text edits retain local draft and old revision")
         try expect(notes.save(editingSession.draft) == nil, "Concurrent external text remains protected by Rust CAS")
-        guard let copiedDraft = notes.save(editingSession.asNewNote()) else { throw AppError.message(notes.error ?? "Save-as-new failed") }
+        guard let copiedDraft = notes.saveCopy(editingSession.asNewNote(), sourceNoteID: editingSession.baseline.id) else { throw AppError.message(notes.error ?? "Save-as-new failed") }
         try expect(copiedDraft.id != externalSaved.id && copiedDraft.text == editingSession.draft.text && copiedDraft.attachments.isEmpty, "Conflicting draft can be saved as a new text note without stealing attachment references")
         try expect(notes.notes.first(where: { $0.id == externalSaved.id })?.text == externalSaved.text, "Saving a new note preserves the other window's text")
         print("PASS: typing during attachment/OCR remains saveable, external edits stay protected and save-as-new preserves both texts")
@@ -214,7 +214,8 @@ enum NotesNativeChecks {
         try verifyFolderProfiles(app: app, meeting: meeting)
         try QuickCaptureController.verifyFolderScope(store: app)
         try await PlainNoteInputChecks.run(root: directory)
-        print("14 native notes checks passed")
+        try await NotesOriginNativeChecks.run(parentRoot: directory, app: app)
+        print("15 native notes checks passed")
     }
     /// The disclosure and existence checks use the object's profile, regardless
     /// of which unrelated folder is currently selected in the sidebar.

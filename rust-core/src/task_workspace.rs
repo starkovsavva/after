@@ -603,7 +603,7 @@ fn materialize(root: &Path, workspace: &mut NotesWorkspace, id: &str) -> Result<
     }
     let (_, origin) = summary_task(root, workspace, id)?;
     let note: CapturedNote = serde_json::from_value(
-        json!({"id":uuid(),"kind":"task","title":d.title,"text":d.text,"owner":d.owner,"due":d.due,"completed":d.completed,"meetingID":d.meeting_id,"createdAt":now(),"updatedAt":now(),"revision":1,"taskOrigin":origin}),
+        json!({"id":uuid(),"kind":"task","title":d.title,"text":d.text,"owner":d.owner,"due":d.due,"completed":d.completed,"meetingID":d.meeting_id,"createdAt":now(),"updatedAt":now(),"revision":1,"taskOrigin":origin,"creationOrigin":"ai"}),
     )?;
     workspace.notes.push(note);
     Ok(workspace.notes.len() - 1)
@@ -782,7 +782,7 @@ fn create(root: &Path, workspace: &mut NotesWorkspace, input: &Value) -> Result<
     let id = uuid();
     let t = now();
     let note: CapturedNote = serde_json::from_value(
-        json!({"id":id,"kind":"task","title":name,"text":text,"owner":input["owner"].as_str().unwrap_or(""),"due":input["due"].as_str().unwrap_or(""),"completed":false,"revision":1,"createdAt":t,"updatedAt":t,"folderID":folder.map(|f|&f.id),"folder":folder.map(|f|f.name.as_str()).unwrap_or("")}),
+        json!({"id":id,"kind":"task","title":name,"text":text,"owner":input["owner"].as_str().unwrap_or(""),"due":input["due"].as_str().unwrap_or(""),"completed":false,"revision":1,"createdAt":t,"updatedAt":t,"folderID":folder.map(|f|&f.id),"folder":folder.map(|f|f.name.as_str()).unwrap_or(""),"creationOrigin":"manual"}),
     )?;
     let mut r = TaskRecord {
         note_id: id.clone(),
@@ -981,7 +981,7 @@ fn link(root: &Path, workspace: &mut NotesWorkspace, input: &Value, unlink: bool
                     "Введите мысль к задаче"
                 );
                 let n: CapturedNote = serde_json::from_value(
-                    json!({"id":uuid(),"kind":"note","title":m.title,"text":text,"meetingID":workspace.notes[index].meeting_id,"createdAt":now(),"updatedAt":now(),"revision":1}),
+                    json!({"id":uuid(),"kind":"note","title":m.title,"text":text,"meetingID":workspace.notes[index].meeting_id,"createdAt":now(),"updatedAt":now(),"revision":1,"creationOrigin":"manual"}),
                 )?;
                 m.note_id = Some(n.id.clone());
                 created = serde_json::to_value(&n)?;

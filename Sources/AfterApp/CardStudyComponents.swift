@@ -26,6 +26,9 @@ struct StudyCardContent: View {
             HStack(spacing: 12) {
                 Text(card.kind == "phrase" ? L("Фраза") : L("Понятие"))
                     .font(AppTypography.caption).foregroundStyle(.secondary)
+                Text(L(card.creationOrigin.titleKey))
+                    .font(AppTypography.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("cards.detail.origin")
                 if actions?.paused == true {
                     Image(systemName: "pause.circle").font(AppTypography.caption).foregroundStyle(.secondary)
                         .help(L("Не повторяется")).accessibilityLabel(L("Не повторяется"))
