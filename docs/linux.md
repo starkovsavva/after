@@ -1,7 +1,7 @@
 # Разработка на Arch Linux
 
 Текущий Linux-срез Tauri: библиотека, заметки, папки, задачи/карточки и импорт медиа.
-Запись Linux, ASR, конспектирование, календарь и полный паритет со Swift-клиентом
+Микрофон Linux реализован через локальный PulseAudio/PipeWire-Pulse. Системное аудио, ASR, конспектирование, календарь и полный паритет со Swift-клиентом
 ещё находятся в плане: [этапы](linux-implementation-plan.md), [аудит](linux-portability-audit.md).
 
 ## Подготовка
@@ -10,8 +10,8 @@
 Для существующего Tauri-host требуется именно GTK3/WebKitGTK 4.1:
 
 ```sh
-sudo pacman -S --needed base-devel pkgconf rust nodejs npm python webkit2gtk-4.1
-pkg-config --modversion gtk+-3.0 webkit2gtk-4.1 openssl
+sudo pacman -S --needed base-devel pkgconf rust nodejs npm python webkit2gtk-4.1 libpulse
+pkg-config --modversion gtk+-3.0 webkit2gtk-4.1 openssl libpulse
 cd desktop
 npm ci --ignore-scripts
 cd ..
@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 626 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 56 host + 10 real-engine
+и helper), 626 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 18 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -126,3 +126,27 @@ native сборку этих платформ.
 [Owned import execution](decisions/owned-import-execution.md) связывает queue claim,
 worker thread, cancellation/join и точный receipt. Проверен повтор после publication
 без исходного файла: копия не создаётся заново, чужой receipt token отклоняется.
+
+## Микрофон Linux
+
+Адаптер `capture/linux.rs` использует асинхронный libpulse на worker thread.
+Нужен работающий локальный PulseAudio или PipeWire-Pulse: по умолчанию
+`$XDG_RUNTIME_DIR/pulse/native`; `PULSE_SERVER` поддерживается только как
+`unix:/absolute/path`. Capability проверяет socket, доступность входа проверяется
+при явном старте записи. Default source должен быть микрофоном, не monitor.
+Смена источника, overflow или разрыв сервера прерывают запись и сохраняют WAV;
+автоматического переключения устройства нет. Системное аудио пока недоступно.
+
+Проверка настоящего SDK без физических устройств:
+
+```sh
+sudo pacman -S --needed pipewire libpulse
+python3 scripts/check-linux-microphone.py --scenario capture
+python3 scripts/check-linux-microphone.py --scenario disconnect
+python3 scripts/check-linux-microphone.py --scenario monitor
+```
+
+Fixture создаёт отдельный сервер и виртуальный источник без hardware modules,
+проверяет PCM и canonical queued import, сохранение после отключения и отказ
+monitor. Физический микрофон, задержка и конкретные desktop-сессии требуют
+отдельной проверки с разрешением пользователя. [Решение](decisions/linux-microphone.md).

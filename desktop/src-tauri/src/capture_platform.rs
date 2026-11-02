@@ -5,12 +5,20 @@ use std::sync::Arc;
 #[path = "capture/windows.rs"]
 mod windows;
 
+#[cfg(target_os = "linux")]
+#[path = "capture/linux.rs"]
+mod linux;
+
 pub(crate) fn backend() -> Arc<dyn CaptureBackend> {
     #[cfg(windows)]
     {
         Arc::new(windows::WindowsCapture)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        Arc::new(linux::LinuxMicrophone::new())
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Arc::new(UnavailableCapture)
     }

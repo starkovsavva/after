@@ -86,9 +86,9 @@ class Verification:
 
     def desktop(self):
         if sys.platform.startswith("linux"):
-            probe = subprocess.run(["pkg-config", "--exists", "webkit2gtk-4.1", "gtk+-3.0"], check=False)
+            probe = subprocess.run(["pkg-config", "--exists", "webkit2gtk-4.1", "gtk+-3.0", "libpulse"], check=False)
             if probe.returncode:
-                raise RuntimeError("Linux host requires WebKitGTK 4.1 and GTK3 development libraries. On Arch: sudo pacman -S --needed webkit2gtk-4.1")
+                raise RuntimeError("Linux host requires WebKitGTK 4.1, GTK3 and libpulse development libraries. On Arch: sudo pacman -S --needed webkit2gtk-4.1 libpulse")
         self.run("Domain layer boundaries", [self.python, "scripts/check_layers.py"])
         self.run("Architecture guard contracts", [self.python, "-m", "unittest", "discover", "-s", "scripts", "-p", "test_layers.py"])
         self.process_tests()

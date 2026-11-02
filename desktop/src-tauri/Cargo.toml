@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+linux-audio-fixture = []
 
 [build-dependencies]
 tauri-build = { version = "=2.7.4", features = [] }
@@ -39,6 +40,7 @@ windows = { version = "0.62", features = ["Win32_Media_Audio", "Win32_System_Per
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "=2.0.2"
+libpulse-binding = "=2.30.1"
 
 [dev-dependencies]
 tempfile = "3"

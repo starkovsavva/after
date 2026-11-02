@@ -8,6 +8,7 @@ on:
       - 'rust-core/**'
       - 'process-runtime/**'
       - 'scripts/*desktop*'
+      - 'scripts/check-linux-microphone.py'
       - '.github/workflows/desktop.yml'
       - 'scripts/verify.py'
       - 'scripts/test_verify.py'
@@ -53,7 +54,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Linux WebKit dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libpulse-dev pipewire-bin libpipewire-0.3-modules pulseaudio-utils build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - run: npm ci --ignore-scripts
         working-directory: desktop
       - run: npm run build
@@ -74,6 +75,12 @@ jobs:
         run: |
           cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --test real_engine -- --ignored
           cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --lib -- --ignored
+      - name: Private virtual Linux microphone SDK
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/check-linux-microphone.py --scenario capture
+          python3 scripts/check-linux-microphone.py --scenario disconnect
+          python3 scripts/check-linux-microphone.py --scenario monitor
       - name: Browser to actual canonical engine (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -89,7 +96,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Install Arch build dependencies
-        run: pacman -Syu --needed --noconfirm git python rust nodejs npm pkgconf openssl webkit2gtk-4.1
+        run: pacman -Syu --needed --noconfirm git python rust nodejs npm pkgconf openssl webkit2gtk-4.1 libpulse
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
         with:

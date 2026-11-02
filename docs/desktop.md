@@ -129,7 +129,7 @@ node scripts/check-desktop-browser.mjs
 
 ## Следующие срезы
 
-1. Реализовать Linux microphone, затем portal/PipeWire capture через выделенный [CaptureBackend](decisions/capture-backend-port.md). [Сохранение recordings](decisions/durable-recording-import.md) использует durable queue; восстановление private WAV доступно независимо от hardware backend. [История](decisions/import-history-pagination.md), явный retry/cancel и startup receipt reconciliation подключены; background recovery не запускает работу.
+1. Проверить Linux microphone на физических устройствах (SDK fixture реализован), затем portal/PipeWire system capture через выделенный [CaptureBackend](decisions/capture-backend-port.md). [Сохранение recordings](decisions/durable-recording-import.md) использует durable queue; восстановление private WAV доступно независимо от hardware backend. [История](decisions/import-history-pagination.md), явный retry/cancel и startup receipt reconciliation подключены; background recovery не запускает работу.
 2. Импорт копии существующей библиотеки, профили и функциональные вкладки папок, задачи/карточки, MCP и помощник.
 3. Отдельные CaptureBackend macOS / Windows / portal+PipeWire; микрофон, звук Mac/PC и видео с одним таймлайном.
 4. Перенос ASR/model-runtime manifests, секретов, календаря и безопасного обновления; проверка полных сценариев на каждой ОС.

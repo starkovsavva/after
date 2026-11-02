@@ -28,6 +28,9 @@ class LayerBoundaryTests(unittest.TestCase):
             (root / "capture").mkdir()
             (root / "capture/windows.rs").write_text("use super::Shared;\n")
             self.assertTrue(list(capture_boundary_violations(root)))
+            (root / "capture/windows.rs").unlink()
+            (root / "capture/linux.rs").write_text("use crate::capture::RecordingStatus;\n")
+            self.assertTrue(list(capture_boundary_violations(root)))
 
     def test_domain_cycles_and_outward_imports_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

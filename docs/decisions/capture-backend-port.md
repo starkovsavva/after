@@ -1,7 +1,7 @@
 # Device capture behind an injected backend
 
 Статус: общий Recorder не выбирает ОС; Windows WASAPI реализует отдельный port.
-Production Linux/macOS backend пока unavailable. Portable private WAV recovery,
+Linux microphone теперь реализован в [local libpulse adapter](linux-microphone.md); macOS Tauri backend пока unavailable. Portable private WAV recovery,
 durable import и media playback сохраняются независимо от hardware capture.
 
 ## Зависимости
@@ -50,5 +50,5 @@ canonical queued import/ack; это не физический microphone test.
 без system-audio fallback. Windows SDK/runtime и физические устройства локально
 не проверены; изменения WASAPI требуют platform CI/ручного прогона.
 
-Следующий этап — Linux microphone adapter, затем system audio через подтверждённый
+Следующий этап — system audio через подтверждённый
 portal/PipeWire путь, разрешения/device changes и физический сквозной тест.

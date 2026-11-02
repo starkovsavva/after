@@ -71,8 +71,9 @@ def capture_boundary_violations(src):
     # Lifecycle may coordinate file adapters, but never select a driver or let
     # that driver mutate its state. The backend contract is an independent leaf.
     patterns = {
-        "capture.rs": r"\bcfg!?\s*\([^)]*\b(?:windows|unix|target_os|target_arch|target_family)\b|\b(?:wasapi|windows)\s*::|\bcrate\s*::\s*(?:platform|capture_platform)\b",
-        "capture_backend.rs": r"\bstd\s*::\s*(?:fs|os|process|net|env)\b|\b(?:wasapi|windows|tauri|libc)\s*::|\bcfg!?\s*\([^)]*\b(?:windows|unix|target_os)\b|\bcrate\s*::\s*capture\b",
+        "capture.rs": r"\bcfg!?\s*\([^)]*\b(?:windows|unix|target_os|target_arch|target_family)\b|\b(?:wasapi|windows|libpulse_binding)\s*::|\bcrate\s*::\s*(?:platform|capture_platform)\b",
+        "capture_backend.rs": r"\bstd\s*::\s*(?:fs|os|process|net|env)\b|\b(?:wasapi|windows|tauri|libc|libpulse_binding)\s*::|\bcfg!?\s*\([^)]*\b(?:windows|unix|target_os)\b|\bcrate\s*::\s*capture\b",
+        "capture/linux.rs": r"\bShared\b|\bRecordingStatus\b|\bcrate\s*::\s*capture\s*::",
         "capture/windows.rs": r"\bShared\b|\bRecordingStatus\b|\bcrate\s*::\s*capture\s*::",
     }
     for name, pattern in patterns.items():

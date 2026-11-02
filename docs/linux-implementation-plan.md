@@ -156,6 +156,10 @@ requirements, manifests, managed model host.
 
 ## Этап 6. Linux-запись
 
+Микрофон реализован через локальный libpulse adapter; private PipeWire SDK fixture
+проверяет запись, отключение и monitor rejection. Физический микрофон и system audio
+ещё требуют проверки/реализации; [ADR](decisions/linux-microphone.md).
+
 **Компоненты:** общий recording lifecycle и отдельные capture backends.
 
 1. Выделить общий контракт дорожек, монотонного времени, состояния и восстановления.
