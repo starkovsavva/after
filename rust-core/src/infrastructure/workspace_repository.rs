@@ -445,9 +445,12 @@ fn receipt_rows(value: &Value) -> Result<BTreeMap<(String, String), Value>> {
 fn commit(
     transaction: &Transaction<'_>,
     previous: Option<&WorkspaceSnapshot>,
-    value: Value,
+    mut value: Value,
     kind: &str,
 ) -> Result<WorkspaceSnapshot> {
+    if let Some(previous) = previous {
+        crate::domain::creation_origin::preserve_note_creation_origins(&previous.value, &mut value);
+    }
     validate(&value)?;
     if let Some(previous) = previous {
         let current: (i64, String) = transaction.query_row(

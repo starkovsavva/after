@@ -199,7 +199,7 @@ struct MainView: View {
                     Text(L("Поиск")).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                     Text("⌘K").font(AppTypography.caption).foregroundStyle(.tertiary)
-                }.font(AppTypography.control).padding(8).background(Ink.soft, in: RoundedRectangle(cornerRadius: 6))
+                }.font(AppTypography.control).afterSearchFieldSurface()
             }.buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 18).padding(.bottom, 18)
                 .accessibilityLabel(L("Поиск по всей библиотеке. Command K"))
             ScrollView {
@@ -369,7 +369,7 @@ struct MainView: View {
                         Button { store.libraryFilter = "" } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel(L("Очистить фильтр"))
                     }
-                }.font(AppTypography.control).padding(8).background(Ink.soft, in: RoundedRectangle(cornerRadius: 6))
+                }.font(AppTypography.control).afterSearchFieldSurface()
                     .padding(.horizontal, 12).padding(.bottom, 8)
             }
             ScrollView {

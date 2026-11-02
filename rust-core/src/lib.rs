@@ -26,6 +26,7 @@ pub mod chatgpt;
 pub mod models;
 pub mod storage;
 pub mod notes;
+pub mod creation_origin;
 pub mod folders;
 pub mod workspace_repository;
 pub mod cards;
@@ -88,11 +89,11 @@ fn data_path(root: &Path, relative: &str) -> Result<PathBuf> {
     if relative.components().any(|p| !matches!(p, Component::Normal(_))) {
         bail!("Недопустимый путь библиотеки");
     }
-    let allowed = ["settings.json", "sidebar-state.json", "language-state.json", "overview-drafts.json", "voice-draft.json", "capture-drafts.json", "meta.json", "transcript.json", "summary.json", "examples.json", "review-state.json"];
+    let allowed = ["settings.json", "sidebar-state.json", "language-state.json", "overview-drafts.json", "voice-draft.json", "capture-drafts.json", "material-filters.json", "meta.json", "transcript.json", "summary.json", "examples.json", "review-state.json"];
     let name = relative.file_name().and_then(|s| s.to_str()).context("Нет имени файла")?;
     if !allowed.contains(&name) { bail!("Этот файл не относится к библиотеке"); }
     let components: Vec<_> = relative.components().collect();
-    if ["settings.json", "sidebar-state.json", "language-state.json", "overview-drafts.json", "voice-draft.json", "capture-drafts.json"].contains(&name) {
+    if ["settings.json", "sidebar-state.json", "language-state.json", "overview-drafts.json", "voice-draft.json", "capture-drafts.json", "material-filters.json"].contains(&name) {
         if components.len() != 1 { bail!("Недопустимый путь настроек"); }
     } else {
         if components.len() != 3 || components[0].as_os_str() != "meetings" { bail!("Недопустимый путь встречи"); }
@@ -112,7 +113,15 @@ pub fn request(value: &Value) -> Result<Value> {
         command if command.starts_with("tracker-") => tracker_sync::request(&root,command,value),
         command if command.starts_with("semantic-") => semantic::dispatch(&root,value),
         command if command.starts_with("code-index-") => code_index::dispatch(&root,value),
-        command if ["notes-list", "note-save", "note-delete", "note-trash", "note-restore", "context-save", "template-save", "template-delete", "note-attach", "attachment-path", "attachment-remove", "attachment-text", "notes-search", "notes-tasks", "notes-task-complete", "notes-brief", "note-search-validate", "note-expansion-validate", "note-expansion-valid"].contains(&command) => notes::dispatch(&root, value),
+        "note-save-from-summary" => {
+            let note: notes::CapturedNote = serde_json::from_value(value["note"].clone())?;
+            if note.kind != "note" || note.meeting_id.is_none() || note.revision != 0 {
+                bail!("Для копии конспекта нужна новая заметка со встречей");
+            }
+            let origin = summary_copy_origin(&root, &note);
+            Ok(serde_json::to_value(notes::save_note_with_origin(&root, note, origin)?)?)
+        }
+        command if ["notes-list", "note-save", "note-save-copy", "note-delete", "note-trash", "note-restore", "context-save", "template-save", "template-delete", "note-attach", "attachment-path", "attachment-remove", "attachment-text", "notes-search", "notes-tasks", "notes-task-complete", "notes-brief", "note-search-validate", "note-expansion-validate", "note-expansion-valid"].contains(&command) => notes::dispatch(&root, value),
         "voice-plan" | "voice-inspect" | "voice-choose" | "voice-apply" | "voice-undo" | "voice-recover" | "task-update" | "task-materialize" | "task-append" => voice::dispatch(&root, value),
         command if command.starts_with("task-") => task_workspace::dispatch(&root, value),
         "card-trash-list" | "card-restore" | "card-trash-purge" | "cards-batch-apply" | "cards-batch-undo" | "cards-batch-recover" | "cards-import" | "cards-import-preview" | "cards-library" | "card-save" | "card-delete" | "card-suspend" | "cards-review" | "cards-review-preview" | "cards-review-undo" => cards::dispatch(&root,value),
@@ -135,17 +144,28 @@ pub fn request(value: &Value) -> Result<Value> {
             if !path.exists() { return Ok(Value::Null); }
             let info = std::fs::symlink_metadata(&path)?;
             if !info.is_file() || info.file_type().is_symlink() { bail!("Ожидается обычный файл библиотеки"); }
+            if path.file_name().and_then(|s| s.to_str()) == Some("material-filters.json") && info.len() > 65_536 {
+                bail!("Файл фильтров слишком большой");
+            }
             Ok(serde_json::from_slice(&std::fs::read(path)?)?)
         }
         "write" => {
             let path = data_path(&root, value["path"].as_str().context("Нет пути")?)?;
             let data = value.get("value").context("Нет данных")?;
+            if path.file_name().and_then(|s| s.to_str()) == Some("material-filters.json") &&
+                (!data.is_object() || serde_json::to_vec(data)?.len() > 65_536) {
+                bail!("Некорректные настройки фильтров");
+            }
             if path.file_name().and_then(|s| s.to_str()) == Some("settings.json") {
                 if ["apiKey", "api_key", "key", "token"].iter().any(|k| data.get(k).is_some()) {
                     bail!("Секреты должны храниться в Связке ключей macOS");
                 }
             }
-            storage::atomic_json(&path, data)?;
+            if path.file_name().and_then(|s| s.to_str()) == Some("summary.json") {
+                cards::write_compatible_summary(&path, data)?;
+            } else {
+                storage::atomic_json(&path, data)?;
+            }
             Ok(json!({"saved": true}))
         }
         "import" => storage::import_meeting(&root, Path::new(value["source"].as_str().context("Нет файла")?),
@@ -169,6 +189,38 @@ pub fn request(value: &Value) -> Result<Value> {
 #[cfg(windows)]
 pub fn request(_value: &Value) -> Result<Value> {
     bail!("Unsupported Windows preview command. Use the typed desktop bridge.")
+}
+
+#[cfg(unix)]
+/// A meeting association or writable recovery draft does not prove authorship.
+/// A draft inherits AI provenance only from the current generated baseline.
+fn summary_copy_origin(root: &Path, note: &notes::CapturedNote) -> creation_origin::CreationOrigin {
+    use creation_origin::CreationOrigin;
+    let Some(id) = note.meeting_id.as_deref() else { return CreationOrigin::Unknown; };
+    let read = |path: PathBuf| {
+        std::fs::symlink_metadata(&path).ok().filter(|info| info.is_file() && !info.file_type().is_symlink() && info.len() <= 8 * 1_048_576)
+            .and_then(|_| storage::regular_json(&path).ok())
+    };
+    let Some(summary) = storage::meeting_directory(root, id).ok().and_then(|directory| read(directory.join("summary.json"))) else {
+        return CreationOrigin::Unknown;
+    };
+    if !summary["provider"].as_str().is_some_and(|s| !s.is_empty() && s != "manual" && s != "import") {
+        return CreationOrigin::Unknown;
+    }
+    let Some(overview) = summary["overview"].as_str() else { return CreationOrigin::Unknown; };
+    if overview == note.text.as_str() { return CreationOrigin::Ai; }
+    let Some(generated_at) = summary["generatedAt"].as_f64().filter(|n| n.is_finite() && *n >= 0.0) else {
+        return CreationOrigin::Unknown;
+    };
+    if let Some(drafts) = read(root.join("overview-drafts.json")) {
+        let draft = &drafts[id];
+        if draft["text"].as_str() == Some(note.text.as_str()) &&
+            draft["original"].as_str() == Some(overview) &&
+            draft["generatedAt"].as_f64() == Some(generated_at) {
+            return CreationOrigin::Ai;
+        }
+    }
+    CreationOrigin::Unknown
 }
 
 /// C ABI contains JSON only: Swift never shares Rust layout, pointers to models,
@@ -196,6 +248,67 @@ pub unsafe extern "C" fn posle_free_string(value: *mut c_char) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn summary_note_origin_rejects_forged_drafts_and_imported_or_manual_baselines() {
+        let root = tempfile::tempdir().unwrap();
+        let meeting = storage::meeting_directory(root.path(), "source").unwrap();
+        storage::atomic_json(&meeting.join("meta.json"), &json!({"id":"source","title":"Source","createdAt":1,"status":"ready"})).unwrap();
+        let save = |id: &str, text: &str| request(&json!({"root":root.path(),"command":"note-save-from-summary","note":{"id":id,"text":text,"meetingID":"source","createdAt":1,"updatedAt":1}})).unwrap();
+        assert_eq!(save("unknown", "Arbitrary manual text")["creationOrigin"], "unknown");
+        let draft = json!({"source":{"text":"Recovered edit","original":"Baseline text","generatedAt":1}});
+        request(&json!({"root":root.path(),"command":"write","path":"overview-drafts.json","value":draft})).unwrap();
+        let recovered = save("forged-draft", "Recovered edit");
+        assert_eq!(recovered["creationOrigin"], "unknown");
+        assert_eq!(recovered["text"], "Recovered edit");
+        for provider in ["import", "manual", ""] {
+            storage::atomic_json(&meeting.join("summary.json"), &json!({"overview":"Baseline text","provider":provider,"generatedAt":1,"cards":[]})).unwrap();
+            assert_eq!(save(&format!("direct-{}", if provider.is_empty() {"missing"} else {provider}), "Baseline text")["creationOrigin"], "unknown");
+            let saved = save(&format!("draft-{}", if provider.is_empty() {"missing"} else {provider}), "Recovered edit");
+            assert_eq!(saved["creationOrigin"], "unknown");
+            assert_eq!(saved["text"], "Recovered edit");
+        }
+        assert_eq!(storage::regular_json(&root.path().join("overview-drafts.json")).unwrap(), draft);
+    }
+    #[test]
+    fn summary_note_origin_accepts_only_current_generated_content_or_matching_draft_baseline() {
+        let root = tempfile::tempdir().unwrap();
+        let meeting = storage::meeting_directory(root.path(), "source").unwrap();
+        storage::atomic_json(&meeting.join("meta.json"), &json!({"id":"source","title":"Source","createdAt":1,"status":"ready"})).unwrap();
+        let save = |id: &str, text: &str| request(&json!({"root":root.path(),"command":"note-save-from-summary","note":{"id":id,"text":text,"meetingID":"source","createdAt":1,"updatedAt":1}})).unwrap();
+        storage::atomic_json(&meeting.join("summary.json"), &json!({"overview":"Generated text","provider":"fixture","generatedAt":1,"cards":[]})).unwrap();
+        assert_eq!(save("generated", "Generated text")["creationOrigin"], "ai");
+        assert_eq!(save("different", "Unrelated text")["creationOrigin"], "unknown");
+        storage::atomic_json(&root.path().join("overview-drafts.json"), &json!({"source":{"text":"Recovered edit","original":"Generated text","generatedAt":1}})).unwrap();
+        let mut recovered = save("recovered", "Recovered edit");
+        assert_eq!(recovered["creationOrigin"], "ai");
+        recovered["text"] = json!("Human edits"); recovered["creationOrigin"] = json!("manual");
+        let saved = request(&json!({"root":root.path(),"command":"note-save","note":recovered})).unwrap();
+        assert_eq!(saved["creationOrigin"], "ai");
+        for (id, draft) in [
+            ("draft-without-original", json!({"text":"Recovered edit","generatedAt":1})),
+            ("draft-wrong-generation", json!({"text":"Recovered edit","original":"Generated text","generatedAt":2})),
+            ("draft-without-generation", json!({"text":"Recovered edit","original":"Generated text"})),
+        ] {
+            storage::atomic_json(&root.path().join("overview-drafts.json"), &json!({"source":draft})).unwrap();
+            assert_eq!(save(id, "Recovered edit")["creationOrigin"], "unknown");
+        }
+        storage::atomic_json(&root.path().join("overview-drafts.json"), &json!({"source":{"text":"Recovered edit","original":"Generated text","generatedAt":1}})).unwrap();
+        for (id, overview, generated_at) in [
+            ("changed-baseline", json!("Different source text"), json!(1)),
+            ("changed-generation", json!("Generated text"), json!(2)),
+            ("missing-generation", json!("Generated text"), Value::Null),
+            ("invalid-generation", json!("Generated text"), json!(-1)),
+        ] {
+            storage::atomic_json(&meeting.join("summary.json"), &json!({"overview":overview,"provider":"fixture","generatedAt":generated_at,"cards":[]})).unwrap();
+            let recovered = save(id, "Recovered edit");
+            assert_eq!(recovered["creationOrigin"], "unknown");
+            assert_eq!(recovered["text"], "Recovered edit");
+        }
+        std::fs::remove_file(meeting.join("summary.json")).unwrap();
+        let recovered = save("missing-baseline", "Recovered edit");
+        assert_eq!(recovered["creationOrigin"], "unknown");
+        assert_eq!(recovered["text"], "Recovered edit");
+    }
     #[test]
     fn sidebar_layout_state_is_private_and_root_only() {
         let directory = tempfile::tempdir().unwrap();

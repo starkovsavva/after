@@ -168,7 +168,7 @@ fn parse(text:&str,separator_override:Option<&str>)->Result<Parsed> {
         // Preserve the app's exported card kind when it is explicitly in the
         // Anki Tags column; arbitrary external tags remain only import metadata.
         let kind=tags_index.and_then(|i|row.get(i)).and_then(|tags|tags.split_whitespace().find(|tag|["phrase","concept"].contains(tag))).unwrap_or("phrase");
-        cards.push(json!({"id":id,"kind":kind,"front":front,"back":back,"context":context,"segmentIDs":[]}));
+        cards.push(json!({"id":id,"kind":kind,"front":front,"back":back,"context":context,"segmentIDs":[],"creationOrigin":"imported"}));
     }
     if skipped>0 { warnings.push(format!("Пропущено пустых, неполных или повторных строк: {skipped}.")); }
     if media { warnings.push("Изображения, видео и аудио из экспорта Anki не импортируются. Текст карточек сохранён.".into()); }
@@ -195,6 +195,48 @@ pub fn preview(path:&Path,separator:Option<&str>)->Result<Value> {
 }
 fn quoted(value:&str)->String {
     if value.contains(['\t','\n','\r','"']) { format!("\"{}\"",value.replace('"',"\"\"")) } else { value.into() }
+}
+/// Compatibility for whole-summary writers whose DTO does not know every
+/// persisted card field. Dedicated creators own provenance for new cards.
+pub(crate) fn write_compatible_summary(path:&Path,incoming:&Value)->Result<()> {
+    ensure!(path.file_name().and_then(|name|name.to_str())==Some("summary.json"),"Ожидался файл конспекта");
+    let directory=path.parent().context("У конспекта нет папки встречи")?;
+    match fs::symlink_metadata(directory) {
+        Ok(info)=>ensure!(info.is_dir()&&!info.file_type().is_symlink(),"Ожидалась обычная папка встречи"),
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>DirBuilder::new().mode(0o700).create(directory)?,
+        Err(error)=>return Err(error.into()),
+    }
+    let _lock=crate::storage::meeting_lock(directory)?;
+    let previous=workspace::read(path,json!({}))?;
+    let mut compatible=previous.as_object().context("Предыдущий конспект должен содержать объект")?.clone();
+    compatible.extend(incoming.as_object().context("Конспект должен содержать объект")?.clone());
+    let originals:Vec<_>=previous["cards"].as_array().into_iter().flatten()
+        .chain(previous["archivedCards"].as_array().into_iter().flatten().filter_map(|entry|entry.get("card")))
+        .collect();
+    let retain_card=|card:&mut Value|->Result<()> {
+        let fields=card.as_object().context("Карточка должна содержать объект")?;
+        let id=fields.get("id").and_then(Value::as_str).context("У карточки нет идентификатора")?;
+        let mut retained=originals.iter().find(|original|original["id"].as_str()==Some(id))
+            .and_then(|original|original.as_object()).cloned().unwrap_or_default();
+        // A missing legacy origin must remain missing even when a newer DTO
+        // encodes its decoded `unknown`, or a caller claims a different origin.
+        for (key,value) in fields {
+            if key!="creationOrigin" { retained.insert(key.clone(),value.clone()); }
+        }
+        *card=Value::Object(retained);
+        Ok(())
+    };
+    if let Some(cards)=compatible.get_mut("cards") {
+        for card in cards.as_array_mut().context("Нет списка карточек")? { retain_card(card)?; }
+    }
+    if let Some(archived)=compatible.get_mut("archivedCards") {
+        for entry in archived.as_array_mut().context("Повреждена корзина карточек")? {
+            retain_card(entry.get_mut("card").context("В корзине нет карточки")?)?;
+        }
+    }
+    let summary=Value::Object(compatible);
+    ensure!(serde_json::to_vec(&summary)?.len()<=8*1_048_576,"Файл конспекта слишком большой");
+    crate::storage::atomic_json(path,&summary)
 }
 pub fn import(root:&Path,path:&Path,separator:Option<&str>,title:Option<&str>)->Result<Value> {
     import_checked(root,path,separator,title,None)
@@ -270,6 +312,56 @@ pub fn dispatch(root:&Path,value:&Value)->Result<Value> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{symlink,PermissionsExt};
+    #[test] fn whole_summary_roundtrip_preserves_card_origins_and_compatible_fields_by_id() {
+        let root=tempfile::tempdir().unwrap(); let directory=crate::storage::meeting_directory(root.path(),"roundtrip").unwrap();
+        let path=directory.join("summary.json");
+        let original=json!({"overview":"Old","provider":"cloud","futureSummary":{"keep":true},"cards":[
+            {"id":"manual","front":"Manual","creationOrigin":"manual","futureCard":{"keep":1}},
+            {"id":"ai","front":"Generated","creationOrigin":"ai"},
+            {"id":"legacy","front":"Legacy","segmentIDs":[7]},
+            {"id":"future","front":"Future","creationOrigin":"future-origin"}
+        ],"archivedCards":[{"trashID":"trash-1","deletedAt":123,"card":{"id":"imported","front":"Imported","creationOrigin":"imported","futureCard":{"keep":2}}}]});
+        crate::storage::atomic_json(&path,&original).unwrap();
+        let reviews=json!({"manual":{"due":"2030-01-01T00:00:00Z","count":7,"lastRating":3}});
+        crate::storage::atomic_json(&directory.join("review-state.json"),&reviews).unwrap();
+        // Older clients drop unknown fields; newer DTOs can re-encode a future
+        // origin as `unknown`. Neither is authority to relabel an existing ID.
+        let incoming=json!({"overview":"Edited","cards":[
+            {"id":"future","front":"Future edited","creationOrigin":"unknown"},
+            {"id":"legacy","front":"Legacy edited","creationOrigin":"manual"},
+            {"id":"ai","front":"Generated edited"},
+            {"id":"manual","front":"Manual edited","creationOrigin":"ai"},
+            {"id":"new","front":"Untrusted new card","creationOrigin":"ai"}
+        ]});
+        crate::request(&json!({"root":root.path(),"command":"write","path":"meetings/roundtrip/summary.json","value":incoming})).unwrap();
+        let saved=crate::storage::regular_json(&path).unwrap();
+        assert_eq!(saved["overview"],"Edited"); assert_eq!(saved["futureSummary"],original["futureSummary"]);
+        assert_eq!(saved["cards"][0]["creationOrigin"],"future-origin");
+        assert!(saved["cards"][1].get("creationOrigin").is_none());
+        assert_eq!(saved["cards"][1]["segmentIDs"],json!([7]));
+        assert_eq!(saved["cards"][2]["creationOrigin"],"ai");
+        assert_eq!(saved["cards"][3]["creationOrigin"],"manual");
+        assert_eq!(saved["cards"][3]["futureCard"],json!({"keep":1}));
+        assert!(saved["cards"][4].get("creationOrigin").is_none());
+        assert_eq!(saved["archivedCards"],original["archivedCards"]);
+        assert_eq!(crate::storage::regular_json(&directory.join("review-state.json")).unwrap(),reviews);
+        // Explicit archived-card roundtrips and moving an ID back to active
+        // storage preserve that same canonical per-card provenance.
+        write_compatible_summary(&path,&json!({"archivedCards":[{"trashID":"trash-1","deletedAt":123,"card":{"id":"imported","front":"Imported edited","creationOrigin":"ai"}}]})).unwrap();
+        let archived=crate::storage::regular_json(&path).unwrap();
+        assert_eq!(archived["archivedCards"][0]["card"]["creationOrigin"],"imported");
+        assert_eq!(archived["archivedCards"][0]["card"]["futureCard"],json!({"keep":2}));
+        write_compatible_summary(&path,&json!({"cards":[{"id":"imported","front":"Restored","creationOrigin":"manual"}],"archivedCards":[]})).unwrap();
+        let restored=crate::storage::regular_json(&path).unwrap();
+        assert_eq!(restored["cards"][0]["creationOrigin"],"imported");
+        assert_eq!(restored["cards"][0]["futureCard"],json!({"keep":2}));
+    }
+    #[test] fn new_whole_summary_cards_cannot_claim_a_trusted_origin() {
+        let root=tempfile::tempdir().unwrap(); let directory=crate::storage::meeting_directory(root.path(),"new-summary").unwrap();
+        let path=directory.join("summary.json");
+        write_compatible_summary(&path,&json!({"cards":[{"id":"new","front":"Question","creationOrigin":"manual"}]})).unwrap();
+        assert!(crate::storage::regular_json(&path).unwrap()["cards"][0].get("creationOrigin").is_none());
+    }
     #[test] fn utf8_bom_anki_headers_tags_and_html_preserve_text() {
         let data="\u{feff}#separator:tab\n#html:true\n#columns:Front\tBack\tTags\n<b>срок</b> &amp; date\tdeadline<br>срок\twork english\n";
         let result=parse(data,None).unwrap(); assert_eq!(result.cards.len(),1);
@@ -308,6 +400,9 @@ mod tests {
         for name in ["meta.json","summary.json","cards.tsv"] { assert_eq!(fs::metadata(directory.join(name)).unwrap().permissions().mode()&0o777,0o600); }
         assert_eq!(fs::metadata(&directory).unwrap().permissions().mode()&0o777,0o700); assert!(!directory.join("transcript.json").exists()); assert_eq!(fs::read(&path).unwrap(),bytes);
         let summary:Value=serde_json::from_slice(&fs::read(directory.join("summary.json")).unwrap()).unwrap(); let card_id=summary["cards"][0]["id"].as_str().unwrap();
+        assert_eq!(summary["cards"][0]["creationOrigin"],"imported");
+        let library=dispatch(root.path(),&json!({"command":"cards-library"})).unwrap();
+        assert_eq!(library["entries"][0]["card"]["creationOrigin"],"imported");
         assert_eq!(crate::storage::review(root.path(),id,card_id,3).unwrap()["count"],1);
         crate::storage::atomic_json(&root.path().join("settings.json"),&json!({"features":{"cards":true}})).unwrap();
         let results=crate::search::search(root.path(),"Hello","cards",60).unwrap();

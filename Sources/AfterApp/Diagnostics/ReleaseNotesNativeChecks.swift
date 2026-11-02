@@ -70,6 +70,27 @@ enum ReleaseNotesNativeChecks {
                        "Patch settings actions must route once to the correct section: " + feature)
         }
         print("PASS: 0.18.0→0.18.1 contains only current fixes/interface changes, preserves historical notes, routes settings correctly and announces once")
+        let materialRoot = try fixture("material-filters-upgrade", ["introSeen": true, "knownVersion": "0.18.2", "lastLaunchedVersion": "0.18.2"])
+        let material = GuidanceController(version: "0.18.3")
+        material.configure(root: materialRoot, preview: false)
+        material.updateFeatures(AppFeatures()); material.considerStartup(hasMeetings: true)
+        let materialUpdates = material.featureGroups.flatMap(\.updates)
+        try expect(material.presentation == .whatsNew && material.previousVersion == "0.18.2" &&
+                   Set(materialUpdates.map(\.id)) == ["notes", "cards", "appearance"],
+                   "0.18.3 upgrade must announce exactly notes, cards and appearance changes")
+        try expect(material.changeCounts.added == 0 && material.changeCounts.changed == 3 && material.changeCounts.fixed == 3,
+                   "0.18.3 must contain three interface updates and three provenance/editor fixes")
+        try expect(materialUpdates.first { $0.id == "notes" }?.requiredFeature == nil &&
+                   materialUpdates.first { $0.id == "notes" }?.settingsSection == "notes" &&
+                   materialUpdates.first { $0.id == "cards" }?.requiredFeature == .cards &&
+                   materialUpdates.first { $0.id == "cards" }?.settingsSection == "ai" &&
+                   materialUpdates.first { $0.id == "appearance" }?.requiredFeature == nil &&
+                   materialUpdates.first { $0.id == "appearance" }?.settingsSection == "appearance",
+                   "Release settings must route notes and appearance directly while keeping cards feature-gated")
+        try expect(!materialUpdates.flatMap(\.changes).contains { change in
+            let text = change.textKey.lowercased()
+            return text.contains("смыслов") || text.contains("по смыслу") || text.contains("свободн")
+        }, "0.18.3 must not claim a semantic or freephrase filter")
         let root = try fixture("upgrade", ["introSeen": true, "knownVersion": "0.17.6.4", "lastLaunchedVersion": "0.17.6.4"])
         for (name, history) in [("empty-prior-guide", ["knownVersion": "0.17.6.4"]),
                                 ("empty-prior-launch", ["lastLaunchedVersion": "0.17.6.4"])] {

@@ -54,6 +54,8 @@ pub struct CapturedNote {
     pub updated_at: f64,
     #[serde(default)]
     pub revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_origin: Option<crate::domain::creation_origin::CreationOrigin>,
     #[serde(default, rename = "sourceURL", alias = "sourceUrl")]
     pub source_url: String,
     #[serde(default)]

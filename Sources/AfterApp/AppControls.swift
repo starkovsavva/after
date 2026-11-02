@@ -305,7 +305,7 @@ private struct AfterPickerSearch<Value: Hashable>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(AppTypography.controlStrong)
-            TextField(L("Поиск"), text: $query).textFieldStyle(.roundedBorder).focused($searchFocused)
+            TextField(L("Поиск"), text: $query).afterSearchField(isFocused: searchFocused).focused($searchFocused)
                 .accessibilityIdentifier(identifier + ".search")
                 .onSubmit { choose(highlighted) }
                 .onKeyPress(keys: [.upArrow, .downArrow]) { press in

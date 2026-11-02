@@ -86,6 +86,65 @@ struct CoreChecks {
         expect(rows[0].split(separator: "\t").count == 3, "three Anki columns")
         print("PASS: Anki TSV export and escaping")
 
+        for (raw, expected) in [("manual", MaterialCreationOrigin.manual), ("ai", .ai), ("imported", .imported), ("future-origin", .unknown)] {
+            let json: [String: Any] = ["id":"origin", "kind":"phrase", "front":"front", "back":"back", "context":"", "segmentIDs":[7], "creationOrigin":raw]
+            let decoded = try JSONDecoder().decode(Flashcard.self, from: JSONSerialization.data(withJSONObject: json))
+            expect(decoded.creationOrigin == expected, "origin uses per-card metadata rather than a transcript link")
+            expect(MaterialOriginFilter.all.includes(decoded.creationOrigin), "all includes imported/future material")
+            expect(MaterialOriginFilter.manual.includes(decoded.creationOrigin) == (expected == .manual || expected == .imported), "created-by-me includes imports but excludes unknown and generated records")
+            expect(MaterialOriginFilter.ai.includes(decoded.creationOrigin) == (expected == .ai), "AI choice includes only canonical AI records")
+        }
+        let legacyCard = try JSONDecoder().decode(Flashcard.self, from: Data(#"{"id":"legacy","kind":"phrase","front":"front","back":"back","context":"","segmentIDs":[7]}"#.utf8))
+        expect(legacyCard.creationOrigin == .unknown, "legacy citation does not fabricate AI origin")
+        print("PASS: legacy/future material origin and independent source semantics")
+
+        var filters = MaterialFilterSet()
+        expect(filters.activeCount == 0 && filters.includesOrigin(.unknown) && filters.includesKind("future"), "empty criteria admit every material")
+        filters.origins = [.manual, .ai]
+        filters.kinds = ["phrase"]
+        filters.topicIDs = ["collection:one", "mixed:two"]
+        expect(filters.activeCount == 3, "counter counts fields rather than values")
+        expect(filters.includesOrigin(.manual) && filters.includesOrigin(.ai) && filters.includesOrigin(.imported) && !filters.includesOrigin(.unknown), "origin choices are unioned, imports belong to me and unknown is not reclassified")
+        expect(filters.includesKind("phrase") && !filters.includesKind("concept"), "kind condition restricts material type")
+        let restoredFilters = try JSONDecoder().decode(MaterialFilterSet.self, from: JSONEncoder().encode(filters))
+        expect(restoredFilters == filters, "complete conditions survive persistence")
+        let partialFilters = try JSONDecoder().decode(MaterialFilterSet.self, from: Data(#"{"meaning":"рабочие встречи"}"#.utf8))
+        expect(partialFilters.activeCount == 0 && partialFilters.origins.isEmpty, "removed preview phrase never becomes an invisible filter")
+        let savedFilters = String(decoding: try JSONEncoder().encode(partialFilters), as: UTF8.self)
+        expect(!savedFilters.contains("meaning"), "removed preview phrase is not saved by the current model")
+        expect(MaterialCreationOrigin.selectableOrigins == [.ai, .manual], "only AI and created-by-me are selectable origin criteria")
+        let encodedImportedOrigin = try JSONEncoder().encode(MaterialCreationOrigin.imported)
+        expect(String(decoding: encodedImportedOrigin, as: UTF8.self) == #""imported""#, "filter grouping must not change canonical imported provenance")
+        let ownMaterials = MaterialFilterSet(origins: [.manual])
+        let aiMaterials = MaterialFilterSet(origins: [.ai])
+        for origin in MaterialCreationOrigin.allCases {
+            expect(ownMaterials.includesOrigin(origin) == (origin == .manual || origin == .imported), "created-by-me groups manual and imported canonical origins only")
+            expect(aiMaterials.includesOrigin(origin) == (origin == .ai), "AI filter must not accept imported or unknown material")
+        }
+        let legacyOriginCriteria: [([String], Set<MaterialCreationOrigin>)] = [
+            ([], []), (["imported"], [.manual]), (["manual", "imported"], [.manual]),
+            (["unknown"], []), (["future-origin"], []), (["unknown", "future-origin"], []),
+            (["ai", "unknown"], [.ai]), (["imported", "unknown"], [.manual]),
+            (["ai", "imported", "unknown", "future-origin"], [.ai, .manual])
+        ]
+        for (raw, expected) in legacyOriginCriteria {
+            let payload: [String: Any] = ["origins": raw, "topicIDs": ["mixed:kept"], "kinds": ["phrase"]]
+            let normalized = try JSONDecoder().decode(MaterialFilterSet.self, from: JSONSerialization.data(withJSONObject: payload))
+            expect(normalized.origins == expected && normalized.activeCount == (expected.isEmpty ? 2 : 3), "saved origin criteria normalize without an invisible active condition")
+            expect(normalized.topicIDs == ["mixed:kept"] && normalized.kinds == ["phrase"], "origin migration preserves other filter fields")
+            let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(normalized)) as! [String: Any]
+            expect(Set(encoded["origins"] as! [String]) == Set(expected.map(\.rawValue)), "persisted origins keep the same wire key with only selectable values")
+        }
+        var mutableCriteria = MaterialFilterSet(origins: [.imported, .unknown])
+        expect(mutableCriteria.origins == [.manual], "direct initialization normalizes legacy choices")
+        mutableCriteria.origins = [.unknown]
+        expect(mutableCriteria.activeCount == 0 && mutableCriteria.includesOrigin(.unknown), "unknown-only criteria clear to the unrestricted list")
+        mutableCriteria.origins.formUnion([.ai, .imported, .unknown])
+        expect(mutableCriteria.origins == [.ai, .manual] && !mutableCriteria.includesOrigin(.unknown), "public set mutation cannot introduce hidden origin choices")
+        mutableCriteria.origins.remove(.manual)
+        expect(mutableCriteria.origins == [.ai] && !mutableCriteria.includesOrigin(.imported), "removing created-by-me also excludes imported material")
+        print("PASS: composable material filter conditions and persistence")
+
         let old = ReviewState(due: "2020-01-01T00:00:00.123+00:00", count: 2, lastRating: 3)
         let future = ReviewState(due: "2090-01-01T00:00:00.123+00:00", count: 2, lastRating: 3)
         expect(old.isDue, "past review date")

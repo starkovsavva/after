@@ -215,6 +215,9 @@ final class AppStore: ObservableObject {
 
     init(preview: Bool = false, recorder: (any MeetingRecordingBackend)? = nil,
          executor: JobCoordinator.Executor? = nil, platform: ApplicationMediaServices? = nil) {
+        #if DEBUG
+        ReleasePreviewFixtures.preflightDataRoot()
+        #endif
         let platform = platform ?? .macOS
         self.mediaPlatform = platform
         self.processingSleepLease = platform.makeSleepLease(); self.recordingSleepLease = platform.makeSleepLease()

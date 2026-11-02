@@ -652,7 +652,7 @@ fn apply(
             .unwrap();
         let note: crate::domain::workspace::CapturedNote = serde_json::from_value(
             json!({"id":note_id,"kind":"note","title":new.title,"text":new.text,
-            "folderID":source.folder_id,"createdAt":timestamp,"updatedAt":timestamp,"revision":1}),
+            "folderID":source.folder_id,"createdAt":timestamp,"updatedAt":timestamp,"revision":1,"creationOrigin":"ai"}),
         )?;
         let mut raw = serde_json::to_value(note)?;
         raw["knowledgeRebuildOrigin"] =

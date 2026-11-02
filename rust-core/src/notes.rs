@@ -48,9 +48,23 @@ fn expected<'a>(data: &'a mut NotesWorkspace,id: &str,revision: u64) -> Result<&
 pub fn list(root: &Path) -> Result<NotesWorkspace> {
     let dir = directory(root)?; let _lock=lock(&dir)?; load(&dir)
 }
-pub fn save_note(root: &Path,mut note: CapturedNote) -> Result<CapturedNote> {
+pub fn save_note(root: &Path,note: CapturedNote) -> Result<CapturedNote> {
+    save_note_with_origin(root,note,crate::creation_origin::CreationOrigin::Manual)
+}
+/// The operation, never the client-supplied note, identifies a new note's
+/// provenance. Existing notes retain their original value, including absence.
+pub(crate) fn save_note_with_origin(root: &Path,note: CapturedNote,origin: crate::creation_origin::CreationOrigin) -> Result<CapturedNote> {
+    save_note_created_from(root,note,origin,None)
+}
+pub fn save_note_copy(root: &Path,note: CapturedNote,source_note_id: &str) -> Result<CapturedNote> {
+    ensure!(valid_id(source_note_id) && note.id != source_note_id && note.revision == 0,"Для копии нужен новый ID заметки");
+    save_note_created_from(root,note,crate::creation_origin::CreationOrigin::Unknown,Some(source_note_id))
+}
+fn save_note_created_from(root: &Path,mut note: CapturedNote,origin: crate::creation_origin::CreationOrigin,source_note_id: Option<&str>) -> Result<CapturedNote> {
     validate_note(&note)?;
     let dir=directory(root)?; let _lock=lock(&dir)?; let mut data=load(&dir)?;
+    let origin=source_note_id.map(|source_id| data.notes.iter().find(|source|source.id==source_id)
+        .and_then(|source|source.creation_origin.clone()).unwrap_or(crate::creation_origin::CreationOrigin::Unknown)).unwrap_or(origin);
     crate::folders::normalize_note_folder(&mut data,&mut note)?;
     if let Some(index)=data.notes.iter().position(|n|n.id == note.id) {
         let old=&data.notes[index]; ensure!(old.revision == note.revision, CONFLICT);
@@ -58,6 +72,7 @@ pub fn save_note(root: &Path,mut note: CapturedNote) -> Result<CapturedNote> {
         // Provenance and append history belong to the operation journal. Older
         // editors which do not encode these fields must preserve them too.
         note.task_origin=old.task_origin.clone(); note.history=old.history.clone();
+        note.creation_origin=old.creation_origin.clone();
         // Plain-text edits made by older editor surfaces must not retain stale rich content.
         if old.text != note.text && old.content_rtf == note.content_rtf { note.content_rtf.clear(); }
         // Trashing a meeting must not make the user's independent note
@@ -76,6 +91,7 @@ pub fn save_note(root: &Path,mut note: CapturedNote) -> Result<CapturedNote> {
         ensure!(note.revision == 0, CONFLICT);
         ensure_meeting(root,note.meeting_id.as_deref())?;
         ensure!(note.attachments.is_empty() && note.expansion.is_none(), "Создайте заметку перед добавлением вложений");
+        note.creation_origin=Some(origin);
         note.created_at=now(); note.updated_at=note.created_at; note.revision=1; data.notes.push(note.clone());
     }
     persist(&dir,&data)?; Ok(note)
@@ -235,6 +251,7 @@ pub fn dispatch(root:&Path,value:&Value) -> Result<Value> {
     match value["command"].as_str().unwrap_or("") {
         "notes-list"=>{let data=list(root)?;Ok(json!({"notes":data.notes,"templates":data.templates,"contexts":data.contexts,"folders":data.folders}))},
         "note-save"=>Ok(serde_json::to_value(save_note(root,serde_json::from_value(value["note"].clone())?)?)?),
+        "note-save-copy"=>Ok(serde_json::to_value(save_note_copy(root,serde_json::from_value(value["note"].clone())?,string("sourceNoteID")?)?)?),
         "note-delete"=>delete_note(root,string("id")?,revision()?),
         "note-trash"|"note-restore"=>Ok(serde_json::to_value(trash_note(root,string("id")?,revision()?,value["command"]=="note-restore")?)?),
         "context-save"=>Ok(serde_json::to_value(save_context(root,serde_json::from_value(value["context"].clone())?)?)?),
@@ -446,6 +463,68 @@ mod tests {
         assert_eq!(list(root.path()).unwrap().notes[0].text,"Новый текст");
         assert_eq!(fs::metadata(root.path().join("notes/workspace.json")).unwrap().permissions().mode()&0o777,0o600);
         assert_eq!(fs::metadata(root.path().join("notes")).unwrap().permissions().mode()&0o777,0o700);
+    }
+    #[test] fn creation_origin_is_assigned_by_creation_operation_and_stays_immutable() {
+        let root=tempfile::tempdir().unwrap(); meeting(root.path(),"one");
+        let mut draft=serde_json::to_value(note("Ручная мысль со ссылкой на встречу")).unwrap();
+        draft["creationOrigin"]=json!("ai"); draft["meetingID"]=json!("one");
+        let saved=dispatch(root.path(),&json!({"command":"note-save","note":draft})).unwrap();
+        assert_eq!(saved["creationOrigin"],"manual");
+        let mut edited=saved.clone(); edited["text"]=json!("Правка"); edited["creationOrigin"]=json!("imported");
+        let saved=dispatch(root.path(),&json!({"command":"note-save","note":edited})).unwrap();
+        assert_eq!(saved["creationOrigin"],"manual");
+        let mut old_editor=saved; old_editor.as_object_mut().unwrap().remove("creationOrigin");
+        old_editor["text"]=json!("Правка старым редактором");
+        let saved=dispatch(root.path(),&json!({"command":"note-save","note":old_editor})).unwrap();
+        assert_eq!(saved["creationOrigin"],"manual");
+
+        let ai=save_note_with_origin(root.path(),note("Сгенерированная заметка"),crate::creation_origin::CreationOrigin::Ai).unwrap();
+        assert_eq!(serde_json::to_value(&ai).unwrap()["creationOrigin"],"ai");
+        let mut edited=ai; edited.text="Ручная правка сгенерированной заметки".into();
+        edited.creation_origin=Some(crate::creation_origin::CreationOrigin::Manual);
+        let saved=save_note(root.path(),edited).unwrap();
+        assert_eq!(serde_json::to_value(saved).unwrap()["creationOrigin"],"ai");
+    }
+    #[test] fn legacy_unknown_and_future_origins_are_not_reclassified_on_edit_or_expansion() {
+        for origin in [None,Some("unknown"),Some("future-origin")] {
+            let root=tempfile::tempdir().unwrap(); meeting(root.path(),"one");
+            let mut raw=json!({"id":"legacy","text":"Вопрос","createdAt":1,"updatedAt":1,"revision":1,"meetingID":"one","expansion":{"text":"Старое дополнение"},"futureNote":{"keep":true}});
+            if let Some(origin)=origin { raw["creationOrigin"]=json!(origin); }
+            crate::storage::atomic_json(&directory(root.path()).unwrap().join("workspace.json"),&json!({"notes":[raw]})).unwrap();
+            let before=crate::workspace_repository::snapshot(root.path()).unwrap().value["notes"][0].clone();
+            assert_eq!(before.get("creationOrigin").and_then(Value::as_str),origin);
+            let mut edited=list(root.path()).unwrap().notes.remove(0);
+            edited.text="Ручная правка старой заметки".into();
+            edited.creation_origin=Some(crate::creation_origin::CreationOrigin::Manual);
+            let saved=save_note(root.path(),edited).unwrap();
+            assert!(saved.expansion.is_none());
+            let after=crate::workspace_repository::snapshot(root.path()).unwrap().value["notes"][0].clone();
+            assert_eq!(after.get("creationOrigin").and_then(Value::as_str),origin);
+            assert_eq!(after["futureNote"],json!({"keep":true}));
+
+            let generated=expansion(root.path(),"one");
+            let fingerprint=generated["sourceFingerprint"].as_str().unwrap().to_owned();
+            save_expansion_checked(root.path(),&saved.id,saved.revision,&fingerprint,generated).unwrap();
+            let expanded=crate::workspace_repository::snapshot(root.path()).unwrap().value["notes"][0].clone();
+            assert_eq!(expanded.get("creationOrigin").and_then(Value::as_str),origin);
+        }
+    }
+    #[test] fn note_copy_uses_canonical_source_origin_even_after_a_conflict_or_deletion() {
+        let root=tempfile::tempdir().unwrap();
+        let source=save_note_with_origin(root.path(),note("Сгенерировано"),crate::creation_origin::CreationOrigin::Ai).unwrap();
+        let mut foreign=source.clone(); foreign.text="Правка другого окна".into();
+        let foreign=save_note(root.path(),foreign).unwrap();
+        let mut draft=serde_json::to_value(note("Мой конфликтный черновик")).unwrap();
+        draft["creationOrigin"]=json!("manual");
+        let copied=dispatch(root.path(),&json!({"command":"note-save-copy","note":draft,"sourceNoteID":source.id})).unwrap();
+        assert_eq!(copied["creationOrigin"],"ai");
+        assert_eq!(copied["text"],"Мой конфликтный черновик");
+        assert_eq!(load_note_snapshot(root.path(),&source.id).unwrap().text,foreign.text);
+        delete_note(root.path(),&source.id,foreign.revision).unwrap();
+        let copied=save_note_copy(root.path(),note("Черновик удалённого оригинала"),&source.id).unwrap();
+        assert_eq!(copied.creation_origin,Some(crate::creation_origin::CreationOrigin::Unknown));
+        let mut unchanged=source.clone(); unchanged.id=Uuid::new_v4().to_string();
+        assert!(save_note_copy(root.path(),unchanged,&source.id).is_err());
     }
     #[test] fn orphaned_notes_remain_editable_without_losing_original_link_or_timestamp() {
         let root=tempfile::tempdir().unwrap(); let dir=meeting(root.path(),"one");

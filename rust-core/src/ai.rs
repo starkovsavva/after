@@ -720,7 +720,21 @@ fn preserve_user_cards(previous: &Value, result: &mut Value, segments: &[Segment
     let archived = previous["archivedCards"].as_array().cloned().unwrap_or_default();
     let deleted: HashSet<_> = archived.iter().filter_map(|entry| entry["card"]["id"].as_str()).collect();
     let mut cards = result["cards"].as_array().cloned().context("Нет созданных карточек")?;
-    let protected: Vec<_> = previous["cards"].as_array().context("Повреждён список предыдущих карточек; он сохранён")?.iter().filter(|card|
+    let previous_cards = previous["cards"].as_array().context("Повреждён список предыдущих карточек; он сохранён")?;
+    // The generated ID may already identify a card from an earlier run. Keep
+    // its creation provenance (including legacy absence and future values),
+    // along with compatible unknown fields, while replacing generated text.
+    for card in &mut cards {
+        if let Some(original) = previous_cards.iter().find(|original| original["id"] == card["id"]) {
+            let mut retained = original.as_object().context("Повреждена предыдущая карточка; она сохранена")?.clone();
+            for (key, value) in card.as_object().context("Повреждена созданная карточка")? {
+                if key != "creationOrigin" { retained.insert(key.clone(), value.clone()); }
+            }
+            *card = Value::Object(retained);
+        }
+    }
+    let protected: Vec<_> = previous_cards.iter().filter(|card|
+        matches!(card["creationOrigin"].as_str(), Some("manual" | "imported")) ||
         card.get("editedAt").is_some() || card.get("suspended").is_some() || card["segmentIDs"].as_array().is_some_and(Vec::is_empty)
     ).collect();
     let protected_ids: HashSet<_> = protected.iter().filter_map(|card| card["id"].as_str()).collect();
@@ -834,7 +848,10 @@ pub fn summarize_with_options(root:&Path,directory:&Path,replace_manual:bool) ->
         for card in part.cards.iter().filter(|_| generate_cards) {
             if seen.insert(card.front.to_lowercase().trim().to_owned()) {
                 let mut value=serde_json::to_value(card)?;
-                value["id"]=json!(card_id(meta["id"].as_str().context("Нет ID встречи")?,&card.front)); cards.push(value);
+                value["id"]=json!(card_id(meta["id"].as_str().context("Нет ID встречи")?,&card.front));
+                // The model supplies learning content only; Rust assigns
+                // provenance immediately before publishing a new card.
+                value["creationOrigin"]=json!("ai"); cards.push(value);
             }
         }
     }
@@ -1430,6 +1447,7 @@ mod tests {
         crate::folders::assign_meeting(root.path(),"manual-meeting",Some(&folder.id),0).unwrap();
         let directory=root.path().join("meetings/manual-meeting");summarize(root.path(),&directory).unwrap();
         let result=read(&directory.join("summary.json")).unwrap();assert_eq!(result["model"],"my-qwen");assert_eq!(result["cards"].as_array().unwrap().len(),1);
+        assert_eq!(result["cards"][0]["creationOrigin"],"ai");
         let requests=server.join().unwrap();let prompt:Value=serde_json::from_str(requests[1].1["messages"][1]["content"].as_str().unwrap()).unwrap();
         assert_eq!(prompt["generate_cards"],true);assert_eq!(prompt["output_language"],"English");assert_eq!(prompt["user_context"],"Learning English");
         assert_eq!(read(&root.path().join("settings.json")).unwrap()["localModel"],"unavailable-global-model");
@@ -1528,6 +1546,25 @@ mod tests {
         preserve_user_cards(&previous,&mut result,&[segment(7,"Original source.")]).unwrap();
         assert_eq!(result["cards"][0],edited); assert_eq!(result["cards"][1]["id"],"fresh"); assert_eq!(result["cards"][2],manual); assert_eq!(result["archivedCards"],previous["archivedCards"]);
         let mut next=json!({"cards":[]}); assert!(preserve_user_cards(&previous,&mut next,&[segment(7,"Different speech with reused ID.")]).is_err());
+    }
+    #[test]
+    fn regeneration_keeps_existing_card_provenance_and_compatible_fields() {
+        for origin in [None,Some("manual"),Some("ai"),Some("imported"),Some("unknown"),Some("future-origin")] {
+            let mut original=json!({"id":"same","kind":"phrase","front":"Original prompt","back":"Original answer","context":"Original source.","segmentIDs":[7],"futureField":{"keep":true}});
+            if let Some(origin)=origin { original["creationOrigin"]=json!(origin); }
+            let previous=json!({"cards":[original]});
+            let mut result=json!({"cards":[
+                {"id":"same","kind":"phrase","front":"Generated prompt","back":"Generated answer","context":"Original source.","segmentIDs":[7],"creationOrigin":"ai"},
+                {"id":"new","kind":"phrase","front":"New prompt","back":"New answer","context":"Original source.","segmentIDs":[7],"creationOrigin":"ai"}
+            ]});
+            preserve_user_cards(&previous,&mut result,&[segment(7,"Original source.")]).unwrap();
+            let retained=&result["cards"][0];
+            assert_eq!(retained.get("creationOrigin"),original.get("creationOrigin"));
+            assert_eq!(retained["futureField"],original["futureField"]);
+            if matches!(origin,Some("manual" | "imported")) { assert_eq!(retained,&original); }
+            else { assert_eq!(retained["front"],"Generated prompt"); }
+            assert_eq!(result["cards"][1]["creationOrigin"],"ai");
+        }
     }
     #[test]
     fn summary_cards_require_both_global_feature_and_this_meetings_explicit_opt_in() {
@@ -2478,6 +2515,7 @@ mod tests {
     fn unknown_fields_and_bad_kinds_are_rejected() {
         assert!(validate_draft(json!({"overview":"x","items":[],"cards":[],"extra":1})).is_err());
         assert!(validate_draft(json!({"overview":"x","items":[{"kind":"promise","text":"x","owner":"","due":"","segmentIDs":[1]}],"cards":[]})).is_err());
+        assert!(validate_draft(json!({"overview":"x","items":[],"cards":[{"kind":"phrase","front":"Prompt","back":"Answer","context":"Source","segmentIDs":[1],"creationOrigin":"manual"}]})).is_err());
     }
     #[test]
     fn invented_quotes_and_ids_are_removed() {

@@ -91,7 +91,7 @@ fn save(root: &Path, input: &Value) -> Result<Value> {
     let kind = input["kind"].as_str().unwrap_or("phrase"); ensure!(["phrase","concept"].contains(&kind), "Неизвестный тип карточки");
     if input["meetingID"].as_str().filter(|s| !s.is_empty()).is_none() {
         ensure!(input["cardID"].as_str().is_none(), "Для правки выберите колоду");
-        return new_deck(root,input["newDeckTitle"].as_str().unwrap_or("Мои карточки"),json!({"id":Uuid::new_v4().to_string(),"kind":kind,"front":front,"back":back,"context":"","segmentIDs":[],"editedAt":Utc::now().timestamp_millis()}),input["folderID"].as_str());
+        return new_deck(root,input["newDeckTitle"].as_str().unwrap_or("Мои карточки"),json!({"id":Uuid::new_v4().to_string(),"kind":kind,"front":front,"back":back,"context":"","segmentIDs":[],"creationOrigin":"manual","editedAt":Utc::now().timestamp_millis()}),input["folderID"].as_str());
     }
     let id = text(input,"meetingID")?; let dir = meeting_directory(root,id)?; let _lock = meeting_lock(&dir)?;
     recover_review(&dir)?;
@@ -102,7 +102,9 @@ fn save(root: &Path, input: &Value) -> Result<Value> {
         summary=json!({"overview":"","items":[],"cards":[],"provider":"manual","model":"manual","generatedAt":Utc::now().timestamp_millis() as f64/1000.0,"warnings":[],"overviewClaims":[]});
     }
     let index = if input["cardID"].as_str().is_some() { Some(checked_card(&summary,input)?.0) } else { None };
-    let mut card = index.map(|i|summary["cards"][i].clone()).unwrap_or_else(|| json!({"id":Uuid::new_v4().to_string(),"context":"","segmentIDs":[]}));
+    // Creation provenance belongs to the original card, never the latest edit
+    // or a caller-supplied field. In particular, legacy absence stays absent.
+    let mut card = index.map(|i|summary["cards"][i].clone()).unwrap_or_else(|| json!({"id":Uuid::new_v4().to_string(),"context":"","segmentIDs":[],"creationOrigin":"manual"}));
     card["front"]=json!(front); card["back"]=json!(back); card["kind"]=json!(kind); card["editedAt"]=json!(Utc::now().timestamp_millis());
     let cards = summary["cards"].as_array_mut().context("Нет списка карточек")?;
     if let Some(i)=index { cards[i]=card.clone(); } else { ensure!(cards.len()<10_000,"В колоде уже 10 000 карточек"); cards.push(card.clone()); }
@@ -172,6 +174,47 @@ mod tests {
     fn deck(root:&Path)->Value { request(root,"card-save",json!({"front":"follow up","back":"вернуться к вопросу","newDeckTitle":"Рабочий английский"})).unwrap() }
     fn entry(root:&Path)->Value { request(root,"cards-library",json!({})).unwrap()["entries"][0].clone() }
     fn args(entry:&Value)->Value { json!({"meetingID":entry["meeting"]["id"],"cardID":entry["card"]["id"],"expectedFingerprint":entry["fingerprint"],"expectedReviewFingerprint":entry["reviewFingerprint"]}) }
+    #[test] fn manual_creation_is_per_card_even_inside_an_ai_meeting() {
+        let temp=tempfile::tempdir().unwrap(); let created=deck(temp.path());
+        assert_eq!(created["card"]["creationOrigin"],"manual");
+        let id=created["meeting"]["id"].as_str().unwrap(); let dir=meeting_directory(temp.path(),id).unwrap();
+        let mut summary=regular_json(&dir.join("summary.json")).unwrap();
+        summary["provider"]=json!("cloud"); summary["cards"][0]["creationOrigin"]=json!("ai");
+        summary["cards"][0]["segmentIDs"]=json!([7]);
+        atomic_json(&dir.join("summary.json"),&summary).unwrap();
+        let added=request(temp.path(),"card-save",json!({"meetingID":id,"front":"Мой вопрос","back":"My answer","creationOrigin":"ai"})).unwrap();
+        assert_eq!(added["card"]["creationOrigin"],"manual");
+        let entries=request(temp.path(),"cards-library",json!({})).unwrap()["entries"].as_array().unwrap().clone();
+        assert_eq!(entries.len(),2);
+        assert_eq!(entries.iter().find(|e|e["card"]["id"]==created["card"]["id"]).unwrap()["card"]["creationOrigin"],"ai");
+        assert_eq!(entries.iter().find(|e|e["card"]["id"]==added["card"]["id"]).unwrap()["card"]["creationOrigin"],"manual");
+    }
+    #[test] fn manual_edits_and_reviews_preserve_creation_origin_and_legacy_absence() {
+        for origin in [None,Some("manual"),Some("ai"),Some("imported"),Some("unknown"),Some("future-origin")] {
+            let temp=tempfile::tempdir().unwrap(); let created=deck(temp.path());
+            let dir=meeting_directory(temp.path(),created["meeting"]["id"].as_str().unwrap()).unwrap();
+            let mut summary=regular_json(&dir.join("summary.json")).unwrap();
+            summary["provider"]=json!("cloud"); summary["cards"][0]["segmentIDs"]=json!([7]);
+            summary["cards"][0]["futureField"]=json!({"keep":true});
+            if let Some(origin)=origin { summary["cards"][0]["creationOrigin"]=json!(origin); }
+            else { summary["cards"][0].as_object_mut().unwrap().remove("creationOrigin"); }
+            atomic_json(&dir.join("summary.json"),&summary).unwrap();
+            let original=entry(temp.path());
+            assert_eq!(original["card"],summary["cards"][0]);
+            assert_eq!(original["fingerprint"],fingerprint(&summary["cards"][0]));
+            let mut edit=args(&original); edit["front"]=json!("Edited prompt"); edit["back"]=json!("Edited answer"); edit["creationOrigin"]=json!("manual");
+            request(temp.path(),"card-save",edit).unwrap();
+            let updated=entry(temp.path());
+            assert_eq!(updated["card"].get("creationOrigin"),original["card"].get("creationOrigin"));
+            assert_eq!(updated["card"]["futureField"],json!({"keep":true}));
+            let before_review=regular_json(&dir.join("summary.json")).unwrap();
+            let mut grade=args(&updated); grade["rating"]=json!(3);
+            let reviewed=request(temp.path(),"cards-review",grade).unwrap();
+            assert_eq!(regular_json(&dir.join("summary.json")).unwrap(),before_review);
+            request(temp.path(),"cards-review-undo",json!({"meetingID":created["meeting"]["id"],"undoID":reviewed["undoID"]})).unwrap();
+            assert_eq!(entry(temp.path())["card"],updated["card"]);
+        }
+    }
     #[test] fn edit_preserves_context_and_examples_and_rejects_stale_write() {
         let temp=tempfile::tempdir().unwrap(); let created=deck(temp.path()); let id=created["meeting"]["id"].as_str().unwrap(); let dir=meeting_directory(temp.path(),id).unwrap();
         let mut summary=regular_json(&dir.join("summary.json")).unwrap(); summary["cards"][0]["context"]=json!("original quote"); summary["cards"][0]["segmentIDs"]=json!([3]); atomic_json(&dir.join("summary.json"),&summary).unwrap();

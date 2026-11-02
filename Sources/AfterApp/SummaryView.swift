@@ -188,7 +188,7 @@ struct SummaryView: View {
                     Spacer()
                     Button(L("В заметки")) {
                         guard let id = overviewMeetingID,
-                              store.notes.capture(text: overviewDraft, meetingID: id) != nil else { return }
+                              store.notes.captureSummaryDraft(text: overviewDraft, meetingID: id) != nil else { return }
                         cancelOverviewEdit()
                         store.notice = L("Правка сохранена в заметки встречи")
                     }.buttonStyle(AfterSoftButtonStyle())

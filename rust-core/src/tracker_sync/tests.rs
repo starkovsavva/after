@@ -518,9 +518,11 @@ fn imported_revision_receipt_preserves_later_local_edit_after_cache_crash() {
         .remote("scope-1", &google("one", "Remote", "v1"))
         .unwrap();
     let before = apply_remote(root.path(), &c, &remote, "stable-local", None).unwrap();
+    assert_eq!(notes::list(root.path()).unwrap().notes[0].creation_origin, Some(crate::creation_origin::CreationOrigin::Imported));
     edit(root.path(), "stable-local", "Later local edit");
     let replay = apply_remote(root.path(), &c, &remote, "stable-local", None).unwrap();
     assert_eq!(replay, before);
+    assert_eq!(notes::list(root.path()).unwrap().notes[0].creation_origin, Some(crate::creation_origin::CreationOrigin::Imported));
     assert_eq!(
         notes::list(root.path()).unwrap().notes[0].title,
         "Later local edit"

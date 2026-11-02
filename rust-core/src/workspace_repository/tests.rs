@@ -119,6 +119,51 @@ fn unknown_fields_follow_ids_when_reordered_and_deleted_entities_stay_deleted() 
 }
 
 #[test]
+fn raw_workspace_updates_preserve_original_note_creation_origin_by_id() {
+    let root = tempfile::tempdir().unwrap();
+    let data = json!({"notes":[
+        {"id":"manual","text":"A","createdAt":1,"updatedAt":1,"creationOrigin":"manual"},
+        {"id":"ai","text":"B","createdAt":1,"updatedAt":1,"creationOrigin":"ai"},
+        {"id":"imported","text":"C","createdAt":1,"updatedAt":1,"creationOrigin":"imported"},
+        {"id":"unknown","text":"D","createdAt":1,"updatedAt":1,"creationOrigin":"unknown"},
+        {"id":"legacy","text":"E","createdAt":1,"updatedAt":1},
+        {"id":"future","text":"F","createdAt":1,"updatedAt":1,"creationOrigin":"future-origin"}
+    ]});
+    legacy(root.path(), &data);
+    let first = snapshot(root.path()).unwrap();
+    let mut changed = first.value.clone();
+    changed["notes"].as_array_mut().unwrap().reverse();
+    for note in changed["notes"].as_array_mut().unwrap() {
+        note["text"] = json!("Edited");
+        note["creationOrigin"] = json!("ai");
+        if note["id"] == "ai" { note.as_object_mut().unwrap().remove("creationOrigin"); }
+    }
+    let saved = compare_and_save(root.path(), first.revision, &changed).unwrap();
+    for original in data["notes"].as_array().unwrap() {
+        let note = saved.value["notes"].as_array().unwrap().iter().find(|note|note["id"]==original["id"]).unwrap();
+        assert_eq!(note.get("creationOrigin"), original.get("creationOrigin"), "{}", original["id"]);
+        assert_eq!(note["text"],"Edited");
+    }
+    assert!(compare_and_save(root.path(), first.revision, &changed).is_err());
+    let mut typed = crate::notes::list(root.path()).unwrap();
+    for note in &mut typed.notes {
+        note.creation_origin = Some(crate::creation_origin::CreationOrigin::Manual);
+        note.text = "Typed edit".into();
+    }
+    {
+        let directory = directory(root.path());
+        let _lock = crate::notes::lock(&directory).unwrap();
+        persist_locked(&directory, &typed).unwrap();
+    }
+    let saved = snapshot(root.path()).unwrap();
+    for original in data["notes"].as_array().unwrap() {
+        let note = saved.value["notes"].as_array().unwrap().iter().find(|note|note["id"]==original["id"]).unwrap();
+        assert_eq!(note.get("creationOrigin"), original.get("creationOrigin"));
+        assert_eq!(note["text"],"Typed edit");
+    }
+}
+
+#[test]
 fn canonical_commit_atomically_writes_receipts_metadata_and_outbox() {
     let root = tempfile::tempdir().unwrap();
     let first = snapshot(root.path()).unwrap();

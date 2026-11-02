@@ -76,6 +76,7 @@ public struct CapturedNote: Codable, Identifiable, Hashable {
     public var taskOrigin: TaskOrigin?
     public var history: [TaskHistory]
     public var subtasks: [TaskSubtask]
+    public var creationOrigin: MaterialCreationOrigin = .unknown
     public init(id: String = UUID().uuidString.lowercased(), text: String = "", kind: String = "note",
                 meetingID: String? = nil, timestamp: Double? = nil, createdAt: Double = Date().timeIntervalSince1970,
                 updatedAt: Double = Date().timeIntervalSince1970, revision: Int = 0, sourceURL: String = "",
@@ -89,7 +90,7 @@ public struct CapturedNote: Codable, Identifiable, Hashable {
     public var displayTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (text.split(separator: "\n").first.map(String.init) ?? "Новая заметка") : title }
     private enum CodingKeys: String, CodingKey {
         case id, text, kind, meetingID, timestamp, createdAt, updatedAt, revision, sourceURL, owner, due, completed, attachments, expansion
-        case title, contentRTF, folder, folderID, tags, pinned, trashedAt, taskOrigin, history, subtasks
+        case title, contentRTF, folder, folderID, tags, pinned, trashedAt, taskOrigin, history, subtasks, creationOrigin
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -115,6 +116,7 @@ public struct CapturedNote: Codable, Identifiable, Hashable {
         taskOrigin = try c.decodeIfPresent(TaskOrigin.self, forKey: .taskOrigin)
         history = try c.decodeIfPresent([TaskHistory].self, forKey: .history) ?? []
         subtasks = try c.decodeIfPresent([TaskSubtask].self, forKey: .subtasks) ?? []
+        creationOrigin = try c.decodeIfPresent(MaterialCreationOrigin.self, forKey: .creationOrigin) ?? .unknown
     }
 }
 public struct NoteTemplate: Codable, Identifiable, Hashable {

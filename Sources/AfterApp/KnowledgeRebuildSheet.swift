@@ -111,7 +111,8 @@ struct KnowledgeRebuildSheet: View {
                 Button(L("Снять выбор")) { controller.selectedNoteIDs.removeAll() }
                     .buttonStyle(.borderless).disabled(controller.busy || controller.selectedNoteIDs.isEmpty)
             }
-            TextField(L("Поиск заметок"), text: $noteQuery).textFieldStyle(.roundedBorder)
+            TextField(L("Поиск заметок"), text: $noteQuery).afterSearchField()
+                .accessibilityIdentifier("knowledge.rebuild.search")
             if candidates.isEmpty {
                 Text(L("В этой области нет доступных заметок. Сначала сохраните заметку или выберите другую папку."))
                     .font(AppTypography.caption).foregroundStyle(.secondary)

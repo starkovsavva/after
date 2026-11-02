@@ -89,6 +89,31 @@ fn batch_rewrite_is_idempotent_preserves_ids_review_and_undo() {
     assert!(call(temp.path(), "cards-batch-apply", args).is_err());
 }
 #[test]
+fn ai_rewrite_preserves_creation_origin_unknown_fields_and_due_state() {
+    for origin in [None,Some("manual"),Some("ai"),Some("imported"),Some("unknown"),Some("future-origin")] {
+        let temp = tempfile::tempdir().unwrap();
+        let created = deck(temp.path(), "follow up", "вернуться к вопросу");
+        let dir = meeting_directory(temp.path(), created["meeting"]["id"].as_str().unwrap()).unwrap();
+        let mut summary = regular_json(&dir.join("summary.json")).unwrap();
+        summary["cards"][0]["futureField"] = json!({"keep":[1,2]});
+        if let Some(origin) = origin { summary["cards"][0]["creationOrigin"] = json!(origin); }
+        else { summary["cards"][0].as_object_mut().unwrap().remove("creationOrigin"); }
+        atomic_json(&dir.join("summary.json"), &summary).unwrap();
+        let reviews = json!({created["card"]["id"].as_str().unwrap():{"due":"2030-01-01T00:00:00Z","count":7,"lastRating":3}});
+        atomic_json(&dir.join("review-state.json"), &reviews).unwrap();
+        let e = entries(temp.path()).remove(0);
+        let mut proposed = change(&e); proposed["creationOrigin"] = json!("ai");
+        call(temp.path(), "cards-batch-apply", json!({"operationID":"rewrite-origin","action":"rewriteCards","changes":[proposed]})).unwrap();
+        let updated = entries(temp.path()).remove(0);
+        assert_eq!(updated["card"].get("creationOrigin"), e["card"].get("creationOrigin"));
+        assert_eq!(updated["card"]["futureField"], e["card"]["futureField"]);
+        assert_eq!(updated["card"]["id"], e["card"]["id"]);
+        assert_eq!(regular_json(&dir.join("review-state.json")).unwrap(), reviews);
+        call(temp.path(), "cards-batch-undo", json!({"operationID":"rewrite-origin"})).unwrap();
+        assert_eq!(entries(temp.path())[0]["card"], e["card"]);
+    }
+}
+#[test]
 fn stale_card_in_second_deck_prevents_any_partial_write() {
     let temp = tempfile::tempdir().unwrap();
     deck(temp.path(), "one", "один");

@@ -28,6 +28,15 @@ struct NotesWorkspaceView: View {
     @EnvironmentObject private var app: AppStore
     @ObservedObject var notes: NotesStore
     let meeting: Meeting
+    @StateObject private var originFilters = OriginFilterPreferences()
+    @StateObject private var filterController = MaterialFilterController()
+    private var meetingNotes: [CapturedNote] { notes.notes(for: meeting.id) }
+    private var visibleNotes: [CapturedNote] {
+        meetingNotes.filter {
+            originFilters.notesFilters.includesOrigin($0.creationOrigin) && originFilters.notesFilters.includesKind($0.kind)
+                && filterController.matchesNote(noteID: $0.id, meetingID: $0.meetingID, filters: originFilters.notesFilters)
+        }
+    }
     private var text: Binding<String> { Binding(get: { notes.captureDrafts[meeting.id] ?? "" }, set: { notes.captureDrafts[meeting.id] = $0 }) }
     private var kind: Binding<String> { Binding(get: {
         let value = notes.captureKinds[meeting.id] ?? "note"
@@ -44,24 +53,60 @@ struct NotesWorkspaceView: View {
                         let time = app.settings.notesAutoTimestamp ? (app.isRecording && app.captureMeetingID == meeting.id
                             ? Date().timeIntervalSince(app.recordingDate ?? Date()) : (app.transcript == nil ? nil : app.playbackTime)) : nil
                         if let saved = notes.capture(text: text.wrappedValue, kind: kind.wrappedValue, meetingID: meeting.id, timestamp: time) {
+                            revealMaterialFilters(for: saved)
                             text.wrappedValue = ""; notes.highlightedNoteID = saved.id
                         }
                     }.appLayoutAnchor("notes.composer")
-                    if notes.notes(for: meeting.id).isEmpty && notes.error == nil {
-                        NotesEmpty(title: L("Заметок пока нет"), text: "", icon: "pencil.and.outline")
+                    MaterialFiltersControl(selection: $originFilters.notesFilters, target: .notes, topics: filterController.topics,
+                                           topicsLoading: filterController.topicsLoading,
+                                           onLoadTopics: { filterController.loadTopics(store: app) }, identifier: "notes.meeting.filters",
+                                           canLoadMoreTopics: filterController.canLoadMoreTopics,
+                                           onLoadMoreTopics: { filterController.loadMoreTopics(store: app) })
+                    if let notice = filterController.notice {
+                        Text(notice).font(AppTypography.caption).foregroundStyle(.secondary).accessibilityIdentifier("notes.meeting.filters.notice")
                     }
-                    ForEach(notes.notes(for: meeting.id)) { note in
+                    if let error = filterController.error {
+                        Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning).accessibilityIdentifier("notes.meeting.filters.error")
+                    }
+                    if let error = originFilters.error {
+                        Text(error).font(AppTypography.caption).foregroundStyle(Ink.warning)
+                    }
+                    if visibleNotes.isEmpty && notes.error == nil {
+                        if meetingNotes.isEmpty { NotesEmpty(title: L("Заметок пока нет"), text: "", icon: "pencil.and.outline") }
+                        else {
+                            Text(L("Нет заметок с выбранными фильтрами")).font(AppTypography.control).foregroundStyle(.secondary)
+                            Button(L("Сбросить фильтры")) { originFilters.notesFilters = MaterialFilterSet() }
+                                .buttonStyle(AfterSoftButtonStyle()).accessibilityIdentifier("notes.meeting.filters.clear-empty")
+                        }
+                    }
+                    Text(LF("Всего: {0}", arguments: [String(visibleNotes.count)])).font(AppTypography.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("notes.meeting.count").accessibilityValue(String(visibleNotes.count))
+                    ForEach(visibleNotes) { note in
                         NoteRow(note: note, notes: notes, meetingTitle: nil) { editing = note }
                             .id(note.id).padding(2)
+                            .accessibilityIdentifier("notes.meeting.row." + note.id)
                             .background(notes.highlightedNoteID == note.id ? Ink.accent.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 9))
                     }
                 }.appContentLayout()
             }
-            .onAppear { if let id = notes.highlightedNoteID { proxy.scrollTo(id, anchor: .center) } }
-            .onChange(of: notes.highlightedNoteID) { _, id in if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } } }
+            .onAppear {
+                originFilters.configure(root: notes.root)
+                updateMaterialFilters()
+                if let id = notes.highlightedNoteID, visibleNotes.contains(where: { $0.id == id }) { proxy.scrollTo(id, anchor: .center) }
+            }
+            .onChange(of: notes.highlightedNoteID) { _, id in
+                guard let id, let note = meetingNotes.first(where: { $0.id == id }) else { return }
+                revealMaterialFilters(for: note)
+                Task { await Task.yield(); withAnimation { proxy.scrollTo(id, anchor: .center) } }
+            }
         }
         .overlay(alignment: .bottomTrailing) { NotesMessage(notes: notes).padding(12).frame(maxWidth: 440) }
         .onAppear { Task { await notes.refresh() } }
+        .onDisappear { filterController.cancel() }
+        .onChange(of: originFilters.notesFilters) { _, _ in updateMaterialFilters() }
+        .onChange(of: notes.refreshState.revision) { _, _ in updateMaterialFilters() }
+        .onChange(of: app.folderSelection) { _, _ in updateMaterialFilters() }
+        .onChange(of: app.settings.features) { _, _ in updateMaterialFilters() }
         .sheet(item: $editing) { note in NoteEditorView(notes: notes, note: note).environmentObject(app).appControlDefaults() }
         .sheet(isPresented: $showingContext) { MeetingContextEditor(notes: notes, meeting: meeting).environmentObject(app) }
     }
@@ -92,6 +137,16 @@ struct NotesWorkspaceView: View {
     private func openContext(_ label: String, mode: String) {
         notes.contextMode = mode; notes.contextSelection = label; app.librarySection = "contexts"
     }
+    private func revealMaterialFilters(for note: CapturedNote) {
+        var value = originFilters.notesFilters
+        if !value.includesOrigin(note.creationOrigin) { value.origins.removeAll() }
+        if !value.includesKind(note.kind) { value.kinds.removeAll() }
+        if !filterController.matchesNote(noteID: note.id, meetingID: note.meetingID, filters: MaterialFilterSet(topicIDs: value.topicIDs)) { value.topicIDs.removeAll() }
+        if value != originFilters.notesFilters { originFilters.notesFilters = value }
+    }
+    private func updateMaterialFilters() {
+        filterController.update(store: app, filters: originFilters.notesFilters, target: .notes, revision: meeting.id + ":" + String(notes.refreshState.revision))
+    }
 }
 
 struct NotesInboxView: View {
@@ -116,7 +171,7 @@ struct NotesInboxView: View {
                         Text(L("Входящие")).font(AppTypography.sectionTitle).accessibilityAddTraits(.isHeader)
                         if notes.error == nil { Text("\(inbox.count)").font(AppTypography.caption).foregroundStyle(.secondary) }
                         Spacer()
-                        TextField(L("Поиск в заметках"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                        TextField(L("Поиск в заметках"), text: $query).afterSearchField().frame(maxWidth: 300)
                             .accessibilityLabel(L("Поиск во входящих заметках"))
                     }
                     NoteComposer(text: text, kind: kind, placeholder: L("Новая заметка…"), documentID: "capture:" + draftKey) {
@@ -166,6 +221,7 @@ private struct NoteComposer: View {
                     .accessibilityLabel(expanded ? L("Уменьшить поле заметки") : L("Увеличить поле заметки"))
                 Spacer()
                 Button(L("Сохранить"), action: save).buttonStyle(AfterSoftButtonStyle(.primary)).tint(Ink.actionFill)
+                    .accessibilityIdentifier("note.composer.save")
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .keyboardShortcut(.return, modifiers: [.command]).help(L("Сохранить · ⌘↩"))
             }
@@ -207,6 +263,9 @@ private struct NoteRow: View {
                     .menuStyle(.borderlessButton).frame(width: 26).accessibilityLabel(L("Действия с заметкой"))
             }
             HStack(spacing: 10) {
+                if let title = note.creationOrigin.badgeTitleKey {
+                    Text(L(title)).lineLimit(1).accessibilityIdentifier("notes.row.origin." + note.id)
+                }
                 if let timestamp = note.timestamp, note.meetingID != nil, !meetingUnavailable {
                     Button(Exporter.timestamp(timestamp)) { open() }.monospacedDigit().buttonStyle(.borderless).help(L("Открыть момент без воспроизведения"))
                 }
@@ -356,7 +415,7 @@ struct NoteEditorView: View {
     private func refreshConflict() { notes.reload(); session.receive(persisted) }
     private func saveAsNew() {
         let preserveMeeting = session.draft.meetingID.map { id in app.allNoteMeetings.contains { $0.id == id } } ?? true
-        if let saved = notes.save(session.asNewNote(preserveMeeting: preserveMeeting)) {
+        if let saved = notes.saveCopy(session.asNewNote(preserveMeeting: preserveMeeting), sourceNoteID: session.baseline.id) {
             notes.notice = L("Ваш текст сохранён новой заметкой. Вложения остались в исходной.")
             session.didPersist(saved); UnsavedEditorRegistry.remove(id: editorID); dismiss()
         }
@@ -674,7 +733,7 @@ struct NotesContextsView: View {
                                 + labels.map { .init(title: $0, value: $0) }, showsLabel: false, searchable: true, identifier: "contexts.selection")
                         if !selected.isEmpty { Text(LF("Встреч: {0}", arguments: [String(describing: (related.count))])).font(AppTypography.caption).foregroundStyle(.secondary) }
                         if allLabels.count > 7 || !query.isEmpty {
-                            TextField(L("Фильтр"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 180)
+                            TextField(L("Фильтр"), text: $query).afterSearchField().frame(maxWidth: 300)
                                 .accessibilityLabel(mode == "project" ? L("Найти проект") : L("Найти человека"))
                         }
                     }

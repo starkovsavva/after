@@ -179,6 +179,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        if ProcessInfo.processInfo.arguments.contains("--check-search-fields") {
+            Task { @MainActor in
+                do { try await SearchFieldsAuditNativeChecks.run(); NSApp.terminate(nil) }
+                catch { fputs("Search fields audit failed: \(error)\n", stderr); exit(1) }
+            }
+            return
+        }
         if ProcessInfo.processInfo.arguments.contains("--check-cards") {
             Task {
                 do { try await CardsNativeChecks.run(); NSApp.terminate(nil) }
@@ -516,7 +523,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true
             window.contentView = view; window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             window.center(); window.makeKeyAndOrderFront(nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            #if DEBUG
+            ReleasePreviewFixtures.navigateReadme(previewStore, screen: screen, in: view)
+            let snapshotDelay: Double = screen.hasPrefix("readme-") ? 4 : 2
+            #else
+            let snapshotDelay: Double = 2
+            #endif
+            DispatchQueue.main.asyncAfter(deadline: .now() + snapshotDelay) {
                 window.makeFirstResponder(nil)
                 view.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                 // The snapshot window uses a transparent title bar. Exclude its
