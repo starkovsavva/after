@@ -682,14 +682,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn subprocess_timeout_and_failed_exit_are_sanitized() {
-        use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
-        let process = temp.path().join("process");
+        // Read the fixture as shell data. Concurrent fork/exec tests can briefly
+        // retain a writable descriptor to a newly created executable inode.
+        let process = temp.path().join("desktop-bridge");
+        let shell = Path::new("/bin/sh");
         fs::write(&process, "#!/bin/sh\nexec /bin/sleep 1\n").unwrap();
-        fs::set_permissions(&process, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(
             execute(
-                &process,
+                shell,
                 temp.path(),
                 b"{}".to_vec(),
                 Duration::from_millis(30)
@@ -705,7 +706,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             execute(
-                &process,
+                shell,
                 temp.path(),
                 b"{}".to_vec(),
                 Duration::from_secs(2)
