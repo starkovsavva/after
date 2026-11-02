@@ -30,7 +30,15 @@ The native receipt is not renderer authority or a speech readiness claim.
 Selection requires explicit `asrModelPath`; no settings are overwritten.
 Managed generations require canonical paths, owned directories and full inventory
 verification. Explicit external model paths retain the existing user-selected local
-compatibility boundary. Frozen job settings never fall back to live settings.
+compatibility boundary. Frozen job settings never fall back to live settings. `SpeechSettings` in the
+application launch contract is captured once by `infrastructure/speech_settings.rs`.
+The same immutable value determines cloud credential admission, model verification
+and the backend's `POSLE_JOB_SETTINGS`; a later live-file change cannot redirect
+execution. Invalid/empty/non-object/non-UTF-8 snapshots are rejected, not replaced
+with disk settings. Native speech snapshots are limited to 256 KiB of UTF-8 JSON;
+the Python `job_settings.py` contract uses the same byte bound and presence rule.
+Explicit CLI paths must already be absolute; expand `~` before selection, so Python
+home expansion cannot bypass native managed-model verification.
 
 Python media uses the host-selected `sys.prefix`, confined to owned runtime
 components, instead of hardcoding `runtime/venv`. This supports Linux generations
@@ -42,6 +50,8 @@ and the existing macOS host binding without changing installed packages.
 English speech through import and canonical CLI transcription. It checks corrupt
 archives leave activation intact, token tampering is rejected before execution,
 frozen selection survives changed settings, and prior transcript/source survive.
+A child shim changes live settings from local to cloud after native verification;
+the real backend still transcribes with the original pinned local model.
 Small manifest-generator contracts run in desktop CI; the large real-model smoke
 is opt-in. Backend media contracts cover generation paths and foreign-path refusal.
 

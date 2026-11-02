@@ -34,6 +34,20 @@ class JobSettingsTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 engine.load(Path("settings.json"))
 
+    def test_supplied_empty_or_unicode_oversized_snapshot_never_falls_back(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "settings.json"
+            path.write_text('{"speechMode":"cloud"}')
+            for raw in ["", "null", "broken", json.dumps({"focus":"я" * 131073}, ensure_ascii=False)]:
+                with self.subTest(raw_length=len(raw)), patch.dict(os.environ, {"POSLE_JOB_SETTINGS":raw}):
+                    with self.assertRaises(RuntimeError):
+                        engine.load(path)
+                    with self.assertRaises(ValueError):
+                        models._json(path)
+            with patch.dict(os.environ, {"POSLE_JOB_SETTINGS":""}):
+                with self.assertRaises(ValueError):
+                    models.selected_asr(Path(folder) / "missing")
+
     def test_embedded_selection_context_does_not_leak_to_next_operation(self):
         first = {"asrModelFormat": "invalid-first"}
         second = {"asrModelFormat": "invalid-second"}

@@ -55,7 +55,17 @@ def main():
         imported = json.loads(run(['import','--root',str(library)],payload=json.dumps({'source':str(speech)})).stdout.splitlines()[-1])
         meeting = library / 'meetings' / imported['id']
         source = meeting / imported['source']; source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-        command = ['transcribe','--root',str(library),'--backend',str(PROJECT/'backend'),'--meeting',str(meeting),'--no-diarization']
+        # Change live selection inside the real child, after native verification.
+        # The backend must still use exactly the local snapshot selected by host.
+        backend = root / 'settings-race backend'
+        backend.mkdir(mode=0o700)
+        (backend / 'engine.py').write_text(
+            'import json,runpy,sys\nfrom pathlib import Path\n'
+            + 'root=Path(sys.argv[sys.argv.index("--root")+1])\n'
+            + '(root/"settings.json").write_text(json.dumps({"speechMode":"cloud"}))\n'
+            + f'sys.path.insert(0,{str(PROJECT / "backend")!r})\n'
+            + f'runpy.run_path({str(PROJECT / "backend/engine.py")!r},run_name="__main__")\n')
+        command = ['transcribe','--root',str(library),'--backend',str(backend),'--meeting',str(meeting),'--no-diarization']
         print("Transcribing synthetic English speech", file=sys.stderr, flush=True)
         run(command)
         transcript = meeting / 'transcript.json'; preserved = transcript.read_bytes()
@@ -68,6 +78,9 @@ def main():
         for segment in value['segments']:
             if not 0 <= segment['start'] <= segment['end'] <= value['duration']+.01:
                 raise RuntimeError('Invalid transcript timing')
+        if json.loads((library/'settings.json').read_text()) != {'speechMode':'cloud'}:
+            raise RuntimeError('Selection race fixture did not execute')
+        (library/'settings.json').write_text(json.dumps(settings))
         token_file = model_dir/'tokens.txt'
         original = token_file.read_bytes(); mode = stat.S_IMODE(token_file.stat().st_mode)
         token_file.chmod(mode | stat.S_IWUSR)
@@ -85,7 +98,7 @@ def main():
             token_file.write_bytes(original);token_file.chmod(mode)
         if transcript.read_bytes()!=preserved or hashlib.sha256(source.read_bytes()).hexdigest()!=source_hash:
             raise RuntimeError('Integrity failure altered previous transcription or source')
-        print(json.dumps({'passed':True,'realParakeetCpu':True,'syntheticSpeechOnly':True,'canonicalTranscript':True,
+        print(json.dumps({'passed':True,'realParakeetCpu':True,'syntheticSpeechOnly':True,'canonicalTranscript':True,'liveSettingsSwitchDidNotRedirect':True,
                           'corruptArchivePreservedActive':True,'tamperedModelRejectedBeforeExecution':True,
                           'frozenSelectionPreserved':True,'previousTranscriptAndSourcePreserved':True},indent=2))
 

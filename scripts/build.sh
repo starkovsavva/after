@@ -115,7 +115,7 @@ fi
 codesign --verify --deep --strict "$SPARKLE"
 ditto --noextattr --norsrc --noqtn "$SPARKLE" "$APP/Contents/Frameworks/Sparkle.framework"
 codesign --verify --deep --strict "$APP/Contents/Frameworks/Sparkle.framework"
-cp "$PROJECT/backend/engine.py" "$PROJECT/backend/models.py" "$PROJECT/backend/media_runtime.py" "$PROJECT/backend/cloud_speech.py" "$PROJECT/backend/embedded_bridge.py" "$PROJECT/backend/short_speech.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$PROJECT/backend/python-runtime.json" "$APP/Contents/Resources/backend/"
+cp "$PROJECT/backend/engine.py" "$PROJECT/backend/models.py" "$PROJECT/backend/job_settings.py" "$PROJECT/backend/media_runtime.py" "$PROJECT/backend/cloud_speech.py" "$PROJECT/backend/embedded_bridge.py" "$PROJECT/backend/short_speech.py" "$PROJECT/backend/setup.sh" "$PROJECT/backend/requirements.txt" "$PROJECT/backend/python-runtime.json" "$APP/Contents/Resources/backend/"
 # SwiftPM owns the shared translation catalog. Keep its resource bundle beside
 # the executable's resources so Bundle.module also resolves after distribution.
 LOCALIZATION_BUNDLE="$SWIFT_BIN/After_AfterLocalization.bundle"

@@ -26,3 +26,6 @@ pub(crate) mod generation_store;
 
 #[cfg(unix)]
 pub(crate) mod asr_model_store;
+
+#[cfg(unix)]
+pub(crate) mod speech_settings;

@@ -289,7 +289,10 @@ Receipt содержит `directory`: явно укажите его в `setting
 с `speechMode: "local"`, `asrModelFormat: "onnx"`, `diarization: false`.
 Установка не меняет настройки и не публикует `ready-v2`. Native guard проверяет
 полный managed inventory до запуска backend и удерживается до завершения worker;
-замороженный job snapshot имеет приоритет над текущими настройками.
+замороженный job snapshot имеет приоритет над текущими настройками. Native host
+фиксирует один снимок (до 256 KiB UTF-8 JSON) для model guard, credential admission
+и backend. Изменение settings после выбора не меняет выполняемую операцию.
+Указывайте абсолютный путь: `~` нужно раскрыть до выбора модели.
 
 Opt-in проверка требует espeak/espeak-ng и около 3 ГБ свободного места:
 

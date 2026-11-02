@@ -7,8 +7,6 @@ use anyhow::{anyhow, bail, Result};
 use crate::application::speech_launch::{RuntimeGuard, SpeechLaunch};
 use serde_json::{json, Value};
 use std::ffi::OsString;
-use std::fs::OpenOptions;
-use std::os::unix::fs::OpenOptionsExt;
 use std::io::{self, Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -48,6 +46,7 @@ struct WorkerSpec {
     forwards_plain_progress: bool,
     accepts_speech_key: bool,
     guard: Option<Box<dyn RuntimeGuard>>,
+    settings: Option<crate::application::speech_launch::SpeechSettings>,
 }
 
 /// Run only an audio/model command. Cloud/local LLM commands are deliberately
@@ -66,7 +65,7 @@ pub fn run_worker(
         bail!("В приложении отсутствует модуль распознавания. Повторите установку приложения.");
     }
     let mut launch = crate::platform::speech_launch(root)?;
-    if let Some(model) = crate::asr_model::selected_guard(root)? {
+    if let Some(model) = crate::asr_model::selected_guard(root, &request.settings)? {
         let mut guards = vec![model];
         if let Some(runtime) = launch.guard.take() {
             guards.insert(0, runtime);
@@ -87,7 +86,7 @@ pub fn run_worker(
 pub fn install_runtime(root: &Path, backend: &Path) -> Result<()> {
     validate_paths(root, backend)?;
     let launch = crate::platform::speech_setup(root, backend)?;
-    let spec = WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress: true, accepts_speech_key: false };
+    let spec = WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress: true, accepts_speech_key: false, settings: None };
     if !backend.join("setup.sh").is_file() {
         bail!("В приложении отсутствует установщик моделей. Повторите установку приложения.");
     }
@@ -137,9 +136,11 @@ fn worker_request(
             arguments.push(OsString::from("--no-diarization"));
         }
     }
+    let settings = crate::infrastructure::speech_settings::capture(root)?;
     Ok(WorkerRequest {
         arguments,
-        accepts_speech_key: command == "transcribe" && cloud_speech_selected(root),
+        accepts_speech_key: command == "transcribe" && settings.cloud(),
+        settings,
     })
 }
 
@@ -148,42 +149,13 @@ pub use crate::platform::apple_bundle::application_contents;
 struct WorkerRequest {
     arguments: Vec<OsString>,
     accepts_speech_key: bool,
+    settings: crate::application::speech_launch::SpeechSettings,
 }
 impl WorkerRequest {
     fn with_launch(self, mut launch: SpeechLaunch) -> WorkerSpec {
         launch.arguments.extend(self.arguments);
-        WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress: false, accepts_speech_key: self.accepts_speech_key }
+        WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress: false, accepts_speech_key: self.accepts_speech_key, settings: Some(self.settings) }
     }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SpeechSelection {
-    speech_mode: Option<String>,
-}
-
-/// Match the worker's explicit job snapshot before consulting global settings.
-/// A supplied invalid snapshot must not gain authority from a different disk
-/// selection. Legacy calls without a snapshot use only a bounded regular file,
-/// without following a replacement symlink.
-fn cloud_speech_selected(root: &Path) -> bool {
-    if let Some(snapshot) = std::env::var_os("POSLE_JOB_SETTINGS") {
-        return snapshot.to_str()
-            .and_then(|raw| crate::ai::snapshot_settings::<SpeechSelection>(raw).ok())
-            .is_some_and(|settings| settings.speech_mode.as_deref() == Some("cloud"));
-    }
-    let Ok(file) = OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(root.join("settings.json")) else { return false; };
-    let Ok(metadata) = file.metadata() else { return false; };
-    const MAX_SETTINGS: u64 = 1024 * 1024;
-    if !metadata.is_file() || metadata.len() > MAX_SETTINGS { return false; }
-    let mut bytes = Vec::new();
-    if file.take(MAX_SETTINGS + 1).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > MAX_SETTINGS {
-        return false;
-    }
-    serde_json::from_slice::<Value>(&bytes).ok()
-        .and_then(|settings| settings.get("speechMode").and_then(Value::as_str).map(|mode| mode == "cloud"))
-        .unwrap_or(false)
 }
 
 /// Text-model credentials never cross into an audio worker. The single speech
@@ -308,6 +280,9 @@ fn run(root: &Path, spec: WorkerSpec) -> Result<()> {
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONDONTWRITEBYTECODE", "1");
     sanitize_environment(&mut command, spec.accepts_speech_key, std::env::vars_os());
+    if let Some(settings) = &spec.settings {
+        command.env("POSLE_JOB_SETTINGS", settings.encoded());
+    }
     if let Some(guard) = &runtime_guard { guard.recheck()?; }
     let mut child = ProcessTree::spawn(&mut command).map_err(|_| anyhow!("Не удалось запустить модуль распознавания. Проверьте установку моделей."))?;
     let stdout = child.take_stdout().ok_or_else(|| anyhow!("Не удалось прочитать прогресс обработки."))?;
@@ -448,7 +423,7 @@ mod tests {
     fn setup_spec(root: &Path, backend: &Path) -> Result<WorkerSpec> {
         validate_paths(root, backend)?;
         let launch = crate::platform::macos_speech::setup(root,backend,&std::env::current_exe()?)?;
-        Ok(WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress:true, accepts_speech_key:false })
+        Ok(WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress:true, accepts_speech_key:false, settings:None })
     }
 
     use super::*;
@@ -460,6 +435,25 @@ mod tests {
     }
 
     #[test]
+    fn worker_receives_the_same_snapshot_after_live_selection_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = root.path().join("settings.json");
+        std::fs::write(&settings, br#"{"speechMode":"local","asrModelPath":"/original/model"}"#).unwrap();
+        let mut spec = worker_spec(root.path(), Path::new("/tmp/backend"), "transcribe", Some(Path::new("/tmp/meeting")), 0, false).unwrap();
+        assert!(!spec.accepts_speech_key);
+        std::fs::write(&settings, br#"{"speechMode":"cloud","asrModelPath":"/changed/model"}"#).unwrap();
+        let received = root.path().join("received.json");
+        // This fixture replaces the platform process adapter, not settings selection.
+        spec.guard = None;
+        spec.executable = "/bin/sh".into();
+        spec.arguments = vec!["-c".into(), "printf '%s' \"$POSLE_JOB_SETTINGS\" > \"$1\"".into(), "fixture".into(), received.clone().into_os_string()];
+        run(root.path(), spec).unwrap();
+        let value: Value = serde_json::from_slice(&std::fs::read(received).unwrap()).unwrap();
+        assert_eq!(value["speechMode"], "local");
+        assert_eq!(value["asrModelPath"], "/original/model");
+    }
+
+    #[test]
     fn invalid_runtime_guard_prevents_spawning_any_child() {
         struct Refuse;
         impl RuntimeGuard for Refuse {
@@ -467,7 +461,7 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap();
         let marker = root.path().join("must-not-exist");
-        let spec = WorkerSpec { executable: "/usr/bin/touch".into(), arguments: vec![marker.clone().into_os_string()], guard: Some(Box::new(Refuse)), forwards_plain_progress:false, accepts_speech_key:false };
+        let spec = WorkerSpec { executable: "/usr/bin/touch".into(), arguments: vec![marker.clone().into_os_string()], guard: Some(Box::new(Refuse)), forwards_plain_progress:false, accepts_speech_key:false, settings:None };
         assert!(run(root.path(),spec).unwrap_err().to_string().contains("selected runtime changed"));
         assert!(!marker.exists());
     }
@@ -561,16 +555,16 @@ mod tests {
             assert_eq!(spec.accepts_speech_key, command == "transcribe");
         }
         assert!(!setup_spec(root.path(), backend).unwrap().accepts_speech_key);
-        for content in [r#"{"speechMode":"local"}"#, r#"{"mode":"cloud"}"#, "broken JSON"] {
+        for content in [r#"{"speechMode":"local"}"#, r#"{"mode":"cloud"}"#] {
             std::fs::write(root.path().join("settings.json"), content).unwrap();
             assert!(!worker_spec(root.path(), backend, "transcribe", Some(meeting), 0, true).unwrap().accepts_speech_key);
         }
         std::fs::remove_file(root.path().join("settings.json")).unwrap();
-        assert!(!cloud_speech_selected(root.path()));
+        assert!(!crate::infrastructure::speech_settings::capture(root.path()).unwrap().cloud());
         let target = root.path().join("linked-settings.json");
         std::fs::write(&target, r#"{"speechMode":"cloud"}"#).unwrap();
         std::os::unix::fs::symlink(&target, root.path().join("settings.json")).unwrap();
-        assert!(!cloud_speech_selected(root.path()));
+        assert!(crate::infrastructure::speech_settings::capture(root.path()).is_err());
     }
 
     #[test]
@@ -589,7 +583,11 @@ mod tests {
                 std::env::set_var("POSLE_JOB_SETTINGS", format!(r#"{{"speechMode":"cloud","focus":"{}"}}"#, "x".repeat(256 * 1024)));
             }
             for name in ["prepare", "transcribe", "diarize", "finalize", "install-local"] {
-                let spec = worker_spec(root, Path::new("/tmp/backend"), name, Some(Path::new("/tmp/meeting")), 0, true).unwrap();
+                let result = worker_spec(root, Path::new("/tmp/backend"), name, Some(Path::new("/tmp/meeting")), 0, true);
+                let spec = match result {
+                    Ok(spec) => spec,
+                    Err(_) => { assert!(!expected); continue; }
+                };
                 let authorized = name == "transcribe" && expected;
                 assert_eq!(spec.accepts_speech_key, authorized, "{name}");
                 let variables: Vec<(OsString, OsString)> = [
@@ -714,6 +712,7 @@ mod tests {
             arguments: vec![directory.join("fixture.sh").into_os_string(), directory.join("pids").into_os_string()],
             forwards_plain_progress: false,
             accepts_speech_key: false,
+            settings: None,
         });
         assert!(result.unwrap_err().to_string().contains("остановлена"));
     }

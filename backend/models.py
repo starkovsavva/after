@@ -39,14 +39,11 @@ MAX_DEPTH = 6
 
 
 def _json(path: Path):
-    if path.name == "settings.json" and os.environ.get("POSLE_JOB_SETTINGS"):
-        raw = os.environ["POSLE_JOB_SETTINGS"]
-        if len(raw) > MAX_JSON:
-            raise ValueError("Конфигурация задания слишком большая")
-        value = json.loads(raw)
-        if not isinstance(value, dict):
-            raise ValueError("Настройки задания должны быть объектом")
-        return value
+    if path.name == "settings.json":
+        from job_settings import snapshot
+        selected = snapshot()
+        if selected is not None:
+            return selected
     if not path.is_file() or path.stat().st_size > MAX_JSON:
         raise ValueError("JSON модели отсутствует или слишком большой")
     with path.open(encoding="utf-8") as stream:
@@ -288,7 +285,7 @@ def selected_asr(root: Path):
     settings_file = root / "settings.json"
     settings = SETTINGS_OVERRIDE.get()
     if settings is None:
-        settings = _json(settings_file) if settings_file.exists() or os.environ.get("POSLE_JOB_SETTINGS") else {}
+        settings = _json(settings_file) if settings_file.exists() or "POSLE_JOB_SETTINGS" in os.environ else {}
     selected_format = settings.get("asrModelFormat", "auto") or "auto"
     if selected_format not in ("auto", "mlx", "onnx"):
         raise RuntimeError("Выберите формат Parakeet: auto, mlx или onnx")

@@ -68,14 +68,14 @@ def progress(message: str, fraction: float = -1):
 
 
 def load(path: Path, default=None):
-    if path.name == "settings.json" and os.environ.get("POSLE_JOB_SETTINGS"):
-        raw = os.environ["POSLE_JOB_SETTINGS"]
-        if len(raw) > 262144:
-            raise RuntimeError("Конфигурация задания слишком большая.")
-        snapshot = json.loads(raw)
-        if not isinstance(snapshot, dict):
-            raise RuntimeError("Некорректные настройки задания.")
-        return snapshot
+    if path.name == "settings.json":
+        from job_settings import snapshot
+        try:
+            selected = snapshot()
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
+        if selected is not None:
+            return selected
     if not path.exists():
         return default
     return json.loads(path.read_text(encoding="utf-8"))
