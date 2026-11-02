@@ -1,7 +1,7 @@
 //! Pinned Linux CPython composition and generation installation. This does not
 //! attest third-party packages, embedded ABI compatibility, models or ASR readiness.
 pub use super::runtime_active::{validate_active, VerifiedRuntime};
-pub use super::runtime_install::{install, InstalledRuntime};
+pub use super::runtime_install::{install, install_cpu, InstalledRuntime};
 use crate::infrastructure::runtime_tree::{Layout, Policy, Tree};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;

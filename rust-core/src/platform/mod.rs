@@ -44,5 +44,5 @@ pub(crate) fn speech_setup(root: &std::path::Path, backend: &std::path::Path) ->
     #[cfg(target_os = "macos")]
     { macos_speech::setup(root, backend, &std::env::current_exe()?) }
     #[cfg(not(target_os = "macos"))]
-    { let _ = (root, backend); anyhow::bail!("Speech dependency installation is not available on this platform yet. Install the pinned CPython separately.") }
+    { let _ = (root, backend); anyhow::bail!("Full speech/model setup is not connected on this platform yet. Linux CPU dependencies can be installed through the native runtime profile.") }
 }

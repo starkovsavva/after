@@ -6,3 +6,5 @@ mod runtime_install;
 mod runtime_active;
 
 pub(super) mod speech_launch;
+
+mod speech_dependencies;

@@ -43,7 +43,8 @@ changing active bytes or leaking its candidate, installs a second generation and
 executes both retained interpreters. The network fixture also exercises the native
 Rust downloader. All data is disposable; source/materials are never uploaded.
 
-This installs CPython and a clean venv only. It does not write `ready-v2`, install
-packages/models, load the macOS PyConfig ABI, or enable ASR. Verified [active-generation selection](active-runtime-selection.md) is now available.
+Default installation creates CPython and a clean venv. The optional
+[Linux CPU profile](linux-cpu-speech-profile.md) installs pinned wheels before activation.
+Neither mode writes `ready-v2`, installs speech models, loads macOS PyConfig or enables ASR. Verified [active-generation selection](active-runtime-selection.md) is now available.
 Next: backend-specific dependencies, Linux speech execution and queue integration,
 cancellation and admission against live processing. Existing macOS setup is unchanged.

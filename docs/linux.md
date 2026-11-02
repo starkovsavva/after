@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 662 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
+и helper), 664 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 18 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -232,7 +232,8 @@ alias redirect и удержание настоящего поколения в�
 
 Проверка не подтверждает происхождение third-party packages и не запускает ASR.
 Worker теперь выбирает launch через platform composition и исполняет проверенный
-Linux CPython. Speech-зависимости и настоящая ASR-обработка остаются следующим этапом.
+Linux CPython. Optional Linux CPU dependency profile теперь доступен; настоящая ASR-обработка
+и подготовка моделей остаются следующим этапом.
 [Решение](decisions/active-runtime-selection.md).
 
 ## Speech launch и общий supervisor
@@ -241,11 +242,36 @@ Linux CPython. Speech-зависимости и настоящая ASR-обра�
 guard. Linux-адаптер выбирает active generation, общий `worker.rs` повторно проверяет
 guard перед spawn и удерживает его до завершения процесса. Аргументы job и фильтрация
 credentials/progress остаются общими. Darwin helper/setup и bundle layout вынесены
-в platform adapters. `install-runtime` на Linux пока явно отказывает: CPython installer
-не означает готовность speech dependencies.
+в platform adapters. `install-runtime` на Linux пока явно отказывает до подключения подготовки моделей.
+Native installer поддерживает отдельный CPU dependency profile.
 
 Real runtime fixture теперь запускает synthetic `engine.py` через настоящую CLI
 `prepare`, проверяет venv/prefix, resource import, Python flags и удаление synthetic
 секретов. Затем отменяет долгий worker с потомком, игнорирующим SIGTERM, и проверяет
 их остановку. Это тест launch/supervision; аудио/ASR-модели не используются.
 [Архитектурная граница](decisions/speech-launch-port.md).
+
+## Linux CPU speech-зависимости
+
+```sh
+.build/rust/debug/posle-engine --posle-install-python-runtime --root "$AFTER_RUNTIME_TEST_ROOT" --download --profile linux-cpu
+# Offline input: дополните --archive ранее проверенным --wheelhouse:
+.build/rust/debug/posle-engine --posle-install-python-runtime --root "$AFTER_RUNTIME_TEST_ROOT" --archive /absolute/path/python.tar.gz --profile linux-cpu --wheelhouse /absolute/path/wheels
+python3 scripts/check-linux-speech-profile.py --download
+```
+
+Профиль содержит 9 закреплённых wheels: imageio-ffmpeg, sherpa-onnx/core, onnx-asr,
+onnxruntime, numpy, protobuf, packaging и flatbuffers. MLX/Torch/GPU не входят.
+Все direct/transitive версии, PyPI URL, размер и SHA-256 находятся в
+`backend/python-wheels-linux-x86_64.json`. Input requirements служит для явного
+обновления lock; native installer использует скомпилированный lock.
+
+Сначала native downloader проверяет каждый wheel, затем bundled ensurepip ставит
+пакеты только из private wheelhouse с hash checking, без index/source builds и
+неявных зависимостей. `pip check`, imports, настоящее CPU ONNX Identity inference
+и synthetic FFmpeg conversion проходят до atomic activation; base CPython
+перепроверяется. Повреждённый wheel сохраняет прежнюю активную среду.
+
+Это не ASR-модель, не проверка качества речи и не attestation всех installed files.
+`RECORD` не используется как trust root; models и `ready-v2` не публикуются.
+[Политика и ограничения](decisions/linux-cpu-speech-profile.md).

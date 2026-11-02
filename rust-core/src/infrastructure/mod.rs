@@ -18,3 +18,5 @@ pub(crate) mod runtime_tree;
 
 #[cfg(unix)]
 pub(crate) mod runtime_venv;
+
+pub(crate) mod artifact_download;

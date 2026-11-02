@@ -13,6 +13,16 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, ValueEnum)]
 enum Command { Prepare, Transcribe, Diarize, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, CheckCloud, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview, VoicePlan, KnowledgeRebuild }
 
+#[cfg(target_os = "linux")]
+#[derive(Parser)]
+struct PythonRuntimeInstallArgs {
+    #[arg(long)] root: PathBuf,
+    #[arg(long, required_unless_present = "archive", conflicts_with = "archive")] download: bool,
+    #[arg(long)] archive: Option<PathBuf>,
+    #[arg(long, value_parser = ["python", "linux-cpu"], default_value = "python")] profile: String,
+    #[arg(long)] wheelhouse: Option<PathBuf>,
+}
+
 #[derive(Parser)]
 #[command(version, about="After: ядро библиотеки и обработки встреч")]
 struct Args {
@@ -173,14 +183,16 @@ fn main() {
     }
     #[cfg(target_os = "linux")]
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(posle_core::python_runtime::INSTALL_MODE)) {
-        let args: Vec<_> = std::env::args_os().skip(2).collect();
-        let result = if args.len() == 3 && args[0] == "--root" && args[2] == "--download" {
-            posle_core::python_runtime::install(Path::new(&args[1]), None)
-        } else if args.len() == 4 && args[0] == "--root" && args[2] == "--archive" {
-            posle_core::python_runtime::install(Path::new(&args[1]), Some(Path::new(&args[3])))
-        } else {
-            Err(anyhow::anyhow!("Usage: --posle-install-python-runtime --root /absolute/private/root (--download | --archive /path/python.tar.gz)"))
-        };
+        let result = PythonRuntimeInstallArgs::try_parse_from(std::iter::once(std::ffi::OsString::from("python-runtime-install")).chain(std::env::args_os().skip(2)))
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+            .and_then(|args| {
+                if args.profile == "linux-cpu" {
+                    posle_core::python_runtime::install_cpu(&args.root,args.archive.as_deref(),args.wheelhouse.as_deref())
+                } else {
+                    if args.wheelhouse.is_some() { bail!("--wheelhouse requires --profile linux-cpu"); }
+                    posle_core::python_runtime::install(&args.root,args.archive.as_deref())
+                }
+            });
         match result {
             Ok(installed) => println!("{}", serde_json::to_string(&installed).unwrap()),
             Err(error) => { eprintln!("{error:#}"); std::process::exit(1); }

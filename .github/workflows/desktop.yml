@@ -14,6 +14,10 @@ on:
       - 'scripts/pin_python_runtime.py'
       - 'scripts/test_python_runtime_policy.py'
       - 'backend/python-runtime*.json'
+      - 'backend/python-wheels*.json'
+      - 'backend/requirements-linux-cpu.txt'
+      - 'backend/probe_linux_cpu.py'
+      - 'scripts/*linux*speech*'
       - '.github/workflows/desktop.yml'
       - 'scripts/verify.py'
       - 'scripts/test_verify.py'
@@ -86,6 +90,11 @@ jobs:
       - name: Real pinned Linux CPython and isolated venv
         if: runner.os == 'Linux'
         run: python3 scripts/check-linux-python-runtime.py --download
+      - name: Real Linux CPU speech dependency profile
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m unittest discover -s scripts -p test_linux_speech_wheels.py
+          python3 scripts/check-linux-speech-profile.py --download
       - name: Private virtual Linux microphone SDK
         if: runner.os == 'Linux'
         run: |

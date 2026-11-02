@@ -7,10 +7,9 @@ use crate::{
 };
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
-    io::{Read, Write},
+    io::Read,
     os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -32,6 +31,8 @@ struct Installer {
     pinned: File,
     lock: File,
     archive: Option<PathBuf>,
+    cpu: bool,
+    wheelhouse: Option<PathBuf>,
 }
 impl Drop for Installer {
     fn drop(&mut self) {
@@ -107,6 +108,8 @@ impl Installer {
             pinned,
             lock,
             archive: archive.map(Path::to_owned),
+            cpu: false,
+            wheelhouse: None,
         })
     }
     fn recheck(&self) -> Result<()> {
@@ -132,6 +135,7 @@ impl Installer {
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("LANG", "C.UTF-8")
+            .env("PIP_CONFIG_FILE", "/dev/null")
             .env("TMPDIR", candidate.directory.join("tmp"))
             .current_dir(&candidate.directory)
             .stdin(Stdio::null())
@@ -166,40 +170,14 @@ impl RuntimeInstallation for Installer {
         };
         owned_directory(&candidate.directory.join("tmp"))?;
         let spec = artifact()?;
-        let mut input: Box<dyn Read> = if let Some(source) = &self.archive {
-            Box::new(crate::platform_fs::open_read(source)?)
-        } else {
-            let client = reqwest::blocking::Client::builder()
-                .https_only(true)
-                .timeout(Duration::from_secs(120))
-                .build()?;
-            Box::new(client.get(&spec.archive_url).send()?.error_for_status()?)
-        };
         let archive = candidate.directory.join("python.tar.gz");
-        let mut output = crate::platform_fs::open_private(&archive, true)?;
-        let mut hash = Sha256::new();
-        let mut count = 0u64;
-        let mut block = [0u8; 64 * 1024];
-        loop {
-            let read = input.read(&mut block)?;
-            if read == 0 {
-                break;
-            }
-            count = count
-                .checked_add(read as u64)
-                .context("Invalid archive size")?;
-            ensure!(
-                count <= spec.archive_size,
-                "Pinned CPython archive size mismatch"
-            );
-            output.write_all(&block[..read])?;
-            hash.update(&block[..read]);
-        }
-        ensure!(
-            count == spec.archive_size && format!("{:x}", hash.finalize()) == spec.archive_sha256,
-            "Pinned CPython archive integrity mismatch"
-        );
-        output.sync_all()?;
+        crate::infrastructure::artifact_download::copy_verified(
+            self.archive.as_deref(),
+            &spec.archive_url,
+            &spec.archive_sha256,
+            spec.archive_size,
+            &archive,
+        )?;
         self.run(
             &candidate,
             Path::new("/usr/bin/tar"),
@@ -238,7 +216,15 @@ impl RuntimeInstallation for Installer {
                 "--without-pip".as_ref(),
                 venv.as_os_str(),
             ],
-        )
+        )?;
+        if self.cpu {
+            super::speech_dependencies::prepare(
+                &candidate.directory,
+                self.wheelhouse.as_deref(),
+                &|program, args| self.run(candidate, program, args),
+            )?;
+        }
+        Ok(())
     }
     fn verify_environment(&mut self, candidate: &Candidate) -> Result<()> {
         self.verify_distribution(candidate)?;
@@ -451,4 +437,17 @@ mod tests {
         assert!(Installer::new(root.path(), None).is_err());
         assert_eq!(fs::read(source).unwrap(), b"keep");
     }
+}
+
+/// Installs the reviewed Linux CPU wheels before activation; models and speech
+/// readiness are separate. A cache is read-only input, never an integrity root.
+pub fn install_cpu(
+    root: &Path,
+    archive: Option<&Path>,
+    wheelhouse: Option<&Path>,
+) -> Result<InstalledRuntime> {
+    let mut installer = Installer::new(root, archive)?;
+    installer.cpu = true;
+    installer.wheelhouse = wheelhouse.map(Path::to_owned);
+    runtime_install::install(&mut installer)
 }

@@ -45,6 +45,6 @@ reaping are distinguished from live processes; cleanup checks PID identity befor
 signalling. No real speech, models, credentials or personal data are used.
 
 Full desktop regression, real engine/IPC and native startup remain separate checks.
-Actual macOS helper/signing behavior requires macOS CI/native verification. Next:
-backend-specific speech dependencies/model assets, controlled resource packaging,
+Actual macOS helper/signing behavior requires macOS CI/native verification. The [Linux CPU dependency profile](linux-cpu-speech-profile.md) now installs a hash-pinned
+wheel set before activation. Next: model assets, controlled resource packaging,
 real CPU ONNX recognition and durable speech queue/Tauri integration.

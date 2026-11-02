@@ -1,0 +1,6 @@
+# Direct Linux CPU speech dependencies. Resolve only into a reviewed wheel lock.
+# The native installer consumes python-wheels-linux-x86_64.json, not this file.
+imageio-ffmpeg==0.6.0
+sherpa-onnx==1.13.8
+onnx-asr==0.12.0
+onnxruntime==1.31.0
