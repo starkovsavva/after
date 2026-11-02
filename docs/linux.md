@@ -162,10 +162,11 @@ CPython и загрузчик; тесты Linux не исполняют скач
 cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust --lib runtime_tree
 ```
 
-21 synthetic contract покрывает ELF-style inventory и существующий macOS
+Synthetic contracts покрывают ELF-style inventory и существующий macOS
 venv/descriptor binding. Linux x86_64 GNU CPython 3.12.16 теперь закреплён отдельным manifest и проверяется
 через native verifier. Native generation installer теперь создаёт и атомарно активирует CPython/venv;
-speech dependencies и сквозная очередь ASR ещё нужны.
+CPU speech dependencies, managed Parakeet и native durable ASR queue реализованы ниже;
+Tauri host binding, упаковка backend и UI ещё нужны.
 [Граница verifier/loader](decisions/runtime-inventory-boundary.md).
 
 ## Настоящий закреплённый CPython
@@ -313,3 +314,12 @@ Native speech jobs теперь имеют отдельный staged execution/p
 транскрипт с приватным receipt. Повтор уже committed операции не запускает модель.
 Это фундамент для durable Tauri speech queue; UI capability пока не включена.
 [Протокол, восстановление и ограничения](decisions/native-speech-publication.md).
+
+
+Native service `--posle-speech-queue --root /owned/root --backend /trusted/backend`
+теперь сохраняет speech jobs в общей SQLite-очереди, использует отдельный lease,
+проверяет receipt при recovery и выполняет только явный Run. Read models не
+возвращают настройки/receipt/attempt token. Python и его дочерние процессы входят
+во внешний owned scope; проверка `check-linux-asr.py` покрывает реальную очередь
+и отмену native/SDK/descendant. Tauri UI пока не подключён.
+[Владение, протокол и intentional group termination](decisions/durable-speech-queue.md).

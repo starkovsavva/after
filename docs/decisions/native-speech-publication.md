@@ -61,7 +61,7 @@ rollback/commit recovery and unresolved outcomes. The opt-in real Parakeet fixtu
 uses this native path and retries an already committed request while model bytes
 are damaged, proving reconciliation avoids another model execution.
 
-This prepares the worker/publication boundary. Durable speech queue ownership,
-progress/cancel protocol, recovery at Tauri startup, UI and speech readiness are
-still required. Cloud ASR, diarization and Windows runtime are separate adapters;
+This prepares the worker/publication boundary. Native [durable speech queue](durable-speech-queue.md)
+ownership, progress/cancel and receipt recovery are now implemented separately.
+Tauri host startup binding, backend packaging, UI and speech readiness remain required. Cloud ASR, diarization and Windows runtime are separate adapters;
 this slice does not advertise those capabilities.

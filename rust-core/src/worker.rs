@@ -46,6 +46,7 @@ struct WorkerSpec {
     forwards_plain_progress: bool,
     accepts_speech_key: bool,
     guard: Option<Box<dyn RuntimeGuard>>,
+    contained: bool,
     settings: Option<crate::application::speech_launch::SpeechSettings>,
 }
 
@@ -73,6 +74,14 @@ pub(crate) fn run_worker_selected(
     diarization: bool,
     settings: crate::application::speech_launch::SpeechSettings,
 ) -> Result<()> {
+    run_worker_in_scope(root, backend, command, meeting, speakers, diarization, settings, false)
+}
+
+pub(crate) fn run_worker_in_scope(
+    root: &Path, backend: &Path, command: &str, meeting: Option<&Path>,
+    speakers: u32, diarization: bool,
+    settings: crate::application::speech_launch::SpeechSettings, contained: bool,
+) -> Result<()> {
     let request = worker_request(root, backend, command, meeting, speakers, diarization, settings)?;
     if !backend.join("engine.py").is_file() {
         bail!("В приложении отсутствует модуль распознавания. Повторите установку приложения.");
@@ -87,7 +96,8 @@ pub(crate) fn run_worker_selected(
             crate::application::speech_launch::RuntimeGuards(guards),
         ));
     }
-    let spec = request.with_launch(launch);
+    let mut spec = request.with_launch(launch);
+    spec.contained = contained;
     if !spec.executable.is_file() {
         bail!("В приложении отсутствует движок распознавания. Повторите установку приложения.");
     }
@@ -99,7 +109,7 @@ pub(crate) fn run_worker_selected(
 pub fn install_runtime(root: &Path, backend: &Path) -> Result<()> {
     validate_paths(root, backend)?;
     let launch = crate::platform::speech_setup(root, backend)?;
-    let spec = WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress: true, accepts_speech_key: false, settings: None };
+    let spec = WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress: true, accepts_speech_key: false, settings: None, contained: false };
     if !backend.join("setup.sh").is_file() {
         bail!("В приложении отсутствует установщик моделей. Повторите установку приложения.");
     }
@@ -167,7 +177,7 @@ struct WorkerRequest {
 impl WorkerRequest {
     fn with_launch(self, mut launch: SpeechLaunch) -> WorkerSpec {
         launch.arguments.extend(self.arguments);
-        WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress: false, accepts_speech_key: self.accepts_speech_key, settings: Some(self.settings) }
+        WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress: false, accepts_speech_key: self.accepts_speech_key, settings: Some(self.settings), contained: false }
     }
 }
 
@@ -297,7 +307,9 @@ fn run(root: &Path, spec: WorkerSpec) -> Result<()> {
         command.env("POSLE_JOB_SETTINGS", settings.encoded());
     }
     if let Some(guard) = &runtime_guard { guard.recheck()?; }
-    let mut child = ProcessTree::spawn(&mut command).map_err(|_| anyhow!("Не удалось запустить модуль распознавания. Проверьте установку моделей."))?;
+    if CANCEL_SIGNAL.load(Ordering::Relaxed) != 0 { bail!("Обработка остановлена."); }
+    let spawned = if spec.contained { ProcessTree::spawn_contained(&mut command) } else { ProcessTree::spawn(&mut command) };
+    let mut child = spawned.map_err(|_| anyhow!("Не удалось запустить модуль распознавания. Проверьте установку моделей."))?;
     let stdout = child.take_stdout().ok_or_else(|| anyhow!("Не удалось прочитать прогресс обработки."))?;
     let pipe_failed = Arc::new(AtomicBool::new(false));
     let reported_error = Arc::new(AtomicBool::new(false));
@@ -436,7 +448,7 @@ mod tests {
     fn setup_spec(root: &Path, backend: &Path) -> Result<WorkerSpec> {
         validate_paths(root, backend)?;
         let launch = crate::platform::macos_speech::setup(root,backend,&std::env::current_exe()?)?;
-        Ok(WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress:true, accepts_speech_key:false, settings:None })
+        Ok(WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress:true, accepts_speech_key:false, settings:None, contained:false })
     }
 
     use super::*;
@@ -474,7 +486,7 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap();
         let marker = root.path().join("must-not-exist");
-        let spec = WorkerSpec { executable: "/usr/bin/touch".into(), arguments: vec![marker.clone().into_os_string()], guard: Some(Box::new(Refuse)), forwards_plain_progress:false, accepts_speech_key:false, settings:None };
+        let spec = WorkerSpec { executable: "/usr/bin/touch".into(), arguments: vec![marker.clone().into_os_string()], guard: Some(Box::new(Refuse)), forwards_plain_progress:false, accepts_speech_key:false, settings:None, contained:false };
         assert!(run(root.path(),spec).unwrap_err().to_string().contains("selected runtime changed"));
         assert!(!marker.exists());
     }
@@ -726,6 +738,7 @@ mod tests {
             forwards_plain_progress: false,
             accepts_speech_key: false,
             settings: None,
+            contained: false,
         });
         assert!(result.unwrap_err().to_string().contains("остановлена"));
     }

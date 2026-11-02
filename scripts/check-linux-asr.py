@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import uuid
+from linux_speech_queue_fixture import transcribe as queued_transcribe, check_cancel
 import tempfile
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -72,8 +73,8 @@ def main():
         inspected = json.loads(run(job_command,payload=json.dumps({'inspect':imported['id']})).stdout.splitlines()[-1])
         work = {'version':1,'operationId':str(uuid.uuid4()),'attemptToken':str(uuid.uuid4()),'meetingId':imported['id'],
                 'inputRevision':inspected['speechJob']['inputRevision'],'settings':settings}
-        completed = json.loads(run(job_command,payload=json.dumps(work)).stdout.splitlines()[-1])
-        receipt = completed['speechJob']['receipt']
+        queued_transcribe(engine,library,backend,env,work)
+        receipt = json.loads((meeting/'transcript.json').read_text())['_posleSpeechReceipt']
         if receipt['operationId'] != work['operationId'] or receipt['attemptToken'] != work['attemptToken']:
             raise RuntimeError('Native speech publication returned the wrong receipt')
         transcript = meeting / 'transcript.json'; preserved = transcript.read_bytes()
@@ -94,6 +95,7 @@ def main():
         token_file.chmod(mode | stat.S_IWUSR)
         try:
             token_file.write_bytes(bytes([original[0]^1])+original[1:])
+            queued_transcribe(engine,library,backend,env,work)
             repeated = json.loads(run(job_command,payload=json.dumps(work)).stdout.splitlines()[-1])
             if repeated['speechJob']['receipt'] != receipt:
                 raise RuntimeError('Committed speech was not reconciled without rerunning the damaged model')
@@ -109,7 +111,11 @@ def main():
             token_file.write_bytes(original);token_file.chmod(mode)
         if transcript.read_bytes()!=preserved or hashlib.sha256(source.read_bytes()).hexdigest()!=source_hash:
             raise RuntimeError('Integrity failure altered previous transcription or source')
-        print(json.dumps({'passed':True,'realParakeetCpu':True,'syntheticSpeechOnly':True,'canonicalTranscript':True,'nativeStagedPublication':True,'receiptPreventedRepeatInference':True,'liveSettingsSwitchDidNotRedirect':True,
+        print("Cancelling a real native/SDK/descendant scope", file=sys.stderr, flush=True)
+        check_cancel(engine,library,env,work,root)
+        if hashlib.sha256(source.read_bytes()).hexdigest()!=source_hash:
+            raise RuntimeError('Speech cancellation/shutdown altered the original media')
+        print(json.dumps({'passed':True,'durableSpeechQueue':True,'nativeSdkDescendantCancellation':True,'eofInterruptedWithoutResume':True,'realParakeetCpu':True,'syntheticSpeechOnly':True,'canonicalTranscript':True,'nativeStagedPublication':True,'receiptPreventedRepeatInference':True,'liveSettingsSwitchDidNotRedirect':True,
                           'corruptArchivePreservedActive':True,'tamperedModelRejectedBeforeExecution':True,
                           'frozenSelectionPreserved':True,'previousTranscriptAndSourcePreserved':True},indent=2))
 

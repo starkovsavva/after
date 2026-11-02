@@ -9,11 +9,10 @@ use crate::{
         },
         import_recovery,
         imports::ImportObserver,
-        job_ports::{JobClock, JobQueueRepository},
         jobs::{ClaimRequest, JobCommand, JobReply},
     },
     desktop_queue::{self, Request},
-    domain::jobs::{Job, JobMutation, JobUpdate, UpdateField},
+    domain::jobs::Job,
     infrastructure::executor_lease::ImportExecutorLease,
 };
 use anyhow::{bail, Result};
@@ -195,92 +194,18 @@ impl Drop for Executor {
 struct QueueStore {
     lease: Arc<ImportExecutorLease>,
 }
-impl ImportRecoveryStore for QueueStore {
-    fn candidates(&self, after: Option<&str>, limit: usize) -> Result<Vec<Job>> {
-        desktop_queue::queue(self.lease.root())
-            .repository
-            .recovery_candidates(
-                crate::application::import_ports::IMPORT_JOB_KIND,
-                after,
-                limit,
-            )
-    }
-    fn resolve(&self, observed: &Job, outcome: ImportRecoveryOutcome) -> Result<bool> {
-        let queue = desktop_queue::queue(self.lease.root());
-        queue.repository.transaction(|transaction| {
-            if transaction.state(&observed.id)?.is_none() {
-                return Ok(false);
-            }
-            let mut current = transaction.get(&observed.id)?;
-            if current.kind != crate::application::import_ports::IMPORT_JOB_KIND
-                || !["running", "interrupted"].contains(&current.state.as_str())
-                || serde_json::to_value(&current)? != serde_json::to_value(observed)?
-            {
-                return Ok(false);
-            }
-            match outcome {
-                ImportRecoveryOutcome::Published => {
-                    current.state = "succeeded".into();
-                    current.progress = 1.0;
-                    current.cancel_requested = false;
-                    current.message.clear();
-                }
-                ImportRecoveryOutcome::Cancelled => {
-                    current.state = "cancelled".into();
-                    current.cancel_requested = false;
-                    current.message = "Import cancelled".into();
-                }
-                ImportRecoveryOutcome::Interrupted => {
-                    current.state = "interrupted".into();
-                    current.cancel_requested = false;
-                    current.message = "Work was interrupted. Retry explicitly.".into();
-                }
-                ImportRecoveryOutcome::Unresolved => {
-                    current.state = "interrupted".into();
-                    current.message = "Import outcome requires reconciliation".into();
-                }
-            }
-            current.updated_at = queue.clock.now();
-            transaction.save(&current)?;
-            Ok(true)
-        })
+impl QueueStore {
+    fn scoped(&self) -> crate::infrastructure::attempt_store::ScopedAttemptStore<'_> {
+        crate::infrastructure::attempt_store::ScopedAttemptStore { root:self.lease.root(),kind:crate::application::import_ports::IMPORT_JOB_KIND,label:"Import" }
     }
 }
+impl ImportRecoveryStore for QueueStore {
+    fn candidates(&self, after: Option<&str>, limit: usize) -> Result<Vec<Job>> { self.scoped().candidates(after,limit) }
+    fn resolve(&self, observed: &Job, outcome: ImportRecoveryOutcome) -> Result<bool> { self.scoped().resolve(observed,outcome) }
+}
 impl ImportJobStore for QueueStore {
-    fn progress(&self, id: &str, attempt: u64, fraction: f64) -> Result<bool> {
-        match desktop_queue::queue(self.lease.root()).execute(JobCommand::Mutate {
-            id: id.into(),
-            expected_attempt: Some(attempt),
-            mutation: JobMutation::Update(JobUpdate {
-                state: Some("running".into()),
-                progress: UpdateField::Set(fraction),
-                message: UpdateField::Unchanged,
-                result: None,
-            }),
-        })? {
-            JobReply::Job(job) => Ok(job.cancel_requested),
-            _ => bail!("Invalid import progress reply"),
-        }
-    }
-    fn finish(&self, id: &str, attempt: u64, outcome: ImportOutcome) -> Result<()> {
-        let message = match outcome {
-            ImportOutcome::Succeeded => "",
-            ImportOutcome::Cancelled => "Import cancelled",
-            ImportOutcome::Failed => "Import failed",
-            ImportOutcome::Interrupted => "Import outcome requires reconciliation",
-        };
-        desktop_queue::queue(self.lease.root()).execute(JobCommand::Mutate {
-            id: id.into(),
-            expected_attempt: Some(attempt),
-            mutation: JobMutation::Update(JobUpdate {
-                state: Some(outcome.state().into()),
-                progress: UpdateField::Unchanged,
-                message: UpdateField::Set(message.into()),
-                result: None,
-            }),
-        })?;
-        Ok(())
-    }
+    fn progress(&self,id:&str,attempt:u64,fraction:f64)->Result<bool> { self.scoped().progress(id,attempt,fraction) }
+    fn finish(&self,id:&str,attempt:u64,outcome:ImportOutcome)->Result<()> { self.scoped().finish(id,attempt,outcome) }
 }
 struct FileWorker {
     lease: Arc<ImportExecutorLease>,

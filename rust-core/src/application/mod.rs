@@ -17,3 +17,8 @@ pub(crate) mod speech_launch;
 pub(crate) mod asr_model_install;
 
 pub(crate) mod speech_execution;
+
+pub(crate) mod attempt_execution;
+pub(crate) mod job_recovery;
+
+pub(crate) mod speech_jobs;

@@ -32,3 +32,10 @@ pub(crate) mod speech_settings;
 
 #[cfg(unix)]
 pub(crate) mod speech_publication;
+
+pub(crate) mod attempt_store;
+
+#[cfg(unix)]
+pub(crate) mod speech_process;
+
+pub(crate) mod native_queue_transport;

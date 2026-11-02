@@ -2,27 +2,9 @@
 //! helper is supervised by the host. Explicit run requests own their worker
 //! threads until cancellation/join; no automatic recovery or retries.
 use anyhow::{ensure, Result};
-use serde::Deserialize;
-use serde_json::{json, Value};
-use std::{
-    io::{BufRead, BufReader, Read, Write},
-    path::Path,
-};
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Request {
-    version: u8,
-    id: String,
-    request: Value,
-}
-
-fn frame(output: &mut impl Write, value: Value) -> Result<()> {
-    serde_json::to_writer(&mut *output, &value)?;
-    output.write_all(b"\n")?;
-    output.flush()?;
-    Ok(())
-}
+use serde_json::json;
+use std::{io::{Read, Write}, path::Path};
+use crate::infrastructure::native_queue_transport::{frame, serve};
 
 pub fn run_stdio(root: &Path, reader: impl Read, mut writer: impl Write) -> Result<()> {
     ensure!(
@@ -50,35 +32,13 @@ pub fn run_stdio(root: &Path, reader: impl Read, mut writer: impl Write) -> Resu
     };
     let mut executor = crate::desktop_queue_executor::Executor::new(lease);
     frame(&mut writer, json!({"version":1,"event":"ready"}))?;
-    let mut input = BufReader::new(reader);
-    loop {
-        let mut bytes = Vec::new();
-        Read::by_ref(&mut input)
-            .take((crate::desktop::MAX_REQUEST_BYTES + 1) as u64)
-            .read_until(b'\n', &mut bytes)?;
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        ensure!(
-            bytes.len() <= crate::desktop::MAX_REQUEST_BYTES && bytes.ends_with(b"\n"),
-            "Invalid queue frame"
-        );
-        let request: Request = serde_json::from_slice(&bytes)?;
-        ensure!(
-            request.version == 1 && crate::desktop_import::valid_import_id(&request.id),
-            "Invalid queue request"
-        );
-        let envelope = crate::desktop::import_queue_envelope(&mut executor, request.request);
-        frame(
-            &mut writer,
-            json!({"version":1,"event":"reply","id":request.id,"envelope":envelope}),
-        )?;
-    }
+    serve(reader, writer, |request| crate::desktop::import_queue_envelope(&mut executor, request))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     #[test]
     fn service_releases_lease_at_eof_and_reports_contention_without_queue_writes() {
         let root = tempfile::tempdir().unwrap();

@@ -1,83 +1,27 @@
 //! Read-only receipt reconciliation; no worker execution or implicit retries.
 use super::import_ports::{
-    input_for_job, ImportReceipts, ImportRecoveryOutcome, ImportRecoveryStore, IMPORT_JOB_KIND,
+    input_for_job, ImportReceipts, ImportRecoveryStore, IMPORT_JOB_KIND,
 };
-use anyhow::{ensure, Result};
-use serde::Serialize;
+use anyhow::Result;
 
-pub(crate) const PAGE_SIZE: usize = 64;
-
-#[derive(Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RecoveryReport {
-    pub examined: usize,
-    pub published: usize,
-    pub interrupted: usize,
-    pub cancelled: usize,
-    pub unresolved: usize,
-    pub stale: usize,
-    pub has_more: bool,
-    pub next_cursor: Option<String>,
-}
-
+pub(crate) use super::job_recovery::RecoveryReport;
 pub(crate) fn reconcile<R: ImportReceipts + ?Sized>(
     store: &dyn ImportRecoveryStore,
     receipts: &R,
     after: Option<&str>,
 ) -> Result<RecoveryReport> {
-    let jobs = store.candidates(after, PAGE_SIZE)?;
-    ensure!(
-        jobs.len() <= PAGE_SIZE
-            && jobs.windows(2).all(|pair| pair[0].id < pair[1].id)
-            && jobs
-                .first()
-                .is_none_or(|job| after.is_none_or(|after| job.id.as_str() > after)),
-        "Invalid recovery page"
-    );
-    let mut report = RecoveryReport {
-        examined: jobs.len(),
-        has_more: jobs.len() == PAGE_SIZE,
-        next_cursor: jobs.last().map(|job| job.id.clone()),
-        ..Default::default()
-    };
-    ensure!(
-        jobs.iter().all(|job| job.kind == IMPORT_JOB_KIND
-            && ["running", "interrupted"].contains(&job.state.as_str())),
-        "Unexpected recovery candidate"
-    );
-    for job in jobs {
-        let receipt = input_for_job(&job).and_then(|input| receipts.committed(&input));
-        let outcome = match receipt {
-            Ok(true) => ImportRecoveryOutcome::Published,
-            Ok(false) if job.cancel_requested => ImportRecoveryOutcome::Cancelled,
-            Ok(false) if job.state == "running" => ImportRecoveryOutcome::Interrupted,
-            Ok(false) => continue,
-            Err(_) => {
-                report.unresolved += 1;
-                if job.state == "interrupted" {
-                    continue;
-                }
-                ImportRecoveryOutcome::Unresolved
-            }
-        };
-        if !store.resolve(&job, outcome)? {
-            report.stale += 1;
-            continue;
-        }
-        match outcome {
-            ImportRecoveryOutcome::Published => report.published += 1,
-            ImportRecoveryOutcome::Cancelled => report.cancelled += 1,
-            ImportRecoveryOutcome::Interrupted | ImportRecoveryOutcome::Unresolved => {
-                report.interrupted += 1
-            }
-        }
-    }
-    Ok(report)
+    super::job_recovery::reconcile(
+        store,
+        IMPORT_JOB_KIND,
+        |job| input_for_job(job).and_then(|input| receipts.committed(&input)),
+        after,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::import_ports::ImportRecoveryOutcome;
     use crate::{
         application::import_ports::ImportInput,
         domain::jobs::{Job, JobDefinition, JobResource},

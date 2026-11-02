@@ -1,7 +1,8 @@
 //! Infrastructure shared by the engine and desktop host. Commands and arguments
 //! come from trusted host code; this crate never interprets renderer requests.
 //!
-//! Each child owns an isolated scope (Unix process group / Windows Job Object).
+//! Ordinary children own an isolated scope (Unix group / Windows Job Object).
+//! Explicit Unix contained children share a scope retained by their outer owner.
 //! Returning from that scope stops remaining descendants, even after the direct
 //! child exits. This is lifecycle management, not a sandbox: Unix children must
 //! not deliberately escape their group via setsid/setpgid.
@@ -29,6 +30,16 @@ impl ProcessTree {
             inner: platform::Process::spawn(command)?,
         })
     }
+    /// Spawn within an already owned Unix process group. The caller must retain
+    /// its outer ProcessTree until this child and the native publisher exit.
+    /// This handle stops/reaps the direct child; the outer owner stops the group.
+    #[cfg(unix)]
+    pub fn spawn_contained(command: &mut Command) -> io::Result<Self> {
+        Ok(Self {
+            inner: platform::Process::spawn_contained(command)?,
+        })
+    }
+
     pub fn id(&self) -> u32 {
         self.inner.child.id()
     }

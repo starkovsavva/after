@@ -8,6 +8,7 @@ pub(super) struct Process {
     pub child: Child,
     group: Option<libc::pid_t>,
     status: Option<ExitStatus>,
+    contained: bool,
 }
 
 impl Process {
@@ -25,14 +26,36 @@ impl Process {
             child,
             group: Some(group),
             status: None,
+            contained: false,
+        })
+    }
+
+    // The caller owns an outer ProcessTree whose group contains this process.
+    // Only the direct child is signalled/reaped here; the outer owner cleans
+    // the entire group after its native publisher exits, including on SIGKILL.
+    pub fn spawn_contained(command: &mut Command) -> io::Result<Self> {
+        let group = unsafe { libc::getpgrp() };
+        let child = command.process_group(group).spawn()?;
+        Ok(Self {
+            child,
+            group: None,
+            status: None,
+            contained: true,
         })
     }
 
     fn signal(&self, signal: libc::c_int) -> io::Result<()> {
-        let Some(group) = self.group else {
+        if self.status.is_some() {
+            return Ok(());
+        }
+        let target = if let Some(group) = self.group {
+            -group
+        } else if self.contained {
+            self.child.id() as libc::pid_t
+        } else {
             return Ok(());
         };
-        if unsafe { libc::kill(-group, signal) } == 0 {
+        if unsafe { libc::kill(target, signal) } == 0 {
             return Ok(());
         }
         let error = io::Error::last_os_error();
@@ -83,5 +106,20 @@ impl Process {
         drop(self.child.stdin.take());
         self.observe_exit(false)?
             .ok_or_else(|| io::Error::other("Child exit was not observed"))
+    }
+}
+
+#[cfg(test)]
+mod contained_tests {
+    use super::*;
+    #[test]
+    fn contained_child_uses_the_callers_group_and_does_not_signal_its_owner() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exec sleep 20"]).process_group(0);
+        let mut child = Process::spawn_contained(&mut command).unwrap();
+        let group = unsafe { libc::getpgid(child.child.id() as libc::pid_t) };
+        assert_eq!(group, unsafe { libc::getpgrp() });
+        child.kill().unwrap();
+        assert!(!child.wait().unwrap().success());
     }
 }

@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use posle_core::{ai, media, models, search, storage, worker};
 use serde_json::{json, Value};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -169,8 +169,21 @@ fn main() {
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
         return;
     }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--posle-speech-queue")) {
+        let args: Vec<_> = std::env::args_os().skip(2).collect();
+        let result = if args.len()==4 && args[0]=="--root" && args[2]=="--backend" {
+            posle_core::desktop_speech_service::run_stdio(Path::new(&args[1]),Path::new(&args[3]),io::stdin(),io::stdout())
+        } else {Err(anyhow::anyhow!("Usage: --posle-speech-queue --root /owned/root --backend /backend"))};
+        if let Err(error)=result {eprintln!("{error:#}");std::process::exit(1);}
+        return;
+    }
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--posle-speech-job")) {
         let args: Vec<_> = std::env::args_os().skip(2).collect();
+        let scope = if args.len()==4 && args[0]=="--root" && args[2]=="--backend" {
+            match posle_core::speech_job::native_scope(Path::new(&args[1])) {
+                Ok(scope)=>scope,Err(error)=>{eprintln!("{error:#}");std::process::exit(1);}
+            }
+        } else {None};
         let result = (|| -> Result<Value> {
             if args.len() != 4 || args[0] != "--root" || args[2] != "--backend" {
                 bail!("Usage: --posle-speech-job --root /owned/root --backend /backend < request.json");
@@ -182,10 +195,13 @@ fn main() {
             let work = serde_json::from_value(raw)?;
             Ok(json!({"receipt":posle_core::speech_job::execute(Path::new(&args[1]),Path::new(&args[3]),&work)?}))
         })();
-        match result {
-            Ok(value) => println!("{}",json!({"event":"done","speechJob":value})),
-            Err(error) => { eprintln!("{error:#}"); std::process::exit(1); }
-        }
+        let failed = match result {
+            Ok(value) => {println!("{}",json!({"event":"done","speechJob":value}));false},
+            Err(error) => {eprintln!("{error:#}");true}
+        };
+        let _=io::stdout().flush(); let _=io::stderr().flush();
+        drop(scope);
+        if failed {std::process::exit(1);}
         return;
     }
     if std::env::args_os().nth(1).as_deref()
