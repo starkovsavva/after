@@ -91,8 +91,8 @@ from its caller. It never chooses a distribution or loads Python. Linux syntheti
 fixtures verify ELF-style inventory names and also compile/run the existing
 macOS venv/descriptor contracts; they do not prove a working Linux speech runtime. Linux composition now supplies
 a separate pinned x86_64 GNU policy and the verification CLI. An opt-in real
-archive fixture verifies CPython/SSL and isolated venv execution; installer and
-queued speech execution remain pending.
+archive fixture verifies CPython/SSL and isolated venv execution; a generation installer now owns verified staging and atomic activation through
+`application/runtime_install.rs`. Third-party dependencies and queued speech execution remain pending.
 
 The established crate paths `python_runtime` and `embedded_speech` are re-exported
 for compatibility. The `posle_request`, `posle_free_string`, `posle_speech_run` and

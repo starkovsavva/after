@@ -36,7 +36,8 @@ and Tauri IPC coverage. Actual macOS loader/SDK behavior needs macOS CI/native
 verification; Linux execution is not evidence for those behaviors.
 
 Linux now has a [reviewed pinned distribution and real archive/venv fixture](linux-pinned-cpython.md).
-It still needs an installer with verification before execution and rollback, an isolated execution adapter,
+A [generation installer](linux-runtime-generations.md) now verifies before execution
+and preserves previous generations. It still needs an isolated speech execution adapter,
 backend-specific speech dependencies, and real queued ASR integration. Windows
 needs its own secure file adapter; Unix code is not a Windows verifier. No
 capability or installation-success claim is enabled by this extraction.

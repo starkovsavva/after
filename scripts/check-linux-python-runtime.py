@@ -73,6 +73,41 @@ def main():
         if json.loads(probe.stdout) != {'base': str(base), 'venv': str(venv)}:
             raise RuntimeError('Venv escaped the pinned distribution')
         verify()
+        library = root / 'disposable-library с пробелами'
+        library.mkdir(mode=0o700)
+        def install(arguments, expected=True):
+            result = subprocess.run([str(engine), '--posle-install-python-runtime', '--root', str(library), *arguments],
+                                    env=runtime_env, capture_output=True, text=True, timeout=180)
+            if (result.returncode == 0) != expected:
+                raise RuntimeError('Native installation returned an unexpected result: ' + result.stderr[-2000:])
+            return json.loads(result.stdout) if expected else None
+        first = install(['--archive', str(archive.resolve())])
+        active = library / 'runtime/linux-python/active.json'
+        first_bytes = active.read_bytes()
+        if json.loads(first_bytes) != first:
+            raise RuntimeError('Installation receipt does not match atomic activation')
+        abandoned = active.parent / 'abandoned-fixture'
+        abandoned.mkdir(mode=0o700)
+        (abandoned / 'keep').write_bytes(b'unreferenced generation; preserve for inspection')
+        bad_archive = root / 'invalid-runtime.tar.gz'
+        bad_archive.write_bytes(b'not a trusted CPython archive')
+        before = set(active.parent.iterdir())
+        install(['--archive', str(bad_archive)], expected=False)
+        if active.read_bytes() != first_bytes or set(active.parent.iterdir()) != before:
+            raise RuntimeError('Failed installation changed the active runtime or leaked its candidate')
+        second = install(['--download'] if args.download else ['--archive', str(archive.resolve())])
+        if second['generation'] == first['generation'] or json.loads(active.read_bytes()) != second:
+            raise RuntimeError('Replacement did not publish a separate generation')
+        if (abandoned / 'keep').read_bytes() != b'unreferenced generation; preserve for inspection':
+            raise RuntimeError('Installation altered an unrelated interrupted candidate')
+        if not Path(first['interpreter']).is_file():
+            raise RuntimeError('Replacement removed the previous generation')
+        # Check the published environment, not only the pre-publication probe.
+        for installed in (first, second):
+            subprocess.run([installed['interpreter'], '-B', '-I', '-c', 'import ssl,sys; assert sys.version.split()[0] == "3.12.16"'],
+                           env=runtime_env, capture_output=True, text=True, check=True, timeout=15)
+        if (library / 'runtime/ready-v2').exists():
+            raise RuntimeError('CPython installation must not claim speech readiness')
         # An on-disk policy cannot authorize extra code, and byte tampering is
         # rejected even when the expected file's size stays exactly the same.
         injected = base / 'python-runtime.json'
@@ -87,7 +122,8 @@ def main():
         print(json.dumps({'passed': True, 'target': policy['target'], 'version': policy['version'],
                           'archiveAndTreeVerifiedBeforeExecution': True, 'isolatedVenv': True,
                           'tamperRejected': True, 'systemPythonUsedAsRuntime': False,
-                          'speechDependenciesInstalled': False}, indent=2))
+                          'speechDependenciesInstalled': False, 'nativeGenerationInstall': True,
+                          'failedInstallPreservedActive': True, 'previousGenerationPreserved': True}, indent=2))
 
 
 if __name__ == '__main__':

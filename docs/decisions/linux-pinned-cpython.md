@@ -40,6 +40,7 @@ Its child environment omits loader/Python overrides and credentials.
 
 This passed on Arch with the actual artifact. The same fixture is configured for
 Ubuntu CI; no remote CI result is claimed. No speech dependencies/models or
-personal data are used. This is not an installer, venv-package integrity proof,
-embedded ABI test or ASR capability. A transactional installer with rollback,
-verified execution adapter and queued speech integration are still required.
+personal data are used. A [generation installer](linux-runtime-generations.md) now uses this verifier and
+is exercised by the same real archive fixture. This is not venv-package integrity
+proof, an embedded ABI test or ASR capability. Verified speech execution, dependencies
+and queued integration are still required.

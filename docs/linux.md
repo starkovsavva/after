@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 649 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
+и helper), 655 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 18 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -164,7 +164,8 @@ cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rus
 
 21 synthetic contract покрывает ELF-style inventory и существующий macOS
 venv/descriptor binding. Linux x86_64 GNU CPython 3.12.16 теперь закреплён отдельным manifest и проверяется
-через native verifier. Installer, speech dependencies и сквозная очередь ASR ещё нужны.
+через native verifier. Native generation installer теперь создаёт и атомарно активирует CPython/venv;
+speech dependencies и сквозная очередь ASR ещё нужны.
 [Граница verifier/loader](decisions/runtime-inventory-boundary.md).
 
 ## Настоящий закреплённый CPython
@@ -186,3 +187,28 @@ Fixture сначала проверяет архив и дерево, затем
 загружаются. Реальный `--download` путь проверен на Arch; CI настроен, удалённый
 прогон пока не подтверждён. Остальные Linux targets пока не имеют pinned policy.
 [Происхождение и ограничения](decisions/linux-pinned-cpython.md).
+
+## Установка CPython и venv отдельным поколением
+
+Нативный установщик работает с уже существующим owned absolute root. Для проверки
+используйте disposable library; полноценная speech-ready установка ещё не подключена.
+
+```sh
+AFTER_RUNTIME_TEST_ROOT="$(mktemp -d /tmp/after-runtime-install.XXXXXX)"
+.build/rust/debug/posle-engine --posle-install-python-runtime --root "$AFTER_RUNTIME_TEST_ROOT" --archive /absolute/path/python.tar.gz
+# Явный сетевой вариант вместо --archive:
+.build/rust/debug/posle-engine --posle-install-python-runtime --root "$AFTER_RUNTIME_TEST_ROOT" --download
+```
+
+`runtime/linux-python/<generation>/` содержит проверенный readonly base и отдельный
+venv, созданный сразу по окончательному пути. После проверки exact version/prefix
+и SSL установщик sync-ит поколение и атомарно заменяет `active.json`. До публикации
+ошибки удаляют только собственный candidate; previous generation остаётся доступным.
+При неопределённом подтверждении после rename сохраняются оба поколения. Фиксированный
+`.install.lock` удерживается до завершения; никогда не удаляйте его для разблокировки.
+Прежние и неизвестные interrupted generations автоматически не очищаются.
+
+`check-linux-python-runtime.py --download` проверяет и Rust HTTPS installer, и local
+archive install, отказ повреждённого архива, сохранение предыдущего executable и
+повторную активацию. Установщик не пишет `ready-v2`, не ставит pip/packages/models
+и не означает готовность ASR. [Протокол установки](decisions/linux-runtime-generations.md).

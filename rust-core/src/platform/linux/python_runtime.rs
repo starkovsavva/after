@@ -1,9 +1,21 @@
-//! Pinned Linux CPython inventory boundary. This does not execute Python or
-//! attest venv dependencies, native ABI compatibility, models or ASR readiness.
+//! Pinned Linux CPython composition and generation installation. This does not
+//! attest third-party packages, embedded ABI compatibility, models or ASR readiness.
+pub use super::runtime_install::{install, InstalledRuntime};
 use crate::infrastructure::runtime_tree::{Layout, Policy, Tree};
 use anyhow::{bail, Context, Result};
+use serde::Deserialize;
 use std::{path::Path, sync::OnceLock};
 
+#[derive(Deserialize)]
+pub(super) struct Artifact {
+    #[serde(flatten)]
+    pub policy: Policy,
+    pub archive_url: String,
+    pub archive_sha256: String,
+    pub archive_size: u64,
+}
+
+pub const INSTALL_MODE: &str = "--posle-install-python-runtime";
 pub const VERIFY_MODE: &str = "--posle-verify-python-runtime";
 const LAYOUT: Layout<'static> = Layout {
     required_files: &[
@@ -15,8 +27,8 @@ const LAYOUT: Layout<'static> = Layout {
 };
 
 #[cfg(all(target_arch = "x86_64", target_env = "gnu"))]
-fn policy() -> Result<&'static Policy> {
-    static POLICY: OnceLock<std::result::Result<Policy, String>> = OnceLock::new();
+pub(super) fn artifact() -> Result<&'static Artifact> {
+    static POLICY: OnceLock<std::result::Result<Artifact, String>> = OnceLock::new();
     match POLICY.get_or_init(|| {
         serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -29,14 +41,14 @@ fn policy() -> Result<&'static Policy> {
     }
 }
 #[cfg(not(all(target_arch = "x86_64", target_env = "gnu")))]
-fn policy() -> Result<&'static Policy> {
+pub(super) fn artifact() -> Result<&'static Artifact> {
     bail!("No pinned CPython distribution is available for this Linux target.")
 }
 
 /// Used before executing even venv/ensurepip. Only the compiled inventory is a
 /// trust root; an on-disk manifest cannot authorize different runtime contents.
 pub fn verify_distribution(base: &Path) -> Result<()> {
-    Tree::verify(base, policy()?, LAYOUT)
+    Tree::verify(base, &artifact()?.policy, LAYOUT)
         .context("Linux CPython inventory verification failed")?
         .recheck()
 }
@@ -47,7 +59,7 @@ mod tests {
     #[test]
     #[cfg(all(target_arch = "x86_64", target_env = "gnu"))]
     fn compiled_policy_pins_the_linux_layout_and_exact_version() {
-        let policy = policy().unwrap();
+        let policy = &artifact().unwrap().policy;
         assert_eq!(policy.version, "3.12.16");
         assert_eq!(
             policy.directory,

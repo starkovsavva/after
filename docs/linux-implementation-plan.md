@@ -140,7 +140,8 @@ Mac/Windows проверки остаются доступными. Нативн
 `infrastructure/runtime_tree.rs`; macOS сохраняет выбор pinned policy/layout и loader.
 На Linux выполняются ELF-style inventory и synthetic macOS venv contracts.
 Linux x86_64 GNU CPython закреплён и проверен на настоящем архиве/изолированном venv;
-installer и ASR ещё не подключены; [ADR](decisions/runtime-inventory-boundary.md).
+generation installer CPython/venv реализован с atomic activation и сохранением previous generation;
+speech dependencies, worker и ASR ещё не подключены; [ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,
 requirements, manifests, managed model host.
