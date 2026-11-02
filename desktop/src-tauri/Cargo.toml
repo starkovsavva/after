@@ -18,6 +18,7 @@ custom-protocol = ["tauri/custom-protocol"]
 linux-audio-fixture = []
 
 [build-dependencies]
+serde_json = "1"
 tauri-build = { version = "=2.7.4", features = [] }
 sha2 = "0.10"
 

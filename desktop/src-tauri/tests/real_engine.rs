@@ -899,3 +899,17 @@ fn paged_import_history_reaches_old_pending_jobs_without_truncating_legacy_list(
     assert_eq!(meeting.id,oldest.object_id);
     assert_eq!(std::fs::read(source).unwrap(),b"original bytes");
 }
+
+#[test]
+#[ignore = "Requires a staged canonical engine and staged speech source"]
+fn native_bridge_verifies_staged_speech_source_without_claiming_runtime_readiness() {
+    let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+    let root = tempfile::tempdir().unwrap();
+    let backend = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/speech-backend");
+    let bridge = LibraryBridge::for_development_with_backend(engine,root.path().join("library"),backend.clone()).unwrap();
+    let grant = bridge.speech_backend().unwrap();
+    assert_eq!(grant.directory(),backend);
+    grant.recheck().unwrap();
+    assert!(bridge.workspace().unwrap().capabilities.library);
+    assert!(!root.path().join("library/runtime").exists());
+}

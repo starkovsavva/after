@@ -1,0 +1,9 @@
+[
+  "cloud_speech.py",
+  "embedded_bridge.py",
+  "engine.py",
+  "job_settings.py",
+  "media_runtime.py",
+  "models.py",
+  "short_speech.py"
+]

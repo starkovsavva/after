@@ -323,3 +323,12 @@ Native service `--posle-speech-queue --root /owned/root --backend /trusted/backe
 во внешний owned scope; проверка `check-linux-asr.py` покрывает реальную очередь
 и отмену native/SDK/descendant. Tauri UI пока не подключён.
 [Владение, протокол и intentional group termination](decisions/durable-speech-queue.md).
+
+
+Tauri теперь упаковывает 7 Python-модулей из `backend/desktop-speech-files.json`
+в `engine/speech-backend`. `stage-desktop-engine.py` обновляет engine и эти ресурсы;
+после изменения backend запускайте staging снова. Host build отказывает при stale/partial
+stage и закрепляет source hashes из checkout; release требует полный stage.
+Native `LibraryBridge.speech_backend()` проверяет состав, хеши и aliases и выдаёт
+удерживаемый source grant с recheck. Это не подтверждение runtime/model readiness.
+Linux WebView smoke также проверяет упакованные speech resources.

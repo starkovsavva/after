@@ -1,6 +1,7 @@
 //! Typed, bounded IPC to the canonical library. The webview never supplies a
 //! process, command-line argument, root directory, filename or engine operation.
 use crate::models::*;
+use crate::host_files::{is_link_or_reparse,ordinary_ancestors};
 use crate::worker_host::{ImportProgress, ImportWork, WorkerHost};
 use after_process_runtime::ProcessTree;
 use serde::de::DeserializeOwned;
@@ -29,6 +30,7 @@ const MAX_PARALLEL: usize = 4;
 #[derive(Clone)]
 pub struct LibraryBridge {
     engine: Engine,
+    backend: Option<crate::speech_resources::BackendResources>,
     root: PathBuf,
     running: Arc<AtomicUsize>,
 }
@@ -43,6 +45,13 @@ impl LibraryBridge {
     pub fn open_import_queue(&self) -> Result<crate::queue_connection::QueueConnection, HostError> {
         self.engine.verify()?;
         crate::queue_connection::QueueConnection::open(&self.engine.path, &self.root)
+    }
+
+    /// Native-only resource grant. This verifies source integrity, not runtime,
+    /// model readiness or permission to submit a renderer speech job.
+    pub fn speech_backend(&self) -> Result<crate::speech_resources::VerifiedBackend, HostError> {
+        self.engine.verify()?;
+        self.backend.as_ref().ok_or_else(||HostError::new("speech_unavailable","Speech resources are not configured."))?.verify()
     }
 
     pub(crate) fn data_root(&self) -> PathBuf {
@@ -61,6 +70,7 @@ impl LibraryBridge {
         };
         Ok(Self {
             engine,
+            backend: Some(crate::speech_resources::BackendResources::bundled(resource_dir.join("engine/speech-backend"))),
             root,
             running: Arc::new(AtomicUsize::new(0)),
         })
@@ -76,10 +86,19 @@ impl LibraryBridge {
                 path: engine,
                 digest: None,
             },
+            backend: None,
             root,
             running: Arc::new(AtomicUsize::new(0)),
         };
         bridge.engine.verify()?;
+        Ok(bridge)
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn for_development_with_backend(engine:PathBuf,root:PathBuf,backend:PathBuf)->Result<Self,HostError> {
+        let mut bridge=Self::for_development(engine,root)?;
+        bridge.backend=Some(crate::speech_resources::BackendResources::bundled(backend));
+        bridge.speech_backend()?;
         Ok(bridge)
     }
 
@@ -323,40 +342,6 @@ fn development_override(name: &str) -> Option<PathBuf> {
         let _ = name;
         None
     }
-}
-fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        return metadata.file_attributes() & 0x400 != 0; // FILE_ATTRIBUTE_REPARSE_POINT
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
-}
-fn ordinary_ancestors(path: &Path) -> Result<(), HostError> {
-    #[cfg(windows)]
-    {
-        for ancestor in path.ancestors() {
-            match fs::symlink_metadata(ancestor) {
-                Ok(metadata) if metadata.is_dir() && !is_link_or_reparse(&metadata) => (),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                _ => {
-                    return Err(HostError::new(
-                        "invalid_configuration",
-                        "The desktop location cannot contain links or reparse points.",
-                    ))
-                }
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    let _ = path;
-    Ok(())
 }
 fn prepare_root(root: &Path) -> Result<(), HostError> {
     if !root.is_absolute() {

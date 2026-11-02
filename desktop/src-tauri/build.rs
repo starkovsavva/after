@@ -30,6 +30,7 @@ fn main() {
     };
     println!("cargo:rustc-env=AFTER_ENGINE_NAME={name}");
     println!("cargo:rustc-env=AFTER_ENGINE_SHA256={digest}");
+    speech_backend();
     let attributes =
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "get_workspace",
@@ -106,5 +107,99 @@ fn verify_windows_engine(bytes: &[u8], target: &str) {
     assert!(
         characteristics & 2 != 0 && characteristics & 0x2000 == 0,
         "The staged engine must be an executable, not a DLL"
+    );
+}
+
+// Pin app-owned Python source from this checkout, never from an untrusted runtime
+// manifest. A stale/partial stage cannot silently change the bundled backend.
+fn speech_backend() {
+    let source = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("../../backend");
+    let catalog = source.join("desktop-speech-files.json");
+    println!("cargo:rerun-if-changed={}", catalog.display());
+    let names: Vec<String> =
+        serde_json::from_slice(&fs::read(catalog).expect("Read speech catalog"))
+            .expect("Speech catalog array");
+    assert!(
+        !names.is_empty() && names.len() <= 32,
+        "Invalid speech catalog"
+    );
+    let unique: std::collections::BTreeSet<_> = names.iter().collect();
+    assert_eq!(unique.len(), names.len(), "Duplicate speech module");
+    let stage = PathBuf::from("binaries/speech-backend");
+    println!("cargo:rerun-if-changed={}", stage.display());
+    let staged = match fs::symlink_metadata(&stage) {
+        Ok(meta) => {
+            assert!(
+                meta.is_dir() && !meta.file_type().is_symlink(),
+                "Speech stage must be an ordinary directory"
+            );
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            assert!(
+                env::var("PROFILE").as_deref() != Ok("release"),
+                "Release requires scripts/stage-desktop-engine.py to stage speech resources"
+            );
+            false
+        }
+        Err(error) => panic!("Cannot inspect speech stage: {error}"),
+    };
+    let mut inventory = Vec::new();
+    for name in &names {
+        assert!(
+            name.ends_with(".py")
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b'_' || b == b'.'),
+            "Invalid speech module name"
+        );
+        let original = source.join(name);
+        println!("cargo:rerun-if-changed={}", original.display());
+        let metadata = fs::symlink_metadata(&original).expect("Speech source metadata");
+        assert!(
+            metadata.is_file() && !metadata.file_type().is_symlink(),
+            "Speech source must be ordinary"
+        );
+        let bytes = fs::read(original).expect("Read speech source");
+        assert!(
+            !bytes.is_empty() && bytes.len() <= 1024 * 1024,
+            "Invalid speech source size"
+        );
+        if staged {
+            let path = stage.join(name);
+            let metadata = fs::symlink_metadata(&path)
+                .expect("Speech stage is incomplete; rerun scripts/stage-desktop-engine.py");
+            assert!(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "Speech stage contains an alias"
+            );
+            assert_eq!(
+                fs::read(path).expect("Read speech stage"),
+                bytes,
+                "Speech stage is stale; rerun scripts/stage-desktop-engine.py"
+            );
+        }
+        inventory.push(serde_json::json!({"name":name,"size":bytes.len(),"sha256":format!("{:x}",Sha256::digest(&bytes))}));
+    }
+    if staged {
+        let actual: std::collections::BTreeSet<_> = fs::read_dir(&stage)
+            .unwrap()
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .into_string()
+                    .expect("UTF-8 speech module")
+            })
+            .collect();
+        assert_eq!(
+            actual,
+            names.into_iter().collect(),
+            "Unexpected speech stage content; rerun scripts/stage-desktop-engine.py"
+        );
+    }
+    println!(
+        "cargo:rustc-env=AFTER_SPEECH_BACKEND_INVENTORY={}",
+        serde_json::to_string(&inventory).unwrap()
     );
 }

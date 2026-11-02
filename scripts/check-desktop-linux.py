@@ -51,10 +51,12 @@ def main():
                             pass  # The first engine call may still be committing.
                     if not ready:
                         time.sleep(0.1)
+                if (library / ".speech-backend-verified").read_bytes() != b"verified\n":
+                    raise RuntimeError("Bundled speech source verification was not confirmed")
                 # Root creation alone happens before the WebView exists. The
                 # workspace row is created by React -> IPC -> bundled engine.
                 result = {"passed": True, "platform": "linux", "app": str(app),
-                          "realWebView": True, "canonicalLibraryCreated": True,
+                          "realWebView": True, "canonicalLibraryCreated": True, "speechBackendResourcesVerified": True,
                           "personalLibraryUsed": False, "normalWindowCloseTested": False}
                 if args.receipt:
                     args.receipt.parent.mkdir(parents=True, exist_ok=True)

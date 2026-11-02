@@ -1,3 +1,5 @@
+mod host_files;
+pub mod speech_resources;
 pub mod bridge;
 pub mod worker_host;
 pub mod import_queue;
@@ -338,6 +340,11 @@ pub fn run() {
             let resource_dir = platform::resource_dir(app.path().resource_dir()?);
             let data_dir = app.path().app_local_data_dir()?;
             let bridge = LibraryBridge::bundled(&resource_dir, &data_dir)?;
+            #[cfg(all(debug_assertions, target_os = "linux"))]
+            if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--check-linux-smoke")) {
+                bridge.speech_backend()?.recheck()?;
+                std::fs::write(bridge.data_root().join(".speech-backend-verified"), b"verified\n")?;
+            }
             app.manage(std::sync::Arc::new(capture::Recorder::new(
                 bridge.data_root(), capture_platform::backend(),
             )));

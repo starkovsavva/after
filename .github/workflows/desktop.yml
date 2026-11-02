@@ -20,6 +20,10 @@ on:
       - 'backend/job_settings.py'
       - 'backend/test_job_settings.py'
       - 'backend/engine.py'
+      - 'backend/desktop-speech-files.json'
+      - 'backend/embedded_bridge.py'
+      - 'backend/cloud_speech.py'
+      - 'backend/short_speech.py'
       - 'backend/models.py'
       - 'scripts/*asr*'
       - 'backend/requirements-linux-cpu.txt'
@@ -96,6 +100,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts -p test_python_runtime_policy.py
           python3 -m unittest discover -s scripts -p test_asr_model_policy.py
+          python3 -m unittest discover -s scripts -p test_desktop_speech_staging.py
       - name: Real pinned Linux CPython and isolated venv
         if: runner.os == 'Linux'
         run: python3 scripts/check-linux-python-runtime.py --download
