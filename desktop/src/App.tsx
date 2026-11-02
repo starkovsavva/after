@@ -87,6 +87,7 @@ export default function App() {
   const [recordMode, setRecordMode] = useState<'microphone' | 'microphone_and_system'>('microphone_and_system');
   const [recording, setRecording] = useState<RecordingStatus | null>(null);
   const [recordingBusy, setRecordingBusy] = useState(false);
+  const [recordingStarting, setRecordingStarting] = useState(false);
   const [recordingMessage, setRecordingMessage] = useState<string | null>(null);
   const [recoverable, setRecoverable] = useState<RecoverableRecording[]>([]);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
@@ -182,9 +183,11 @@ export default function App() {
     void api.recordingStatus().then(status => { if (active) setRecording(status.sessionId ? status : null); })
       .catch(() => { if (active) setRecordingMessage(copyRef.current.recordingFailed); })
       .finally(() => { if (active) setRecordingSyncing(false); });
-    void refreshRecovery();
     return () => { active = false; };
-  }, [workspace?.capabilities.recording, refreshRecovery]);
+  }, [workspace?.capabilities.recording]);
+  useEffect(() => {
+    if (!importing && !recordingBusy && (workspace?.capabilities.recordingRecovery || workspace?.capabilities.recording)) void refreshRecovery();
+  }, [workspace?.capabilities.recordingRecovery, workspace?.capabilities.recording, importing, recordingBusy, refreshRecovery]);
   useEffect(() => {
     if (!workspace?.capabilities.recording || recordingBusy || recordingSyncing) return;
     let active = true;
@@ -298,14 +301,14 @@ export default function App() {
   });
   const startRecording = async () => {
     if (recordingBusy || recordingActive) return;
-    setRecordingBusy(true); setRecordingMessage(null);
+    setRecordingStarting(true); setRecordingBusy(true); setRecordingMessage(null);
     try {
       const status = await api.startRecording(recordMode);
       setRecording(status); setRecordDialog(false);
     } catch {
       try { const status = await api.recordingStatus(); setRecording(status.sessionId ? status : null); } catch { /* The original error is shown below. */ }
       setRecordingMessage(t.recordingFailed); setRecordDialog(false); await refreshRecovery();
-    } finally { setRecordingBusy(false); }
+    } finally { setRecordingStarting(false); setRecordingBusy(false); }
   };
   const stopRecording = async () => {
     if (recordingBusy || !recordingActive) return;
@@ -329,7 +332,7 @@ export default function App() {
     try {
       await api.recoverRecording(sessionId); setRecoveryOpen(false);
       await loadWorkspace(); await refreshRecovery(); setRecordingMessage(t.recordingSavedInterrupted);
-    } catch { setRecordingMessage(t.recordingFailed); await loadWorkspace(); await refreshRecovery(); }
+    } catch { setRecordingMessage(t.recoveryFailed); await loadWorkspace(); await refreshRecovery(); }
     finally { setRecordingBusy(false); }
   };
   const clearEditor = () => { setDraft(null); setOriginal(null); setSaveError(null); };
@@ -407,8 +410,8 @@ export default function App() {
     <header className="titlebar">
       <div className="brand"><img src="/logo.svg" alt=""/><span>{t.appName}</span><span className="demo-label" title={demoMode ? t.demoHint : t.previewHint}>{demoMode ? t.demo : t.preview}</span></div>
       <div className="titlebar-context"><Icon name="folder" size={16}/><select aria-label={t.activeFolder} value={folderId || ''} onChange={event => chooseFolder(event.target.value || undefined)} disabled={!workspace || saving}>{folderOptions}</select></div>
-      {workspace?.capabilities.import && <button className="button" onClick={() => setHistoryOpen(true)} disabled={importing || saving}>{t.importHistory}</button>}
-      {workspace?.capabilities.import && <button className="button" onClick={importMeeting} disabled={importing || saving} title={t.importMeeting}><Icon name="import" size={16}/>{t.importMeeting}</button>}
+      {workspace?.capabilities.import && <button className="button" onClick={() => setHistoryOpen(true)} disabled={importing || saving || recordingBusy || recordingSyncing}>{t.importHistory}</button>}
+      {workspace?.capabilities.import && <button className="button" onClick={importMeeting} disabled={importing || saving || recordingBusy || recordingSyncing} title={t.importMeeting}><Icon name="import" size={16}/>{t.importMeeting}</button>}
       {workspace?.capabilities.recording && (recordingActive
         ? <button className="button primary" onClick={() => void stopRecording()} disabled={recordingBusy || recordingSyncing}>{t.stopRecording} · {formatDuration((recording?.elapsedMs || 0) / 1000)}</button>
         : <button className="button primary" onClick={() => setRecordDialog(true)} disabled={recordingBusy || recordingSyncing || importing}>{t.record}</button>)}
@@ -417,7 +420,7 @@ export default function App() {
     </header>
     {(recordingActive || recordingBusy || recordingMessage || recoverable.length > 0) && <div className="recording-banner" role="status">
       {recordingActive && <><strong>{recording?.phase === 'starting' ? t.startingRecording : recording?.phase === 'recording' ? t.recording : t.recordingStopped} · {formatDuration((recording?.elapsedMs || 0) / 1000)}</strong>{recording?.phase === 'interrupted' && <span>{t.recordingInterrupted}</span>}</>}
-      {recordingBusy && <span>{recordingActive ? t.savingRecording : t.startingRecording}</span>}
+      {recordingBusy && <span>{recordingStarting ? t.startingRecording : t.savingRecording}</span>}
       {recordingMessage && <span>{recordingMessage}</span>}
       {recoverable.length > 0 && !recordingBusy && <button className="text-button" onClick={() => setRecoveryOpen(true)}>{t.recoverRecordings} ({recoverable.length})</button>}
     </div>}

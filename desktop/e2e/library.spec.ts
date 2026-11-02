@@ -344,3 +344,36 @@ test('import history loads older pages, retains rows after a page error and resu
   await history.getByRole('listitem').last().getByRole('button', { name: 'Resume import', exact: true }).click();
   await expect(page.getByRole('button', { name: /Old import resumed/ })).toBeVisible();
 });
+
+test('saved capture recovery is available without a physical recording backend', async ({ page }) => {
+  await page.addInitScript(() => {
+    let recovered = false;
+    let maintenanceBusy = false;
+    const sessionId = '77777777-7777-4777-8777-777777777777';
+    const meeting = () => ({ id: sessionId, title: 'Recovered capture', startedAt: null, durationSeconds: null, folderId: null, hasTranscript: false, hasSummary: false });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke: async (command: string, args: Record<string, unknown>) => {
+      if (command === 'get_workspace') return { folders: [], notes: [], meetings: recovered ? [meeting()] : [], capabilities: { library: true, import: true, recording: false, recordingRecovery: true, calendar: false, assistant: false, cards: false, tasks: false } };
+      if (command === 'import_status') return { phase: 'idle', operationId: null, controlId: null, copiedBytes: 0, totalBytes: 0, progress: null, cancelRequested: false };
+      if (command === 'import_history' || command === 'recoverable_recordings') {
+        if (maintenanceBusy) throw { code: 'busy' };
+        maintenanceBusy = true; await new Promise(resolve => setTimeout(resolve, 30)); maintenanceBusy = false;
+        return command === 'import_history' ? { jobs: [], total: 0, hasMore: false, nextCursor: null } : recovered ? [] : [{ sessionId, bytes: 1048576 }];
+      }
+      if (command === 'recover_recording') {
+        if (args.sessionId !== sessionId || Object.keys(args).length !== 1) throw { code: 'invalid_request' };
+        await new Promise(resolve => setTimeout(resolve, 200)); recovered = true; return { meeting: meeting(), interrupted: true };
+      }
+      if (command === 'recording_status' || command === 'start_recording') throw { code: 'unsupported_platform' };
+      throw { code: 'unsupported_operation' };
+    } } });
+  });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Record meeting', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Recover recordings (1)', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Recover recordings', exact: true });
+  await dialog.getByRole('button', { name: 'Recover', exact: true }).click();
+  await expect(page.getByText('Saving recording…', { exact: true })).toBeVisible();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('button', { name: /Recovered capture/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Recover recordings (1)', exact: true })).toHaveCount(0);
+});

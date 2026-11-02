@@ -4,6 +4,7 @@ pub mod import_queue;
 pub mod queue_connection;
 mod process_worker;
 mod queued_import;
+mod recording_import;
 pub mod import_history;
 mod imports;
 mod capture;
@@ -166,18 +167,19 @@ async fn stop_recording(
     state: tauri::State<'_, Arc<capture::Recorder>>,
     bridge: tauri::State<'_, LibraryBridge>,
     gate: tauri::State<'_, Arc<RecordingGate>>,
+    imports: tauri::State<'_, Arc<imports::Imports>>,
     title: String,
 ) -> Result<SavedRecording, HostError> {
     let recorder = state.inner().clone();
     let bridge = bridge.inner().clone();
+    let imports = imports.inner().clone();
     let permit = RecordingPermit::acquire(gate.inner().clone())?;
     background(move || {
         let _permit = permit;
-        let completed = recorder.stop().map_err(capture_error)?;
-        let meeting = bridge.import_meeting(&completed.path, Some(&title))?;
-        if let Some(id) = &completed.status.session_id {
-            let _ = recorder.mark_imported(id);
-        }
+        // Stop capture even if queue admission later fails; keep its source in recovery.
+        let mut completed = recorder.stop().map_err(capture_error)?;
+        let reservation=imports.reserve()?;
+        let meeting=recording_import::save(&bridge,&mut completed,reservation,Some(title),false)?;
         Ok(SavedRecording {
             meeting,
             interrupted: completed.status.phase == "interrupted",
@@ -188,29 +190,39 @@ async fn stop_recording(
 
 #[tauri::command]
 async fn recoverable_recordings(
-    state: tauri::State<'_, std::sync::Arc<capture::Recorder>>,
+    state: tauri::State<'_, Arc<capture::Recorder>>,
+    bridge: tauri::State<'_, LibraryBridge>,
+    imports: tauri::State<'_, Arc<imports::Imports>>,
 ) -> Result<Vec<capture::RecoverableRecording>, HostError> {
-    let recorder = state.inner().clone();
-    background(move || recorder.recoverable().map_err(capture_error)).await
+    let recorder=state.inner().clone(); let bridge=bridge.inner().clone();
+    let reservation=imports.reserve()?;
+    background(move || {
+        let _reservation=reservation;
+        let candidates=recorder.recoverable().map_err(capture_error)?;
+        if candidates.is_empty() { return Ok(candidates); }
+        let queue=bridge.open_import_queue()?;
+        Ok(candidates.into_iter().filter(|entry| {
+            let Ok(capture)=recorder.pending(entry.session_id.clone()) else { return true; };
+            !matches!(recording_import::reconcile(&bridge,&queue,&capture),Ok(true))
+        }).collect())
+    }).await
 }
-
 #[tauri::command]
 async fn recover_recording(
     state: tauri::State<'_, Arc<capture::Recorder>>,
     bridge: tauri::State<'_, LibraryBridge>,
     gate: tauri::State<'_, Arc<RecordingGate>>,
+    imports: tauri::State<'_, Arc<imports::Imports>>,
     session_id: String,
 ) -> Result<SavedRecording, HostError> {
     let recorder = state.inner().clone();
     let bridge = bridge.inner().clone();
+    let reservation=imports.reserve()?;
     let permit = RecordingPermit::acquire(gate.inner().clone())?;
     background(move || {
         let _permit = permit;
-        let completed = recorder
-            .recover(session_id.clone())
-            .map_err(capture_error)?;
-        let meeting = bridge.import_meeting(&completed.path, None)?;
-        let _ = recorder.mark_imported(&session_id);
+        let mut completed=recorder.pending(session_id).map_err(capture_error)?;
+        let meeting=recording_import::save(&bridge,&mut completed,reservation,None,true)?;
         Ok(SavedRecording {
             meeting,
             interrupted: true,
@@ -420,8 +432,11 @@ mod ipc_tests {
         .map(|body| body.deserialize::<Value>().unwrap())
     }
     fn application(bridge: LibraryBridge) -> tauri::App<MockRuntime> {
+        let recorder=Arc::new(capture::Recorder::new(bridge.data_root()));
         library_commands(mock_builder())
             .manage(bridge)
+            .manage(recorder)
+            .manage(Arc::new(RecordingGate(AtomicBool::new(false))))
             .manage(Arc::new(imports::Imports::default()))
             .build(application_context())
             .unwrap()
@@ -563,6 +578,54 @@ mod ipc_tests {
         assert_eq!(workspace["notes"][0]["title"], "Edited");
         assert_eq!(workspace["notes"][0]["revision"], 2);
         assert!(fixture.path().join("data/core.sqlite").is_file());
+        // No device: synthesize a private capture and exercise the actual
+        // recovery command, durable queue, receipt gap and late local ack.
+        fn captured_wav() -> Vec<u8> {
+            let mut bytes=vec![0u8;52];
+            bytes[0..4].copy_from_slice(b"RIFF"); bytes[4..8].copy_from_slice(&44u32.to_le_bytes());
+            bytes[8..16].copy_from_slice(b"WAVEfmt "); bytes[16..20].copy_from_slice(&16u32.to_le_bytes());
+            bytes[20..22].copy_from_slice(&1u16.to_le_bytes()); bytes[22..24].copy_from_slice(&1u16.to_le_bytes());
+            bytes[24..28].copy_from_slice(&48000u32.to_le_bytes()); bytes[28..32].copy_from_slice(&96000u32.to_le_bytes());
+            bytes[32..34].copy_from_slice(&2u16.to_le_bytes()); bytes[34..36].copy_from_slice(&16u16.to_le_bytes());
+            bytes[36..40].copy_from_slice(b"data"); bytes[40..44].copy_from_slice(&8u32.to_le_bytes()); bytes
+        }
+        let capture_id=uuid::Uuid::new_v4().to_string();
+        let capture_dir=fixture.path().join("data/captures").join(&capture_id);
+        std::fs::create_dir_all(&capture_dir).unwrap();
+        std::fs::write(capture_dir.join("source.wav"),captured_wav()).unwrap();
+        let recovered=request(&main,"recover_recording",json!({"sessionId":capture_id}),local_origin()).unwrap();
+        assert_eq!(recovered["meeting"]["id"],capture_id); assert_eq!(recovered["interrupted"],true);
+        assert_eq!(std::fs::read(capture_dir.join("source.wav")).unwrap(),captured_wav());
+        assert!(capture_dir.join("imported").is_file());
+        std::fs::remove_file(capture_dir.join("imported")).unwrap();
+        std::fs::remove_file(capture_dir.join("source.wav")).unwrap();
+        let again=request(&main,"recover_recording",json!({"sessionId":capture_id}),local_origin()).unwrap();
+        assert_eq!(again["meeting"]["id"],capture_id);
+        let recording_history=request(&main,"import_history",json!({}),local_origin()).unwrap();
+        assert_eq!(recording_history["total"],1);
+        assert_eq!(recording_history["jobs"][0]["attempt"],1);
+        assert!(!recording_history.to_string().contains("attemptToken"));
+        // A capture resumed from generic job history receives its local ack
+        // on listing, without starting another import or repairing its source.
+        let late_id=uuid::Uuid::new_v4().to_string();
+        let late_dir=fixture.path().join("data/captures").join(&late_id);
+        std::fs::create_dir_all(&late_dir).unwrap();
+        std::fs::write(late_dir.join("source.wav"),captured_wav()).unwrap();
+        {
+            use crate::import_queue::{ImportInput,ImportQueue,QueueCommand};
+            let bridge=app.state::<LibraryBridge>(); let queue=bridge.open_import_queue().unwrap();
+            let work=crate::worker_host::ImportWork { operation_id:late_id.clone(),attempt_token:uuid::Uuid::new_v4().to_string(),source:late_dir.join("source.wav"),title:None };
+            let job=queue.execute(QueueCommand::Enqueue { input:ImportInput::from(&work) }).unwrap().job.unwrap();
+            queue.execute(QueueCommand::Claim { job_id:Some(job.id.clone()) }).unwrap(); drop(queue);
+            request(&main,"resume_import",json!({"jobId":job.id,"expectedAttempt":1}),local_origin()).unwrap();
+        }
+        assert!(!late_dir.join("imported").exists());
+        let pending=request(&main,"recoverable_recordings",json!({}),local_origin()).unwrap();
+        assert!(pending.as_array().unwrap().is_empty());
+        assert!(late_dir.join("imported").is_file());
+        assert_eq!(std::fs::read(late_dir.join("source.wav")).unwrap(),captured_wav());
+        let capabilities=request(&main,"get_workspace",json!({}),local_origin()).unwrap();
+        assert_eq!(capabilities["capabilities"]["recordingRecovery"],true);
         let source = fixture.path().join("synthetic.wav");
         let bytes: Vec<u8> = (0..1_048_600).map(|n| (n % 251) as u8).collect();
         std::fs::write(&source, &bytes).unwrap();
@@ -588,7 +651,7 @@ mod ipc_tests {
         assert_eq!(history["jobs"][0]["state"],"succeeded");
         assert_eq!(history["jobs"][0]["attempt"],2);
         let end = request(&main,"import_history",json!({"after":{"createdAt":0.0,"id":job.id}}),local_origin()).unwrap();
-        assert_eq!(end["total"],1);
+        assert_eq!(end["total"],3);
         assert!(end["jobs"].as_array().unwrap().is_empty());
         assert_eq!(end["hasMore"],false);
         assert_eq!(request(&main,"import_history",json!({"after":{"createdAt":0.0,"id":"../../private"}}),local_origin()).unwrap_err()["code"],"invalid_request");

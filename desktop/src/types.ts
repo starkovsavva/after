@@ -37,7 +37,7 @@ export interface Note {
 export interface Capabilities {
   library: boolean;
   import: boolean;
-  recording: boolean;
+  recording: boolean; recordingRecovery?: boolean;
   calendar: boolean;
   assistant: boolean;
   cards: boolean;

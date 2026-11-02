@@ -61,6 +61,21 @@ pub(crate) struct JobQueue<R, C, I> {
 }
 
 impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
+    pub fn object_job(&self, object_id: &str) -> Result<Option<Job>> {
+        ensure!(
+            !object_id.is_empty() && object_id.len() <= 512 && !object_id.contains('\0'),
+            "Invalid object identity"
+        );
+        let jobs = self.repository.object_jobs(self.kind, object_id)?;
+        ensure!(jobs.len() <= 1, "Ambiguous job object identity");
+        if let Some(job) = jobs.into_iter().next() {
+            self.owned(&job)?;
+            ensure!(job.object_id == object_id, "Invalid job object identity");
+            Ok(Some(job))
+        } else {
+            Ok(None)
+        }
+    }
     pub fn history(&self, after: Option<&JobHistoryCursor>) -> Result<JobHistoryPage> {
         const LIMIT: usize = 50;
         if let Some(cursor) = after {
@@ -424,6 +439,19 @@ mod tests {
                 has_more,
             })
         }
+        fn object_jobs(&self, kind: Option<&str>, object_id: &str) -> Result<Vec<Job>> {
+            Ok(self
+                .state
+                .borrow()
+                .jobs
+                .iter()
+                .filter(|job| {
+                    job.object_id == object_id && kind.is_none_or(|kind| job.kind == kind)
+                })
+                .take(2)
+                .cloned()
+                .collect())
+        }
         fn recovery_candidates(
             &self,
             kind: &str,
@@ -607,6 +635,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn object_lookup_preserves_scope_and_rejects_ambiguous_receipt_identity() {
+        let mut queue = queue();
+        queue.kind = Some("example");
+        let original = submit(&queue, definition("capture-session"));
+        let mut foreign = original.clone();
+        foreign.id = "foreign-job".into();
+        foreign.kind = "foreign".into();
+        queue.repository.state.borrow_mut().jobs.push(foreign);
+        assert_eq!(
+            queue.object_job("capture-session").unwrap().unwrap().id,
+            original.id
+        );
+        assert!(queue.object_job("missing").unwrap().is_none());
+        let mut duplicate = original;
+        duplicate.id = "second-receipt".into();
+        queue.repository.state.borrow_mut().jobs.push(duplicate);
+        assert!(queue.object_job("capture-session").is_err());
+        assert_eq!(queue.repository.transactions.get(), 1);
+    }
     #[test]
     fn history_pages_preserve_scope_ties_and_position_when_jobs_complete() {
         let mut queue = queue();

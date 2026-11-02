@@ -54,6 +54,6 @@ executables и давали подтверждённый ETXTBSY ещё до han
 исполняет стабильный `/bin/sh`, читающий отдельный script; десять повторных
 прогонов suite с параллельными тестами прошли без изменения production timeouts или integrity checks.
 
-На Arch прошли desktop profile, 624 core + 2 CLI, 44 host, 10 real-engine,
-1 настоящий Tauri IPC и 16 Playwright scenarios. Windows/macOS локально не проверены.
-Далее — перенос recording import на durable queue и Linux capture/ASR adapters.
+На Arch прошли desktop profile, 626 core + 2 CLI, 51 host, 10 real-engine,
+1 настоящий Tauri IPC и 17 Playwright scenarios. Windows/macOS локально не проверены.
+Recording import использует [durable queue](durable-recording-import.md). Далее — CaptureBackend и Linux capture/ASR adapters.

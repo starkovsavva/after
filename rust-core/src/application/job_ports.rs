@@ -87,6 +87,8 @@ pub(crate) trait JobQueueRepository {
         after: Option<&JobHistoryCursor>,
         limit: usize,
     ) -> Result<JobHistorySnapshot>;
+    /// At most two rows; the application rejects ambiguous logical identities.
+    fn object_jobs(&self, kind: Option<&str>, object_id: &str) -> Result<Vec<Job>>;
     fn get(&self, id: &str) -> Result<Job>;
     /// Serializes competing claims before reading admission state. The adapter
     /// must not split this callback into independently committed operations.

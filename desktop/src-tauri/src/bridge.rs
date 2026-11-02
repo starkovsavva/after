@@ -90,6 +90,7 @@ impl LibraryBridge {
         })?;
         workspace.capabilities.import = true;
         workspace.capabilities.recording = crate::capture::Recorder::available();
+        workspace.capabilities.recording_recovery = true;
         Ok(workspace)
     }
     pub fn meeting(&self, id: String) -> Result<MeetingDetail, HostError> {
@@ -102,6 +103,7 @@ impl LibraryBridge {
     }
     /// Only host-selected files or host-owned recordings may cross this boundary.
     /// The renderer cannot supply a path.
+    #[cfg(test)]
     pub(crate) fn import_meeting(
         &self,
         source: &Path,
@@ -589,6 +591,20 @@ fn execute(
     };
     // ProcessTree also covers missing pipes, reader failures and unwinding.
     result
+}
+
+impl crate::recording_import::RecordingLibrary for LibraryBridge {
+    fn open_queue(&self) -> Result<Box<dyn crate::import_queue::ImportQueueSession>,HostError> {
+        Ok(Box::new(self.open_import_queue()?))
+    }
+    fn committed(&self, work: &ImportWork) -> Result<Option<Meeting>,HostError> {
+        self.call("get_import_result",json!({"operationId":work.operation_id,"attemptToken":work.attempt_token}))
+    }
+    fn resume(&self,queue: &dyn crate::import_queue::ImportQueueSession,job:crate::import_queue::ImportJob,
+        cancelled:&AtomicBool,progress:&mut dyn FnMut(f64)) -> Result<Meeting,HostError> {
+        let attempt=job.attempt;
+        self.resume_queued_import(queue,job,attempt,cancelled,progress)
+    }
 }
 
 #[cfg(test)]

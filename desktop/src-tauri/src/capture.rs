@@ -1,5 +1,5 @@
-//! Windows audio recording. Files remain in the private library until the
-//! host has successfully copied them into a canonical meeting.
+//! Portable capture lifecycle/recovery with a Windows recording adapter. Files
+//! stay in the private library until an exact canonical import receipt exists.
 use serde::Serialize;
 use std::{
     fs,
@@ -50,8 +50,60 @@ pub struct CompletedRecording {
     pub path: PathBuf,
     pub status: RecordingStatus,
     _guard: guard::Guard,
-    _file: std::fs::File,
+    _file: Option<std::fs::File>,
 }
+impl CompletedRecording {
+    pub fn session_id(&self) -> Result<&str, String> {
+        self.status.session_id.as_deref().filter(|id|valid_session_id(id))
+            .ok_or_else(|| "Invalid recording identity.".into())
+    }
+    pub fn finalize(&mut self) -> Result<(), String> {
+        let dir=self.path.parent().ok_or("Invalid recording path.")?;
+        if imported(dir)? { return Err("This recording was already saved to the library.".into()); }
+        if self._file.is_none() {
+            let mut file=guard::open_source(&self.path,true).map_err(|_| "The recording is unavailable or unsafe.")?;
+            wav::repair(&mut file).map_err(|_| "The recording cannot be recovered as WAV; its original file was kept.")?;
+            self._file=Some(file);
+        }
+        Ok(())
+    }
+    pub fn mark_imported(&self) -> Result<(), String> {
+        mark_imported(self.path.parent().ok_or("Invalid recording path.")?)
+    }
+}
+impl crate::recording_import::CapturedRecording for CompletedRecording {
+    fn session_id(&self) -> Result<&str,crate::models::HostError> {
+        self.session_id().map_err(|_|crate::models::HostError::invalid())
+    }
+    fn source(&self) -> &std::path::Path { &self.path }
+    fn finalize(&mut self) -> Result<(),crate::models::HostError> {
+        self.finalize().map_err(|_|crate::models::HostError::new("recording_error","The captured audio could not be finalized. It remains available for recovery."))
+    }
+    fn acknowledge(&self) -> Result<(),crate::models::HostError> {
+        self.mark_imported().map_err(|_|crate::models::HostError::new("recording_error","The saved recording could not be acknowledged."))
+    }
+}
+fn imported(dir: &std::path::Path) -> Result<bool,String> {
+    let path=dir.join("imported");
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("Cannot inspect recording receipt marker.".into()),
+        Ok(_) => {
+            let file=guard::open_source(&path,false).map_err(|_| "Recording receipt marker is unsafe.")?;
+            if file.metadata().map_err(|_| "Cannot inspect recording receipt marker.")?.len()!=0 {
+                return Err("Recording receipt marker is invalid.".into());
+            }
+            Ok(true)
+        }
+    }
+}
+fn mark_imported(dir: &std::path::Path) -> Result<(),String> {
+    if imported(dir)? { return Ok(()); }
+    fs::OpenOptions::new().write(true).create_new(true).open(dir.join("imported"))
+        .and_then(|file|file.sync_all()).map_err(|_| "The recording was imported but could not be marked as saved.")?;
+    Ok(())
+}
+
 pub struct Recorder {
     root: PathBuf,
     state: Arc<Mutex<Shared>>,
@@ -233,11 +285,11 @@ impl Recorder {
                 continue;
             }
             let dir = entry.path();
-            let _guard = match guard::pin(&dir) {
+            let _guard = match guard::pin_session(&dir) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            if dir.join("imported").exists() {
+            if imported(&dir)? {
                 continue;
             }
             let file = match guard::open_source(&dir.join("source.wav"), false) {
@@ -255,7 +307,7 @@ impl Recorder {
         result.sort_by(|a, b| a.session_id.cmp(&b.session_id));
         Ok(result)
     }
-    pub fn recover(&self, session_id: String) -> Result<CompletedRecording, String> {
+    pub fn pending(&self, session_id: String) -> Result<CompletedRecording, String> {
         if !valid_session_id(&session_id) {
             return Err("Invalid recording identifier.".into());
         }
@@ -269,15 +321,8 @@ impl Recorder {
             return Err("Stop this recording before recovering it.".into());
         }
         let dir = self.root.join("captures").join(&session_id);
-        let guard = guard::pin(&dir).map_err(|_| "The recording is unavailable or unsafe.")?;
-        if dir.join("imported").exists() {
-            return Err("This recording was already saved to the library.".into());
-        }
+        let guard = guard::pin_session(&dir).map_err(|_| "The recording is unavailable or unsafe.")?;
         let path = dir.join("source.wav");
-        let mut file = guard::open_source(&path, true)
-            .map_err(|_| "The recording is unavailable or unsafe.")?;
-        wav::repair(&mut file)
-            .map_err(|_| "The recording cannot be recovered as WAV; its original file was kept.")?;
         let status = RecordingStatus {
             session_id: Some(session_id),
             phase: "recovered".into(),
@@ -289,22 +334,23 @@ impl Recorder {
             path,
             status,
             _guard: guard,
-            _file: file,
+            _file: None,
         })
     }
+    #[cfg(test)]
+    pub fn recover(&self, session_id: String) -> Result<CompletedRecording, String> {
+        let mut completed=self.pending(session_id)?;
+        completed.finalize()?;
+        Ok(completed)
+    }
+    #[cfg(test)]
     pub fn mark_imported(&self, session_id: &str) -> Result<(), String> {
         if !valid_session_id(session_id) {
             return Err("Invalid recording identifier.".into());
         }
         let dir = self.root.join("captures").join(session_id);
         let _guard = guard::pin(&dir).map_err(|_| "The recording is unavailable or unsafe.")?;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(dir.join("imported"))
-            .and_then(|f| f.sync_all())
-            .map_err(|_| "The recording was imported but could not be marked as saved.")?;
-        Ok(())
+        mark_imported(&dir)
     }
     pub fn stop(&self) -> Result<CompletedRecording, String> {
         let mut slot = self
@@ -339,7 +385,7 @@ impl Recorder {
             path: session.path,
             status: completed_status,
             _guard: session.guard,
-            _file: file,
+            _file: Some(file),
         })
     }
 }
@@ -420,6 +466,7 @@ mod tests {
         assert!(stopped.status.session_id.is_some());
         assert_eq!(recorder.status().phase, "idle");
         assert!(recorder.status().session_id.is_none());
+        drop(stopped);
         assert_eq!(recorder.recoverable().unwrap().len(), 1);
     }
     #[test]
@@ -453,9 +500,9 @@ mod tests {
         assert_eq!(recorder.status().phase, "idle");
         let bytes = std::fs::read(&completed.path).unwrap();
         assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 200);
+        drop(completed);
         assert_eq!(recorder.recoverable().unwrap().len(), 1);
     }
-    #[cfg(windows)]
     #[test]
     fn recovery_rejects_hard_linked_source() {
         let root = tempfile::tempdir().unwrap();

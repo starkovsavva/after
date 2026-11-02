@@ -1,6 +1,6 @@
 # Import WorkerHost
 
-Статус: standalone WorkerHost используется recording import и protocol checks.
+Статус: standalone WorkerHost используется protocol checks; [recording import](durable-recording-import.md) использует durable queue.
 Выбор файла в UI использует durable native [controller](queued-import-controller.md).
 
 ## Границы
@@ -37,9 +37,9 @@ Native `imports.rs` владеет transient session. UI показывает pr
 
 ## Проверки и ограничения
 
-На Arch прошли desktop verification, 16 Playwright-сценариев, реальные engine/IPC
+На Arch прошли desktop verification, 17 Playwright-сценариев, реальные engine/IPC
 проверки progress, отмены, изоляции и receipts. Диалог выбора, физические устройства
 и кодеки не покрыты этими проверками. Windows/macOS локально не запускались.
 
-Native [scoped queue port](scoped-executors.md) реализован отдельно. Native Run и [startup reconciliation](import-startup-recovery.md) готовы; recording queue binding, ASR/model workers, ResourceLocator
+Native [scoped queue port](scoped-executors.md) реализован отдельно. Native Run и [startup reconciliation](import-startup-recovery.md) готовы; CaptureBackend, ASR/model workers, ResourceLocator
 и SleepInhibitor остаются следующими этапами. Swift сохраняется до проверки паритета.

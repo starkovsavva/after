@@ -1,7 +1,6 @@
 # Supervised durable imports from the file picker
 
-Статус: выбор файла в Tauri UI использует durable queue. Recording import пока
-остаётся standalone; [история и явный retry](import-history-and-resume.md) после перезапуска host подключены.
+Статус: выбор файла в Tauri UI использует durable queue. [Recording import](durable-recording-import.md) использует те же queue/controller ports; [история и явный retry](import-history-and-resume.md) после перезапуска host подключены.
 
 ## Разделение ответственности
 
@@ -38,8 +37,8 @@ transient session для reload WebView и отмены. Старый byte-progr
 
 ## Проверки и следующие шаги
 
-На Arch прошли 44 host tests, 10 real-engine integrations, настоящий Tauri IPC,
-frontend build/model checks и 16 Playwright scenarios. Проверены изменение budget
+На Arch прошли 51 host tests, 10 real-engine integrations, настоящий Tauri IPC,
+frontend build/model checks и 17 Playwright scenarios. Проверены изменение budget
 внутри зависшего RPC, grace, stale attempts, отмена до enqueue, published success,
 неизменность source и повторный receipt lookup без исходного файла.
 Системный file picker и Windows/macOS локально не проверены.
@@ -47,5 +46,5 @@ frontend build/model checks и 16 Playwright scenarios. Проверены из�
 Grant-free history и явный retry/cancel pending jobs подключены; startup probe
 открывает queue для reconciliation без выполнения работы. Connection используется
 на одну native операцию; reservation сериализует чтение и запуск. UI загружает
-всю историю страницами по 50 jobs ([ADR](import-history-pagination.md)). Следующий этап —
-перенос recording import. Платные и model workers не запускаются автоматически.
+всю историю страницами по 50 jobs ([ADR](import-history-pagination.md)). Следующие этапы —
+CaptureBackend и Linux capture/ASR adapters. Платные и model workers не запускаются автоматически.

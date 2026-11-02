@@ -227,6 +227,23 @@ impl JobQueueRepository for SqliteJobQueue<'_> {
             has_more,
         })
     }
+    fn object_jobs(&self, kind: Option<&str>, object_id: &str) -> Result<Vec<Job>> {
+        let connection = open(self.root)?;
+        let mut statement=connection.prepare("SELECT id,payload FROM jobs WHERE object_id=?1 AND (?2 IS NULL OR json_extract(payload,'$.kind')=?2) ORDER BY id LIMIT 2")?;
+        let rows = statement.query_map(params![object_id, kind], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (id, payload) = row?;
+            let job: Job = serde_json::from_str(&payload)?;
+            ensure!(
+                job.id == id && job.object_id == object_id,
+                "Invalid job object identity"
+            );
+            Ok(job)
+        })
+        .collect()
+    }
     fn recovery_candidates(
         &self,
         kind: &str,
@@ -347,6 +364,42 @@ mod tests {
         call(root,"job-enqueue",json!({"kind":"summarize","objectID":object,"resource":resource,"inputRevision":"v1","config":{"model":"local"}}))["job"].clone()
     }
 
+    #[test]
+    fn object_lookup_is_scoped_and_bounded_before_resolving_receipt_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let initial = enqueue(root.path(), "capture-session", "light");
+        let original: Job = serde_json::from_value(initial).unwrap();
+        let connection = open(root.path()).unwrap();
+        for index in 0..3 {
+            let mut other = original.clone();
+            other.id = format!("other-{index}");
+            other.state = "failed".into();
+            if index == 0 {
+                other.kind = "foreign".into();
+            }
+            persist(&connection, &other).unwrap();
+        }
+        drop(connection);
+        let repository = SqliteJobQueue { root: root.path() };
+        assert_eq!(
+            repository
+                .object_jobs(Some("foreign"), "capture-session")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            repository
+                .object_jobs(Some("summarize"), "capture-session")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(repository
+            .object_jobs(Some("foreign"), "absent")
+            .unwrap()
+            .is_empty());
+    }
     #[test]
     fn sqlite_history_pages_include_all_states_filter_before_limit_and_keep_deleted_cursor_position(
     ) {

@@ -72,6 +72,8 @@ pub struct Capabilities {
     #[serde(default)]
     pub import: bool,
     pub recording: bool,
+    #[serde(default)]
+    pub recording_recovery: bool,
     pub calendar: bool,
     pub assistant: bool,
     pub cards: bool,

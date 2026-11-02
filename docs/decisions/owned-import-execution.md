@@ -29,7 +29,7 @@ EOF/error/shutdown останавливает и joins worker до освобо�
 [отсоединяет поток](https://doc.rust-lang.org/stable/std/thread/struct.JoinHandle.html).
 Worker adapters дополнительно удерживают Arc lease. При принудительной остановке
 helper процесс и его потоки завершаются вместе; successor получает lock после
-освобождения kernel handles. Standalone WorkerHost сохраняется для recording import и protocol checks; file-picker UI использует durable execution path.
+освобождения kernel handles. Standalone WorkerHost сохраняется для protocol checks; file-picker и recording UI используют durable execution path.
 
 ## Публикация и исход
 
@@ -65,6 +65,6 @@ publication/completion gap без исходного файла; чужой toke
 Это не проверка кодеков, физического захвата или model quality. Windows/macOS
 локально не запускались. Native Run отменяется кооперативно на checkpoints; принудительная граница
 супервизора — весь owner process. File-picker controller сохраняет deadline/grace политику прежнего WorkerHost и восстанавливает соединение без повторного запуска.
-Следующие шаги — перенос recording import и расширение worker ports; автоматические retries и Swift removal
+Следующие шаги — CaptureBackend и расширение worker ports; автоматические retries и Swift removal
 не включены. При совместном root с legacy writer всё ещё нужна защита от его
 глобального claim/recover; штатные библиотеки клиентов разделены.

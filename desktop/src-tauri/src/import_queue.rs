@@ -76,6 +76,9 @@ pub enum QueueCommand {
         input: ImportInput,
     },
     List,
+    Find {
+        operation_id: String,
+    },
     History {
         after: Option<HistoryCursor>,
     },

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Folder, FolderInput, ImportHistory, ImportHistoryCursor, LibraryAPI, Meeting, MeetingDetail, Note, NoteInput, SearchResponse, Workspace } from './types';
+import type { Folder, FolderInput, ImportHistory, ImportHistoryCursor, LibraryAPI, Meeting, MeetingDetail, Note, NoteInput, RecoverableRecording, SearchResponse, Workspace } from './types';
 
 export const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).get('demo') === '1';
 const native = '__TAURI_INTERNALS__' in window;
@@ -25,12 +25,25 @@ export function featureCommand<T>(operation: string, args: Record<string, unknow
 }
 // Share only an in-flight read: StrictMode/startup and the history dialog may
 // request the same leased snapshot together. Never cache completed history.
+// These reads acquire the same native maintenance reservation. Keep concurrent
+// startup/dialog probes in order; failures do not poison the next explicit read.
+let maintenanceRead: Promise<unknown> = Promise.resolve();
+function readMaintenance<T>(name: string, args: Record<string, unknown> = {}): Promise<T> {
+  const request = maintenanceRead.then(() => command<T>(name, args));
+  maintenanceRead = request.catch(() => undefined);
+  return request;
+}
+let recoveryRequest: Promise<RecoverableRecording[]> | null = null;
+function recoverableRecordings(): Promise<RecoverableRecording[]> {
+  recoveryRequest ??= readMaintenance<RecoverableRecording[]>('recoverable_recordings').finally(() => { recoveryRequest = null; });
+  return recoveryRequest;
+}
 const historyRequests = new Map<string, Promise<ImportHistory>>();
 function importHistory(after?: ImportHistoryCursor): Promise<ImportHistory> {
   const key = after ? JSON.stringify([after.createdAt, after.id]) : 'initial';
   let request = historyRequests.get(key);
   if (!request) {
-    request = command<ImportHistory>('import_history', { after: after ?? null }).finally(() => { historyRequests.delete(key); });
+    request = readMaintenance<ImportHistory>('import_history', { after: after ?? null }).finally(() => { historyRequests.delete(key); });
     historyRequests.set(key, request);
   }
   return request;
@@ -47,7 +60,7 @@ const desktop: LibraryAPI = {
   startRecording: mode => command('start_recording', { mode }),
   recordingStatus: () => command('recording_status'),
   stopRecording: title => command('stop_recording', { title }),
-  recoverableRecordings: () => command('recoverable_recordings'),
+  recoverableRecordings,
   recoverRecording: sessionId => command('recover_recording', { sessionId }),
   saveNote: (input: NoteInput) => command<Note>('save_note', { input }),
   saveFolder: (input: FolderInput) => command<Folder>('save_folder', { input }),

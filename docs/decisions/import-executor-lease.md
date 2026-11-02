@@ -2,7 +2,7 @@
 
 Статус: kernel lease и persistent queue service реализованы; explicit native Run
 [владеет worker lifetime](owned-import-execution.md). [Startup reconciliation](import-startup-recovery.md) выполняется при открытии native connection; file-picker UI использует
-[durable controller](queued-import-controller.md); recording import пока standalone.
+[durable controller](queued-import-controller.md); [recording import](durable-recording-import.md) использует те же queue/controller ports.
 
 ## Владение
 
@@ -39,8 +39,7 @@ reaps; соединение больше не используется. Обыч
 ## Следующая граница
 
 Explicit Run уже размещает import worker внутри owner-процесса и joins его
-до освобождения lease. File-picker UI использует durable controller; recording import пока отдельный
-путь. История/retry с пагинацией по 50 jobs и startup recovery подключены; нужен recording queue binding; явный retry
+до освобождения lease. File-picker и recording UI используют durable controller. История/retry с пагинацией по 50 jobs и startup recovery подключены; нужны CaptureBackend и Linux capture adapters; явный retry
 проверяет receipt до нового копирования. Сам lease не делает внешний эффект
 идемпотентным: [политика выполнения](owned-import-execution.md) описывает эту границу.
 

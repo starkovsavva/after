@@ -26,6 +26,9 @@ pub(crate) enum Request {
         input: ImportInput,
     },
     List {},
+    Find {
+        operation_id: String,
+    },
     History {
         after: Option<JobHistoryCursor>,
     },
@@ -77,6 +80,10 @@ pub(crate) fn id(value: &str) -> Result<()> {
 }
 
 pub(crate) fn execute(root: &Path, request: Request) -> Result<Value> {
+    if let Request::Find { operation_id } = request {
+        id(&operation_id)?;
+        return Ok(json!({"job":queue(root).object_job(&operation_id)?}));
+    }
     if let Request::History { after } = request {
         let page = queue(root).history(after.as_ref())?;
         let jobs: Vec<_> = page
@@ -113,7 +120,7 @@ pub(crate) fn execute(root: &Path, request: Request) -> Result<Value> {
             anyhow::bail!("Import run requires its live executor")
         }
         Request::List {} => JobCommand::List,
-        Request::History { .. } => unreachable!(),
+        Request::History { .. } | Request::Find { .. } => unreachable!(),
         Request::Get { job_id } => {
             id(&job_id)?;
             JobCommand::Get { id: job_id }
