@@ -299,8 +299,15 @@ export default function App() {
       } finally { importOwned.current = false; setImporting(false); }
     })();
   });
+  const recordingModes = workspace?.capabilities.recordingModes ?? ['microphone_and_system', 'microphone'];
+  const recordingModeSupported = recordingModes.includes(recordMode);
+  useEffect(() => {
+    if (!recordDialog && workspace?.capabilities.recordingModes && !workspace.capabilities.recordingModes.includes(recordMode)) {
+      setRecordMode(workspace.capabilities.recordingModes[0] ?? 'microphone');
+    }
+  }, [recordDialog, recordMode, workspace?.capabilities.recordingModes]);
   const startRecording = async () => {
-    if (recordingBusy || recordingActive) return;
+    if (recordingBusy || recordingActive || !recordingModeSupported) return;
     setRecordingStarting(true); setRecordingBusy(true); setRecordingMessage(null);
     try {
       const status = await api.startRecording(recordMode);
@@ -490,8 +497,8 @@ export default function App() {
     {recordDialog && <Dialog title={t.record} close={recordingBusy ? undefined : () => setRecordDialog(false)} closeLabel={t.close}>
       <form onSubmit={event => { event.preventDefault(); void startRecording(); }}>
         <label className="field-label" htmlFor="record-title">{t.recordTitle}</label><input id="record-title" className="text-input" value={recordTitle} onChange={event => { const title = event.target.value; setRecordTitle(title); try { sessionStorage.setItem('posle.recording.title', title); } catch { /* Optional draft metadata. */ } }} placeholder={t.recordingName} maxLength={200} disabled={recordingBusy}/>
-        <label className="field-label" htmlFor="record-mode">{t.recordMode}</label><select id="record-mode" className="text-input" value={recordMode} onChange={event => setRecordMode(event.target.value as typeof recordMode)} disabled={recordingBusy}><option value="microphone_and_system">{t.microphoneSystem}</option><option value="microphone">{t.microphoneOnly}</option></select>
-        <div className="dialog-actions"><button type="button" className="button" onClick={() => setRecordDialog(false)} disabled={recordingBusy}>{t.cancel}</button><button type="submit" className="button primary" disabled={recordingBusy}>{recordingBusy ? t.startingRecording : t.startRecording}</button></div>
+        <label className="field-label" htmlFor="record-mode">{t.recordMode}</label><select id="record-mode" className="text-input" value={recordingModeSupported ? recordMode : ''} onChange={event => setRecordMode(event.target.value as typeof recordMode)} disabled={recordingBusy}>{!recordingModeSupported && <option value="" disabled>{t.chooseAudioMode}</option>}{recordingModes.includes('microphone_and_system') && <option value="microphone_and_system">{t.microphoneSystem}</option>}{recordingModes.includes('microphone') && <option value="microphone">{t.microphoneOnly}</option>}</select>
+        <div className="dialog-actions"><button type="button" className="button" onClick={() => setRecordDialog(false)} disabled={recordingBusy}>{t.cancel}</button><button type="submit" className="button primary" disabled={recordingBusy || !recordingModeSupported}>{recordingBusy ? t.startingRecording : t.startRecording}</button></div>
       </form>
     </Dialog>}
     {recoveryOpen && <Dialog title={t.recoverRecordings} close={recordingBusy ? undefined : () => setRecoveryOpen(false)} closeLabel={t.close}><p className="dialog-description">{t.recoveryHint}</p>{recoverable.map(item => <div className="recovery-row" key={item.sessionId}><span>{item.sessionId.slice(0, 8)} · {(item.bytes / 1_048_576).toFixed(1)} MB</span><button className="button" disabled={recordingBusy} onClick={() => void recoverRecording(item.sessionId)}>{t.recoverRecording}</button></div>)}</Dialog>}

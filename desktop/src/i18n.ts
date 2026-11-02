@@ -2,6 +2,7 @@ export type Language = 'en' | 'ru';
 export type LanguagePreference = 'system' | Language;
 
 const en = {
+  chooseAudioMode: 'Choose an audio source',
   importHistory: 'Import history', importHistoryHint: 'Unfinished imports stay on this computer. Resume explicitly to read the original file again. Keep After open until the import finishes.',
   refreshImports: 'Refresh imports', importHistoryFailed: 'Could not load import history. Another import may be running. Refresh before trying again.', noImports: 'No imports yet.',
   moreImports: 'Load more imports', importHistoryLimited: 'Loaded imports', importItem: 'Import', importAttempt: 'Attempt', resumeImport: 'Resume import', openImport: 'Open meeting',
@@ -52,6 +53,7 @@ const en = {
 };
 export type Copy = typeof en;
 const ru: Copy = {
+  chooseAudioMode: 'Выберите источник звука',
   importHistory: 'История импорта', importHistoryHint: 'Незавершённые импорты сохраняются на этом компьютере. Продолжите явно, чтобы снова прочитать исходный файл. Не закрывайте After до завершения импорта.',
   refreshImports: 'Обновить историю', importHistoryFailed: 'Не удалось загрузить историю импорта. Возможно, другой импорт ещё выполняется. Обновите историю перед повтором.', noImports: 'Импортов пока нет.',
   moreImports: 'Загрузить ещё импорты', importHistoryLimited: 'Загружены импорты', importItem: 'Импорт', importAttempt: 'Попытка', resumeImport: 'Продолжить импорт', openImport: 'Открыть встречу',

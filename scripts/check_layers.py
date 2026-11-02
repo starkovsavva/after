@@ -67,6 +67,28 @@ def outer_layer_violations(src):
                 yield f"{path}:{source[:match.start()].count(chr(10)) + 1}: {layer} depends on a concrete outer implementation/facade"
 
 
+def capture_boundary_violations(src):
+    # Lifecycle may coordinate file adapters, but never select a driver or let
+    # that driver mutate its state. The backend contract is an independent leaf.
+    patterns = {
+        "capture.rs": r"\bcfg!?\s*\([^)]*\b(?:windows|unix|target_os|target_arch|target_family)\b|\b(?:wasapi|windows)\s*::|\bcrate\s*::\s*(?:platform|capture_platform)\b",
+        "capture_backend.rs": r"\bstd\s*::\s*(?:fs|os|process|net|env)\b|\b(?:wasapi|windows|tauri|libc)\s*::|\bcfg!?\s*\([^)]*\b(?:windows|unix|target_os)\b|\bcrate\s*::\s*capture\b",
+        "capture/windows.rs": r"\bShared\b|\bRecordingStatus\b|\bcrate\s*::\s*capture\s*::",
+    }
+    for name, pattern in patterns.items():
+        path = src / name
+        if not path.exists():
+            continue
+        source = re.split(r"#\[cfg\(test\)\]\s*mod\s+tests\b", path.read_text(), maxsplit=1)[0]
+        source = re.sub(r"/\*.*?\*/|//[^\n]*", lambda m: "\n" * m[0].count("\n"), source, flags=re.S)
+        for match in re.finditer(pattern, source):
+            yield f"{path}:{source[:match.start()].count(chr(10)) + 1}: capture boundary depends on a concrete driver or recorder state"
+        if name == "capture_backend.rs":
+            for match in re.finditer(r"\bstd\s*::\s*\{([^}]+)\}", source, re.S):
+                if re.search(r"\b(?:fs|os|process|net|env)\b", match[1]):
+                    yield f"{path}: capture port has a grouped OS/I/O dependency"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--domain-root", type=Path, default=Path(__file__).resolve().parents[1] / "rust-core/src/domain")
@@ -74,6 +96,7 @@ def main():
     if not args.domain_root.is_dir() or not any(args.domain_root.rglob("*.rs")):
         parser.error("Domain source directory is missing or empty")
     errors = list(violations(args.domain_root)) + list(outer_layer_violations(args.domain_root.parent))
+    errors += list(capture_boundary_violations(Path(__file__).resolve().parents[1] / "desktop/src-tauri/src"))
     if errors:
         raise SystemExit("\n".join(errors))
     print("PASS: domain/application/infrastructure layer boundaries")

@@ -49,7 +49,7 @@ bridge, восстанавливает interrupted job, явно продолж�
 нечитаемая metadata блокирует Retry/Cancel без ремонта. Настоящий Tauri IPC проверяет
 history, stale expectedAttempt, resume и отсутствие grants. Playwright проверяет
 reload без autorun, явное продолжение, ошибки истории и отмену queued attempt 0.
-На Arch прошли desktop profile, 51 host, 10 real-engine и 17 browser scenarios.
+На Arch прошли desktop profile, 56 host, 10 real-engine и 18 browser scenarios.
 Windows/macOS и системный picker локально не проверены.
 
 Сохранение recordings использует [durable queue](durable-recording-import.md); ASR/model workers

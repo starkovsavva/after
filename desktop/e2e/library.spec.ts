@@ -377,3 +377,29 @@ test('saved capture recovery is available without a physical recording backend',
   await expect(page.getByRole('button', { name: /Recovered capture/ })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Recover recordings (1)', exact: true })).toHaveCount(0);
 });
+
+test('recording modes follow the backend capability without a system-audio fallback', async ({ page }) => {
+  await page.addInitScript(() => {
+    let active = false;
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke: async (command: string, args: Record<string, unknown>) => {
+      if (command === 'get_workspace') return { folders: [], notes: [], meetings: [], capabilities: { library: true, import: true, recording: true, recordingRecovery: true, recordingModes: ['microphone'], calendar: false, assistant: false, cards: false, tasks: false } };
+      if (command === 'import_status') return { phase: 'idle', operationId: null, controlId: null, copiedBytes: 0, totalBytes: 0, progress: null, cancelRequested: false };
+      if (command === 'import_history') return { jobs: [], total: 0, hasMore: false, nextCursor: null };
+      if (command === 'recoverable_recordings') return [];
+      if (command === 'recording_status') return { sessionId: active ? '88888888-8888-4888-8888-888888888888' : null, phase: active ? 'recording' : 'idle', mode: active ? 'microphone' : null, elapsedMs: 0, warning: null };
+      if (command === 'start_recording') {
+        if (args.mode !== 'microphone') throw { code: 'unsupported_mode' };
+        active = true; return { sessionId: '88888888-8888-4888-8888-888888888888', phase: 'recording', mode: 'microphone', elapsedMs: 0, warning: null };
+      }
+      throw { code: 'unsupported_operation' };
+    } } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Record meeting', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Record meeting', exact: true });
+  await expect(dialog.getByLabel('Audio', { exact: true })).toHaveValue('microphone');
+  await expect(dialog.getByRole('option', { name: 'Microphone and system audio', exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Start recording', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Stop and save/ })).toBeVisible();
+  await expect(dialog).not.toBeVisible();
+});

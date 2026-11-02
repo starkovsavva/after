@@ -73,6 +73,8 @@ pub struct Capabilities {
     pub import: bool,
     pub recording: bool,
     #[serde(default)]
+    pub(crate) recording_modes: Vec<crate::capture_backend::CaptureMode>,
+    #[serde(default)]
     pub recording_recovery: bool,
     pub calendar: bool,
     pub assistant: bool,

@@ -1,6 +1,7 @@
-//! Portable capture lifecycle/recovery with a Windows recording adapter. Files
+//! Portable capture lifecycle/recovery through an injected device backend. Files
 //! stay in the private library until an exact canonical import receipt exists.
 use serde::Serialize;
+use crate::{capture_audio as wav, capture_backend::{CaptureBackend, CaptureCapabilities, CaptureControl, CaptureMode, CaptureRequest}};
 use std::{
     fs,
     path::PathBuf,
@@ -10,11 +11,7 @@ use std::{
 };
 #[path = "capture/guard.rs"]
 mod guard;
-#[path = "capture/wav.rs"]
-mod wav;
-#[cfg(windows)]
-#[path = "capture/windows.rs"]
-mod windows;
+
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +42,39 @@ struct Session {
 struct Shared {
     status: RecordingStatus,
     started: Option<Instant>,
+}
+struct SessionControl {
+    state: Arc<Mutex<Shared>>,
+    identity: String,
+    ready: Option<mpsc::SyncSender<Result<(),String>>>,
+    stop: mpsc::Receiver<()>,
+}
+impl CaptureControl for SessionControl {
+    fn started(&mut self) -> Result<(),String> {
+        let ready=self.ready.take().ok_or("The capture backend reported readiness twice.")?;
+        let mut state=self.state.lock().unwrap_or_else(|error|error.into_inner());
+        if state.status.session_id.as_deref()!=Some(&self.identity) { return Err("The capture session changed.".into()); }
+        state.started=Some(Instant::now()); state.status.phase="recording".into();
+        // A caller may have timed out and already requested stop. Keep cleanup
+        // in the backend even when that caller no longer receives readiness.
+        let _=ready.send(Ok(()));
+        Ok(())
+    }
+    fn wait_for_stop(&self, timeout:std::time::Duration) -> bool {
+        !matches!(self.stop.recv_timeout(timeout),Err(mpsc::RecvTimeoutError::Timeout))
+    }
+}
+impl SessionControl {
+    fn finish(&mut self, result:Result<(),String>) {
+        let result=if self.ready.is_some() && result.is_ok() { Err("The capture backend stopped before reporting readiness.".into()) } else { result };
+        let mut state=self.state.lock().unwrap_or_else(|error|error.into_inner());
+        if state.status.session_id.as_deref()==Some(&self.identity) {
+            if let Some(started)=state.started { state.status.elapsed_ms=started.elapsed().as_millis().min(u64::MAX as u128) as u64; }
+            state.status.phase=if result.is_ok() { "stopped" } else { "interrupted" }.into();
+            state.status.warning=result.as_ref().err().cloned();
+        }
+        if let Some(ready)=self.ready.take() { let _=ready.send(result); }
+    }
 }
 pub struct CompletedRecording {
     pub path: PathBuf,
@@ -106,15 +136,19 @@ fn mark_imported(dir: &std::path::Path) -> Result<(),String> {
 
 pub struct Recorder {
     root: PathBuf,
+    backend: Arc<dyn CaptureBackend>,
+    startup_timeout: std::time::Duration,
     state: Arc<Mutex<Shared>>,
     session: Mutex<Option<Session>>,
 }
 impl Recorder {
-    pub(crate) fn available() -> bool { cfg!(windows) }
+    pub fn capabilities(&self) -> CaptureCapabilities { self.backend.capabilities() }
 
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf, backend: Arc<dyn CaptureBackend>) -> Self {
         Self {
             root,
+            backend,
+            startup_timeout: std::time::Duration::from_secs(10),
             state: Arc::new(Mutex::new(Shared {
                 status: RecordingStatus::idle(),
                 started: None,
@@ -133,11 +167,9 @@ impl Recorder {
         status
     }
     pub fn start(&self, mode: String) -> Result<RecordingStatus, String> {
-        if !Self::available() {
-            return Err("Recording is currently available only on Windows.".into());
-        }
-        if mode != "microphone" && mode != "microphone_and_system" {
-            return Err("Invalid recording mode.".into());
+        let mode = CaptureMode::parse(&mode)?;
+        if !self.backend.capabilities().supports(mode) {
+            return Err("The capture backend does not support this recording mode.".into());
         }
         let mut slot = self
             .session
@@ -154,13 +186,14 @@ impl Recorder {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let state = Arc::clone(&self.state);
         let path_for_thread = path.clone();
-        let mode_for_thread = mode.clone();
+        let backend = self.backend.clone();
+        let identity = session_id.clone();
         {
             let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
             s.status = RecordingStatus {
                 session_id: Some(session_id),
                 phase: "starting".into(),
-                mode: Some(mode),
+                mode: Some(mode.as_str().into()),
                 elapsed_ms: 0,
                 warning: None,
             };
@@ -169,30 +202,9 @@ impl Recorder {
         let worker = thread::Builder::new()
             .name("after-audio-capture".into())
             .spawn(move || {
-                #[cfg(windows)]
-                let result = windows::record(
-                    &path_for_thread,
-                    &mode_for_thread,
-                    stop_rx,
-                    ready_tx,
-                    Arc::clone(&state),
-                );
-                #[cfg(not(windows))]
-                let result: Result<(), String> = {
-                    let _ = (path_for_thread, mode_for_thread, stop_rx, ready_tx);
-                    Err("Windows only".into())
-                };
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(t) = s.started {
-                    s.status.elapsed_ms = t.elapsed().as_millis().min(u64::MAX as u128) as u64;
-                }
-                s.status.phase = if result.is_ok() {
-                    "stopped"
-                } else {
-                    "interrupted"
-                }
-                .into();
-                s.status.warning = result.err();
+                let mut control=SessionControl { state, identity, ready:Some(ready_tx), stop:stop_rx };
+                let result=backend.record(CaptureRequest { destination:&path_for_thread,mode }, &mut control);
+                control.finish(result);
             })
             .map_err(|_| {
                 let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -208,7 +220,7 @@ impl Recorder {
             guard,
         });
         drop(slot);
-        match ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        match ready_rx.recv_timeout(self.startup_timeout) {
             Ok(Ok(())) => Ok(self.status()),
             Ok(Err(error)) => {
                 if let Ok(mut slot) = self.session.lock() {
@@ -413,11 +425,95 @@ fn valid_session_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Clone, Copy)]
+    enum Behavior { Normal, NoReady, PanicBeforeReady, DuplicateReady }
+    struct Synthetic {
+        behavior:Behavior,
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+        init: Option<Mutex<mpsc::Receiver<()>>>,
+    }
+    impl CaptureBackend for Synthetic {
+        fn capabilities(&self)->CaptureCapabilities { CaptureCapabilities::MICROPHONE }
+        fn record(&self, request:CaptureRequest<'_>,control:&mut dyn CaptureControl)->Result<(),String> {
+            if let Some(init)=&self.init { init.lock().unwrap().recv_timeout(std::time::Duration::from_secs(2)).map_err(|_|"Synthetic init timeout")?; }
+            assert_eq!(request.mode,CaptureMode::Microphone);
+            let mut wav=wav::Wav::create(request.destination).map_err(|error|error.to_string())?;
+            wav.write(&[0.25;100]).map_err(|error|error.to_string())?;
+            if matches!(self.behavior,Behavior::PanicBeforeReady) { panic!("Synthetic capture panic"); }
+            if matches!(self.behavior,Behavior::NoReady) { return Ok(()); }
+            control.started()?;
+            if matches!(self.behavior,Behavior::DuplicateReady) { control.started()?; }
+            while !control.wait_for_stop(std::time::Duration::from_millis(10)) {}
+            wav.finish().map_err(|error|error.to_string())?;
+            self.stopped.store(true,std::sync::atomic::Ordering::Release);
+            Ok(())
+        }
+    }
+    fn synthetic(behavior:Behavior)->Arc<Synthetic> {
+        Arc::new(Synthetic { behavior,stopped:Arc::new(std::sync::atomic::AtomicBool::new(false)),init:None })
+    }
+    #[test]
+    fn injected_backend_owns_devices_and_common_lifecycle_stops_and_retains_audio() {
+        let root=tempfile::tempdir().unwrap();let backend=synthetic(Behavior::Normal);
+        let recorder=Recorder::new(root.path().canonicalize().unwrap(),backend.clone());
+        let started=recorder.start("microphone".into()).unwrap();
+        assert_eq!(started.phase,"recording");assert_eq!(started.mode.as_deref(),Some("microphone"));
+        assert!(recorder.start("microphone".into()).is_err());
+        let completed=recorder.stop().unwrap();
+        assert!(backend.stopped.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(completed.status.phase,"stopped");assert_eq!(fs::metadata(&completed.path).unwrap().len(),244);
+        assert_eq!(recorder.status().phase,"idle");
+        assert!(recorder.recoverable().unwrap().is_empty());
+        drop(completed);assert_eq!(recorder.recoverable().unwrap().len(),1);
+    }
+    #[test]
+    fn unsupported_modes_fail_before_creating_capture_directories() {
+        let root=tempfile::tempdir().unwrap();let recorder=Recorder::new(root.path().canonicalize().unwrap(),synthetic(Behavior::Normal));
+        assert!(recorder.start("microphone_and_system".into()).is_err());
+        assert!(recorder.start("arbitrary".into()).is_err());
+        assert!(!root.path().join("captures").exists());
+        let recorder=Recorder::new(root.path().canonicalize().unwrap(),Arc::new(crate::capture_platform::UnavailableCapture));
+        assert!(recorder.start("microphone".into()).is_err());
+        assert!(!root.path().join("captures").exists());
+    }
+    #[test]
+    fn missing_readiness_or_panic_releases_admission_and_preserves_partial_audio() {
+        for behavior in [Behavior::NoReady,Behavior::PanicBeforeReady] {
+            let root=tempfile::tempdir().unwrap();let recorder=Recorder::new(root.path().canonicalize().unwrap(),synthetic(behavior));
+            assert!(recorder.start("microphone".into()).is_err());
+            assert_eq!(recorder.status().phase,"idle");
+            let pending=recorder.recoverable().unwrap();assert_eq!(pending.len(),1);
+            let completed=recorder.recover(pending[0].session_id.clone()).unwrap();
+            assert_eq!(fs::metadata(completed.path.clone()).unwrap().len(),244);
+        }
+    }
+    #[test]
+    fn duplicate_readiness_interrupts_instead_of_resetting_the_capture_clock() {
+        let root=tempfile::tempdir().unwrap();let recorder=Recorder::new(root.path().canonicalize().unwrap(),synthetic(Behavior::DuplicateReady));
+        recorder.start("microphone".into()).unwrap();
+        let completed=recorder.stop().unwrap();
+        assert_eq!(completed.status.phase,"interrupted");
+        assert!(completed.status.warning.unwrap().contains("readiness twice"));
+    }
+    #[test]
+    fn startup_timeout_keeps_ownership_until_late_backend_cleanup_is_joined() {
+        let root=tempfile::tempdir().unwrap();let (release,init)=mpsc::channel();
+        let backend=Arc::new(Synthetic { behavior:Behavior::Normal,stopped:Arc::new(std::sync::atomic::AtomicBool::new(false)),init:Some(Mutex::new(init)) });
+        let mut recorder=Recorder::new(root.path().canonicalize().unwrap(),backend.clone());
+        recorder.startup_timeout=std::time::Duration::from_millis(10);
+        let status=recorder.start("microphone".into()).unwrap();
+        assert_eq!(status.phase,"starting");assert!(status.warning.is_some());
+        assert!(recorder.recoverable().unwrap().is_empty());
+        release.send(()).unwrap();
+        let completed=recorder.stop().unwrap();
+        assert!(backend.stopped.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(recorder.status().phase,"idle");assert!(completed.path.is_file());
+    }
     #[test]
     fn interrupted_recording_can_be_recovered_then_marked_imported() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
-        let recorder = Recorder::new(root.clone());
+        let recorder = Recorder::new(root.clone(), Arc::new(crate::capture_platform::UnavailableCapture));
         let id = uuid::Uuid::new_v4().to_string();
         let (session, guard) = guard::create(&root, &id).unwrap();
         let mut wav = wav::Wav::create(&session.join("source.wav")).unwrap();
@@ -438,7 +534,7 @@ mod tests {
     fn active_session_does_not_appear_in_recovery() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
-        let recorder = Recorder::new(root.clone());
+        let recorder = Recorder::new(root.clone(), Arc::new(crate::capture_platform::UnavailableCapture));
         let id = uuid::Uuid::new_v4().to_string();
         let (session, guard) = guard::create(&root, &id).unwrap();
         let mut wav = wav::Wav::create(&session.join("source.wav")).unwrap();
@@ -473,7 +569,7 @@ mod tests {
     fn panicked_capture_is_repaired_and_reported_interrupted() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
-        let recorder = Recorder::new(root.clone());
+        let recorder = Recorder::new(root.clone(), Arc::new(crate::capture_platform::UnavailableCapture));
         let id = uuid::Uuid::new_v4().to_string();
         let (session, guard) = guard::create(&root, &id).unwrap();
         let path = session.join("source.wav");
@@ -513,7 +609,7 @@ mod tests {
         std::fs::write(&original, [0u8; 64]).unwrap();
         std::fs::hard_link(&original, session.join("source.wav")).unwrap();
         drop(guard);
-        let recorder = Recorder::new(canonical);
+        let recorder = Recorder::new(canonical, Arc::new(crate::capture_platform::UnavailableCapture));
         assert!(recorder.recover(id).is_err());
         assert!(recorder.recoverable().unwrap().is_empty());
         assert_eq!(std::fs::read(original).unwrap(), [0u8; 64]);
@@ -527,7 +623,7 @@ mod tests {
         std::fs::create_dir(root.path().join("captures")).unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         symlink(outside.path(), root.path().join("captures").join(&id)).unwrap();
-        let recorder = Recorder::new(root.path().canonicalize().unwrap());
+        let recorder = Recorder::new(root.path().canonicalize().unwrap(), Arc::new(crate::capture_platform::UnavailableCapture));
         assert!(recorder.recover(id).is_err());
         assert!(recorder.recoverable().unwrap().is_empty());
     }

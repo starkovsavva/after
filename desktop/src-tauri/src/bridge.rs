@@ -89,7 +89,8 @@ impl LibraryBridge {
             error
         })?;
         workspace.capabilities.import = true;
-        workspace.capabilities.recording = crate::capture::Recorder::available();
+        // Device capabilities are supplied by the injected recorder in IPC.
+        workspace.capabilities.recording = false;
         workspace.capabilities.recording_recovery = true;
         Ok(workspace)
     }

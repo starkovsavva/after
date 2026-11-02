@@ -548,7 +548,7 @@ fn canonical_engine_persists_scoped_notes_and_rejects_stale_edits() {
     assert!(initial.capabilities.library);
     assert!(initial.capabilities.import);
     assert!(initial.capabilities.tasks && initial.capabilities.cards);
-    assert_eq!(initial.capabilities.recording, cfg!(windows));
+    assert!(!initial.capabilities.recording); // Metadata bridge does not select a device backend.
     assert!(!initial.capabilities.assistant);
     let folder = bridge
         .save_folder(SaveFolderInput {

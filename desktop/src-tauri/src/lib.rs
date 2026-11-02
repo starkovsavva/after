@@ -8,6 +8,9 @@ mod recording_import;
 pub mod import_history;
 mod imports;
 mod capture;
+mod capture_backend;
+mod capture_platform;
+mod capture_audio;
 mod media;
 mod platform;
 pub mod models;
@@ -61,9 +64,15 @@ async fn background<T: Send + 'static>(
         })?
 }
 #[tauri::command]
-async fn get_workspace(state: tauri::State<'_, LibraryBridge>) -> Result<Workspace, HostError> {
+async fn get_workspace(state: tauri::State<'_, LibraryBridge>, recorder: tauri::State<'_, Arc<capture::Recorder>>) -> Result<Workspace, HostError> {
     let bridge = state.inner().clone();
-    background(move || bridge.workspace()).await
+    let recorder=recorder.inner().clone();
+    background(move || {
+        let mut workspace=bridge.workspace()?;
+        workspace.capabilities.recording_modes=recorder.capabilities().modes();
+        workspace.capabilities.recording=!workspace.capabilities.recording_modes.is_empty();
+        Ok(workspace)
+    }).await
 }
 #[tauri::command]
 async fn get_meeting(
@@ -330,7 +339,7 @@ pub fn run() {
             let data_dir = app.path().app_local_data_dir()?;
             let bridge = LibraryBridge::bundled(&resource_dir, &data_dir)?;
             app.manage(std::sync::Arc::new(capture::Recorder::new(
-                bridge.data_root(),
+                bridge.data_root(), capture_platform::backend(),
             )));
             app.manage(Arc::new(RecordingGate(AtomicBool::new(false))));
             app.manage(Arc::new(imports::Imports::default()));
@@ -432,7 +441,10 @@ mod ipc_tests {
         .map(|body| body.deserialize::<Value>().unwrap())
     }
     fn application(bridge: LibraryBridge) -> tauri::App<MockRuntime> {
-        let recorder=Arc::new(capture::Recorder::new(bridge.data_root()));
+        application_with_backend(bridge,capture_platform::backend())
+    }
+    fn application_with_backend(bridge: LibraryBridge,backend:Arc<dyn capture_backend::CaptureBackend>)->tauri::App<MockRuntime> {
+        let recorder=Arc::new(capture::Recorder::new(bridge.data_root(),backend));
         library_commands(mock_builder())
             .manage(bridge)
             .manage(recorder)
@@ -527,7 +539,18 @@ mod ipc_tests {
         );
         let fixture = tempfile::tempdir().unwrap();
         let bridge = LibraryBridge::for_development(engine, fixture.path().join("data")).unwrap();
-        let app = application(bridge);
+        struct SyntheticMicrophone;
+        impl capture_backend::CaptureBackend for SyntheticMicrophone {
+            fn capabilities(&self)->capture_backend::CaptureCapabilities { capture_backend::CaptureCapabilities::MICROPHONE }
+            fn record(&self,request:capture_backend::CaptureRequest<'_>,control:&mut dyn capture_backend::CaptureControl)->Result<(),String> {
+                let mut wav=capture_audio::Wav::create(request.destination).map_err(|error|error.to_string())?;
+                wav.write(&[0.25;100]).map_err(|error|error.to_string())?;
+                control.started()?;
+                while !control.wait_for_stop(std::time::Duration::from_millis(10)) {}
+                wav.finish().map_err(|error|error.to_string())
+            }
+        }
+        let app = application_with_backend(bridge,Arc::new(SyntheticMicrophone));
         let main = window(&app, "main", fixture.path());
         let initial = request(&main, "get_workspace", json!({}), local_origin()).unwrap();
         assert_eq!(initial["notes"], json!([]));
@@ -626,6 +649,16 @@ mod ipc_tests {
         assert_eq!(std::fs::read(late_dir.join("source.wav")).unwrap(),captured_wav());
         let capabilities=request(&main,"get_workspace",json!({}),local_origin()).unwrap();
         assert_eq!(capabilities["capabilities"]["recordingRecovery"],true);
+        let devices=request(&main,"get_workspace",json!({}),local_origin()).unwrap();
+        assert_eq!(devices["capabilities"]["recording"],true);
+        assert_eq!(devices["capabilities"]["recordingModes"],json!(["microphone"]));
+        assert!(request(&main,"start_recording",json!({"mode":"microphone_and_system"}),local_origin()).is_err());
+        let live=request(&main,"start_recording",json!({"mode":"microphone"}),local_origin()).unwrap();
+        assert_eq!(live["phase"],"recording");
+        let saved=request(&main,"stop_recording",json!({"title":"Synthetic microphone"}),local_origin()).unwrap();
+        assert_eq!(saved["meeting"]["id"],live["sessionId"]);
+        assert_eq!(saved["interrupted"],false);
+        assert!(fixture.path().join("data/captures").join(live["sessionId"].as_str().unwrap()).join("imported").is_file());
         let source = fixture.path().join("synthetic.wav");
         let bytes: Vec<u8> = (0..1_048_600).map(|n| (n % 251) as u8).collect();
         std::fs::write(&source, &bytes).unwrap();
@@ -651,7 +684,7 @@ mod ipc_tests {
         assert_eq!(history["jobs"][0]["state"],"succeeded");
         assert_eq!(history["jobs"][0]["attempt"],2);
         let end = request(&main,"import_history",json!({"after":{"createdAt":0.0,"id":job.id}}),local_origin()).unwrap();
-        assert_eq!(end["total"],3);
+        assert_eq!(end["total"],4);
         assert!(end["jobs"].as_array().unwrap().is_empty());
         assert_eq!(end["hasMore"],false);
         assert_eq!(request(&main,"import_history",json!({"after":{"createdAt":0.0,"id":"../../private"}}),local_origin()).unwrap_err()["code"],"invalid_request");

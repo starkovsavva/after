@@ -39,7 +39,7 @@ reaps; соединение больше не используется. Обыч
 ## Следующая граница
 
 Explicit Run уже размещает import worker внутри owner-процесса и joins его
-до освобождения lease. File-picker и recording UI используют durable controller. История/retry с пагинацией по 50 jobs и startup recovery подключены; нужны CaptureBackend и Linux capture adapters; явный retry
+до освобождения lease. File-picker и recording UI используют durable controller. История/retry с пагинацией по 50 jobs и startup recovery подключены; нужны Linux capture adapters через выделенный CaptureBackend port; явный retry
 проверяет receipt до нового копирования. Сам lease не делает внешний эффект
 идемпотентным: [политика выполнения](owned-import-execution.md) описывает эту границу.
 

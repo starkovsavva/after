@@ -1,13 +1,11 @@
-use super::{
-    wav::{Mixer, Wav, RATE},
-    Shared,
+use crate::{
+    capture_audio::{Mixer, Wav, RATE},
+    capture_backend::{
+        CaptureBackend, CaptureCapabilities, CaptureControl, CaptureMode, CaptureRequest,
+    },
 };
 use std::{
     path::Path,
-    sync::{
-        mpsc::{Receiver, SyncSender},
-        Arc, Mutex,
-    },
     time::{Duration, Instant},
 };
 use wasapi::{AudioClient, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
@@ -136,33 +134,22 @@ fn now_hns() -> Result<u64> {
     }
     Ok(((counter as u128 * 10_000_000) / frequency as u128) as u64)
 }
-pub fn record(
-    path: &Path,
-    mode: &str,
-    stop: Receiver<()>,
-    ready: SyncSender<Result<()>>,
-    state: Arc<Mutex<Shared>>,
-) -> Result<()> {
-    let mut ready = Some(ready);
-    let result = run(path, mode, stop, &mut ready, state);
-    if let Some(ready) = ready {
-        let _ = ready.send(result.clone());
+pub(crate) struct WindowsCapture;
+impl CaptureBackend for WindowsCapture {
+    fn capabilities(&self) -> CaptureCapabilities {
+        CaptureCapabilities::MICROPHONE_AND_SYSTEM
     }
-    result
+    fn record(&self, request: CaptureRequest<'_>, control: &mut dyn CaptureControl) -> Result<()> {
+        run(request.destination, request.mode, control)
+    }
 }
-fn run(
-    path: &Path,
-    mode: &str,
-    stop: Receiver<()>,
-    ready: &mut Option<SyncSender<Result<()>>>,
-    state: Arc<Mutex<Shared>>,
-) -> Result<()> {
+fn run(path: &Path, mode: CaptureMode, control: &mut dyn CaptureControl) -> Result<()> {
     wasapi::initialize_mta()
         .ok()
         .map_err(|err| format!("Cannot initialize Windows audio: {err}"))?;
     let e = DeviceEnumerator::new().map_err(|err| format!("Cannot find audio devices: {err}"))?;
     let mut microphone = Input::open(&e, Direction::Capture)?;
-    let mut system = if mode == "microphone_and_system" {
+    let mut system = if mode == CaptureMode::MicrophoneAndSystem {
         Some(Input::open(&e, Direction::Render)?)
     } else {
         None
@@ -180,13 +167,12 @@ fn run(
             .start_stream()
             .map_err(|err| format!("Cannot start system audio: {err}"))?;
     }
-    {
-        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-        s.started = Some(Instant::now());
-        s.status.phase = "recording".into();
-    }
-    if let Some(ready) = ready.take() {
-        let _ = ready.send(Ok(()));
+    if let Err(error) = control.started() {
+        let _ = microphone.client.stop_stream();
+        if let Some(system) = &system {
+            let _ = system.client.stop_stream();
+        }
+        return Err(error);
     }
     let mut last_device_check = Instant::now();
     let capture_result = loop {
@@ -212,7 +198,7 @@ fn run(
         if let Err(e) = result {
             break Err(e);
         }
-        if stop.recv_timeout(Duration::from_millis(10)).is_ok() {
+        if control.wait_for_stop(Duration::from_millis(10)) {
             // Packets can arrive during the wait. Drain once more before
             // stopping the streams so the final audio is not silently cut off.
             let final_drain = microphone.drain(0, base, &mut mixer).and_then(|_| {

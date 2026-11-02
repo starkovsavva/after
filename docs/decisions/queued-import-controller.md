@@ -37,8 +37,8 @@ transient session для reload WebView и отмены. Старый byte-progr
 
 ## Проверки и следующие шаги
 
-На Arch прошли 51 host tests, 10 real-engine integrations, настоящий Tauri IPC,
-frontend build/model checks и 17 Playwright scenarios. Проверены изменение budget
+На Arch прошли 56 host tests, 10 real-engine integrations, настоящий Tauri IPC,
+frontend build/model checks и 18 Playwright scenarios. Проверены изменение budget
 внутри зависшего RPC, grace, stale attempts, отмена до enqueue, published success,
 неизменность source и повторный receipt lookup без исходного файла.
 Системный file picker и Windows/macOS локально не проверены.
@@ -47,4 +47,4 @@ Grant-free history и явный retry/cancel pending jobs подключены;
 открывает queue для reconciliation без выполнения работы. Connection используется
 на одну native операцию; reservation сериализует чтение и запуск. UI загружает
 всю историю страницами по 50 jobs ([ADR](import-history-pagination.md)). Следующие этапы —
-CaptureBackend и Linux capture/ASR adapters. Платные и model workers не запускаются автоматически.
+Linux capture/ASR adapters через выделенный CaptureBackend port. Платные и model workers не запускаются автоматически.

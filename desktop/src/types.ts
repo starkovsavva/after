@@ -34,10 +34,11 @@ export interface Note {
   revision: number;
   updatedAt?: number | string;
 }
+export type RecordingMode = 'microphone' | 'microphone_and_system';
 export interface Capabilities {
   library: boolean;
   import: boolean;
-  recording: boolean; recordingRecovery?: boolean;
+  recording: boolean; recordingRecovery?: boolean; recordingModes?: RecordingMode[];
   calendar: boolean;
   assistant: boolean;
   cards: boolean;

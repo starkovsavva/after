@@ -3,10 +3,32 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from check_layers import violations, outer_layer_violations
+from check_layers import violations, outer_layer_violations, capture_boundary_violations
 
 
 class LayerBoundaryTests(unittest.TestCase):
+    def test_capture_lifecycle_takes_a_port_without_selecting_the_os(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "capture.rs"
+            source.write_text("use crate::capture_backend::CaptureBackend;\n")
+            self.assertEqual(list(capture_boundary_violations(root)), [])
+            source.write_text("#[cfg(windows)] use wasapi::Device;\n")
+            self.assertTrue(list(capture_boundary_violations(root)))
+
+    def test_capture_port_rejects_grouped_io_and_driver_state_coupling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "capture_backend.rs"
+            source.write_text("use std::{path::Path, time::Duration};\n")
+            self.assertEqual(list(capture_boundary_violations(root)), [])
+            source.write_text("use std::{path::Path, fs};\n")
+            self.assertTrue(list(capture_boundary_violations(root)))
+            source.unlink()
+            (root / "capture").mkdir()
+            (root / "capture/windows.rs").write_text("use super::Shared;\n")
+            self.assertTrue(list(capture_boundary_violations(root)))
+
     def test_domain_cycles_and_outward_imports_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

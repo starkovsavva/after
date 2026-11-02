@@ -2,7 +2,7 @@
 
 Статус: Stop/Recover и file-picker используют один durable executor. Private PCM WAV
 можно восстанавливать на всех desktop OS; физическая запись пока Windows-only.
-Linux portal/PipeWire и ASR/model workers остаются незавершёнными.
+[CaptureBackend port](capture-backend-port.md) отделяет общий lifecycle от драйвера; Linux portal/PipeWire и ASR/model workers остаются незавершёнными.
 
 ## Слои и identity
 
@@ -50,11 +50,11 @@ Live cancellation использует новый controlId и прежние de
 
 ## Проверки и продолжение
 
-626 core + 2 CLI, 51 host, 10 real-engine и расширенный настоящий Tauri IPC прошли
+626 core + 2 CLI, 56 host, 10 real-engine и расширенный настоящий Tauri IPC прошли
 на Arch. IPC восстанавливает synthetic capture, повторяет publication/ack gap без
 source и подтверждает поздний ack после history Resume. Unit tests проверяют scope,
 ambiguity, receipt-before-repair, private token, guard lifetime, duplicate handles,
-реальный child-process lock и сохранность linked files. 17 Playwright scenarios
+реальный child-process lock и сохранность linked files. 18 Playwright scenarios
 включают recovery без physical backend и последовательность maintenance reads.
 Native WebView smoke использует временную библиотеку. Физические устройства,
 macOS/Windows runtime и качество ASR локально не проверялись; Swift сохраняется.
