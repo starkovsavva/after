@@ -12,3 +12,5 @@ pub(crate) mod knowledge;
 
 pub mod creation_origin;
 pub mod asr_models;
+
+pub(crate) mod speech;

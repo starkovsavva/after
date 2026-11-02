@@ -149,7 +149,9 @@ Linux worker launch теперь использует verified standalone CPytho
 CPU speech dependency profile подключён через pinned wheel lock и проверен на настоящем
 ONNX inference/FFmpeg; managed Parakeet установлен через общий Unix generation store,
 реальная CLI ASR проверена на синтетической английской речи. Очередь Tauri и диаризация
-ещё не подключены; [ADR](decisions/runtime-inventory-boundary.md).
+ещё не подключены. Native staged speech execution/publication с source/result revision CAS
+и atomic receipt реализован как следующая граница для очереди;
+[publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,
 requirements, manifests, managed model host.

@@ -169,6 +169,25 @@ fn main() {
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
         return;
     }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--posle-speech-job")) {
+        let args: Vec<_> = std::env::args_os().skip(2).collect();
+        let result = (|| -> Result<Value> {
+            if args.len() != 4 || args[0] != "--root" || args[2] != "--backend" {
+                bail!("Usage: --posle-speech-job --root /owned/root --backend /backend < request.json");
+            }
+            let raw = read_voice_input(io::stdin())?;
+            if raw.get("inspect").and_then(Value::as_str).is_some() && raw.as_object().is_some_and(|v| v.len()==1) {
+                return Ok(json!({"inputRevision":posle_core::speech_job::inspect(Path::new(&args[1]),raw["inspect"].as_str().unwrap())?}));
+            }
+            let work = serde_json::from_value(raw)?;
+            Ok(json!({"receipt":posle_core::speech_job::execute(Path::new(&args[1]),Path::new(&args[3]),&work)?}))
+        })();
+        match result {
+            Ok(value) => println!("{}",json!({"event":"done","speechJob":value})),
+            Err(error) => { eprintln!("{error:#}"); std::process::exit(1); }
+        }
+        return;
+    }
     if std::env::args_os().nth(1).as_deref()
         == Some(std::ffi::OsStr::new("--posle-install-asr-model"))
     {

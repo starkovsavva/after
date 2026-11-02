@@ -306,3 +306,10 @@ python3 scripts/check-linux-asr.py --python-archive /absolute/path/python.tar.gz
 предыдущего результата/источника. Микрофон и личные записи не используются.
 Качество других языков, диаризация и Tauri speech queue этим не подтверждены.
 [Артефакты и архитектура](decisions/managed-parakeet-model.md).
+
+
+Native speech jobs теперь имеют отдельный staged execution/publication протокол:
+вычисление использует копии медиа, Rust проверяет исходную ревизию и публикует
+транскрипт с приватным receipt. Повтор уже committed операции не запускает модель.
+Это фундамент для durable Tauri speech queue; UI capability пока не включена.
+[Протокол, восстановление и ограничения](decisions/native-speech-publication.md).

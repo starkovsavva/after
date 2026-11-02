@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import uuid
 import tempfile
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -67,7 +68,14 @@ def main():
             + f'runpy.run_path({str(PROJECT / "backend/engine.py")!r},run_name="__main__")\n')
         command = ['transcribe','--root',str(library),'--backend',str(backend),'--meeting',str(meeting),'--no-diarization']
         print("Transcribing synthetic English speech", file=sys.stderr, flush=True)
-        run(command)
+        job_command = ['--posle-speech-job','--root',str(library),'--backend',str(backend)]
+        inspected = json.loads(run(job_command,payload=json.dumps({'inspect':imported['id']})).stdout.splitlines()[-1])
+        work = {'version':1,'operationId':str(uuid.uuid4()),'attemptToken':str(uuid.uuid4()),'meetingId':imported['id'],
+                'inputRevision':inspected['speechJob']['inputRevision'],'settings':settings}
+        completed = json.loads(run(job_command,payload=json.dumps(work)).stdout.splitlines()[-1])
+        receipt = completed['speechJob']['receipt']
+        if receipt['operationId'] != work['operationId'] or receipt['attemptToken'] != work['attemptToken']:
+            raise RuntimeError('Native speech publication returned the wrong receipt')
         transcript = meeting / 'transcript.json'; preserved = transcript.read_bytes()
         value = json.loads(preserved)
         words = re.findall(r'[a-z]+',' '.join(segment['text'] for segment in value['segments']).lower())
@@ -86,6 +94,9 @@ def main():
         token_file.chmod(mode | stat.S_IWUSR)
         try:
             token_file.write_bytes(bytes([original[0]^1])+original[1:])
+            repeated = json.loads(run(job_command,payload=json.dumps(work)).stdout.splitlines()[-1])
+            if repeated['speechJob']['receipt'] != receipt:
+                raise RuntimeError('Committed speech was not reconciled without rerunning the damaged model')
             blocked = run(command,expected=False)
             if 'ASR model integrity verification failed' not in blocked.stdout+blocked.stderr:
                 raise RuntimeError('Corrupted managed model was not rejected by the native guard')
@@ -98,7 +109,7 @@ def main():
             token_file.write_bytes(original);token_file.chmod(mode)
         if transcript.read_bytes()!=preserved or hashlib.sha256(source.read_bytes()).hexdigest()!=source_hash:
             raise RuntimeError('Integrity failure altered previous transcription or source')
-        print(json.dumps({'passed':True,'realParakeetCpu':True,'syntheticSpeechOnly':True,'canonicalTranscript':True,'liveSettingsSwitchDidNotRedirect':True,
+        print(json.dumps({'passed':True,'realParakeetCpu':True,'syntheticSpeechOnly':True,'canonicalTranscript':True,'nativeStagedPublication':True,'receiptPreventedRepeatInference':True,'liveSettingsSwitchDidNotRedirect':True,
                           'corruptArchivePreservedActive':True,'tamperedModelRejectedBeforeExecution':True,
                           'frozenSelectionPreserved':True,'previousTranscriptAndSourcePreserved':True},indent=2))
 

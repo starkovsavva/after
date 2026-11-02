@@ -382,3 +382,6 @@ mod tests {
 
 #[cfg(unix)]
 pub mod asr_model;
+
+#[cfg(unix)]
+pub mod speech_job;

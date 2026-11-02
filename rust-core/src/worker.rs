@@ -60,7 +60,20 @@ pub fn run_worker(
     speakers: u32,
     diarization: bool,
 ) -> Result<()> {
-    let request = worker_request(root, backend, command, meeting, speakers, diarization)?;
+    let settings = crate::infrastructure::speech_settings::capture(root)?;
+    run_worker_selected(root, backend, command, meeting, speakers, diarization, settings)
+}
+
+pub(crate) fn run_worker_selected(
+    root: &Path,
+    backend: &Path,
+    command: &str,
+    meeting: Option<&Path>,
+    speakers: u32,
+    diarization: bool,
+    settings: crate::application::speech_launch::SpeechSettings,
+) -> Result<()> {
+    let request = worker_request(root, backend, command, meeting, speakers, diarization, settings)?;
     if !backend.join("engine.py").is_file() {
         bail!("В приложении отсутствует модуль распознавания. Повторите установку приложения.");
     }
@@ -107,6 +120,7 @@ fn worker_request(
     meeting: Option<&Path>,
     speakers: u32,
     diarization: bool,
+    settings: crate::application::speech_launch::SpeechSettings,
 ) -> Result<WorkerRequest> {
     validate_paths(root, backend)?;
     if !matches!(command, "prepare" | "transcribe" | "diarize" | "finalize" | "install-local") {
@@ -136,7 +150,6 @@ fn worker_request(
             arguments.push(OsString::from("--no-diarization"));
         }
     }
-    let settings = crate::infrastructure::speech_settings::capture(root)?;
     Ok(WorkerRequest {
         arguments,
         accepts_speech_key: command == "transcribe" && settings.cloud(),
@@ -418,7 +431,7 @@ fn forward_stdout(mut input: impl Read, plain_progress: bool, redactor: &Redacto
 mod tests {
     use crate::platform::apple_bundle::native_host_path;
     fn worker_spec(root: &Path, backend: &Path, command: &str, meeting: Option<&Path>, speakers: u32, diarization: bool) -> Result<WorkerSpec> {
-        Ok(worker_request(root,backend,command,meeting,speakers,diarization)?.with_launch(crate::platform::macos_speech::worker(root,&std::env::current_exe()?)?))
+        Ok(worker_request(root,backend,command,meeting,speakers,diarization,crate::infrastructure::speech_settings::capture(root)?)?.with_launch(crate::platform::macos_speech::worker(root,&std::env::current_exe()?)?))
     }
     fn setup_spec(root: &Path, backend: &Path) -> Result<WorkerSpec> {
         validate_paths(root, backend)?;
