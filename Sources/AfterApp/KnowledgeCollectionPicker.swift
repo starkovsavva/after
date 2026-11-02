@@ -133,7 +133,7 @@ struct KnowledgeCollectionPicker: View {
                 if folders.count > 1 { folderList }
                 VStack(alignment: .leading, spacing: 12) {
                     TextField(L("Найти по названию или тексту"), text: $draft.query)
-                        .textFieldStyle(.roundedBorder).disabled(draft.saving)
+                        .afterSearchField().disabled(draft.saving)
                         .accessibilityIdentifier("knowledge.collection.pick.search")
                     ScrollView {
                         if candidates.isEmpty { emptyState }

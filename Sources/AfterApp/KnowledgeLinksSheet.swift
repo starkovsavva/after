@@ -277,7 +277,7 @@ struct KnowledgeLinksSheet: View {
                     KnowledgeMeetingSourcesView(source: source) { notes.reload(); controller.refresh() }
                     Divider()
                     Text(L("Связать с заметкой")).font(AppTypography.controlStrong)
-                    TextField(L("Найти заметку"), text: $query).textFieldStyle(.roundedBorder)
+                    TextField(L("Найти заметку"), text: $query).afterSearchField()
                         .accessibilityIdentifier("knowledge.links.search")
                     ForEach(Array(candidates.prefix(50))) { other in
                         HStack {

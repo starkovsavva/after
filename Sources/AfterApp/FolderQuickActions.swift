@@ -160,7 +160,7 @@ struct FolderMeetingPicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(LF("Переместить в «{0}»", arguments: [String(describing: (folder.name))])).font(AppTypography.modalTitle).lineLimit(2)
-            TextField(L("Найти встречу"), text: $query).textFieldStyle(.roundedBorder).accessibilityIdentifier("folder.add.search")
+            TextField(L("Найти встречу"), text: $query).afterSearchField().accessibilityIdentifier("folder.add.search")
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(candidates) { meeting in

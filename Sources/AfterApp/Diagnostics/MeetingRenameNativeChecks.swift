@@ -222,13 +222,14 @@ enum MeetingRenameNativeChecks {
         host.window.sendEvent(event)
         try await Task.sleep(for: .milliseconds(30))
     }
-    private static func settle(_ host: Host, _ condition: () -> Bool) async throws {
+    private static func settle(_ host: Host, line: UInt = #line, _ condition: () -> Bool) async throws {
         for _ in 0..<150 {
             host.view.layoutSubtreeIfNeeded(); host.window.displayIfNeeded()
             if condition() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
-        throw AppError.message("Native meeting rename did not reach expected state. Title: " + (field(host)?.stringValue ?? "missing"))
+        let responder = host.window.firstResponder.map { String(reflecting: type(of: $0)) } ?? "none"
+        throw AppError.message("Native meeting rename did not reach expected state at line \(line). Key window: \(host.window.isKeyWindow); field editor: \(field(host)?.currentEditor() != nil); responder: \(responder). Title: " + (field(host)?.stringValue ?? "missing"))
     }
     private static func expect(_ value: Bool, _ message: String) throws { if !value { throw AppError.message(message) } }
 }

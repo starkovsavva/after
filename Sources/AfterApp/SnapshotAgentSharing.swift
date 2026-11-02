@@ -299,7 +299,8 @@ struct TaskSnapshotShareSheet: View {
             HStack {
                 Text(LF("Выбрано {0} из 50 заметок", arguments: [String(selected.count)])).font(AppTypography.controlStrong).accessibilityIdentifier("snapshot.selection-count")
                 Spacer()
-                TextField(L("Поиск"), text: $query).frame(width: 220).accessibilityIdentifier("snapshot.note-search")
+                TextField(L("Поиск"), text: $query).afterSearchField()
+                    .frame(minWidth: 220, idealWidth: 280, maxWidth: 320).accessibilityIdentifier("snapshot.note-search")
             }
             if selected.count >= AgentSharePresentation.noteLimit {
                 Text(L("В одном снимке можно передать до 50 заметок. Снимите выбор с одной заметки, чтобы добавить другую."))

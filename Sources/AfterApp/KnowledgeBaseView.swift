@@ -228,7 +228,7 @@ struct KnowledgeBaseView: View {
                             .accessibilityIdentifier("knowledge.collection.create")
                     }
                 }
-                TextField(L("Найти заметку или встречу"), text: $query).textFieldStyle(.roundedBorder)
+                TextField(L("Найти заметку или встречу"), text: $query).afterSearchField()
                     .accessibilityIdentifier("knowledge.topics.search")
                 if section == "materials" {
                     KnowledgeMaterialsView(query: query)

@@ -143,7 +143,7 @@ struct MaterialFiltersControl: View {
                     Text(L("Карточки из встреч, которые входят в выбранные темы. Тема относится к источнику карточки."))
                         .font(AppTypography.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                TextField(L("Найти тему"), text: $topicQuery).textFieldStyle(.roundedBorder)
+                TextField(L("Найти тему"), text: $topicQuery).afterSearchField()
                     .accessibilityIdentifier(identifier + ".topic.search")
                 if topicsLoading { ProgressView(L("Загружаю темы…")).controlSize(.small) }
                 if filteredTopics.isEmpty {

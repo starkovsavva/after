@@ -154,7 +154,8 @@ struct CardsWorkspaceView: View {
                             [.init(title: L("Все колоды"), value: "")] + decks.map { .init(title: $0.title, value: $0.id) },
                             showsLabel: false, maxWidth: 210, searchable: true, identifier: "cards.deck")
                     }
-                    TextField(L("Найти карточку"), text: $query).textFieldStyle(.roundedBorder).frame(width: 220)
+                    TextField(L("Найти карточку"), text: $query).afterSearchField()
+                        .frame(minWidth: 240, idealWidth: 300, maxWidth: 360)
                         .accessibilityIdentifier("cards.search")
                     MaterialFiltersControl(selection: filtersBinding, target: .cards, topics: filtering.topics, topicsLoading: filtering.topicsLoading,
                                            onLoadTopics: { filtering.loadTopics(store: app) }, identifier: "cards.filters",

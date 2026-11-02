@@ -175,7 +175,7 @@ struct NotesInboxView: View {
                         Text(L("Входящие")).font(AppTypography.sectionTitle).accessibilityAddTraits(.isHeader)
                         if notes.error == nil { Text("\(inbox.count)").font(AppTypography.caption).foregroundStyle(.secondary) }
                         Spacer()
-                        TextField(L("Поиск в заметках"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                        TextField(L("Поиск в заметках"), text: $query).afterSearchField().frame(maxWidth: 300)
                             .accessibilityLabel(L("Поиск во входящих заметках"))
                     }
                     NoteComposer(text: text, kind: kind, placeholder: L("Новая заметка…"), documentID: "capture:" + draftKey) {
@@ -736,7 +736,7 @@ struct NotesContextsView: View {
                                 + labels.map { .init(title: $0, value: $0) }, showsLabel: false, searchable: true, identifier: "contexts.selection")
                         if !selected.isEmpty { Text(LF("Встреч: {0}", arguments: [String(describing: (related.count))])).font(AppTypography.caption).foregroundStyle(.secondary) }
                         if allLabels.count > 7 || !query.isEmpty {
-                            TextField(L("Фильтр"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 180)
+                            TextField(L("Фильтр"), text: $query).afterSearchField().frame(maxWidth: 300)
                                 .accessibilityLabel(mode == "project" ? L("Найти проект") : L("Найти человека"))
                         }
                     }

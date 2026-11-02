@@ -20,7 +20,7 @@ struct TranscriptView: View {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField(L("Поиск по словам встречи"), text: $store.transcriptSearch).textFieldStyle(.plain)
                     Text(LF("Реплик: {0}", arguments: [String(describing: (segments.count))])).foregroundStyle(.secondary).monospacedDigit()
-                }.padding(10).background(Ink.soft, in: RoundedRectangle(cornerRadius: AppLayout.controlRadius))
+                }.afterSearchFieldSurface()
                 Button { showingSpeakers = true } label: {
                     Label(LF("Собеседники: {0}", arguments: [String(describing: (Set((store.transcript?.segments ?? []).map(\.speaker).filter { $0 != "unknown" }).count))]), systemImage: "person.2")
                 }.buttonStyle(AfterSoftButtonStyle()).disabled(store.busy || store.isRecording)

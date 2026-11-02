@@ -314,7 +314,7 @@ struct NotesLibraryView: View {
                     TextField(L("Поиск заметок"), text: $query).textFieldStyle(.plain).accessibilityLabel(L("Поиск по заголовкам, тексту, тегам и вложениям"))
                         .accessibilityIdentifier("notes.search")
                     if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel(L("Очистить поиск заметок")) }
-                }.padding(8).background(Ink.field, in: RoundedRectangle(cornerRadius: 7))
+                }.afterSearchFieldSurface()
                 AfterCompactPicker(L("Показать"), selection: $filter, options: [
                     .init(title: L("Все заметки"), value: "all"), .init(title: L("Без встречи"), value: "inbox"),
                     .init(title: L("Закреплённые"), value: "pinned"), .init(title: L("Корзина"), value: "trash")

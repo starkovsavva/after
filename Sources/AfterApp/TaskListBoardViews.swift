@@ -31,7 +31,7 @@ struct TaskListPane: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField(L("Найти задачу…"), text: $query).textFieldStyle(.plain).accessibilityIdentifier("tasks.search")
-            }.padding(9).background(Ink.soft, in: RoundedRectangle(cornerRadius: AppLayout.controlRadius)).padding(12)
+            }.afterSearchFieldSurface().padding(12)
             HStack {
                 Text(L("Задачи")).font(AppTypography.captionStrong)
                 Spacer(); Text("\(tasks.count)").font(AppTypography.caption).monospacedDigit()

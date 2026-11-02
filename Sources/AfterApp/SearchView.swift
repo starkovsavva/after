@@ -15,18 +15,20 @@ struct SearchView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass").font(.system(size: 21)).foregroundStyle(Ink.accent)
-                TextField(L("Слово или фраза"), text: $store.searchQuery)
-                    .font(.system(size: 20)).textFieldStyle(.plain).focused($queryFocused)
-                    .accessibilityLabel(store.notes.folder(store.folderSelection).map { L("Поиск в папке «") + $0.name + "»" } ?? L("Поиск по всей библиотеке"))
-                    .onSubmit { openSelected() }
-                    .onKeyPress(.downArrow) { move(1); return .handled }
-                    .onKeyPress(.upArrow) { move(-1); return .handled }
-                if byMeaning ? knowledge.searching || knowledge.openingID != nil : store.searching || store.searchOpeningID != nil { ProgressView().controlSize(.small) }
-                if !store.searchQuery.isEmpty {
-                    Button { store.searchQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                        .buttonStyle(.plain).accessibilityLabel(L("Очистить поиск"))
-                }
+                HStack(spacing: 12) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 21)).foregroundStyle(Ink.accent)
+                    TextField(L("Слово или фраза"), text: $store.searchQuery)
+                        .font(.system(size: 20)).textFieldStyle(.plain).focused($queryFocused)
+                        .accessibilityLabel(store.notes.folder(store.folderSelection).map { L("Поиск в папке «") + $0.name + "»" } ?? L("Поиск по всей библиотеке"))
+                        .onSubmit { openSelected() }
+                        .onKeyPress(.downArrow) { move(1); return .handled }
+                        .onKeyPress(.upArrow) { move(-1); return .handled }
+                    if byMeaning ? knowledge.searching || knowledge.openingID != nil : store.searching || store.searchOpeningID != nil { ProgressView().controlSize(.small) }
+                    if !store.searchQuery.isEmpty {
+                        Button { store.searchQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                            .buttonStyle(.plain).accessibilityLabel(L("Очистить поиск"))
+                    }
+                }.afterSearchFieldSurface(isFocused: queryFocused)
                 Button(L("Закрыть")) { store.showingSearch = false }
                     .buttonStyle(.borderless).keyboardShortcut(.cancelAction)
             }.padding(22)

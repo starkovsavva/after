@@ -38,7 +38,8 @@ struct TrashView: View {
             HStack {
                 Text(L("Корзина")).font(AppTypography.pageTitle)
                 Spacer()
-                TextField(L("Найти в Корзине"), text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 240)
+                TextField(L("Найти в Корзине"), text: $query).afterSearchField()
+                    .frame(minWidth: 240, idealWidth: 300, maxWidth: 360)
             }.padding(24)
             Divider()
             if loading { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }

@@ -52,7 +52,7 @@ struct TaskAttachmentSheet: View {
     }
     private var notePicker: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField(L("Найти заметку"), text: $query).textFieldStyle(.roundedBorder).accessibilityIdentifier("tasks.attach-note-search")
+            TextField(L("Найти заметку"), text: $query).afterSearchField().accessibilityIdentifier("tasks.attach-note-search")
             ScrollView {
                 LazyVStack(spacing: 2) {
                     ForEach(availableNotes) { note in
@@ -76,7 +76,7 @@ struct TaskAttachmentSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             AfterCompactPicker(L("Встреча"), selection: $meetingID,
                 options: [.init(title: L("Выберите встречу"), value: "")] + app.noteMeetings.map { .init(title: $0.title, value: $0.id) }, searchable: true).onChange(of: meetingID) { _, _ in selectedSegments = []; query = ""; loadTranscript() }
-            TextField(L("Найти реплику"), text: $query).textFieldStyle(.roundedBorder)
+            TextField(L("Найти реплику"), text: $query).afterSearchField().accessibilityIdentifier("tasks.attach-transcript-search")
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(segments.prefix(200)) { segment in
