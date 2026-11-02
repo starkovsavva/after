@@ -3,8 +3,8 @@
 ## Problem and boundaries
 
 An atomic activation record selects a generation; it cannot authorize an arbitrary
-interpreter. Existing common worker launch still assumes the Darwin helper and
-legacy venv layout. Linux execution first needs a retained, verified generation.
+interpreter. Linux execution needs a retained, verified generation. The former common Darwin
+helper/legacy-layout assumption is now isolated behind a [speech launch port](speech-launch-port.md).
 
 `platform/linux/runtime_active.rs` validates a bounded ordinary single-link
 `active.json` under owned, pinned directories. The receipt must contain schema 1,
@@ -46,7 +46,6 @@ guard alive, atomically switch to another genuine installed generation, validate
 new selection and recheck the retained old selection. It restores the original
 pointer before proceeding. Data and interpreters are disposable.
 
-This is not third-party package integrity or ASR readiness. Next: replace the common
-Darwin launch assumption with a Linux verified execution adapter, preserve progress,
-secret filtering/cancellation/process ownership, install backend-specific dependencies,
-and connect queued speech processing. Do not reuse macOS PyConfig on Linux.
+This is not third-party package integrity or ASR readiness. The [verified execution adapter](speech-launch-port.md) now preserves common progress,
+secret filtering/cancellation and process ownership. Next: install backend-specific
+dependencies and connect queued speech processing. Do not reuse macOS PyConfig on Linux.

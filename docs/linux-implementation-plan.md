@@ -142,7 +142,8 @@ Mac/Windows проверки остаются доступными. Нативн
 Linux x86_64 GNU CPython закреплён и проверен на настоящем архиве/изолированном venv;
 generation installer CPython/venv реализован с atomic activation и сохранением previous generation;
 проверяемый active-generation selector и общий Unix venv binding подключены;
-speech dependencies, Linux worker launch и ASR ещё не подключены; [ADR](decisions/runtime-inventory-boundary.md).
+Linux worker launch теперь использует verified standalone CPython через общий supervisor;
+speech dependencies, очередь ASR и настоящее распознавание ещё не подключены; [ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,
 requirements, manifests, managed model host.

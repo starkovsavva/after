@@ -11,3 +11,5 @@ pub(crate) mod import_execution;
 pub(crate) mod import_recovery;
 
 pub(crate) mod runtime_install;
+
+pub(crate) mod speech_launch;

@@ -10,6 +10,7 @@ on:
       - 'scripts/*desktop*'
       - 'scripts/check-linux-microphone.py'
       - 'scripts/check-linux-python-runtime.py'
+      - 'scripts/linux_speech_fixture.py'
       - 'scripts/pin_python_runtime.py'
       - 'scripts/test_python_runtime_policy.py'
       - 'backend/python-runtime*.json'

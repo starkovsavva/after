@@ -1,5 +1,6 @@
 //! Native runtime composition. macOS owns embedded speech; Linux currently
-//! supplies pinned CPython inventory verification, not an execution/ASR adapter.
+//! supplies verified standalone CPython execution. Speech dependencies and full
+//! ASR integration still require separate platform verification.
 //! Each OS must supply its own verified distribution, loading and execution path.
 
 #[cfg(target_os = "macos")]
@@ -23,3 +24,25 @@ pub(crate) fn clone_model(_source: &std::path::Path, _destination: &std::path::P
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::python_runtime;
+
+pub(crate) mod apple_bundle;
+#[cfg(any(target_os = "macos", all(unix, test)))]
+#[path = "macos/speech_launch.rs"]
+pub(crate) mod macos_speech;
+
+#[cfg(unix)]
+pub(crate) fn speech_launch(root: &std::path::Path) -> anyhow::Result<crate::application::speech_launch::SpeechLaunch> {
+    #[cfg(target_os = "macos")]
+    { macos_speech::worker(root, &std::env::current_exe()?) }
+    #[cfg(target_os = "linux")]
+    { linux::speech_launch::worker(root) }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    { anyhow::bail!("Speech runtime is unavailable on this platform") }
+}
+#[cfg(unix)]
+pub(crate) fn speech_setup(root: &std::path::Path, backend: &std::path::Path) -> anyhow::Result<crate::application::speech_launch::SpeechLaunch> {
+    #[cfg(target_os = "macos")]
+    { macos_speech::setup(root, backend, &std::env::current_exe()?) }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = (root, backend); anyhow::bail!("Speech dependency installation is not available on this platform yet. Install the pinned CPython separately.") }
+}

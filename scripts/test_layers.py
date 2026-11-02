@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from check_layers import violations, outer_layer_violations, capture_boundary_violations, runtime_boundary_violations
+from check_layers import violations, outer_layer_violations, capture_boundary_violations, runtime_boundary_violations, speech_boundary_violations
 
 
 class LayerBoundaryTests(unittest.TestCase):
@@ -35,6 +35,16 @@ class LayerBoundaryTests(unittest.TestCase):
             self.assertTrue(list(runtime_boundary_violations(root)))
             source.write_text("use super::runtime_tree::open;\n")
             self.assertEqual(list(runtime_boundary_violations(root)), [])
+
+    def test_shared_speech_supervisor_cannot_choose_darwin_or_legacy_python(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "worker.rs"
+            for value in ['"--posle-python-host"', '"runtime/venv/bin/python"', '"/bin/bash"']:
+                source.write_text(value)
+                self.assertTrue(list(speech_boundary_violations(root)))
+            source.write_text("guard.recheck()?; ProcessTree::spawn(&mut command)?;")
+            self.assertEqual(list(speech_boundary_violations(root)), [])
 
     def test_capture_lifecycle_takes_a_port_without_selecting_the_os(self):
         with tempfile.TemporaryDirectory() as directory:

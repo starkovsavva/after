@@ -176,4 +176,8 @@ before reading the distribution or following venv aliases. Its guard pins scope
 identities, base inventory and venv binding; it never treats the active pointer as
 an execution grant. Atomic pointer updates affect future selections. The real
 archive fixture retains a selected guard while switching to another generation.
-This validates selection, not third-party package provenance or Linux speech launch.
+Selection does not attest third-party package provenance. Speech launch is now
+composed through `application/speech_launch.rs`: Linux executes verified standalone
+CPython, macOS selects its existing branded helper/setup adapter. Shared `worker.rs`
+owns credentials/progress/signals/process scope and retains the runtime guard through
+child cleanup. Apple bundle path compatibility lives in `platform/apple_bundle.rs`.

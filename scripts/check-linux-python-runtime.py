@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 
 from pin_python_runtime import inventory, render
+from linux_speech_fixture import check_worker
 
 PROJECT = Path(__file__).resolve().parents[1]
 POLICY = PROJECT / 'backend/python-runtime-linux-x86_64.json'
@@ -153,6 +154,7 @@ def main():
         for installed in (first, second):
             subprocess.run([installed['interpreter'], '-B', '-I', '-c', 'import ssl,sys; assert sys.version.split()[0] == "3.12.16"'],
                            env=runtime_env, capture_output=True, text=True, check=True, timeout=15)
+        check_worker(engine, library, second, root, runtime_env)
         if (library / 'runtime/ready-v2').exists():
             raise RuntimeError('CPython installation must not claim speech readiness')
         # An on-disk policy cannot authorize extra code, and byte tampering is
@@ -171,7 +173,8 @@ def main():
                           'tamperRejected': True, 'systemPythonUsedAsRuntime': False,
                           'speechDependenciesInstalled': False, 'nativeGenerationInstall': True,
                           'failedInstallPreservedActive': True, 'previousGenerationPreserved': True, 'activeGenerationValidated': True,
-                          'pointerConfigAndAliasRedirectRejected': True, 'heldGenerationSurvivesActivation': True}, indent=2))
+                          'pointerConfigAndAliasRedirectRejected': True, 'heldGenerationSurvivesActivation': True, 'verifiedSpeechLaunch': True,
+                          'syntheticWorkerOnly': True, 'workerCancellationAndDescendantCleanup': True}, indent=2))
 
 
 if __name__ == '__main__':

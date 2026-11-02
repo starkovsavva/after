@@ -4,6 +4,7 @@
 //! error paths terminate the entire group, including ffmpeg/uv descendants.
 
 use anyhow::{anyhow, bail, Result};
+use crate::application::speech_launch::{RuntimeGuard, SpeechLaunch};
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -46,6 +47,7 @@ struct WorkerSpec {
     arguments: Vec<OsString>,
     forwards_plain_progress: bool,
     accepts_speech_key: bool,
+    guard: Option<Box<dyn RuntimeGuard>>,
 }
 
 /// Run only an audio/model command. Cloud/local LLM commands are deliberately
@@ -59,15 +61,13 @@ pub fn run_worker(
     speakers: u32,
     diarization: bool,
 ) -> Result<()> {
-    let spec = worker_spec(root, backend, command, meeting, speakers, diarization)?;
-    if !root.join("runtime/venv/bin/python").is_file() {
-        bail!("Сначала установите модели в настройках.");
-    }
-    if !spec.executable.is_file() {
-        bail!("В приложении отсутствует движок распознавания. Повторите установку приложения.");
-    }
+    let request = worker_request(root, backend, command, meeting, speakers, diarization)?;
     if !backend.join("engine.py").is_file() {
         bail!("В приложении отсутствует модуль распознавания. Повторите установку приложения.");
+    }
+    let spec = request.with_launch(crate::platform::speech_launch(root)?);
+    if !spec.executable.is_file() {
+        bail!("В приложении отсутствует движок распознавания. Повторите установку приложения.");
     }
     run(root, spec)
 }
@@ -75,7 +75,9 @@ pub fn run_worker(
 /// Install the private Python runtime and ASR dependencies, without a shell
 /// command string, shell profile changes, or passing any API key to the script.
 pub fn install_runtime(root: &Path, backend: &Path) -> Result<()> {
-    let spec = setup_spec(root, backend)?;
+    validate_paths(root, backend)?;
+    let launch = crate::platform::speech_setup(root, backend)?;
+    let spec = WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress: true, accepts_speech_key: false };
     if !backend.join("setup.sh").is_file() {
         bail!("В приложении отсутствует установщик моделей. Повторите установку приложения.");
     }
@@ -89,14 +91,14 @@ fn validate_paths(root: &Path, backend: &Path) -> Result<()> {
     Ok(())
 }
 
-fn worker_spec(
+fn worker_request(
     root: &Path,
     backend: &Path,
     command: &str,
     meeting: Option<&Path>,
     speakers: u32,
     diarization: bool,
-) -> Result<WorkerSpec> {
+) -> Result<WorkerRequest> {
     validate_paths(root, backend)?;
     if !matches!(command, "prepare" | "transcribe" | "diarize" | "finalize" | "install-local") {
         bail!("Неизвестная команда модуля распознавания.");
@@ -109,8 +111,6 @@ fn worker_spec(
         bail!("Папка встречи должна иметь абсолютный путь.");
     }
     let mut arguments = vec![
-        OsString::from("--posle-python-host"),
-        root.join("runtime/venv/bin/python").into_os_string(),
         backend.join("engine.py").into_os_string(),
         OsString::from(command),
         OsString::from("--root"),
@@ -127,57 +127,23 @@ fn worker_spec(
             arguments.push(OsString::from("--no-diarization"));
         }
     }
-    Ok(WorkerSpec {
-        executable: native_host_path(&std::env::current_exe()
-            .map_err(|_| anyhow!("Не удалось найти движок приложения."))?),
+    Ok(WorkerRequest {
         arguments,
-        forwards_plain_progress: false,
         accepts_speech_key: command == "transcribe" && cloud_speech_selected(root),
     })
 }
 
-/// Resolve the outer application from either its compatibility CLI executable
-/// or one of its nested helper applications. Helper resources belong to the
-/// enclosing product, rather than the helper's own Contents directory.
-pub fn application_contents(executable: &Path) -> Option<&Path> {
-    let contents = executable.parent()
-        .filter(|path| path.file_name().is_some_and(|name| name == "MacOS"))?
-        .parent().filter(|path| path.file_name().is_some_and(|name| name == "Contents"))?;
-    let package = contents.parent().filter(|path| path.extension().is_some_and(|name| name == "app"))?;
-    if let Some(outer) = package.parent()
-        .filter(|path| path.file_name().is_some_and(|name| name == "Helpers"))
-        .and_then(Path::parent)
-        .filter(|path| path.file_name().is_some_and(|name| name == "Contents"))
-        .filter(|path| path.parent().is_some_and(|parent| parent.extension().is_some_and(|name| name == "app"))) {
-        return Some(outer);
+pub use crate::platform::apple_bundle::application_contents;
+
+struct WorkerRequest {
+    arguments: Vec<OsString>,
+    accepts_speech_key: bool,
+}
+impl WorkerRequest {
+    fn with_launch(self, mut launch: SpeechLaunch) -> WorkerSpec {
+        launch.arguments.extend(self.arguments);
+        WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress: false, accepts_speech_key: self.accepts_speech_key }
     }
-    Some(contents)
-}
-
-/// Production uses a separately branded native helper inside the app. The
-/// ordinary engine binary supports the same private entry point for developers.
-fn native_host_path(engine: &Path) -> PathBuf {
-    application_contents(engine)
-        .map(|contents| {
-            let directory = contents.join("Helpers/После Распознавание.app/Contents/MacOS");
-            let current = directory.join("After Speech");
-            let legacy = directory.join("После Речь");
-            // A process from an earlier version may still see the old bundle
-            // while an update is being applied. Never prefer the legacy file
-            // when the current helper is present.
-            if !current.is_file() && legacy.is_file() { legacy } else { current }
-        })
-        .unwrap_or_else(|| engine.to_owned())
-}
-
-fn setup_spec(root: &Path, backend: &Path) -> Result<WorkerSpec> {
-    validate_paths(root, backend)?;
-    Ok(WorkerSpec {
-        executable: PathBuf::from("/bin/bash"),
-        arguments: vec![OsString::from("-p"), backend.join("setup.sh").into_os_string(), root.as_os_str().to_owned(), native_host_path(&std::env::current_exe()?).into_os_string()],
-        forwards_plain_progress: true,
-        accepts_speech_key: false,
-    })
 }
 
 #[derive(serde::Deserialize)]
@@ -316,6 +282,7 @@ impl Redactor {
 }
 
 fn run(root: &Path, spec: WorkerSpec) -> Result<()> {
+    let runtime_guard = spec.guard;
     let _single_worker = WORKER_LOCK.lock().map_err(|_| anyhow!("Предыдущая обработка прервалась. Повторите попытку."))?;
     let _signals = SignalGuard::install()?;
     let initial_parent = unsafe { libc::getppid() };
@@ -331,6 +298,7 @@ fn run(root: &Path, spec: WorkerSpec) -> Result<()> {
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONDONTWRITEBYTECODE", "1");
     sanitize_environment(&mut command, spec.accepts_speech_key, std::env::vars_os());
+    if let Some(guard) = &runtime_guard { guard.recheck()?; }
     let mut child = ProcessTree::spawn(&mut command).map_err(|_| anyhow!("Не удалось запустить модуль распознавания. Проверьте установку моделей."))?;
     let stdout = child.take_stdout().ok_or_else(|| anyhow!("Не удалось прочитать прогресс обработки."))?;
     let pipe_failed = Arc::new(AtomicBool::new(false));
@@ -463,12 +431,35 @@ fn forward_stdout(mut input: impl Read, plain_progress: bool, redactor: &Redacto
 
 #[cfg(test)]
 mod tests {
+    use crate::platform::apple_bundle::native_host_path;
+    fn worker_spec(root: &Path, backend: &Path, command: &str, meeting: Option<&Path>, speakers: u32, diarization: bool) -> Result<WorkerSpec> {
+        Ok(worker_request(root,backend,command,meeting,speakers,diarization)?.with_launch(crate::platform::macos_speech::worker(root,&std::env::current_exe()?)?))
+    }
+    fn setup_spec(root: &Path, backend: &Path) -> Result<WorkerSpec> {
+        validate_paths(root, backend)?;
+        let launch = crate::platform::macos_speech::setup(root,backend,&std::env::current_exe()?)?;
+        Ok(WorkerSpec { executable: launch.executable, arguments: launch.arguments, guard: launch.guard, forwards_plain_progress:true, accepts_speech_key:false })
+    }
+
     use super::*;
     #[cfg(target_os = "macos")]
     use std::process::Child;
 
     fn strings(spec: &WorkerSpec) -> Vec<String> {
         spec.arguments.iter().map(|argument| argument.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn invalid_runtime_guard_prevents_spawning_any_child() {
+        struct Refuse;
+        impl RuntimeGuard for Refuse {
+            fn recheck(&self) -> Result<()> { bail!("selected runtime changed") }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("must-not-exist");
+        let spec = WorkerSpec { executable: "/usr/bin/touch".into(), arguments: vec![marker.clone().into_os_string()], guard: Some(Box::new(Refuse)), forwards_plain_progress:false, accepts_speech_key:false };
+        assert!(run(root.path(),spec).unwrap_err().to_string().contains("selected runtime changed"));
+        assert!(!marker.exists());
     }
 
     #[test]
@@ -708,6 +699,7 @@ mod tests {
         let Some(directory) = std::env::var_os("POSLE_WORKER_TEST_DIRECTORY") else { return; };
         let directory = PathBuf::from(directory);
         let result = run(&directory, WorkerSpec {
+            guard: None,
             executable: PathBuf::from("/bin/bash"),
             arguments: vec![directory.join("fixture.sh").into_os_string(), directory.join("pids").into_os_string()],
             forwards_plain_progress: false,

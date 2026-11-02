@@ -62,7 +62,7 @@ def outer_layer_violations(src):
             source = re.sub(r"/\*.*?\*/|//[^\n]*", lambda m: "\n" * m[0].count("\n"), source, flags=re.S)
             forbidden = r"\bcrate\s*::\s*(?:notes|folders|corrections|workspace_repository|jobs)\b"
             if layer == "application":
-                forbidden = r"\bcrate\s*::\s*(?:infrastructure|notes|folders|storage|corrections|workspace_repository|platform_fs|jobs)\b|\b(?:reqwest|rusqlite|libc|tauri|after_process_runtime)\s*::|\bstd\s*::\s*(?:fs|os|process|net|env)\b"
+                forbidden = r"\bcrate\s*::\s*(?:infrastructure|platform|notes|folders|storage|corrections|workspace_repository|platform_fs|jobs)\b|\b(?:reqwest|rusqlite|libc|tauri|after_process_runtime)\s*::|\bstd\s*::\s*(?:fs|os|process|net|env)\b"
             for match in re.finditer(forbidden, source):
                 yield f"{path}:{source[:match.start()].count(chr(10)) + 1}: {layer} depends on a concrete outer implementation/facade"
 
@@ -90,6 +90,16 @@ def capture_boundary_violations(src):
                     yield f"{path}: capture port has a grouped OS/I/O dependency"
 
 
+def speech_boundary_violations(src):
+    path = src / "worker.rs"
+    if not path.exists():
+        return
+    source = re.split(r"#\[cfg\(test\)\]", path.read_text(), maxsplit=1)[0]
+    source = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.S)
+    if re.search(r"--posle-python-host|runtime/venv/bin/python|/bin/bash|Contents/MacOS|native_host_path", source):
+        yield f"{path}: shared speech supervisor selects a platform helper/runtime"
+
+
 def runtime_boundary_violations(src):
     for name in ("runtime_tree.rs", "runtime_venv.rs"):
         path = src / "infrastructure" / name
@@ -109,6 +119,7 @@ def main():
         parser.error("Domain source directory is missing or empty")
     errors = list(violations(args.domain_root)) + list(outer_layer_violations(args.domain_root.parent))
     errors += list(runtime_boundary_violations(args.domain_root.parent))
+    errors += list(speech_boundary_violations(args.domain_root.parent))
     errors += list(capture_boundary_violations(Path(__file__).resolve().parents[1] / "desktop/src-tauri/src"))
     if errors:
         raise SystemExit("\n".join(errors))

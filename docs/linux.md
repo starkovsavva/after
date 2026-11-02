@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 661 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
+и helper), 662 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 18 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -231,6 +231,21 @@ alias redirect и удержание настоящего поколения в�
 Он запускает opt-in Rust contract с feature `linux-runtime-fixture`.
 
 Проверка не подтверждает происхождение third-party packages и не запускает ASR.
-Текущий `worker.rs` ещё использует старый Darwin launch path: подключение Linux
-execution adapter и speech-зависимостей остаётся следующим этапом.
+Worker теперь выбирает launch через platform composition и исполняет проверенный
+Linux CPython. Speech-зависимости и настоящая ASR-обработка остаются следующим этапом.
 [Решение](decisions/active-runtime-selection.md).
+
+## Speech launch и общий supervisor
+
+`application/speech_launch.rs` задаёт executable/arguments и удерживаемый runtime
+guard. Linux-адаптер выбирает active generation, общий `worker.rs` повторно проверяет
+guard перед spawn и удерживает его до завершения процесса. Аргументы job и фильтрация
+credentials/progress остаются общими. Darwin helper/setup и bundle layout вынесены
+в platform adapters. `install-runtime` на Linux пока явно отказывает: CPython installer
+не означает готовность speech dependencies.
+
+Real runtime fixture теперь запускает synthetic `engine.py` через настоящую CLI
+`prepare`, проверяет venv/prefix, resource import, Python flags и удаление synthetic
+секретов. Затем отменяет долгий worker с потомком, игнорирующим SIGTERM, и проверяет
+их остановку. Это тест launch/supervision; аудио/ASR-модели не используются.
+[Архитектурная граница](decisions/speech-launch-port.md).
