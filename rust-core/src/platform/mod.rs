@@ -1,6 +1,6 @@
-//! Native runtime boundaries. The current application runtime is macOS-only;
-//! this module does not make the Unix persistence/domain code Windows-ready.
-//! Each future OS adapter must supply its own verified runtime policy and IPC.
+//! Native runtime composition. macOS owns embedded speech; Linux currently
+//! supplies pinned CPython inventory verification, not an execution/ASR adapter.
+//! Each OS must supply its own verified distribution, loading and execution path.
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -18,3 +18,8 @@ pub(crate) use macos::filesystem::clone_model;
 pub(crate) fn clone_model(_source: &std::path::Path, _destination: &std::path::Path) -> bool {
     false
 }
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::python_runtime;

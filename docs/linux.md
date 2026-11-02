@@ -71,7 +71,7 @@ UI-сценарий и не проверка нормального закрыт
 ## Подтверждённый срез
 
 Локально на Arch прошли portable-профиль: 7 process-runtime entries (6 сценариев
-и helper), 647 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
+и helper), 649 core (1 performance probe ignored) + 2 CLI, frontend build + 7 tests, 60 host + 10 real-engine
 интеграции + 1 настоящий Tauri IPC-сценарий. Отдельно прошли 18 Playwright-сценариев. Проверен native WebView startup с
 bundled engine. IPC-сценарий импортирует синтетический файл и читает диапазон медиа;
 host-регрессия проверяет cleanup потомка с открытыми pipes. Диалог выбора файла,
@@ -163,6 +163,26 @@ cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rus
 ```
 
 21 synthetic contract покрывает ELF-style inventory и существующий macOS
-venv/descriptor binding. Это не подтверждение Linux ASR: отдельный pinned runtime,
-installer, speech dependencies и сквозная очередь обработки ещё нужны.
+venv/descriptor binding. Linux x86_64 GNU CPython 3.12.16 теперь закреплён отдельным manifest и проверяется
+через native verifier. Installer, speech dependencies и сквозная очередь ASR ещё нужны.
 [Граница verifier/loader](decisions/runtime-inventory-boundary.md).
+
+## Настоящий закреплённый CPython
+
+`backend/python-runtime-linux-x86_64.json` содержит полный inventory официального
+Python build standalone 3.12.16 (`20261026`, x86_64 GNU). Архив закреплён по размеру
+и SHA-256; native verifier использует только скомпилированный manifest.
+
+```sh
+python3 scripts/check-linux-python-runtime.py --download
+# Либо без сети, с ранее скачанным архивом:
+python3 scripts/check-linux-python-runtime.py --archive /absolute/path/python.tar.gz
+python3 scripts/pin_python_runtime.py --archive /absolute/path/python.tar.gz --policy backend/python-runtime-linux-x86_64.json --check
+```
+
+Fixture сначала проверяет архив и дерево, затем запускает CPython/SSL и создаёт
+изолированный venv без pip. Проверяет exact version/prefix, отсутствие изменений
+в base после venv и отказ после tampering. Все данные временные; речь и модели не
+загружаются. Реальный `--download` путь проверен на Arch; CI настроен, удалённый
+прогон пока не подтверждён. Остальные Linux targets пока не имеют pinned policy.
+[Происхождение и ограничения](decisions/linux-pinned-cpython.md).

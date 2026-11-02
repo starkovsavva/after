@@ -9,6 +9,10 @@ on:
       - 'process-runtime/**'
       - 'scripts/*desktop*'
       - 'scripts/check-linux-microphone.py'
+      - 'scripts/check-linux-python-runtime.py'
+      - 'scripts/pin_python_runtime.py'
+      - 'scripts/test_python_runtime_policy.py'
+      - 'backend/python-runtime*.json'
       - '.github/workflows/desktop.yml'
       - 'scripts/verify.py'
       - 'scripts/test_verify.py'
@@ -75,6 +79,12 @@ jobs:
         run: |
           cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --test real_engine -- --ignored
           cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --lib -- --ignored
+      - name: Pinned Python inventory generator contracts
+        if: runner.os != 'Windows'
+        run: python3 -m unittest discover -s scripts -p test_python_runtime_policy.py
+      - name: Real pinned Linux CPython and isolated venv
+        if: runner.os == 'Linux'
+        run: python3 scripts/check-linux-python-runtime.py --download
       - name: Private virtual Linux microphone SDK
         if: runner.os == 'Linux'
         run: |

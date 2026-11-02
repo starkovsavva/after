@@ -15,6 +15,10 @@ import re
 import tarfile
 
 POLICY = Path(__file__).resolve().parents[1] / "backend/python-runtime.json"
+LIBRARIES = {
+    "aarch64-apple-darwin": "lib/libpython3.12.dylib",
+    "x86_64-unknown-linux-gnu": "lib/libpython3.12.so.1.0",
+}
 
 
 def normalized(name: str) -> str:
@@ -26,9 +30,12 @@ def normalized(name: str) -> str:
 
 
 def inventory(archive: Path, policy: dict) -> dict:
+    platform_target = policy.get("target", "aarch64-apple-darwin")
+    if platform_target not in LIBRARIES or not policy.get("directory", "").endswith("-" + platform_target):
+        raise ValueError("Unsupported or mismatched CPython target")
     if (policy.get("schemaVersion") != 1 or not re.fullmatch(r"3\.12\.[0-9]+", policy.get("version", ""))
             or not re.fullmatch(r"[0-9a-f]{64}", policy.get("archive_sha256", ""))
-            or not re.fullmatch(r"cpython-[A-Za-z0-9.+-]+", policy.get("directory", ""))
+            or not re.fullmatch(r"cpython-[A-Za-z0-9.+_-]+", policy.get("directory", ""))
             or not policy.get("archive_url", "").startswith("https://github.com/astral-sh/python-build-standalone/releases/download/")):
         raise ValueError("Invalid pinned CPython policy")
     if archive.is_symlink() or not archive.is_file() or archive.stat().st_size != policy["archive_size"]:
@@ -48,7 +55,7 @@ def inventory(archive: Path, policy: dict) -> dict:
                     raise ValueError("Invalid archive root")
                 continue
             relative = "/".join(parts[1:])
-            if relative in names or relative.casefold() in folded:
+            if relative in names or (platform_target == "aarch64-apple-darwin" and relative.casefold() in folded):
                 raise ValueError("Duplicate or ambiguous archive path: " + relative)
             names.add(relative); folded.add(relative.casefold())
             parent = PurePosixPath(relative).parent
@@ -83,10 +90,12 @@ def inventory(archive: Path, policy: dict) -> dict:
             current = posixpath.normpath(posixpath.join(posixpath.dirname(current), aliases[current]))
         if current not in regular | directories:
             raise ValueError("Dangling archive alias: " + alias)
-    for required in ("bin/python3.12", "lib/libpython3.12.dylib", "lib/python3.12/encodings/__init__.py"):
+    for required in ("bin/python3.12", LIBRARIES[platform_target], "lib/python3.12/encodings/__init__.py"):
         if required not in regular:
             raise ValueError("Missing required CPython file: " + required)
     result = {key: policy[key] for key in ("schemaVersion", "version", "directory", "archive_url", "archive_sha256", "archive_size")}
+    if "target" in policy:
+        result["target"] = platform_target
     result.update(directories=sorted(directories), files=sorted(files, key=lambda entry: entry["path"]), links=sorted(links, key=lambda entry: entry["path"]))
     return result
 
@@ -96,6 +105,8 @@ def render(policy: dict) -> str:
     lines = ["{"]
     for key in ("schemaVersion", "version", "directory", "archive_url", "archive_sha256", "archive_size"):
         lines.append("  " + json.dumps(key) + ": " + json.dumps(policy[key]) + ",")
+    if "target" in policy:
+        lines.append('  "target": ' + json.dumps(policy["target"]) + ",")
     for key in ("directories", "files", "links"):
         lines.append("  " + json.dumps(key) + ": [")
         entries = policy[key]
@@ -108,14 +119,15 @@ def render(policy: dict) -> str:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, required=True)
+    parser.add_argument("--policy", type=Path, default=POLICY, help="Reviewed target-specific policy; defaults to the existing macOS policy")
     parser.add_argument("--check", action="store_true", help="Fail if the committed inventory differs; never write")
     args = parser.parse_args()
-    expected = render(inventory(args.archive, json.loads(POLICY.read_text())))
+    expected = render(inventory(args.archive, json.loads(args.policy.read_text())))
     if args.check:
-        if POLICY.read_text() != expected:
+        if args.policy.read_text() != expected:
             raise SystemExit("Committed CPython inventory differs from the verified archive")
     else:
-        POLICY.write_text(expected)
+        args.policy.write_text(expected)
     print("Verified pinned CPython archive and complete inventory")
 
 

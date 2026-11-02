@@ -159,7 +159,7 @@ fn main() {
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
         return;
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(posle_core::python_runtime::VERIFY_MODE)) {
         let args: Vec<_> = std::env::args_os().skip(2).collect();
         let result = if args.len() == 1 { posle_core::python_runtime::verify_distribution(Path::new(&args[0])) }

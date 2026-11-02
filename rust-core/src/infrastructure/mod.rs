@@ -11,8 +11,7 @@ pub(crate) mod executor_lease;
 
 pub(crate) mod agent_store_layout;
 
-// Production consumer is currently macOS; Linux exercises the same verifier
-// before a platform-specific pinned distribution/installer is introduced.
+// Both macOS and Linux choose their own pinned policy/layout at composition.
 #[cfg(unix)]
 #[allow(dead_code)]
 pub(crate) mod runtime_tree;

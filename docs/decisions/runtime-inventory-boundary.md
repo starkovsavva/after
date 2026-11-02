@@ -35,8 +35,8 @@ dependencies in the shared verifier. Full desktop regressions retain real-engine
 and Tauri IPC coverage. Actual macOS loader/SDK behavior needs macOS CI/native
 verification; Linux execution is not evidence for those behaviors.
 
-Linux still needs a reviewed pinned distribution and manifest, installer with
-verification before execution and rollback, an isolated execution adapter,
+Linux now has a [reviewed pinned distribution and real archive/venv fixture](linux-pinned-cpython.md).
+It still needs an installer with verification before execution and rollback, an isolated execution adapter,
 backend-specific speech dependencies, and real queued ASR integration. Windows
 needs its own secure file adapter; Unix code is not a Windows verifier. No
 capability or installation-success claim is enabled by this extraction.

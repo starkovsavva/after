@@ -12,7 +12,9 @@ mod desktop_media;
 pub mod desktop_platform;
 mod platform;
 #[cfg(target_os = "macos")]
-pub use platform::{embedded_speech, python_runtime};
+pub use platform::embedded_speech;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub use platform::python_runtime;
 #[cfg(target_os = "macos")]
 use platform::managed_embedding_transport;
 #[cfg(unix)]

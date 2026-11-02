@@ -89,7 +89,10 @@ alerts and URLs that the application does not own.
 The Unix inventory verifier receives required bootstrap files and the library path
 from its caller. It never chooses a distribution or loads Python. Linux synthetic
 fixtures verify ELF-style inventory names and also compile/run the existing
-macOS venv/descriptor contracts; they do not prove a working Linux CPython runtime.
+macOS venv/descriptor contracts; they do not prove a working Linux speech runtime. Linux composition now supplies
+a separate pinned x86_64 GNU policy and the verification CLI. An opt-in real
+archive fixture verifies CPython/SSL and isolated venv execution; installer and
+queued speech execution remain pending.
 
 The established crate paths `python_runtime` and `embedded_speech` are re-exported
 for compatibility. The `posle_request`, `posle_free_string`, `posle_speech_run` and

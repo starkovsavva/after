@@ -10,10 +10,10 @@ import pin_python_runtime as pin
 
 
 class PinnedPythonPolicyTests(unittest.TestCase):
-    def archive(self, root, extra=()):
+    def archive(self, root, extra=(), target="aarch64-apple-darwin"):
         archive = root / "python.tar.gz"
         with tarfile.open(archive, "w:gz") as package:
-            for name in ("bin/python3.12", "lib/libpython3.12.dylib", "lib/python3.12/encodings/__init__.py"):
+            for name in ("bin/python3.12", pin.LIBRARIES[target], "lib/python3.12/encodings/__init__.py"):
                 content = b"synthetic executable bytes, never executed: " + name.encode()
                 item = tarfile.TarInfo("python/" + name); item.size = len(content)
                 package.addfile(item, io.BytesIO(content))
@@ -22,7 +22,37 @@ class PinnedPythonPolicyTests(unittest.TestCase):
         policy = {"schemaVersion": 1, "version": "3.12.16", "directory": "cpython-3.12.16+20261026-aarch64-apple-darwin",
                   "archive_url": "https://github.com/astral-sh/python-build-standalone/releases/download/fixture/python.tar.gz",
                   "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "archive_size": archive.stat().st_size}
+        if target != "aarch64-apple-darwin":
+            policy.update(target=target, directory="cpython-3.12.16+20261026-" + target)
         return archive, policy
+
+    def test_linux_layout_and_case_distinct_inventory_preserve_macos_rules(self):
+        extra = []
+        for name in ('share/terminfo/x/Entry', 'share/terminfo/x/entry'):
+            entry = tarfile.TarInfo('python/' + name); entry.size = 1
+            extra.append((entry, b'x'))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive, policy = self.archive(root, extra, 'x86_64-unknown-linux-gnu')
+            actual = pin.inventory(archive, policy)
+            self.assertEqual(actual['target'], 'x86_64-unknown-linux-gnu')
+            self.assertEqual(len(actual['files']), 5)
+            self.assertEqual(json.loads(pin.render(actual)), actual)
+            archive, policy = self.archive(root, extra)
+            with self.assertRaisesRegex(ValueError, 'ambiguous'):
+                pin.inventory(archive, policy)
+
+    def test_target_mismatch_and_missing_linux_library_fail_before_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive, policy = self.archive(Path(temporary))
+            for target in ('windows-x86_64', 'x86_64-unknown-linux-gnu'):
+                with self.subTest(target=target), self.assertRaises(ValueError):
+                    pin.inventory(archive, policy | {'target': target})
+            with self.assertRaisesRegex(ValueError, 'Missing required'):
+                pin.inventory(archive, policy | {
+                    'target': 'x86_64-unknown-linux-gnu',
+                    'directory': 'cpython-3.12.16+20261026-x86_64-unknown-linux-gnu',
+                })
 
     def test_inventory_is_derived_from_verified_archive_and_deterministic(self):
         with tempfile.TemporaryDirectory() as temporary:
