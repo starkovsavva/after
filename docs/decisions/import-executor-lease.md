@@ -40,7 +40,7 @@ reaps; соединение больше не используется. Обыч
 
 Explicit Run уже размещает import worker внутри owner-процесса и joins его
 до освобождения lease. File-picker UI использует durable controller; recording import пока отдельный
-путь. История/retry последних 50 jobs и startup recovery подключены; нужны полная пагинация и recording queue binding; явный retry
+путь. История/retry с пагинацией по 50 jobs и startup recovery подключены; нужен recording queue binding; явный retry
 проверяет receipt до нового копирования. Сам lease не делает внешний эффект
 идемпотентным: [политика выполнения](owned-import-execution.md) описывает эту границу.
 

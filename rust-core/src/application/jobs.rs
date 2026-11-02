@@ -1,7 +1,8 @@
 //! Shared durable queue use cases. Admission and lifecycle policy run against a
 //! transaction port; storage, time, identity and live worker handles stay outside.
 use super::job_ports::{
-    JobClock, JobIds, JobMatchScope, JobQueueRepository, JobQueueTransaction, JobSelection,
+    JobClock, JobHistoryCursor, JobHistoryPage, JobIds, JobMatchScope, JobQueueRepository,
+    JobQueueTransaction, JobSelection,
 };
 use crate::domain::jobs::{
     chatgpt_account, chatgpt_execution_account, reached_chatgpt_limit, resource_available, Job,
@@ -60,6 +61,40 @@ pub(crate) struct JobQueue<R, C, I> {
 }
 
 impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
+    pub fn history(&self, after: Option<&JobHistoryCursor>) -> Result<JobHistoryPage> {
+        const LIMIT: usize = 50;
+        if let Some(cursor) = after {
+            cursor.validate()?;
+        }
+        let snapshot = self.repository.history(self.kind, after, LIMIT)?;
+        ensure!(
+            snapshot.jobs.len() <= LIMIT
+                && snapshot.total >= snapshot.jobs.len() as u64
+                && (!snapshot.has_more || snapshot.jobs.len() == LIMIT),
+            "Invalid history page"
+        );
+        let mut previous = after.cloned();
+        for job in &snapshot.jobs {
+            self.owned(job)?;
+            let cursor = JobHistoryCursor {
+                created_at: job.created_at,
+                id: job.id.clone(),
+            };
+            cursor.validate()?;
+            ensure!(
+                previous
+                    .as_ref()
+                    .is_none_or(|previous| cursor.follows(previous)),
+                "Unordered history page"
+            );
+            previous = Some(cursor);
+        }
+        Ok(JobHistoryPage {
+            next_cursor: if snapshot.has_more { previous } else { None },
+            jobs: snapshot.jobs,
+            total: snapshot.total,
+        })
+    }
     pub fn execute(&self, command: JobCommand) -> Result<JobReply> {
         match command {
             JobCommand::List => Ok(JobReply::Snapshot(self.repository.snapshot(self.kind)?)),
@@ -303,6 +338,7 @@ impl<R: JobQueueRepository, C: JobClock, I: JobIds> JobQueue<R, C, I> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::job_ports::JobHistorySnapshot;
     use crate::domain::jobs::{JobUpdate, UpdateField};
     use anyhow::Context;
     use serde_json::{json, to_value};
@@ -350,6 +386,42 @@ mod tests {
                     .into_iter()
                     .filter(|job| kind.is_none_or(|kind| kind == job.kind))
                     .collect(),
+            })
+        }
+        fn history(
+            &self,
+            kind: Option<&str>,
+            after: Option<&JobHistoryCursor>,
+            limit: usize,
+        ) -> Result<JobHistorySnapshot> {
+            let state = self.state.borrow();
+            let mut jobs: Vec<_> = state
+                .jobs
+                .iter()
+                .filter(|job| kind.is_none_or(|kind| kind == job.kind))
+                .cloned()
+                .collect();
+            let total = jobs.len() as u64;
+            jobs.retain(|job| {
+                after.is_none_or(|after| {
+                    (JobHistoryCursor {
+                        created_at: job.created_at,
+                        id: job.id.clone(),
+                    })
+                    .follows(after)
+                })
+            });
+            jobs.sort_by(|a, b| {
+                b.created_at
+                    .total_cmp(&a.created_at)
+                    .then_with(|| b.id.cmp(&a.id))
+            });
+            let has_more = jobs.len() > limit;
+            jobs.truncate(limit);
+            Ok(JobHistorySnapshot {
+                jobs,
+                total,
+                has_more,
             })
         }
         fn recovery_candidates(
@@ -533,6 +605,63 @@ mod tests {
             JobReply::Claimed(job) => job,
             _ => panic!("expected claim"),
         }
+    }
+
+    #[test]
+    fn history_pages_preserve_scope_ties_and_position_when_jobs_complete() {
+        let mut queue = queue();
+        queue.kind = Some("example");
+        for index in 0..121 {
+            let mut job = definition(&format!("object-{index}"))
+                .into_job(format!("job-{index:03}"), (index / 7) as f64);
+            job.state = [
+                "queued",
+                "running",
+                "interrupted",
+                "failed",
+                "succeeded",
+                "cancelled",
+                "blocked",
+            ][index % 7]
+                .into();
+            queue.repository.state.borrow_mut().jobs.push(job);
+        }
+        let mut foreign = definition("foreign").into_job("foreign-newer".into(), 9999.0);
+        foreign.kind = "foreign".into();
+        queue.repository.state.borrow_mut().jobs.push(foreign);
+        let first = queue.history(None).unwrap();
+        assert_eq!(first.total, 121);
+        assert_eq!(first.jobs.len(), 50);
+        let mut ids: Vec<_> = first.jobs.iter().map(|job| job.id.clone()).collect();
+        let cursor = first.next_cursor.unwrap();
+        {
+            let mut state = queue.repository.state.borrow_mut();
+            state.jobs[120].state = "succeeded".into();
+            state.jobs[120].updated_at = 99_999.0;
+            state
+                .jobs
+                .push(definition("new-front").into_job("new-front".into(), 999.0));
+        }
+        let mut next = Some(cursor);
+        while let Some(cursor) = next {
+            let page = queue.history(Some(&cursor)).unwrap();
+            assert_eq!(page.total, 122);
+            ids.extend(page.jobs.iter().map(|job| job.id.clone()));
+            next = page.next_cursor;
+        }
+        let expected: Vec<_> = (0..121)
+            .rev()
+            .map(|index| format!("job-{index:03}"))
+            .collect();
+        assert_eq!(ids, expected);
+        assert_eq!(queue.history(None).unwrap().jobs[0].id, "new-front");
+        assert_eq!(queue.repository.transactions.get(), 0);
+        assert!(queue
+            .history(Some(&JobHistoryCursor {
+                created_at: f64::NAN,
+                id: "invalid".into()
+            }))
+            .is_err());
     }
 
     #[test]

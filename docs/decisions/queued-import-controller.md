@@ -38,14 +38,14 @@ transient session для reload WebView и отмены. Старый byte-progr
 
 ## Проверки и следующие шаги
 
-На Arch прошли 42 host tests, 9 real-engine integrations, настоящий Tauri IPC,
-frontend build/model checks и 15 Playwright scenarios. Проверены изменение budget
+На Arch прошли 44 host tests, 10 real-engine integrations, настоящий Tauri IPC,
+frontend build/model checks и 16 Playwright scenarios. Проверены изменение budget
 внутри зависшего RPC, grace, stale attempts, отмена до enqueue, published success,
 неизменность source и повторный receipt lookup без исходного файла.
 Системный file picker и Windows/macOS локально не проверены.
 
 Grant-free history и явный retry/cancel pending jobs подключены; startup probe
 открывает queue для reconciliation без выполнения работы. Connection используется
-на одну native операцию; reservation сериализует чтение и запуск. UI показывает
-последние 50 jobs и сообщает о truncation. Следующие этапы — полная пагинация
-и перенос recording import. Платные и model workers не запускаются автоматически.
+на одну native операцию; reservation сериализует чтение и запуск. UI загружает
+всю историю страницами по 50 jobs ([ADR](import-history-pagination.md)). Следующий этап —
+перенос recording import. Платные и model workers не запускаются автоматически.

@@ -129,7 +129,7 @@ node scripts/check-desktop-browser.mjs
 
 ## Следующие срезы
 
-1. Добавить полную пагинацию [истории импортов](decisions/import-history-and-resume.md) и перенести сохранение recordings с standalone WorkerHost. История последних 50 jobs, явный retry/cancel и startup receipt reconciliation уже подключены; recovery не запускает работу.
+1. Перенести сохранение recordings с standalone WorkerHost на durable queue. [История импортов](decisions/import-history-pagination.md) с пагинацией по 50 jobs, явный retry/cancel и startup receipt reconciliation подключены; recovery не запускает работу.
 2. Импорт копии существующей библиотеки, профили и функциональные вкладки папок, задачи/карточки, MCP и помощник.
 3. Отдельные CaptureBackend macOS / Windows / portal+PipeWire; микрофон, звук Mac/PC и видео с одним таймлайном.
 4. Перенос ASR/model-runtime manifests, секретов, календаря и безопасного обновления; проверка полных сценариев на каждой ОС.

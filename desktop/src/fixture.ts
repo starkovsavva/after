@@ -47,7 +47,7 @@ export const fixtureAPI: LibraryAPI = {
   async stopRecording(title) { await delay(); if (!fixtureRecording().sessionId) throw { code: 'recording_error' }; sessionStorage.removeItem('posle.demo.recording'); const meeting = { id: crypto.randomUUID(), title, startedAt: Date.now() / 1000, durationSeconds: 1, folderId: null, hasTranscript: false, hasSummary: false }; workspace.meetings = [meeting, ...workspace.meetings]; persist(); return { meeting, interrupted: false }; },
   async recoverableRecordings() { return []; },
   async recoverRecording() { throw { code: 'unsupported_platform' }; },
-  async importHistory() { return { jobs: [], total: 0, hasMore: false }; },
+  async importHistory() { return { jobs: [], total: 0, hasMore: false, nextCursor: null }; },
   async resumeImport() { throw { code: 'invalid_request' }; },
   async cancelQueuedImport() { throw { code: 'invalid_request' }; },
   async importStatus() { return clone(importState); },

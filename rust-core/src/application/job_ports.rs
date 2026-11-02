@@ -3,6 +3,40 @@
 use crate::domain::jobs::{Job, JobQueueSnapshot};
 use anyhow::Result;
 
+/// Immutable creation key; progress/completion cannot move a row across pages.
+#[derive(Clone, serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct JobHistoryCursor {
+    pub created_at: f64,
+    pub id: String,
+}
+impl JobHistoryCursor {
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.created_at.is_finite()
+                && !self.id.is_empty()
+                && self.id.len() <= 512
+                && !self.id.contains('\0'),
+            "Invalid history cursor"
+        );
+        Ok(())
+    }
+    pub fn follows(&self, previous: &Self) -> bool {
+        self.created_at < previous.created_at
+            || (self.created_at == previous.created_at && self.id < previous.id)
+    }
+}
+pub(crate) struct JobHistorySnapshot {
+    pub jobs: Vec<Job>,
+    pub total: u64,
+    pub has_more: bool,
+}
+pub(crate) struct JobHistoryPage {
+    pub jobs: Vec<Job>,
+    pub total: u64,
+    pub next_cursor: Option<JobHistoryCursor>,
+}
+
 pub(crate) enum JobSelection {
     /// Queued/running, in creation order with stable insertion-order ties.
     Active,
@@ -45,6 +79,14 @@ pub(crate) trait JobQueueRepository {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Job>>;
+    /// All states, newest creation first with descending ID ties. Filter before
+    /// LIMIT; rows and count share one read snapshot. No admission/history cap.
+    fn history(
+        &self,
+        kind: Option<&str>,
+        after: Option<&JobHistoryCursor>,
+        limit: usize,
+    ) -> Result<JobHistorySnapshot>;
     fn get(&self, id: &str) -> Result<Job>;
     /// Serializes competing claims before reading admission state. The adapter
     /// must not split this callback into independently committed operations.

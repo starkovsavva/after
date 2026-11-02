@@ -350,11 +350,14 @@ mod tests {
     }
     #[cfg(unix)]
     fn fake(script: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let engine = root.path().join("engine");
-        std::fs::write(&engine, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Execute the stable interpreter, not a freshly written executable:
+        // concurrent forks can temporarily inherit a writer before CLOEXEC,
+        // causing ETXTBSY for another test's script. The fixed protocol action
+        // becomes the interpreter's script argument in this private fixture.
+        std::fs::write(root.path().join("desktop-import-queue"), script).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", &engine).unwrap();
         (root, engine)
     }
     #[cfg(unix)]

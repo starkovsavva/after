@@ -847,3 +847,55 @@ fn import_history_reopens_and_explicit_resume_preserves_receipts_and_attempt_fen
     assert!(corrupt.is_dir());
     assert_eq!(std::fs::read(source).unwrap(),b"untouched original");
 }
+
+#[test]
+#[ignore = "Set AFTER_TEST_ENGINE_PATH to the built canonical engine and run --ignored"]
+fn paged_import_history_reaches_old_pending_jobs_without_truncating_legacy_list() {
+    use after_desktop::{import_queue::{HistoryCursor, ImportInput, ImportQueue, JobState, QueueCommand}, worker_host::ImportWork};
+    use std::sync::atomic::AtomicBool;
+    let engine=PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+    let fixture=tempfile::tempdir().unwrap();
+    let bridge=LibraryBridge::for_development(engine,fixture.path().join("paged-library")).unwrap();
+    let source=fixture.path().join("original.wav");
+    std::fs::write(&source,b"original bytes").unwrap();
+    let queue=bridge.open_import_queue().unwrap();
+    let mut ids=std::collections::HashSet::new();
+    let mut oldest=None;
+    for _ in 0..121 {
+        let work=ImportWork { operation_id:uuid::Uuid::new_v4().to_string(),attempt_token:uuid::Uuid::new_v4().to_string(),source:source.clone(),title:None };
+        let job=queue.execute(QueueCommand::Enqueue { input:ImportInput::from(&work) }).unwrap().job.unwrap();
+        ids.insert(job.id.clone());
+        if oldest.is_none() { oldest=Some(job); }
+    }
+    let oldest=oldest.unwrap();
+    queue.execute(QueueCommand::Claim { job_id:Some(oldest.id.clone()) }).unwrap();
+    let legacy=queue.execute(QueueCommand::List).unwrap();
+    assert!(legacy.jobs.len()>50);
+    assert_eq!(bridge.import_history_page(Some(HistoryCursor { created_at:1.0,id:"../../private".into() })).err().unwrap().code,"invalid_request");
+    drop(queue);
+    let first=bridge.import_history().unwrap();
+    assert_eq!(first.total,121);
+    assert_eq!(first.jobs.len(),50);
+    assert!(first.has_more);
+    assert!(!first.jobs.iter().any(|row|row.job_id==oldest.id));
+    let mut seen:Vec<_>=first.jobs.into_iter().map(|row|row.job_id).collect();
+    let mut next=first.next_cursor;
+    let mut pages=1;
+    while let Some(cursor)=next {
+        let page=bridge.import_history_page(Some(cursor)).unwrap();
+        assert_eq!(page.total,121);
+        assert!(page.jobs.len()<=50);
+        seen.extend(page.jobs.into_iter().map(|row|row.job_id));
+        next=page.next_cursor;
+        pages+=1;
+    }
+    assert_eq!(pages,3);
+    assert_eq!(seen.len(),121);
+    assert_eq!(seen.into_iter().collect::<std::collections::HashSet<_>>(),ids);
+    let queue=bridge.open_import_queue().unwrap();
+    let job=queue.execute(QueueCommand::Get { job_id:oldest.id.clone() }).unwrap().job.unwrap();
+    assert_eq!(job.state,JobState::Interrupted);
+    let meeting=bridge.resume_queued_import(&queue,job,1,&AtomicBool::new(false),&mut |_| {}).unwrap();
+    assert_eq!(meeting.id,oldest.object_id);
+    assert_eq!(std::fs::read(source).unwrap(),b"original bytes");
+}

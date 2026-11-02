@@ -1,13 +1,13 @@
 # Durable import history and explicit resume
 
-Статус: desktop UI показывает последние 50 импортов, Continue/Cancel для pending
-jobs и Open meeting для succeeded. При более длинной истории показываются count
-и явное ограничение; полная пагинация ещё нужна. Recovery обходит все страницы
-по 64 записи независимо от этого UI limit.
+Статус: desktop UI показывает историю страницами по 50 импортов, Continue/Cancel
+для pending jobs и Open meeting для succeeded. [Creation-key pagination](import-history-pagination.md)
+позволяет загрузить старые jobs. Recovery обходит свои страницы по 64 записи
+независимо от UI.
 
 ## Границы
 
-Новые Tauri команды: `import_history`, `resume_import {jobId, expectedAttempt}`,
+Новые Tauri команды: `import_history {after?}`, `resume_import {jobId, expectedAttempt}`,
 `cancel_queued_import {jobId, expectedAttempt}`. Они разрешены только локальному
 main window. Путь, config, receipt token, engine action и kind не принимаются.
 `import_history.rs` создаёт отдельный renderer DTO с ID, state, progress, attempt
@@ -49,8 +49,8 @@ bridge, восстанавливает interrupted job, явно продолж�
 нечитаемая metadata блокирует Retry/Cancel без ремонта. Настоящий Tauri IPC проверяет
 history, stale expectedAttempt, resume и отсутствие grants. Playwright проверяет
 reload без autorun, явное продолжение, ошибки истории и отмену queued attempt 0.
-На Arch прошли desktop profile, 42 host, 9 real-engine и 15 browser scenarios.
+На Arch прошли desktop profile, 44 host, 10 real-engine и 16 browser scenarios.
 Windows/macOS и системный picker локально не проверены.
 
-Следующие этапы — полная пагинация и запись через durable queue; ASR/model workers
+Следующий этап — запись через durable queue; ASR/model workers
 и Linux capture остаются отдельными незавершёнными срезами. Swift не удаляется.

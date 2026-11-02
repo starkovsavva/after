@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { copy, type Language } from './i18n';
-import type { ImportHistory, ImportHistoryEntry } from './types';
+import type { ImportHistory, ImportHistoryCursor, ImportHistoryEntry } from './types';
 
 export function ImportHistoryPanel({ language, onResume, onOpen }: {
   language: Language;
@@ -14,11 +14,19 @@ export function ImportHistoryPanel({ language, onResume, onOpen }: {
   const [failed, setFailed] = useState(false);
   const active = useRef(false);
   const sequence = useRef(0);
-  const load = useCallback(async () => {
+  const load = useCallback(async (after?: ImportHistoryCursor) => {
     const current = ++sequence.current;
     setBusy(true); setFailed(false);
-    try { const result = await api.importHistory(); if (active.current && current === sequence.current) setHistory(result); }
-    catch { if (active.current && current === sequence.current) { setHistory(null); setFailed(true); } }
+    try {
+      const result = await api.importHistory(after);
+      if (active.current && current === sequence.current) setHistory(previous => {
+        if (!after) return result;
+        const jobs = new Map((previous?.jobs ?? []).map(job => [job.jobId, job]));
+        result.jobs.forEach(job => jobs.set(job.jobId, job));
+        return { ...result, jobs: [...jobs.values()] };
+      });
+    }
+    catch { if (active.current && current === sequence.current) { if (!after) setHistory(null); setFailed(true); } }
     finally { if (active.current && current === sequence.current) setBusy(false); }
   }, []);
   useEffect(() => { active.current = true; void load(); return () => { active.current = false; }; }, [load]);
@@ -38,7 +46,7 @@ export function ImportHistoryPanel({ language, onResume, onOpen }: {
     {busy && <p role="status">{t.loading}</p>}
     {failed && <p role="alert">{t.importHistoryFailed}</p>}
     {!busy && history?.total === 0 && <p>{t.noImports}</p>}
-    {history?.hasMore && <p>{t.importHistoryLimited} ({history.jobs.length}/{history.total})</p>}
+    {!!history?.jobs.length && <p>{t.importHistoryLimited} ({history.jobs.length}/{history.total})</p>}
     <ul className="import-history-list">
       {history?.jobs.map(job => <li key={job.jobId}>
         <div><strong>{t.importItem} {job.jobId.slice(0, 8)}</strong><p>{labels[job.state]} · {t.importAttempt} {job.attempt}</p></div>
@@ -50,5 +58,6 @@ export function ImportHistoryPanel({ language, onResume, onOpen }: {
         </div>
       </li>)}
     </ul>
+    {history?.hasMore && history.nextCursor && <button className="button" disabled={busy} onClick={() => void load(history.nextCursor!)}>{t.moreImports}</button>}
   </div>;
 }

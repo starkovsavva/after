@@ -96,11 +96,11 @@ fn import_status(state: tauri::State<'_, Arc<imports::Imports>>) -> imports::Imp
 fn cancel_import(state: tauri::State<'_, Arc<imports::Imports>>, operation_id: String, control_id: String) -> Result<imports::ImportStatus, HostError> { state.cancel(&operation_id, &control_id) }
 #[tauri::command]
 async fn import_history(
-    state: tauri::State<'_, LibraryBridge>, imports: tauri::State<'_, Arc<imports::Imports>>,
+    state: tauri::State<'_, LibraryBridge>, imports: tauri::State<'_, Arc<imports::Imports>>, after: Option<import_queue::HistoryCursor>,
 ) -> Result<import_history::ImportHistory, HostError> {
     let bridge = state.inner().clone();
     let reservation = imports.reserve()?;
-    background(move || { let _reservation = reservation; bridge.import_history() }).await
+    background(move || { let _reservation = reservation; bridge.import_history_page(after) }).await
 }
 #[tauri::command]
 async fn resume_import(
@@ -587,6 +587,12 @@ mod ipc_tests {
         let history = request(&main,"import_history",json!({}),local_origin()).unwrap();
         assert_eq!(history["jobs"][0]["state"],"succeeded");
         assert_eq!(history["jobs"][0]["attempt"],2);
+        let end = request(&main,"import_history",json!({"after":{"createdAt":0.0,"id":job.id}}),local_origin()).unwrap();
+        assert_eq!(end["total"],1);
+        assert!(end["jobs"].as_array().unwrap().is_empty());
+        assert_eq!(end["hasMore"],false);
+        assert_eq!(request(&main,"import_history",json!({"after":{"createdAt":0.0,"id":"../../private"}}),local_origin()).unwrap_err()["code"],"invalid_request");
+
         let meeting = bridge
             .import_meeting(&source, Some("Synthetic media"))
             .unwrap();

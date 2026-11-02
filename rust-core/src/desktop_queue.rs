@@ -2,6 +2,7 @@
 //! is deliberately not registered as a renderer command. Recovery requires an
 //! exclusive executor lease; callers must not recover another live host.
 use crate::application::import_ports::{ImportInput, IMPORT_JOB_KIND as KIND};
+use crate::application::job_ports::JobHistoryCursor;
 use crate::application::jobs::{ClaimRequest, JobCommand, JobQueue, JobReply};
 use crate::domain::jobs::{Job, JobDefinition, JobMutation, JobResource, JobUpdate, UpdateField};
 use crate::infrastructure::{
@@ -25,6 +26,9 @@ pub(crate) enum Request {
         input: ImportInput,
     },
     List {},
+    History {
+        after: Option<JobHistoryCursor>,
+    },
     Get {
         job_id: String,
     },
@@ -73,6 +77,21 @@ pub(crate) fn id(value: &str) -> Result<()> {
 }
 
 pub(crate) fn execute(root: &Path, request: Request) -> Result<Value> {
+    if let Request::History { after } = request {
+        let page = queue(root).history(after.as_ref())?;
+        let jobs: Vec<_> = page
+            .jobs
+            .iter()
+            .map(|job| {
+                let mut row = summary(job);
+                row["createdAt"] = json!(job.created_at);
+                row
+            })
+            .collect();
+        return Ok(
+            json!({"jobs":jobs,"total":page.total,"hasMore":page.next_cursor.is_some(),"nextCursor":page.next_cursor}),
+        );
+    }
     let command = match request {
         Request::Enqueue { input } => {
             input.validate()?;
@@ -94,6 +113,7 @@ pub(crate) fn execute(root: &Path, request: Request) -> Result<Value> {
             anyhow::bail!("Import run requires its live executor")
         }
         Request::List {} => JobCommand::List,
+        Request::History { .. } => unreachable!(),
         Request::Get { job_id } => {
             id(&job_id)?;
             JobCommand::Get { id: job_id }

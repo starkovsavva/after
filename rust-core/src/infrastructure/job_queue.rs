@@ -1,7 +1,8 @@
 //! SQLite implementation of the application queue ports. No transport dispatch
 //! or scheduling rules live here; a callback owns one immediate transaction.
 use crate::application::job_ports::{
-    JobMatchScope, JobQueueRepository, JobQueueTransaction, JobSelection,
+    JobHistoryCursor, JobHistorySnapshot, JobMatchScope, JobQueueRepository, JobQueueTransaction,
+    JobSelection,
 };
 use crate::domain::jobs::{Job, JobQueueSnapshot};
 use anyhow::{ensure, Context, Result};
@@ -164,6 +165,68 @@ impl JobQueueRepository for SqliteJobQueue<'_> {
         })
     }
 
+    fn history(
+        &self,
+        kind: Option<&str>,
+        after: Option<&JobHistoryCursor>,
+        limit: usize,
+    ) -> Result<JobHistorySnapshot> {
+        ensure!((1..=256).contains(&limit), "Invalid history page limit");
+        if let Some(cursor) = after {
+            cursor.validate()?;
+        }
+        let mut connection = open(self.root)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let mut jobs = {
+            let mut statement = transaction.prepare("SELECT id,created_at,payload FROM jobs WHERE (?1 IS NULL OR json_extract(payload,'$.kind')=?1) AND (?2 IS NULL OR created_at<?2 OR (created_at=?2 AND id<?3)) ORDER BY created_at DESC,id DESC LIMIT ?4")?;
+            let rows = statement.query_map(
+                params![
+                    kind,
+                    after.map(|cursor| cursor.created_at),
+                    after.map(|cursor| cursor.id.as_str()),
+                    (limit + 1) as i64
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )?;
+            rows.map(|row| {
+                let (id, created_at, payload) = row?;
+                let mut job: Job = serde_json::from_str(&payload)?;
+                // Old JSON readers could round payload timestamps by one ULP
+                // during mutation. Keep the immutable SQL key authoritative in
+                // this read view; never rewrite the persisted payload.
+                ensure!(
+                    job.id == id
+                        && created_at.is_finite()
+                        && job.created_at.is_finite()
+                        && (job.created_at == created_at
+                            || job.created_at.to_bits().abs_diff(created_at.to_bits()) <= 1),
+                    "Invalid history record identity"
+                );
+                job.created_at = created_at;
+                Ok(job)
+            })
+            .collect::<Result<Vec<_>>>()?
+        };
+        let has_more = jobs.len() > limit;
+        jobs.truncate(limit);
+        let total: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE ?1 IS NULL OR json_extract(payload,'$.kind')=?1",
+            [kind],
+            |row| row.get(0),
+        )?;
+        transaction.commit()?;
+        Ok(JobHistorySnapshot {
+            jobs,
+            total: total.try_into().context("Invalid history count")?,
+            has_more,
+        })
+    }
     fn recovery_candidates(
         &self,
         kind: &str,
@@ -282,6 +345,133 @@ mod tests {
     }
     fn enqueue(root: &Path, object: &str, resource: &str) -> Value {
         call(root,"job-enqueue",json!({"kind":"summarize","objectID":object,"resource":resource,"inputRevision":"v1","config":{"model":"local"}}))["job"].clone()
+    }
+
+    #[test]
+    fn sqlite_history_pages_include_all_states_filter_before_limit_and_keep_deleted_cursor_position(
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let mut connection = open(root.path()).unwrap();
+        let transaction = connection.transaction().unwrap();
+        for index in 0..171 {
+            let mut job = JobDefinition {
+                kind: if index < 121 {
+                    "desktop-import"
+                } else {
+                    "foreign"
+                }
+                .into(),
+                object_id: format!("object-{index}"),
+                input_revision: "v1".into(),
+                config: json!({}),
+                resource: JobResource::LocalHeavy,
+                dependencies: vec![],
+                title: "Job".into(),
+                paid: false,
+            }
+            .into_job(
+                uuid::Uuid::from_u128(index + 1).to_string(),
+                1_793_619_200.0000021 + (index / 7) as f64,
+            );
+            job.state = [
+                "queued",
+                "running",
+                "interrupted",
+                "failed",
+                "succeeded",
+                "cancelled",
+                "blocked",
+            ][(index % 7) as usize]
+                .into();
+            persist(&transaction, &job).unwrap();
+        }
+        transaction.commit().unwrap();
+        drop(connection);
+        let repository = SqliteJobQueue { root: root.path() };
+        let first = repository
+            .history(Some("desktop-import"), None, 50)
+            .unwrap();
+        assert_eq!(first.total, 121);
+        assert!(first.has_more);
+        let last = first.jobs.last().unwrap();
+        let mut cursor = JobHistoryCursor {
+            created_at: last.created_at,
+            id: last.id.clone(),
+        };
+        let mut seen: Vec<_> = first.jobs.iter().map(|job| job.id.clone()).collect();
+        // Continuation is a value, not a lookup of a mutable/deleted anchor row.
+        let connection = open(root.path()).unwrap();
+        connection
+            .execute("DELETE FROM jobs WHERE id=?1", [&cursor.id])
+            .unwrap();
+        let mut completed = get(&connection, &seen[0]).unwrap();
+        completed.state = "succeeded".into();
+        completed.updated_at = 100_000.0;
+        persist(&connection, &completed).unwrap();
+        drop(connection);
+        loop {
+            cursor = serde_json::from_str(&serde_json::to_string(&cursor).unwrap()).unwrap();
+            let page = repository
+                .history(Some("desktop-import"), Some(&cursor), 50)
+                .unwrap();
+            assert_eq!(page.total, 120);
+            seen.extend(page.jobs.iter().map(|job| job.id.clone()));
+            if !page.has_more {
+                break;
+            }
+            let last = page.jobs.last().unwrap();
+            cursor = JobHistoryCursor {
+                created_at: last.created_at,
+                id: last.id.clone(),
+            };
+        }
+        assert_eq!(
+            seen,
+            (1..=121)
+                .rev()
+                .map(|index| uuid::Uuid::from_u128(index).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn history_uses_the_sql_key_for_legacy_one_ulp_payload_rounding_without_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let initial = enqueue(root.path(), "legacy-precision", "light");
+        let mut job: Job = serde_json::from_value(initial).unwrap();
+        let connection = open(root.path()).unwrap();
+        let exact = 1_793_619_200.0000021f64;
+        job.created_at = f64::from_bits(exact.to_bits() - 1);
+        connection
+            .execute(
+                "UPDATE jobs SET created_at=?1,payload=?2 WHERE id=?3",
+                params![exact, serde_json::to_string(&job).unwrap(), job.id],
+            )
+            .unwrap();
+        drop(connection);
+        let path = root.path().join("jobs.sqlite");
+        let before = fs::read(&path).unwrap();
+        let page = SqliteJobQueue { root: root.path() }
+            .history(None, None, 50)
+            .unwrap();
+        assert_eq!(page.jobs[0].created_at.to_bits(), exact.to_bits());
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+    #[test]
+    fn history_rejects_inconsistent_creation_keys_without_repairing_payload() {
+        let root = tempfile::tempdir().unwrap();
+        let initial = enqueue(root.path(), "corrupt-history", "light");
+        let id = initial["id"].as_str().unwrap();
+        let connection = open(root.path()).unwrap();
+        connection
+            .execute("UPDATE jobs SET created_at=created_at+1 WHERE id=?1", [id])
+            .unwrap();
+        drop(connection);
+        let path = root.path().join("jobs.sqlite");
+        let before = fs::read(&path).unwrap();
+        assert!(SqliteJobQueue { root: root.path() }
+            .history(None, None, 50)
+            .is_err());
+        assert_eq!(fs::read(path).unwrap(), before);
     }
 
     #[test]

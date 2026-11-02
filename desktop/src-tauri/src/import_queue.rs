@@ -1,5 +1,6 @@
-//! Durable native queue port. These DTOs contain private file grants and receipts
-//! and must never be returned to the renderer or registered as Tauri commands.
+//! Durable native queue port. Input/job DTOs contain private grants and receipts;
+//! never return them or QueueReply to the renderer. HistoryCursor and JobState
+//! are grant-free values reused by the separate renderer read model.
 use crate::{models::HostError, worker_host::ImportWork};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -33,6 +34,25 @@ impl ImportInput {
     }
 }
 
+/// Public pagination key contains no file grant or receipt capability.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryCursor {
+    pub created_at: f64,
+    pub id: String,
+}
+impl HistoryCursor {
+    pub fn valid(&self) -> bool {
+        self.created_at.is_finite()
+            && self.id.len() == 36
+            && uuid::Uuid::parse_str(&self.id).is_ok()
+    }
+    pub fn follows(&self, previous: &Self) -> bool {
+        self.created_at < previous.created_at
+            || (self.created_at == previous.created_at && self.id < previous.id)
+    }
+}
+
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
@@ -56,6 +76,9 @@ pub enum QueueCommand {
         input: ImportInput,
     },
     List,
+    History {
+        after: Option<HistoryCursor>,
+    },
     Get {
         job_id: String,
     },
@@ -106,6 +129,7 @@ pub struct ImportJob {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JobSummary {
     pub id: String,
+    pub created_at: Option<f64>,
     #[serde(rename = "objectID")]
     pub object_id: String,
     pub state: JobState,
@@ -122,6 +146,7 @@ pub struct QueueReply {
     pub jobs: Vec<JobSummary>,
     pub total: Option<u64>,
     pub has_more: Option<bool>,
+    pub next_cursor: Option<HistoryCursor>,
     pub deduplicated: Option<bool>,
     pub recovered: Option<usize>,
     pub reconciliation: Option<ImportReconciliation>,

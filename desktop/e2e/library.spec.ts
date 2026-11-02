@@ -301,3 +301,46 @@ test('import history failures stay visible and queued cancellation uses the obse
   await history.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(history.getByText('Cancelled · Attempt 0')).toBeVisible();
 });
+
+test('import history loads older pages, retains rows after a page error and resumes an old attempt', async ({ page }) => {
+  await page.addInitScript(() => {
+    const id = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+    const cursor = { createdAt: 2, id: id(2) };
+    let failNextPage = true;
+    let resumed = false;
+    const row = (index: number) => ({ jobId: id(index), operationId: id(index + 1000), state: index === 1 ? 'interrupted' : 'succeeded', attempt: 1, progress: index === 1 ? 0.4 : 1, cancelRequested: false });
+    const meeting = () => ({ id: id(1001), title: 'Old import resumed', startedAt: null, durationSeconds: null, folderId: null, hasTranscript: false, hasSummary: false });
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke: async (command: string, args: Record<string, unknown>) => {
+      if (command === 'get_workspace') return { folders: [], notes: [], meetings: resumed ? [meeting()] : [], capabilities: { library: true, import: true, recording: false, calendar: false, assistant: false, cards: false, tasks: false } };
+      if (command === 'import_status') return { phase: 'idle', operationId: null, controlId: null, copiedBytes: 0, totalBytes: 0, progress: null, cancelRequested: false };
+      if (command === 'import_history') {
+        if (!args.after) return { jobs: Array.from({ length: 50 }, (_, index) => row(51 - index)), total: 51, hasMore: true, nextCursor: cursor };
+        if (JSON.stringify(args.after) !== JSON.stringify(cursor)) throw { code: 'invalid_request' };
+        if (failNextPage) { failNextPage = false; throw { code: 'busy' }; }
+        return { jobs: [row(1)], total: 51, hasMore: false, nextCursor: null };
+      }
+      if (command === 'resume_import') {
+        if (args.jobId !== id(1) || args.expectedAttempt !== 1) throw { code: 'conflict' };
+        resumed = true; return meeting();
+      }
+      if (command === 'get_meeting') return { meeting: meeting(), notes: [], transcript: [], summary: null };
+      throw { code: 'unsupported_operation' };
+    } } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Import history', exact: true }).click();
+  const history = page.getByRole('dialog', { name: 'Import history', exact: true });
+  await expect(history.getByRole('listitem')).toHaveCount(50);
+  await history.getByRole('button', { name: 'Load more imports', exact: true }).click();
+  await expect(history.getByRole('alert')).toBeVisible();
+  await expect(history.getByRole('listitem')).toHaveCount(50);
+  await history.getByRole('button', { name: 'Load more imports', exact: true }).click();
+  await expect(history.getByRole('listitem')).toHaveCount(51);
+  await expect(history.getByRole('button', { name: 'Load more imports', exact: true })).toHaveCount(0);
+  await history.getByRole('button', { name: 'Refresh imports', exact: true }).click();
+  await expect(history.getByRole('listitem')).toHaveCount(50);
+  await history.getByRole('button', { name: 'Load more imports', exact: true }).click();
+  await expect(history.getByRole('listitem')).toHaveCount(51);
+  await history.getByRole('listitem').last().getByRole('button', { name: 'Resume import', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Old import resumed/ })).toBeVisible();
+});

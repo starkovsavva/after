@@ -178,9 +178,14 @@ impl LibraryBridge {
         Err(HostError::new("import_interrupted", "Import completion could not be confirmed."))
     }
     pub fn import_history(&self) -> Result<crate::import_history::ImportHistory, HostError> {
+        self.import_history_page(None)
+    }
+    pub fn import_history_page(&self, after: Option<crate::import_queue::HistoryCursor>) -> Result<crate::import_history::ImportHistory, HostError> {
         use crate::import_queue::{ImportQueue, QueueCommand};
+        if after.as_ref().is_some_and(|cursor| !cursor.valid()) { return Err(HostError::invalid()); }
         let queue = self.open_import_queue()?;
-        queue.execute(QueueCommand::List)?.try_into()
+        let reply = queue.execute(QueueCommand::History { after: after.clone() })?;
+        crate::import_history::ImportHistory::from_reply(reply, after.as_ref())
     }
     pub fn resume_queued_import(
         &self, queue: &dyn crate::import_queue::ImportQueueSession,

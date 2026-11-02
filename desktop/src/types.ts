@@ -98,7 +98,7 @@ export interface LibraryAPI {
   getMeeting(meetingId: string): Promise<MeetingDetail>;
   chooseAndImport(): Promise<Meeting | null>;
   importStatus(): Promise<ImportStatus>;
-  importHistory(): Promise<ImportHistory>;
+  importHistory(after?: ImportHistoryCursor): Promise<ImportHistory>;
   resumeImport(jobId: string, expectedAttempt: number): Promise<Meeting | null>;
   cancelQueuedImport(jobId: string, expectedAttempt: number): Promise<void>;
   cancelImport(operationId: string, controlId: string): Promise<ImportStatus>;
@@ -120,7 +120,8 @@ export interface ImportHistoryEntry {
   attempt: number;
   cancelRequested: boolean;
 }
-export interface ImportHistory { jobs: ImportHistoryEntry[]; total: number; hasMore: boolean; }
+export interface ImportHistoryCursor { createdAt: number; id: string; }
+export interface ImportHistory { jobs: ImportHistoryEntry[]; total: number; hasMore: boolean; nextCursor: ImportHistoryCursor | null; }
 export interface ImportStatus {
   controlId: string | null;
   progress?: number | null;
