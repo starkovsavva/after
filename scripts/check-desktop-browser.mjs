@@ -159,7 +159,7 @@ try {
 
   // Search respects the current folder before limiting and opens a real item.
   await page.getByLabel('Active folder', { exact: true }).selectOption(english.id);
-  await page.keyboard.press('Control+k');
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+k' : 'Control+k');
   await page.getByRole('searchbox', { name: 'Search library', exact: true }).fill('phrasal');
   await page.getByRole('button', { name: /Phrasal verbs/ }).click();
   await expect(page.getByRole('textbox', { name: 'Note text', exact: true })).toHaveValue(initial.text);

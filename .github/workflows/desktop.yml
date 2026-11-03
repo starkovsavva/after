@@ -124,7 +124,7 @@ jobs:
           cd desktop
           npx playwright install --with-deps chromium
           cd ..
-          node scripts/check-desktop-browser.mjs
+          python3 scripts/run-ci-check.py -- node scripts/check-desktop-browser.mjs
 
   arch:
     name: Arch Linux core and desktop IPC
