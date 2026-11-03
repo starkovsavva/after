@@ -1,3 +1,7 @@
+#[cfg(target_os = "macos")]
+#[path = "macos.rs"]
+mod macos;
+
 use std::{
     io,
     os::unix::process::CommandExt,
@@ -60,10 +64,15 @@ impl Process {
         }
         let error = io::Error::last_os_error();
         if error.raw_os_error() == Some(libc::ESRCH) {
-            Ok(())
-        } else {
-            Err(error)
+            return Ok(());
         }
+        #[cfg(target_os = "macos")]
+        if error.raw_os_error() == Some(libc::EPERM)
+            && self.group.is_some_and(macos::group_has_no_live_members)
+        {
+            return Ok(());
+        }
+        Err(error)
     }
     pub fn request_stop(&mut self) -> io::Result<()> {
         self.signal(libc::SIGTERM)

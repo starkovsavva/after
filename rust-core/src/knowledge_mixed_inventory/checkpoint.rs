@@ -2,13 +2,11 @@
 //! It does not grant access or prove that privacy settings did not race.
 use super::*;
 use anyhow::bail;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
-use std::fs::{DirBuilder, OpenOptions};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use std::time::Duration;
 
 pub(super) struct Checkpoint {
-    connection: Connection,
+    connection: crate::platform_fs::GuardedConnection,
 }
 
 impl Checkpoint {
@@ -29,40 +27,8 @@ impl Checkpoint {
         // SQLite NOFOLLOW rejects symlinks anywhere in the path, so resolve the
         // already-checked root before appending our checked private directory.
         let directory = fs::canonicalize(&inventory.root)?.join("knowledge-mixed-index");
-        match fs::symlink_metadata(&directory) {
-            Ok(info) => ensure!(info.is_dir() && !info.file_type().is_symlink(), "Недопустимый каталог индекса"),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => DirBuilder::new().mode(0o700).create(&directory)?,
-            Err(error) => return Err(error.into()),
-        }
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
         let scope = format!("{:x}", Sha256::digest(serde_json::to_vec(&inventory.folder)?));
-        let path = directory.join(format!("meetings-{scope}.sqlite"));
-        // SQLite may recover an interrupted transaction from one of these
-        // files during open. Never follow an unrelated link as a journal.
-        for suffix in ["-journal", "-wal", "-shm"] {
-            let sidecar=directory.join(format!("meetings-{scope}.sqlite{suffix}"));
-            match fs::symlink_metadata(sidecar) {
-                Ok(info) => ensure!(info.is_file() && !info.file_type().is_symlink() &&
-                    info.nlink()==1 && info.permissions().mode() & 0o077 == 0,
-                    "Недопустимый служебный файл индекса"),
-                Err(error) if error.kind()==std::io::ErrorKind::NotFound => {},
-                Err(error) => return Err(error.into()),
-            }
-        }
-        let empty_or_new = match OpenOptions::new().write(true).create_new(true).mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW).open(&path) {
-            Ok(file) => { file.set_permissions(fs::Permissions::from_mode(0o600))?; file.sync_all()?; true }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let info=fs::symlink_metadata(&path)?;
-                ensure!(info.is_file() && !info.file_type().is_symlink(), "Недопустимый файл индекса");
-                ensure!(info.nlink()==1, "Файл индекса не должен иметь жёстких ссылок");
-                ensure!(info.permissions().mode() & 0o077 == 0, "Файл индекса не является приватным");
-                info.len()==0
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        let mut connection=Connection::open_with_flags(path,flags)?;
+        let (mut connection,empty_or_new)=super::checkpoint_files::open(&directory,&scope)?;
         connection.busy_timeout(Duration::from_secs(1))?;
         const APPLICATION_ID: i64=0x41464b42;
         let application_id:i64=connection.query_row("PRAGMA application_id",[],|row|row.get(0))?;

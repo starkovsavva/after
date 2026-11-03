@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::knowledge_meetings::{self, MeetingSource};
 
 mod checkpoint;
+mod checkpoint_files;
 mod mixed_topics;
 mod product;
 
