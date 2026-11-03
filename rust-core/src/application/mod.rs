@@ -31,3 +31,5 @@ pub(crate) mod speech_progress;
 
 pub(crate) mod speech_work;
 pub(crate) mod speech_submission;
+
+pub(crate) mod local_speech_install;

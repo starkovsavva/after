@@ -23,6 +23,16 @@ struct PythonRuntimeInstallArgs {
     #[arg(long)] wheelhouse: Option<PathBuf>,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Parser)]
+struct LocalSpeechInstallArgs {
+    #[arg(long)] root: PathBuf,
+    #[arg(long, required_unless_present_all = ["python_archive", "model_archive"], conflicts_with_all = ["python_archive", "model_archive", "wheelhouse"])] download: bool,
+    #[arg(long)] python_archive: Option<PathBuf>,
+    #[arg(long)] model_archive: Option<PathBuf>,
+    #[arg(long, requires_all = ["python_archive", "model_archive"])] wheelhouse: Option<PathBuf>,
+}
+
 #[derive(Parser)]
 #[command(version, about="After: ядро библиотеки и обработки встреч")]
 struct Args {
@@ -247,6 +257,19 @@ fn main() {
         return;
     }
     #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--posle-install-local-speech")) {
+        let result = LocalSpeechInstallArgs::try_parse_from(std::iter::once(std::ffi::OsString::from("local-speech-install")).chain(std::env::args_os().skip(2)))
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+            .and_then(|args| posle_core::local_speech_install::install_cpu(
+                &args.root, args.python_archive.as_deref(), args.model_archive.as_deref(), args.wheelhouse.as_deref(),
+                |stage| eprintln!("{}",json!({"event":"local_speech_install","stage":stage}))));
+        match result {
+            Ok((runtime, model)) => println!("{}",json!({"runtime":runtime,"model":model,"settingsChanged":false,"inferenceChecked":false})),
+            Err(error) => { eprintln!("{error:#}"); std::process::exit(1); }
+        }
+        return;
+    }
+    #[cfg(target_os = "linux")]
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(posle_core::python_runtime::INSTALL_MODE)) {
         let result = PythonRuntimeInstallArgs::try_parse_from(std::iter::once(std::ffi::OsString::from("python-runtime-install")).chain(std::env::args_os().skip(2)))
             .map_err(|error| anyhow::anyhow!(error.to_string()))
@@ -328,5 +351,24 @@ mod voice_input_tests {
         bytes.resize(VOICE_INPUT_LIMIT + 1, b' ');
         assert!(read_voice_input(bytes.as_slice()).unwrap_err().to_string().contains("слишком большой"));
         assert!(read_voice_input(&[0xffu8][..]).is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod local_speech_install_arguments {
+    use super::*;
+    #[test]
+    fn deployment_requires_explicit_download_or_both_native_archives() {
+        for arguments in [
+            vec!["install","--root","/private/library","--download"],
+            vec!["install","--root","/private/library","--python-archive","/python.tar.gz","--model-archive","/model.tar.bz2","--wheelhouse","/wheels"],
+        ] { assert!(LocalSpeechInstallArgs::try_parse_from(arguments).is_ok()); }
+        for arguments in [
+            vec!["install","--root","/private/library"],
+            vec!["install","--root","/private/library","--python-archive","/python.tar.gz"],
+            vec!["install","--root","/private/library","--model-archive","/model.tar.bz2"],
+            vec!["install","--root","/private/library","--download","--python-archive","/python.tar.gz"],
+            vec!["install","--root","/private/library","--wheelhouse","/wheels"],
+        ] { assert!(LocalSpeechInstallArgs::try_parse_from(arguments).is_err()); }
     }
 }

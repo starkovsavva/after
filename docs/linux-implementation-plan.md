@@ -179,7 +179,9 @@ Tauri status/start/resume/cancel подключены к общей с preflight
 В карточке встречи подключена `TranscriptionPanel`: passive status, Start/Resume/Cancel,
 подтверждение замены результата, защита от stale reads и refresh после публикации.
 Проверены браузерные сценарии interrupted/cancel/lost acknowledgement и узкий русский UI.
-Setup UI runtime/model ещё нужен; [queue ADR](decisions/durable-speech-queue.md);
+Общий application-сценарий установки runtime → model → verify подключён к Linux CLI
+`--posle-install-local-speech`; установка не меняет settings/selection и не выдаёт
+ready-grant. Setup UI runtime/model и явный выбор модели ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,

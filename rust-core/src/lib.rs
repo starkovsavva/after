@@ -382,6 +382,7 @@ mod tests {
 
 #[cfg(unix)]
 pub mod asr_model;
+pub mod local_speech_install;
 
 #[cfg(unix)]
 pub mod speech_job;

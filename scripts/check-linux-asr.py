@@ -36,12 +36,22 @@ def main():
             if (result.returncode == 0) != expected:
                 raise RuntimeError('ASR fixture command failed: ' + result.stdout[-3000:] + result.stderr[-1000:])
             return result
-        runtime_args = ['--posle-install-python-runtime','--root',str(library),'--archive',str(args.python_archive.resolve()),'--profile','linux-cpu']
-        if args.wheelhouse: runtime_args += ['--wheelhouse',str(args.wheelhouse.resolve())]
-        print("Installing verified CPU runtime", file=sys.stderr, flush=True)
-        run(runtime_args)
-        print("Installing verified Parakeet model", file=sys.stderr, flush=True)
-        model = json.loads(run(['--posle-install-asr-model','--root',str(library),'--archive',str(args.model_archive.resolve())]).stdout)
+        setup_args = ['--posle-install-local-speech','--root',str(library),'--python-archive',str(args.python_archive.resolve()),'--model-archive',str(args.model_archive.resolve())]
+        if args.wheelhouse: setup_args += ['--wheelhouse',str(args.wheelhouse.resolve())]
+        settings_before = json.dumps({'speechMode':'cloud','apiKey':'private-deployment-fixture','future':{'keep':True}}).encode()
+        (library/'settings.json').write_bytes(settings_before)
+        print("Installing verified local CPU runtime and Parakeet model", file=sys.stderr, flush=True)
+        installed = run(setup_args)
+        setup = json.loads(installed.stdout)
+        phases = [event['stage'] for line in installed.stderr.splitlines() if line.startswith('{')
+                  for event in [json.loads(line)] if event.get('event') == 'local_speech_install']
+        if phases != ['runtime', 'model', 'verify', 'complete']:
+            raise RuntimeError('Deployment progress did not finish verification in order')
+        if setup['settingsChanged'] is not False or setup['inferenceChecked'] is not False:
+            raise RuntimeError('Deployment incorrectly selected a model or claimed inference readiness')
+        if (library/'settings.json').read_bytes() != settings_before or 'private-deployment-fixture' in installed.stdout+installed.stderr:
+            raise RuntimeError('Deployment changed or exposed existing settings')
+        model = setup['model']
         model_dir = Path(model['directory'])
         active = model_dir.parent.parent / 'active.json'
         before = active.read_bytes()

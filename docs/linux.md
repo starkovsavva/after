@@ -380,3 +380,31 @@ source resources, а не готовность runtime — используйт�
 атомарной публикации, исходная запись сохраняется. После ошибки команды обновите
 статус перед следующим действием. Держите приложение открытым до завершения;
 прерванная работа не запускается автоматически при следующем открытии.
+
+
+### Общий native-сценарий установки
+
+Для нового disposable root можно явно установить весь CPU-профиль и managed Parakeet:
+
+```sh
+.build/rust/debug/posle-engine --posle-install-local-speech --root /absolute/test-library --download
+```
+
+Для локальных проверенных архивов (пакеты из wheelhouse также сверяются с pinned inventory):
+
+```sh
+.build/rust/debug/posle-engine --posle-install-local-speech --root /absolute/test-library \
+  --python-archive /absolute/cpython.tar.gz --model-archive /absolute/parakeet.tar.bz2 \
+  --wheelhouse /absolute/wheels
+```
+
+Общий application-сценарий не зависит от ОС; Linux-адаптер использует прежние
+проверенные установщики. JSON progress в stderr проходит `runtime`, `model`, `verify`,
+`complete`; stdout содержит native deployment receipts. Это не renderer DTO.
+Каждый артефакт публикуется независимо: если модель не установилась, уже проверенный
+runtime сохраняется, отката или удаления поколений нет. Completion требует повторной
+проверки runtime и модели; это не проверка распознавания выбранной пользовательской записи.
+`settings.json` не читается и не меняется, модель не выбирается автоматически;
+ответ явно содержит `settingsChanged: false`, `inferenceChecked: false`.
+Выбор local-профиля/модели и явный `check-speech` остаются отдельными действиями.
+Tauri setup UI и адаптер общего сценария для macOS ещё не подключены.
