@@ -87,8 +87,8 @@ jobs:
       - name: Canonical core regression and engine (Unix)
         if: runner.os != 'Windows'
         run: |
-          cargo test --manifest-path process-runtime/Cargo.toml --locked --target-dir .build/rust
-          cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust
+          python3 scripts/run-ci-check.py -- cargo test --manifest-path process-runtime/Cargo.toml --locked --target-dir .build/rust
+          python3 scripts/run-ci-check.py -- cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust
           cargo build --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust
           python3 scripts/stage-desktop-engine.py
       - name: Host to actual canonical engine (Unix)
@@ -96,8 +96,8 @@ jobs:
         env:
           AFTER_TEST_ENGINE_PATH: ${{ github.workspace }}/.build/rust/debug/posle-engine
         run: |
-          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --test real_engine -- --ignored
-          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --lib -- --ignored
+          python3 scripts/run-ci-check.py -- cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --test real_engine -- --ignored
+          python3 scripts/run-ci-check.py -- cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --lib -- --ignored
       - name: Pinned Python inventory generator contracts
         if: runner.os != 'Windows'
         run: |

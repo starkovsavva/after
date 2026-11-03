@@ -17,7 +17,7 @@ fn opening_a_queue_reconciles_all_pages_without_starting_missing_or_uncertain_wo
     };
     use std::sync::atomic::AtomicBool;
     let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let root = fixture.path().join("startup-library");
     let bridge = LibraryBridge::for_development(engine, root.clone()).unwrap();
     let source = fixture.path().join("keep original.wav");
@@ -181,7 +181,7 @@ fn leased_queue_executes_import_and_reconciles_a_published_attempt_without_its_s
         }
     }
     let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let root = fixture.path().join("owned-import-library");
     let bridge = LibraryBridge::for_development(engine, root.clone()).unwrap();
     let queue = bridge.open_import_queue().unwrap();
@@ -308,7 +308,7 @@ fn import_owner_kernel_lease_is_released_after_abnormal_process_exit() {
         time::Duration,
     };
     let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let root = fixture.path().join("crash-library");
     let bridge = LibraryBridge::for_development(engine.clone(), root.clone()).unwrap();
     let mut command = Command::new(&engine);
@@ -362,7 +362,7 @@ fn native_import_queue_survives_bridge_recreation_and_preserves_attempt_fencing(
         worker_host::ImportWork,
     };
     let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let root = fixture.path().join("queue-library");
     let bridge = LibraryBridge::for_development(engine.clone(), root.clone()).unwrap();
     let queue = bridge.open_import_queue().unwrap();
@@ -472,7 +472,7 @@ fn streaming_import_preserves_sources_and_recovers_only_its_exact_commit_receipt
     use after_desktop::worker_host::{ImportPhase, ImportWork};
     use std::sync::atomic::AtomicBool;
     let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let root = fixture.path().join("worker-library");
     let bridge = LibraryBridge::for_development(engine, root.clone()).unwrap();
     bridge.workspace().unwrap();
@@ -540,7 +540,7 @@ fn canonical_engine_persists_scoped_notes_and_rejects_stale_edits() {
         std::env::var_os("AFTER_TEST_ENGINE_PATH")
             .expect("AFTER_TEST_ENGINE_PATH must point to a real posle-engine"),
     );
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let root = fixture.path().join("isolated-library");
     let bridge = LibraryBridge::for_development(engine.clone(), root.clone()).unwrap();
     let initial = bridge.workspace().unwrap();
@@ -627,7 +627,7 @@ fn tasks_and_cards_cross_real_host_transport_and_remain_isolated() {
         std::env::var_os("AFTER_TEST_ENGINE_PATH")
             .expect("AFTER_TEST_ENGINE_PATH must point to a real posle-engine"),
     );
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let first_root = fixture.path().join("first-private-library");
     let second_root = fixture.path().join("second-private-library");
     let first = LibraryBridge::for_development(engine.clone(), first_root.clone()).unwrap();
@@ -755,7 +755,7 @@ fn queued_file_import_persists_success_and_reuses_exact_receipt_without_source()
     };
     use std::sync::atomic::AtomicBool;
     let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let bridge = LibraryBridge::for_development(engine, fixture.path().join("queued-library")).unwrap();
     let source = fixture.path().join("synthetic.wav");
     let original: Vec<u8> = (0..2_097_152).map(|index| (index % 251) as u8).collect();
@@ -792,7 +792,7 @@ fn import_history_reopens_and_explicit_resume_preserves_receipts_and_attempt_fen
     use after_desktop::{import_queue::{ImportInput, ImportQueue, JobState, QueueCommand}, worker_host::ImportWork};
     use std::sync::atomic::AtomicBool;
     let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
-    let fixture = tempfile::tempdir().unwrap();
+    let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let root = fixture.path().join("resume-library");
     let bridge = LibraryBridge::for_development(engine.clone(), root.clone()).unwrap();
     let source = fixture.path().join("original.wav");
@@ -854,7 +854,7 @@ fn paged_import_history_reaches_old_pending_jobs_without_truncating_legacy_list(
     use after_desktop::{import_queue::{HistoryCursor, ImportInput, ImportQueue, JobState, QueueCommand}, worker_host::ImportWork};
     use std::sync::atomic::AtomicBool;
     let engine=PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
-    let fixture=tempfile::tempdir().unwrap();
+    let fixture=tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let bridge=LibraryBridge::for_development(engine,fixture.path().join("paged-library")).unwrap();
     let source=fixture.path().join("original.wav");
     std::fs::write(&source,b"original bytes").unwrap();
@@ -904,7 +904,7 @@ fn paged_import_history_reaches_old_pending_jobs_without_truncating_legacy_list(
 #[ignore = "Requires a staged canonical engine and staged speech source"]
 fn native_bridge_verifies_staged_speech_source_without_claiming_runtime_readiness() {
     let engine = PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let backend = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/speech-backend");
     let bridge = LibraryBridge::for_development_with_backend(engine,root.path().join("library"),backend.clone()).unwrap();
     let grant = bridge.speech_backend().unwrap();

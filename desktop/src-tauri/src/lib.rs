@@ -482,7 +482,7 @@ mod ipc_tests {
 
     #[test]
     fn generated_acl_allows_only_local_main_window_and_registered_library_commands() {
-        let fixture = tempfile::tempdir().unwrap();
+        let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let engine = fixture.path().join("unexecutable-engine");
         std::fs::write(&engine, b"").unwrap();
         let bridge = LibraryBridge::for_development(engine, fixture.path().join("data")).unwrap();
@@ -544,7 +544,7 @@ mod ipc_tests {
         let engine = std::path::PathBuf::from(
             std::env::var_os("AFTER_TEST_ENGINE_PATH").expect("AFTER_TEST_ENGINE_PATH"),
         );
-        let fixture = tempfile::tempdir().unwrap();
+        let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let bridge = LibraryBridge::for_development(engine, fixture.path().join("data")).unwrap();
         struct SyntheticMicrophone;
         impl capture_backend::CaptureBackend for SyntheticMicrophone {

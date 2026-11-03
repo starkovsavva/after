@@ -77,12 +77,12 @@ jobs:
       - name: Typed host, ACL and real Windows engine through IPC
         shell: pwsh
         run: |
-          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --target x86_64-pc-windows-msvc
+          python scripts/run-ci-check.py -- cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:AFTER_TEST_ENGINE_PATH = (Resolve-Path '.build/rust/x86_64-pc-windows-msvc/release/posle-engine.exe').Path
-          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --target x86_64-pc-windows-msvc --test real_engine -- --ignored
+          python scripts/run-ci-check.py -- cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --target x86_64-pc-windows-msvc --test real_engine -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --target x86_64-pc-windows-msvc --lib -- --ignored
+          python scripts/run-ci-check.py -- cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --target x86_64-pc-windows-msvc --lib -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build NSIS test installer without publishing
         working-directory: desktop
