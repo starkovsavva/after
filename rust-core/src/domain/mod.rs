@@ -16,3 +16,5 @@ pub mod asr_models;
 pub(crate) mod speech;
 
 pub(crate) mod speech_settings;
+
+pub(crate) mod meeting_ids;

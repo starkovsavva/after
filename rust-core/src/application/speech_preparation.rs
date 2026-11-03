@@ -11,7 +11,7 @@ pub(crate) trait SpeechInputs {
 }
 pub(crate) fn prepare(port: &impl SpeechInputs, meeting: &str) -> Result<SpeechWork> {
     ensure!(
-        uuid::Uuid::parse_str(meeting)?.to_string() == meeting,
+        crate::domain::meeting_ids::valid(meeting),
         "Invalid meeting identity"
     );
     let settings = crate::domain::speech_settings::local_snapshot(&port.settings()?)?;
@@ -64,6 +64,19 @@ mod tests {
         assert_eq!(one.settings["speechMode"], "local");
         assert_eq!(one.input_revision, "a".repeat(64));
         assert!(prepare(&port, &meeting).is_err());
+    }
+    #[test]
+    fn legacy_meeting_identity_is_preserved_in_prepared_work() {
+        let port = Inputs {
+            settings: RefCell::new(serde_json::json!({"speechMode":"local","diarization":false,"asrModelPath":"/selected/model"})),
+            revision: RefCell::new("a".repeat(64)),
+        };
+        for meeting in ["Meeting_2026-11-03", "ABCDEF12-3456-4789-ABCD-123456789ABC"] {
+            let mut work = prepare(&port, meeting).unwrap();
+            assert_eq!(work.meeting_id, meeting);
+            work.attempt_token = "legacy-attempt".into();
+            assert!(work.validate().is_err());
+        }
     }
     #[test]
     fn invalid_meeting_never_reads_private_settings() {

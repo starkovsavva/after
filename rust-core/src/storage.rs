@@ -85,10 +85,7 @@ pub fn atomic_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> 
 #[cfg(windows)]
 pub fn atomic_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<()> { crate::platform_fs::atomic_json(path,value) }
 
-fn valid_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 128
-        && id.bytes().all(|character| character.is_ascii_alphanumeric() || character == b'-' || character == b'_')
-}
+fn valid_id(id:&str)->bool {crate::domain::meeting_ids::valid(id)}
 
 #[cfg(windows)]
 fn private_directory(path: &Path) -> Result<()> { crate::platform_fs::private_directory(path) }

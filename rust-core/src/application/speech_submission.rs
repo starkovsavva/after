@@ -39,7 +39,7 @@ pub(crate) fn enqueue(port: &impl SubmissionPort, work: SpeechWork) -> Result<(J
 }
 pub(crate) fn submit(port: &impl SubmissionPort, meeting: &str) -> Result<Submitted> {
     ensure!(
-        uuid::Uuid::parse_str(meeting)?.to_string() == meeting,
+        crate::domain::meeting_ids::valid(meeting),
         "Invalid meeting identity"
     );
     if let Some(job) = port.pending(meeting)? {

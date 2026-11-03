@@ -387,6 +387,39 @@ mod tests {
         crate::storage::atomic_json(&stage.directory.join("transcript.json"), &json!({"duration":1.,"segments":[{"id":0,"start":0.,"end":1.,"text":"synthetic result"}]})).unwrap();
     }
     #[test]
+    fn legacy_meeting_identity_survives_staging_publication_and_receipt_recovery() {
+        for id in ["Meeting_2026-11-03", "ABCDEF12-3456-4789-ABCD-123456789ABC"] {
+            let root = tempfile::tempdir().unwrap();
+            let (mut work, old_directory) = fixture(root.path());
+            let directory = root.path().join("meetings").join(id);
+            fs::rename(old_directory, &directory).unwrap();
+            crate::storage::atomic_json(
+                &directory.join("meta.json"),
+                &json!({"id":id,"source":"input.wav","title":"original"}),
+            )
+            .unwrap();
+            let publication = Publication { root: root.path() };
+            work.meeting_id = id.into();
+            work.input_revision = publication.inspect(id).unwrap();
+            work.validate().unwrap();
+            let stage = publication.stage(&work).unwrap();
+            output(&stage);
+            let result = publication.publish(&work, &stage).unwrap();
+            assert_eq!(result.meeting_id, id);
+            assert_eq!(
+                receipt(&directory).unwrap(),
+                Some(SpeechReceipt::for_work(&work))
+            );
+            assert!(publication.committed(&work).unwrap());
+            assert_eq!(
+                fs::read(directory.join("input.wav")).unwrap(),
+                b"synthetic input; never inferred in unit tests"
+            );
+            work.operation_id = "legacy-operation".into();
+            assert!(work.validate().is_err());
+        }
+    }
+    #[test]
     fn inference_is_isolated_and_atomic_receipt_prevents_repeat_execution() {
         let root = tempfile::tempdir().unwrap();
         let (work, directory) = fixture(root.path());

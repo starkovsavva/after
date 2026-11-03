@@ -18,10 +18,14 @@ pub struct SpeechWork {
 impl SpeechWork {
     pub(crate) fn validate(&self) -> Result<SpeechSettings> {
         ensure!(self.version == 1, "Unsupported speech request version");
-        for id in [&self.operation_id, &self.attempt_token, &self.meeting_id] {
+        for id in [&self.operation_id, &self.attempt_token] {
             let parsed = uuid::Uuid::parse_str(id)?;
             ensure!(parsed.to_string() == *id, "Invalid speech identity");
         }
+        ensure!(
+            crate::domain::meeting_ids::valid(&self.meeting_id),
+            "Invalid meeting identity"
+        );
         ensure!(
             self.input_revision.len() == 64
                 && self

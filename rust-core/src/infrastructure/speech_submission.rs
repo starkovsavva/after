@@ -54,7 +54,7 @@ impl SubmissionPort for Submission<'_> {
 
 pub(crate) fn latest(root: &Path, meeting: &str) -> Result<Option<Job>> {
     ensure!(
-        uuid::Uuid::parse_str(meeting)?.to_string() == meeting,
+        crate::domain::meeting_ids::valid(meeting),
         "Invalid meeting identity"
     );
     if let Some(job) = lookup(root, meeting, true)? {
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn pending_lookup_ignores_history_limit_and_foreign_scope_and_preserves_ambiguity() {
         let root = tempfile::tempdir().unwrap();
-        let meeting = uuid::Uuid::new_v4().to_string();
+        let meeting = "Meeting_2026-11-03".to_string();
         let directory = crate::storage::meeting_directory(root.path(), &meeting).unwrap();
         crate::platform_fs::create_private_directory(&directory).unwrap();
         crate::storage::atomic_json(

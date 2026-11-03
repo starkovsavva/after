@@ -155,7 +155,7 @@ SQLite scheduler, scoped lease, receipt recovery и внешний process scope
 host speech-port подключён через общий framing/process transport, независимо от импортных
 DTO; owner удерживает/recheck ресурсы и не начинает inference на startup. Проверены
 раздельные leases, stale cancellation, grant-free history и отказ при подмене source.
-Native Prepare по UUID встречи получает source revision и минимальный snapshot local-настроек через
+Native Prepare по ID встречи получает source revision и минимальный snapshot local-настроек через
 application-порты; credentials/посторонние app settings не попадают в создаваемое задание.
 Prepare не ставит работу в очередь и не объявляет runtime готовым; Enqueue проверяет CAS.
 Явный CLI `check-speech` выполняет offline decode синтетической тишины и private FFmpeg через
@@ -171,8 +171,9 @@ lazy native session и host-owned current-check policy. Пассивное от�
 Native Start/Meeting/Resume по meeting ID подключены: pending lookup не ограничен
 страницей истории, повторный Start возвращает существующую работу без нового inference,
 Resume проверяет observed attempt и receipts. Общие work/receipt модели отделены от execution.
-Перед renderer binding нужно согласовать native meeting ID со storage (строковые legacy ID
-пока отвергаются UUID-проверкой; operation/attempt tokens должны остаться strict UUID).
+Native meeting ID использует общий со storage контракт `domain/meeting_ids.rs`: 1–128 ASCII
+букв/цифр/`-`/`_`, без изменения регистра; operation/attempt tokens остаются strict UUID.
+Проверены staging/publication и receipt recovery для legacy ID.
 Renderer transcription commands и setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 

@@ -134,10 +134,11 @@ running it implicitly. A new operation captures current settings/revision and
 attempts resource admission; busy work stays queued. Resume checks expectedAttempt
 and reconciles receipts before explicit retry/run. History/status never infer.
 
-Before exposing these controls for all libraries, preserve the storage ID contract:
-meeting-directory names allow bounded ASCII identifiers, while native speech still
-requires canonical UUIDs. Operation/attempt tokens must remain strict UUIDs when
-meeting-ID compatibility is fixed.
+Meeting identities share the existing storage contract through `domain/meeting_ids.rs`:
+1–128 ASCII letters, digits, hyphens or underscores, preserved exactly. Native
+preparation, submission, lookup and publication accept legacy identifiers without
+normalizing their case. Operation/attempt tokens remain strict canonical UUIDs;
+source revision, protected paths and exact publication receipts remain required.
 
 Renderer transcription commands and runtime/model setup remain pending; explicit preflight UI is described above.
 Local speech requires explicit local settings and diarization=false. Cloud ASR,
