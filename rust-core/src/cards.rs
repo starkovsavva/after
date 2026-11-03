@@ -8,10 +8,8 @@ use chrono::Utc;
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::collections::HashSet;
-use std::fs::{self,DirBuilder,OpenOptions};
+use std::fs;
 use std::io::{Read,Write};
-#[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt,OpenOptionsExt};
 use std::path::Path;
 use uuid::Uuid;
 const MAX_FILE:u64=10*1_048_576;
@@ -203,7 +201,7 @@ pub(crate) fn write_compatible_summary(path:&Path,incoming:&Value)->Result<()> {
     let directory=path.parent().context("У конспекта нет папки встречи")?;
     match fs::symlink_metadata(directory) {
         Ok(info)=>ensure!(info.is_dir()&&!info.file_type().is_symlink(),"Ожидалась обычная папка встречи"),
-        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>DirBuilder::new().mode(0o700).create(directory)?,
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>crate::platform_fs::create_private_directory(directory)?,
         Err(error)=>return Err(error.into()),
     }
     let _lock=crate::storage::meeting_lock(directory)?;
