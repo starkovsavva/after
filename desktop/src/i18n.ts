@@ -2,6 +2,15 @@ export type Language = 'en' | 'ru';
 export type LanguagePreference = 'system' | Language;
 
 const en = {
+  transcriptionTitle: 'Local transcription', transcriptionHint: 'Uses your selected local model without speaker separation. Configure local speech first and keep After open until processing finishes.',
+  transcriptionLoading: 'Reading transcription status…', transcriptionIdle: 'No transcription job', transcriptionStart: 'Transcribe locally', transcriptionNew: 'New transcription with current settings',
+  transcriptionResume: 'Continue saved transcription', transcriptionSaved: 'Continue uses the settings saved with this job.', transcriptionCancel: 'Cancel transcription', transcriptionRefresh: 'Refresh transcription',
+  transcriptionQueued: 'Waiting for resources. Continue explicitly when available.', transcriptionRunning: 'Transcribing…', transcriptionSucceeded: 'Transcription completed',
+  transcriptionFailed: 'Transcription failed. Check local speech setup, then continue explicitly or create a new transcription.', transcriptionCancelled: 'Transcription cancelled', transcriptionInterrupted: 'Transcription interrupted. Continue explicitly.',
+  transcriptionStopping: 'Stopping transcription…', transcriptionError: 'Could not update transcription. Refresh its status before another action.',
+  transcriptionReplace: 'A successful transcription replaces the current transcript and clears its summary. The original recording is preserved. Continue?',
+  transcriptionConfirm: 'Confirm transcription', transcriptionKeep: 'Keep current result', transcriptionResult: 'Reload result',
+
   speechCheckLoading: 'Reading check status…', speechCheckStopping: 'Stopping check…',
   speechCheckTitle: 'Local speech check', speechCheckHint: 'Checks the selected local model and audio components using synthetic silence. No meeting audio is used or uploaded.',
   speechCheckStart: 'Check local speech', speechCheckRunQueued: 'Run queued check', speechCheckCancel: 'Cancel check', speechCheckIdle: 'Not checked in this session',
@@ -60,6 +69,15 @@ const en = {
 };
 export type Copy = typeof en;
 const ru: Copy = {
+  transcriptionTitle: 'Локальная транскрипция', transcriptionHint: 'Использует выбранную локальную модель без разделения спикеров. Сначала настройте локальное распознавание и не закрывайте After до завершения.',
+  transcriptionLoading: 'Читаем состояние транскрипции…', transcriptionIdle: 'Заданий транскрипции нет', transcriptionStart: 'Распознать локально', transcriptionNew: 'Новая транскрипция с текущими настройками',
+  transcriptionResume: 'Продолжить сохранённую транскрипцию', transcriptionSaved: 'Продолжение использует настройки, сохранённые в этом задании.', transcriptionCancel: 'Отменить транскрипцию', transcriptionRefresh: 'Обновить состояние транскрипции',
+  transcriptionQueued: 'Ожидание ресурсов. Продолжите явно, когда они освободятся.', transcriptionRunning: 'Распознаём…', transcriptionSucceeded: 'Транскрипция завершена',
+  transcriptionFailed: 'Транскрипция не удалась. Проверьте локальное распознавание, затем явно продолжите или создайте новую транскрипцию.', transcriptionCancelled: 'Транскрипция отменена', transcriptionInterrupted: 'Транскрипция прервана. Продолжите явно.',
+  transcriptionStopping: 'Останавливаем транскрипцию…', transcriptionError: 'Не удалось обновить транскрипцию. Обновите состояние перед следующим действием.',
+  transcriptionReplace: 'Успешная транскрипция заменит текущий текст и очистит конспект. Исходная запись сохранится. Продолжить?',
+  transcriptionConfirm: 'Подтвердить транскрипцию', transcriptionKeep: 'Сохранить текущий результат', transcriptionResult: 'Обновить результат',
+
   speechCheckLoading: 'Читаем состояние проверки…', speechCheckStopping: 'Останавливаем проверку…',
   speechCheckTitle: 'Проверка локального распознавания', speechCheckHint: 'Проверяет выбранную локальную модель и аудиокомпоненты на синтетической тишине. Аудио встреч не используется и не отправляется.',
   speechCheckStart: 'Проверить распознавание', speechCheckRunQueued: 'Запустить ожидающую проверку', speechCheckCancel: 'Отменить проверку', speechCheckIdle: 'В этой сессии ещё не проверялось',

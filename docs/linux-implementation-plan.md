@@ -176,7 +176,10 @@ Native meeting ID использует общий со storage контракт 
 Проверены staging/publication и receipt recovery для legacy ID.
 Tauri status/start/resume/cancel подключены к общей с preflight native session;
 проверены ACL, stale attempts, отсутствие replay и actual-engine IPC с legacy meeting ID.
-Renderer transcription UI и setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
+В карточке встречи подключена `TranscriptionPanel`: passive status, Start/Resume/Cancel,
+подтверждение замены результата, защита от stale reads и refresh после публикации.
+Проверены браузерные сценарии interrupted/cancel/lost acknowledgement и узкий русский UI.
+Setup UI runtime/model ещё нужен; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,

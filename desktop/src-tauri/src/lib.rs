@@ -82,6 +82,7 @@ async fn get_workspace(state: tauri::State<'_, LibraryBridge>, recorder: tauri::
         workspace.capabilities.recording_modes=recorder.capabilities().modes();
         workspace.capabilities.recording=!workspace.capabilities.recording_modes.is_empty();
         workspace.capabilities.speech_checks=platform::speech_checks_supported() && bridge.speech_backend().is_ok();
+        workspace.capabilities.speech_transcription=workspace.capabilities.speech_checks;
         Ok(workspace)
     }).await
 }

@@ -70,6 +70,8 @@ pub struct Note {
 pub struct Capabilities {
     #[serde(default)]
     pub speech_checks: bool,
+    #[serde(default)]
+    pub speech_transcription: bool,
     pub library: bool,
     #[serde(default)]
     pub import: bool,

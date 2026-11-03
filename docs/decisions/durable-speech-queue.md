@@ -150,8 +150,18 @@ transport failures invalidate it without replaying mutations. Status never resum
 work. Unit/ACL and actual-engine IPC tests cover shared ownership, stale controls,
 missing-runtime failure and original source preservation.
 
-Renderer transcription UI and runtime/model setup remain pending; explicit
-preflight UI is described above.
+The meeting view exposes `TranscriptionPanel` when the host advertises
+`speechTranscription` and the meeting has media. It reads status without running
+work, supports explicit Start/Resume/Cancel and confirms replacement when a
+transcript or summary already exists. Resume uses saved settings; a new terminal
+job uses current settings. Epochs reject stale reads after actions/unmount, and
+an unknown action result requires a successful status read before another
+mutation. Publication refreshes canonical meeting data. Browser scenarios cover
+passive entry, interrupted work, delayed reads/cancel, lost acknowledgement,
+publication refresh and Russian layout. These synthetic UI scenarios do not prove
+WebView inference or speech accuracy.
+
+Runtime/model setup UI remains pending; explicit preflight UI is described above.
 Local speech requires explicit local settings and diarization=false. Cloud ASR,
 diarization and Windows runtime remain separate work. Abrupt/forced stops may retain
 unknown private speech stages; broad deletion or automatic inference recovery is

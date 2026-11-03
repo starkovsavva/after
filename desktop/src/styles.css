@@ -196,3 +196,9 @@ kbd { font-size: 11px; font-family: inherit; color: var(--muted); white-space: n
 .speech-check .dialog-actions { flex-wrap: wrap; }
 .speech-check progress { width: 100%; }
 .speech-check { padding-bottom: 20px; }
+
+.transcription-panel { margin: 16px 0; padding: 16px; }
+.transcription-panel .dialog-actions { flex-wrap: wrap; justify-content: flex-start; }
+.transcription-panel progress { width: 100%; }
+.transcription-panel button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.transcription-confirm { border-top: 1px solid var(--line); padding-top: 10px; }

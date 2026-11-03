@@ -1,10 +1,10 @@
 // Explicit development preview only. Production builds cannot select this transport.
-import type { SpeechCheck, Folder, ImportStatus, LibraryAPI, MeetingDetail, Note, RecordingStatus, Workspace } from './types';
+import type { Transcription, SpeechCheck, Folder, ImportStatus, LibraryAPI, MeetingDetail, Note, RecordingStatus, Workspace } from './types';
 let importState: ImportStatus = { operationId: null, controlId: null, phase: 'idle', copiedBytes: 0, totalBytes: 0, cancelRequested: false };
 const storageKey = 'posle.demo.workspace.v1';
 let check: SpeechCheck | null = null;
 let checkStarted = 0;
-const capabilities = { speechChecks: new URLSearchParams(location.search).get('speech') === '1', library: true, import: true, recording: new URLSearchParams(location.search).get('recording') === '1', calendar: false, assistant: false, cards: false, tasks: false };
+const capabilities = { speechTranscription: new URLSearchParams(location.search).get('transcription') === '1', speechChecks: new URLSearchParams(location.search).get('speech') === '1', library: true, import: true, recording: new URLSearchParams(location.search).get('recording') === '1', calendar: false, assistant: false, cards: false, tasks: false };
 const sample: Workspace = {
   folders: [{ id: 'work', name: 'Работа', revision: 1 }, { id: 'english', name: 'Английский', revision: 1 }],
   meetings: [
@@ -25,6 +25,17 @@ function initial(): Workspace {
   return structuredClone(sample);
 }
 let workspace = initial();
+if (capabilities.speechTranscription) {
+  workspace.capabilities.speechTranscription = true;
+  for (const meeting of workspace.meetings) meeting.hasMedia = true;
+}
+const transcriptions = new Map<string, Transcription>();
+const transcriptionStarted = new Map<string, number>();
+const transcriptionParams = new URLSearchParams(location.search);
+const initialTranscriptionState = transcriptionParams.get('transcriptionState');
+if (initialTranscriptionState === 'interrupted' || initialTranscriptionState === 'queued') {
+  transcriptions.set('sync', { id: crypto.randomUUID(), meetingId: 'sync', state: initialTranscriptionState, progress: 0, attempt: initialTranscriptionState === 'queued' ? 0 : 1, cancelRequested: false, createdAt: 1 });
+}
 const idleStatus = (): RecordingStatus => ({ sessionId: null, phase: 'idle', mode: null, elapsedMs: 0, warning: null });
 function fixtureRecording(): RecordingStatus { try { return JSON.parse(sessionStorage.getItem('posle.demo.recording') || 'null') || idleStatus(); } catch { return idleStatus(); } }
 function persist() { try { localStorage.setItem(storageKey, JSON.stringify(workspace)); } catch { /* No real data is stored in preview. */ } }
@@ -44,6 +55,38 @@ const details: Record<string, Omit<MeetingDetail, 'meeting' | 'notes'>> = {
   ] },
 };
 export const fixtureAPI: LibraryAPI = {
+  async transcriptionStatus(meetingId) {
+    let job = transcriptions.get(meetingId);
+    if (job?.state === 'running' && !transcriptionParams.has('transcriptionSlow') && Date.now() - (transcriptionStarted.get(meetingId) || 0) > 1200) {
+      job = { ...job, state: 'succeeded', progress: 1 }; transcriptions.set(meetingId, job);
+      details[meetingId] = { transcript: [{ start: 0, end: 1, text: 'Synthetic local transcription result' }], summary: null };
+      const meeting = workspace.meetings.find(value => value.id === meetingId);
+      if (meeting) { meeting.hasTranscript = true; meeting.hasSummary = false; }
+    }
+    const observed = clone(job || null);
+    if (transcriptionParams.has('transcriptionReadDelay')) await delay(800);
+    return observed;
+  },
+  async startTranscription(meetingId) {
+    const current = transcriptions.get(meetingId);
+    if (current && ['running', 'queued', 'interrupted', 'blocked'].includes(current.state)) return clone(current);
+    const job: Transcription = { id: crypto.randomUUID(), meetingId, state: 'running', progress: 0, attempt: 1, cancelRequested: false, createdAt: Date.now()/1000 };
+    transcriptions.set(meetingId, job); transcriptionStarted.set(meetingId, Date.now());
+    if (transcriptionParams.has('transcriptionLostAck')) throw { code: 'engine_timeout' };
+    return clone(job);
+  },
+  async resumeTranscription(meetingId, jobId, expectedAttempt) {
+    const job = transcriptions.get(meetingId);
+    if (!job || job.id !== jobId || job.attempt !== expectedAttempt) throw { code: 'conflict' };
+    const resumed: Transcription = { ...job, state: 'running', attempt: job.attempt + 1, cancelRequested: false };
+    transcriptions.set(meetingId, resumed); transcriptionStarted.set(meetingId, Date.now()); return clone(resumed);
+  },
+  async cancelTranscription(meetingId, jobId, expectedAttempt) {
+    const job = transcriptions.get(meetingId);
+    if (!job || job.id !== jobId || job.attempt !== expectedAttempt) throw { code: 'conflict' };
+    const cancelled: Transcription = { ...job, state: 'cancelled', cancelRequested: true };
+    transcriptions.set(meetingId, cancelled); return clone(cancelled);
+  },
   async speechCheckStatus() {
     if (check?.state === 'running' && !new URLSearchParams(location.search).has('speechSlow') && Date.now() - checkStarted > 1200) check = { ...check, state: 'succeeded', progress: 1 };
     const observed = clone(check);
