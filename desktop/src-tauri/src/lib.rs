@@ -4,6 +4,8 @@ pub mod bridge;
 pub mod worker_host;
 pub mod import_queue;
 pub mod queue_connection;
+mod native_queue_connection;
+pub mod queue_budget;
 mod process_worker;
 mod queued_import;
 mod recording_import;

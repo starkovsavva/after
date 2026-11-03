@@ -62,8 +62,10 @@ resource admission, grant-free history and recovery beyond 50/64-row boundaries.
 The opt-in real ASR fixture now runs Parakeet through the persistent queue, reopens
 it after completion, and checks cancellation of native/SDK/descendant processes.
 
-Tauri host bindings, packaged backend resources, readiness/setup UI and speech
-controls remain pending; this native service does not advertise a UI capability.
+Packaged backend source is staged and build-pinned by the Tauri host. Shared host
+framing/process ownership lives in `native_queue_connection.rs`; deadlines belong
+to `queue_budget.rs`, independently of import DTOs. Tauri speech bindings,
+readiness/setup UI and speech controls remain pending; this native service does not advertise a UI capability.
 Local speech requires explicit local settings and diarization=false. Cloud ASR,
 diarization and Windows runtime remain separate work. Abrupt/forced stops may retain
 unknown private speech stages; broad deletion or automatic inference recovery is

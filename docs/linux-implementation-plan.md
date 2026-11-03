@@ -12,7 +12,7 @@
 - Tasks/cards объявляются ядром независимо от ОС. File picker вынесен в host-адаптер
   и подключён на Linux; импорт/чтение media ranges проверены через настоящий IPC.
   Системный диалог и аппаратные/кодековые сценарии ещё требуют ручной проверки.
-- Добавлены Ubuntu real-engine проверки и Arch CI job; удалённый CI пока не запускался.
+- Добавлены Ubuntu real-engine проверки и Arch CI job. На `2fb6c2d` прошли macOS build/queue, полная desktop-матрица (Arch/Ubuntu/macOS/Windows) и Windows installer со smoke установленного приложения.
 - Общие Settings/AppFeatures и модели/валидация заметок, папок и задач выделены
   в чистый `domain`; старые API-пути сохранены реэкспортами. Границы domain проверяет
   `scripts/check_layers.py`. Циклы между notes/repository/corrections устранены: application-координатор
@@ -151,8 +151,8 @@ ONNX inference/FFmpeg; managed Parakeet установлен через общи
 реальная CLI ASR проверена на синтетической английской речи. Очередь Tauri и диаризация
 ещё не подключены. Native staged speech execution/publication с source/result revision CAS
 и atomic receipt реализован; native durable speech queue теперь использует общий
-SQLite scheduler, scoped lease, receipt recovery и внешний process scope. Tauri host
-binding/packaging/readiness/UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
+SQLite scheduler, scoped lease, receipt recovery и внешний process scope. Backend source уже поставляется и проверяется host по build-pinned inventory; Tauri host
+binding/readiness/UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,
