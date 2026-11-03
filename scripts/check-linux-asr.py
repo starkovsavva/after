@@ -83,7 +83,7 @@ def main():
         inspected = json.loads(run(job_command,payload=json.dumps({'inspect':imported['id']})).stdout.splitlines()[-1])
         work = {'version':1,'operationId':str(uuid.uuid4()),'attemptToken':str(uuid.uuid4()),'meetingId':imported['id'],
                 'inputRevision':inspected['speechJob']['inputRevision'],'settings':settings}
-        queued_transcribe(engine,library,backend,env,work)
+        queued_transcribe(engine,library,backend,env,work,start_by_meeting=True)
         receipt = json.loads((meeting/'transcript.json').read_text())['_posleSpeechReceipt']
         if receipt['operationId'] != work['operationId'] or receipt['attemptToken'] != work['attemptToken']:
             raise RuntimeError('Native speech publication returned the wrong receipt')

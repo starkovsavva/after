@@ -1,11 +1,11 @@
 //! Durable local-speech attempt policy; no SQL, processes or platform selection.
 use super::{
     attempt_execution::{AttemptOutcome, AttemptStop, AttemptStore},
-    speech_execution::SpeechWork,
+    speech_work::SpeechWork,
 };
 use crate::domain::jobs::Job;
 use anyhow::{ensure, Result};
-pub(crate) const KIND: &str = "desktop-speech";
+pub(crate) use super::speech_work::KIND;
 pub(crate) use super::speech_progress::SpeechObserver;
 pub(crate) trait SpeechJobWorker: Send + Sync {
     fn committed(&self, work: &SpeechWork) -> Result<bool>;
@@ -17,19 +17,7 @@ pub(crate) trait SpeechJobWorker: Send + Sync {
         observer: &mut dyn SpeechObserver,
     ) -> Result<()>;
 }
-pub(crate) fn input(job: &Job) -> Result<SpeechWork> {
-    ensure!(
-        job.kind == KIND && job.resource == "local-heavy" && !job.paid,
-        "Speech belongs to another execution route"
-    );
-    let work: SpeechWork = serde_json::from_value(job.config.clone())?;
-    work.validate()?;
-    ensure!(
-        work.operation_id == job.object_id && work.input_revision == job.input_revision,
-        "Speech identity or revision changed"
-    );
-    Ok(work)
-}
+pub(crate) fn input(job:&Job)->Result<SpeechWork>{SpeechWork::from_job(job)}
 pub(crate) fn execute(
     store: &dyn AttemptStore,
     worker: &dyn SpeechJobWorker,

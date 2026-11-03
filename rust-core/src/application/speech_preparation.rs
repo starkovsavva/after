@@ -1,6 +1,6 @@
 //! Prepare private local work from host-selected persisted settings and source
 //! revision. No queue write, inference, runtime installation or readiness claim.
-use super::speech_execution::SpeechWork;
+use super::speech_work::SpeechWork;
 use anyhow::{ensure, Result};
 use serde_json::Value;
 

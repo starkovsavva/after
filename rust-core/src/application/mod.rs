@@ -28,3 +28,6 @@ pub(crate) mod speech_preparation;
 pub(crate) mod speech_check;
 
 pub(crate) mod speech_progress;
+
+pub(crate) mod speech_work;
+pub(crate) mod speech_submission;

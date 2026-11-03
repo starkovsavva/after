@@ -25,6 +25,16 @@ pub struct SpeechInput {
     rename_all_fields = "camelCase"
 )]
 pub enum SpeechCommand {
+    Start {
+        meeting_id: String,
+    },
+    Meeting {
+        meeting_id: String,
+    },
+    Resume {
+        job_id: String,
+        expected_attempt: u64,
+    },
     EnqueueCheck {},
     GetCheck {
         job_id: String,

@@ -8,7 +8,7 @@ use crate::{
         speech_execution::SpeechWork,
         speech_jobs::{self, SpeechJobWorker},
     },
-    domain::jobs::{Job, JobDefinition, JobMutation, JobResource},
+    domain::jobs::{Job, JobMutation, JobResource},
     infrastructure::{attempt_store::ScopedAttemptStore, executor_lease::SpeechExecutorLease},
 };
 use anyhow::{bail, ensure, Result};
@@ -26,6 +26,9 @@ use std::{
     deny_unknown_fields
 )]
 pub(crate) enum Request {
+    Meeting {meeting_id:String},
+    Start {meeting_id:String},
+    Resume {job_id:String,expected_attempt:u64},
     EnqueueCheck {},
     GetCheck {job_id:String},
     RunCheck {job_id:String},
@@ -149,39 +152,26 @@ impl Executor {
             Request::RunCheck {job_id} => self.checks()?.run(job_id),
             Request::CancelCheck {job_id,expected_attempt} => self.checks()?.cancel(job_id,expected_attempt),
             Request::Prepare { meeting_id } => Ok(json!({"prepared":crate::speech_job::prepare(self.lease.root(), &meeting_id)?})),
+            Request::Meeting {meeting_id} => Ok(json!({"job":crate::infrastructure::speech_submission::latest(self.lease.root(),&meeting_id)?.as_ref().map(summary)})),
+            Request::Start {meeting_id} => {
+                let submission=crate::application::speech_submission::submit(&crate::infrastructure::speech_submission::Submission{root:self.lease.root()},&meeting_id)?;
+                let job=submission.job;
+                if !submission.created || self.active.is_some() {return Ok(json!({"job":summary(&job)}));}
+                let reply=self.run(job.id.clone())?;
+                if reply["job"].is_null(){Ok(json!({"job":summary(&job)}))}else{Ok(reply)}
+            }
+            Request::Resume {job_id,expected_attempt} => {
+                ensure!(self.active.is_none(),"Speech executor is busy");self.reconcile()?;
+                let job=match self.store().queue().execute(JobCommand::Get{id:job_id.clone()})?{JobReply::Job(job)=>job,_=>bail!("Missing speech job")};
+                ensure!(job.attempt==expected_attempt,"Speech attempt changed");
+                if job.state=="succeeded" {return Ok(json!({"job":summary(&job)}));}
+                if job.state!="queued" {self.command(Request::Retry {job_id:job_id.clone(),expected_attempt})?;}
+                let queued=match self.store().queue().execute(JobCommand::Get{id:job_id.clone()})?{JobReply::Job(job)=>job,_=>bail!("Missing speech job")};
+                let reply=self.run(job_id)?;if reply["job"].is_null(){Ok(json!({"job":summary(&queued)}))}else{Ok(reply)}
+            }
             Request::Enqueue { input } => {
-                input.validate()?;
-                if let Some(job) = self.store().queue().object_job(&input.operation_id)? {
-                    ensure!(
-                        job.config == serde_json::to_value(&input)?,
-                        "Speech operation identity was reused"
-                    );
-                    return Ok(json!({"job":summary(&job),"deduplicated":true}));
-                }
-                ensure!(
-                    crate::speech_job::inspect(self.lease.root(), &input.meeting_id)?
-                        == input.input_revision,
-                    "Speech source or result changed before enqueue"
-                );
-                let definition = JobDefinition {
-                    kind: speech_jobs::KIND.into(),
-                    object_id: input.operation_id.clone(),
-                    input_revision: input.input_revision.clone(),
-                    config: serde_json::to_value(input)?,
-                    resource: JobResource::LocalHeavy,
-                    dependencies: Vec::new(),
-                    title: "Transcribe meeting".into(),
-                    paid: false,
-                };
-                match self.store().queue().execute(JobCommand::Enqueue {
-                    definition,
-                    follow_ups: Vec::new(),
-                })? {
-                    JobReply::Enqueued {
-                        job, deduplicated, ..
-                    } => Ok(json!({"job":summary(&job),"deduplicated":deduplicated})),
-                    _ => bail!("Invalid speech enqueue reply"),
-                }
+                let (job,deduplicated)=crate::application::speech_submission::enqueue(&crate::infrastructure::speech_submission::Submission{root:self.lease.root()},input)?;
+                Ok(json!({"job":summary(&job),"deduplicated":deduplicated}))
             }
             Request::Get { job_id } => match self
                 .store()
@@ -304,6 +294,7 @@ fn summary(job: &Job) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::jobs::JobDefinition;
     use super::*;
     use crate::{
         application::{job_recovery::RecoveryStore, speech_jobs::SpeechObserver},
@@ -385,6 +376,22 @@ mod tests {
             input_revision: Publication { root }.inspect(&id).unwrap(),
             settings: json!({"speechMode":"local","diarization":false}),
         }
+    }
+    #[test]
+    fn meeting_start_reuses_pending_work_and_resume_fences_the_observed_attempt() {
+        let root=tempfile::tempdir().unwrap();let seed=input(root.path());
+        std::fs::write(root.path().join("settings.json"),json!({"speechMode":"local","diarization":false,"asrModelPath":"/selected/model"}).to_string()).unwrap();
+        let (worker,ready,resume)=worker(false);let mut owner=owner(root.path(),worker.clone());
+        let first=owner.command(Request::Start{meeting_id:seed.meeting_id.clone()}).unwrap()["job"].clone();let id=first["id"].as_str().unwrap().to_owned();
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let repeated=owner.command(Request::Start{meeting_id:seed.meeting_id}).unwrap();assert_eq!(repeated["job"]["id"],id);assert_eq!(worker.calls.load(Ordering::Relaxed),1);
+        assert!(owner.command(Request::Cancel{job_id:id.clone(),expected_attempt:0}).is_err());
+        owner.command(Request::Cancel{job_id:id.clone(),expected_attempt:1}).unwrap();wait(&mut owner,&id,"cancelled");
+        assert!(owner.command(Request::Resume{job_id:id.clone(),expected_attempt:0}).is_err());
+        assert_eq!(owner.command(Request::Resume{job_id:id.clone(),expected_attempt:1}).unwrap()["job"]["attempt"],2);ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(owner.command(Request::Cancel{job_id:id.clone(),expected_attempt:1}).is_err());
+        resume.send(()).unwrap();wait(&mut owner,&id,"succeeded");
+        assert_eq!(owner.command(Request::Resume{job_id:id,expected_attempt:2}).unwrap()["job"]["state"],"succeeded");assert_eq!(worker.calls.load(Ordering::Relaxed),2);
     }
     fn owner(root: &Path, worker: Arc<dyn SpeechJobWorker>) -> Executor {
         Executor::new(

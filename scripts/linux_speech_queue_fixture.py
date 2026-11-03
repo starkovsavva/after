@@ -70,17 +70,31 @@ class Queue:
         self.close()
 
 
-def transcribe(engine, library, backend, env, work):
+def transcribe(engine, library, backend, env, work, *, start_by_meeting=False):
     with Queue(engine, library, backend, env) as queue:
-        job = queue.call('enqueue', input=work)['job']
+        if start_by_meeting:
+            job = queue.call('start',meetingId=work['meetingId'])['job']
+            if queue.call('start',meetingId=work['meetingId'])['job']['id']!=job['id']:
+                raise RuntimeError('Repeated meeting start created a second operation')
+            # Private fixture inspection is not a renderer API. Verify the
+            # authoritative saved selection and bind subsequent receipt checks.
+            import sqlite3
+            with sqlite3.connect((library/'jobs.sqlite').as_uri()+'?mode=ro',uri=True) as connection:
+                saved=json.loads(connection.execute('SELECT payload FROM jobs WHERE id=?',(job['id'],)).fetchone()[0])['config']
+            if saved['settings']!=work['settings'] or saved['meetingId']!=work['meetingId']:
+                raise RuntimeError('Native start changed the selected settings or meeting')
+            work.update(saved)
+        else:
+            job = queue.call('enqueue', input=work)['job']
         serialized = json.dumps(job)
         if any(secret in serialized for secret in (work['attemptToken'], work['operationId'], 'settings', 'inputRevision')):
             raise RuntimeError('Native queue read model exposed private configuration or grants')
         if job['state'] == 'succeeded':
             return job
-        claimed = queue.call('run', jobId=job['id'])['job']
-        if not claimed or claimed['attempt'] != job['attempt'] + 1:
-            raise RuntimeError('Speech attempt was not claimed durably')
+        if job['state']!='running':
+            claimed = queue.call('resume', jobId=job['id'],expectedAttempt=job['attempt'])['job']
+            if not claimed or claimed['attempt'] != job['attempt'] + 1:
+                raise RuntimeError('Speech attempt was not claimed durably')
         result = queue.wait(job['id'], 'succeeded')
         if result['progress'] != 1:
             raise RuntimeError('Completed speech did not publish complete durable progress')

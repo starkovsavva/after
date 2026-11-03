@@ -168,6 +168,11 @@ Startup не повторяет проверку; исторический succe
 lazy native session и host-owned current-check policy. Пассивное открытие не запускает
 очередь/модель; UI отбрасывает запоздалые ответы после cancel и восстанавливает состояние
 при переоткрытии настроек. Capability означает platform/source support, не runtime ready.
+Native Start/Meeting/Resume по meeting ID подключены: pending lookup не ограничен
+страницей истории, повторный Start возвращает существующую работу без нового inference,
+Resume проверяет observed attempt и receipts. Общие work/receipt модели отделены от execution.
+Перед renderer binding нужно согласовать native meeting ID со storage (строковые legacy ID
+пока отвергаются UUID-проверкой; operation/attempt tokens должны остаться strict UUID).
 Renderer transcription commands и setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 

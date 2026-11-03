@@ -122,7 +122,24 @@ the observed ID/attempt. UI epochs reject delayed status after newer actions;
 closing settings leaves ownership in the host and reopening reads its state.
 Runtime/model setup and renderer transcription controls remain separate work.
 
-Renderer speech commands, readiness/setup UI and speech controls remain pending; this native service does not advertise a UI capability.
+Native `start { meetingId }`, `meeting { meetingId }`, and
+`resume { jobId, expectedAttempt }` are now available for the next renderer binding.
+Submission policy lives in `application/speech_submission.rs` behind a port;
+shared work/receipt contracts live in `application/speech_work.rs`, independent of
+publication policy, with old execution exports retained. The protected SQLite
+adapter filters pending rows by scope/meeting before LIMIT and indexes meeting
+lookup independently of the visible history page. Multiple unfinished matches
+fail closed. Start returns existing pending work without changing its selection or
+running it implicitly. A new operation captures current settings/revision and
+attempts resource admission; busy work stays queued. Resume checks expectedAttempt
+and reconciles receipts before explicit retry/run. History/status never infer.
+
+Before exposing these controls for all libraries, preserve the storage ID contract:
+meeting-directory names allow bounded ASCII identifiers, while native speech still
+requires canonical UUIDs. Operation/attempt tokens must remain strict UUIDs when
+meeting-ID compatibility is fixed.
+
+Renderer transcription commands and runtime/model setup remain pending; explicit preflight UI is described above.
 Local speech requires explicit local settings and diarization=false. Cloud ASR,
 diarization and Windows runtime remain separate work. Abrupt/forced stops may retain
 unknown private speech stages; broad deletion or automatic inference recovery is
