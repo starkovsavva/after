@@ -85,10 +85,18 @@ def private_venv(root: Path, venv: Path) -> Path:
     runtime = root.resolve(strict=True) / "runtime"
     if not venv.is_absolute() or ".." in venv.parts:
         raise RuntimeError("Нужен абсолютный путь собственной среды After.")
-    try:
-        relative = venv.relative_to(runtime)
-    except ValueError as exc:
-        raise RuntimeError("Среда распознавания должна находиться в собственной папке After.") from exc
+    # macOS exposes system temporary roots through /var -> /private/var.
+    # Preserve the relative path before canonicalizing the library ancestor;
+    # every component inside runtime still goes through the no-alias checks.
+    relative = None
+    for candidate in (root / "runtime", runtime):
+        try:
+            relative = venv.relative_to(candidate)
+            break
+        except ValueError:
+            pass
+    if relative is None:
+        raise RuntimeError("Среда распознавания должна находиться в собственной папке After.")
     current = runtime
     for part in (None, *relative.parts, "bin"):
         if part is not None:
@@ -96,7 +104,7 @@ def private_venv(root: Path, venv: Path) -> Path:
         info = current.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
             raise RuntimeError("Среда распознавания должна находиться в собственной папке After. Подготовьте её в настройках.")
-    return venv.resolve(strict=True)
+    return runtime.joinpath(relative)
 
 
 def configure(root: Path, venv: Path) -> Path:

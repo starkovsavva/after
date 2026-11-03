@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn unresponsive_owner_times_out_and_connection_is_not_reused() {
         let (root, engine) =
-            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nexec /usr/bin/sleep 30");
+            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nexec sleep 30");
         let connection =
             QueueConnection::connect(&engine, root.path(), Duration::from_millis(200)).unwrap();
         assert_eq!(
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn supervisor_deadline_overrides_the_longer_rpc_timeout() {
         let (root, engine) =
-            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nexec /usr/bin/sleep 30");
+            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nexec sleep 30");
         let connection =
             QueueConnection::connect(&engine, root.path(), Duration::from_secs(5)).unwrap();
         let start = Instant::now();
@@ -418,7 +418,7 @@ mod tests {
             }
         }
         let (root, engine) =
-            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nexec /usr/bin/sleep 30");
+            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nexec sleep 30");
         let connection =
             QueueConnection::connect(&engine, root.path(), Duration::from_secs(5)).unwrap();
         let budget = Budget {
@@ -449,7 +449,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn mismatched_reply_identity_closes_the_owner_connection() {
-        let (root, engine) = fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nIFS= read -r request\nprintf '%s\\n' '{\"event\":\"reply\",\"version\":1,\"id\":\"wrong\",\"envelope\":{\"ok\":true,\"result\":{\"jobs\":[]}}}'\nexec /usr/bin/sleep 30");
+        let (root, engine) = fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nIFS= read -r request\nprintf '%s\\n' '{\"event\":\"reply\",\"version\":1,\"id\":\"wrong\",\"envelope\":{\"ok\":true,\"result\":{\"jobs\":[]}}}'\nexec sleep 30");
         let connection =
             QueueConnection::connect(&engine, root.path(), Duration::from_secs(3)).unwrap();
         assert_eq!(
@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn a_blocked_stdin_writer_cannot_defeat_the_request_deadline() {
         let (root, engine) =
-            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nexec /usr/bin/sleep 30");
+            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":1}'\nexec sleep 30");
         let connection =
             QueueConnection::connect(&engine, root.path(), Duration::from_secs(1)).unwrap();
         let before = Instant::now();
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn an_incompatible_startup_protocol_never_admits_requests() {
         let (root, engine) =
-            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":2}'\nexec /usr/bin/sleep 30");
+            fake("printf '%s\\n' '{\"event\":\"ready\",\"version\":2}'\nexec sleep 30");
         assert_eq!(
             QueueConnection::connect(&engine, root.path(), Duration::from_secs(1))
                 .err()

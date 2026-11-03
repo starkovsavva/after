@@ -94,6 +94,8 @@ class Verification:
         self.process_tests()
         self.run("Rust domain contracts", self.cargo_command("test"))
         self.build_rust()
+        engine = self.rust / "debug" / ("posle-engine.exe" if os.name == "nt" else "posle-engine")
+        self.run("Stage desktop engine and speech resources", [self.python, "scripts/stage-desktop-engine.py", "--engine", engine])
         frontend = ["npm.cmd" if os.name == "nt" else "npm", "--prefix", PROJECT / "desktop"]
         self.run("Frontend production build", [*frontend, "run", "build"])
         self.run("Frontend contracts", [*frontend, "test"])

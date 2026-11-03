@@ -9,6 +9,19 @@ import media_runtime
 
 
 class MediaRuntimeChecks(unittest.TestCase):
+    def test_system_ancestor_alias_is_normalized_without_accepting_runtime_aliases(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            actual = base / "actual/library"
+            venv = actual / "runtime/venv"
+            (venv / "bin").mkdir(parents=True, mode=0o700)
+            (base / "alias").symlink_to(base / "actual", target_is_directory=True)
+            root = base / "alias/library"
+            self.assertEqual(media_runtime.private_venv(root, root / "runtime/venv"), venv.resolve())
+            (actual / "runtime/redirect").symlink_to(venv, target_is_directory=True)
+            with self.assertRaises(RuntimeError):
+                media_runtime.private_venv(root, root / "runtime/redirect")
+
     def test_reuses_bytes_without_touching_the_dependency_and_updates_copy(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

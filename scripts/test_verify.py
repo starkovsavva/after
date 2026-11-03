@@ -56,6 +56,12 @@ class VerifyIsolationTests(unittest.TestCase):
             self.assertIn('AFTER_TEST_ENGINE_PATH', kwargs['env'])
             self.assertNotIn('POSLE_DATA_DIR', kwargs['env'])
         self.assertTrue(any('--test' in command and 'real_engine' in command for command in commands))
+        staged = next(index for index, command in enumerate(commands) if 'scripts/stage-desktop-engine.py' in command)
+        host = next(index for index, command in enumerate(commands) if str(verify.PROJECT / 'desktop/src-tauri/Cargo.toml') in command)
+        self.assertLess(staged, host)
+        stage_command = commands[staged]
+        expected = str(controller.rust / 'debug' / ('posle-engine.exe' if os.name == 'nt' else 'posle-engine'))
+        self.assertEqual(stage_command[stage_command.index('--engine') + 1], expected)
 
     @unittest.skipUnless(verify.sys.platform.startswith('linux'), 'Linux dependency preflight')
     def test_desktop_missing_webkit_fails_before_any_build(self):
