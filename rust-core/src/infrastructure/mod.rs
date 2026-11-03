@@ -42,3 +42,5 @@ pub(crate) mod native_queue_transport;
 
 #[cfg(unix)]
 pub(crate) mod speech_preparation;
+
+pub(crate) mod job_database;
