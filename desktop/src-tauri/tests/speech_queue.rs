@@ -244,3 +244,89 @@ fn changed_backend_stops_the_owner_before_any_further_queue_request() {
         "engine_failure"
     );
 }
+
+#[test]
+#[ignore = "Requires staged canonical engine and speech source"]
+fn native_preflight_is_explicit_and_does_not_require_or_create_a_meeting() {
+    let fixture = fixture();
+    let root = fixture.path().join("library");
+    let bridge = bridge(&engine(), &root, &backend());
+    std::fs::write(
+        root.join("settings.json"),
+        json!({"speechMode":"local","diarization":false,"asrModelPath":"/unused/model"})
+            .to_string(),
+    )
+    .unwrap();
+    let queue = bridge.open_speech_queue().unwrap();
+    let check = queue
+        .execute(SpeechCommand::EnqueueCheck {})
+        .unwrap()
+        .check
+        .unwrap();
+    assert_eq!(check.state, JobState::Queued);
+    assert_eq!(check.attempt, 0);
+    assert_eq!(
+        queue
+            .execute(SpeechCommand::History { after: None })
+            .unwrap()
+            .total,
+        Some(0)
+    );
+    let visible = serde_json::to_value(&check).unwrap().to_string();
+    for secret in ["settings", "model", "operationId", "attemptToken"] {
+        assert!(!visible.contains(secret));
+    }
+    drop(queue);
+    let queue = bridge.open_speech_queue().unwrap();
+    assert_eq!(
+        queue
+            .execute(SpeechCommand::GetCheck {
+                job_id: check.id.clone()
+            })
+            .unwrap()
+            .check
+            .unwrap()
+            .state,
+        JobState::Queued
+    );
+    assert!(queue
+        .execute(SpeechCommand::CancelCheck {
+            job_id: check.id.clone(),
+            expected_attempt: 1
+        })
+        .is_err());
+    assert!(queue
+        .execute(SpeechCommand::Get {
+            job_id: check.id.clone()
+        })
+        .is_err());
+    assert_eq!(
+        queue
+            .execute(SpeechCommand::RunCheck {
+                job_id: check.id.clone()
+            })
+            .unwrap()
+            .check
+            .unwrap()
+            .attempt,
+        1
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let status = queue
+            .execute(SpeechCommand::GetCheck {
+                job_id: check.id.clone(),
+            })
+            .unwrap()
+            .check
+            .unwrap();
+        if status.state == JobState::Failed {
+            break;
+        }
+        assert_eq!(status.state, JobState::Running);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!root.join("meetings").exists());
+    assert!(!root.join("runtime").exists());
+}

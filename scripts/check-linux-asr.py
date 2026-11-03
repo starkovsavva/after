@@ -10,7 +10,7 @@ import stat
 import subprocess
 import sys
 import uuid
-from linux_speech_queue_fixture import transcribe as queued_transcribe, check_cancel
+from linux_speech_queue_fixture import transcribe as queued_transcribe, check_cancel, preflight
 import tempfile
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -60,6 +60,8 @@ def main():
             raise RuntimeError('Speech preflight did not verify actual local inference and media')
         if (library / 'meetings').exists() and any((library / 'meetings').glob('*/transcript.json')):
             raise RuntimeError('Speech preflight wrote a meeting transcript')
+        print('Checking admitted native preflight',file=sys.stderr,flush=True)
+        preflight(engine,library,PROJECT/'backend',env)
         speech = root / 'synthetic.wav'
         subprocess.run([tts,'-v','en-us','-s','145','-w',str(speech),'Hello world. This is a test of local speech recognition.'],env=env,check=True,timeout=20)
         imported = json.loads(run(['import','--root',str(library)],payload=json.dumps({'source':str(speech)})).stdout.splitlines()[-1])
@@ -121,9 +123,11 @@ def main():
             raise RuntimeError('Integrity failure altered previous transcription or source')
         print("Cancelling a real native/SDK/descendant scope", file=sys.stderr, flush=True)
         check_cancel(engine,library,env,work,root)
+        print("Cancelling native preflight/SDK/descendant scopes", file=sys.stderr, flush=True)
+        check_cancel(engine,library,env,work,root,preflight=True)
         if hashlib.sha256(source.read_bytes()).hexdigest()!=source_hash:
             raise RuntimeError('Speech cancellation/shutdown altered the original media')
-        print(json.dumps({'passed':True,'durableSpeechQueue':True,'nativeSdkDescendantCancellation':True,'eofInterruptedWithoutResume':True,'realParakeetCpu':True,'syntheticSpeechOnly':True,'canonicalTranscript':True,'nativeStagedPublication':True,'receiptPreventedRepeatInference':True,'liveSettingsSwitchDidNotRedirect':True,
+        print(json.dumps({'passed':True,'durablePreflight':True,'preflightCancellationAndEof':True,'durableSpeechQueue':True,'nativeSdkDescendantCancellation':True,'eofInterruptedWithoutResume':True,'realParakeetCpu':True,'syntheticSpeechOnly':True,'canonicalTranscript':True,'nativeStagedPublication':True,'receiptPreventedRepeatInference':True,'liveSettingsSwitchDidNotRedirect':True,
                           'corruptArchivePreservedActive':True,'tamperedModelRejectedBeforeExecution':True,
                           'frozenSelectionPreserved':True,'previousTranscriptAndSourcePreserved':True},indent=2))
 

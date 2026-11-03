@@ -351,3 +351,10 @@ credentials и посторонние настройки. FFmpeg создаёт 
 Это проверка текущей local inference/media конфигурации, не качества распознавания,
 диаризации или постоянной готовности после обновления файлов. Native Tauri readiness
 и UI ещё требуют подключения; результат не включает пути, настройки или текст.
+
+Native speech-port также поддерживает отдельные preflight jobs: EnqueueCheck только
+фиксирует минимальные local-настройки; RunCheck запускает их после общего
+local-heavy admission. GetCheck и CancelCheck используют opaque ID и attempt.
+На cancel/EOF owner завершает native/SDK/descendant scope и ждёт его до освобождения
+lease. История транскрипций не включает preflight, а исторический успех не отменяет
+повторную проверку runtime/model при распознавании. Renderer-кнопки ещё не подключены.

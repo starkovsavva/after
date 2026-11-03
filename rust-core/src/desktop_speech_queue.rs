@@ -26,6 +26,10 @@ use std::{
     deny_unknown_fields
 )]
 pub(crate) enum Request {
+    EnqueueCheck {},
+    GetCheck {job_id:String},
+    RunCheck {job_id:String},
+    CancelCheck {job_id:String,expected_attempt:u64},
     Prepare { meeting_id: String },
     Enqueue {
         input: SpeechWork,
@@ -54,6 +58,7 @@ pub(crate) struct Executor {
     worker: Arc<dyn SpeechJobWorker>,
     active: Option<Active>,
     halted: bool,
+    checks: Option<crate::desktop_speech_checks::Checks>,
 }
 struct Active {
     id: String,
@@ -90,10 +95,15 @@ impl Executor {
             worker,
             active: None,
             halted: false,
+            checks: None,
         };
         owner.reconcile()?;
         Ok(owner)
     }
+    pub fn with_checks(lease:Arc<SpeechExecutorLease>,worker:Arc<dyn SpeechJobWorker>,checks:crate::desktop_speech_checks::Checks)->Result<Self> {
+        let mut owner=Self::new(lease,worker)?;owner.checks=Some(checks);Ok(owner)
+    }
+    fn checks(&mut self)->Result<&mut crate::desktop_speech_checks::Checks>{self.checks.as_mut().ok_or_else(||anyhow::anyhow!("Speech preflight unavailable"))}
     fn store(&self) -> ScopedAttemptStore<'_> {
         ScopedAttemptStore {
             root: self.lease.root(),
@@ -134,6 +144,10 @@ impl Executor {
             }
         }
         match request {
+            Request::EnqueueCheck {} => self.checks()?.enqueue(),
+            Request::GetCheck {job_id} => self.checks()?.get(job_id),
+            Request::RunCheck {job_id} => self.checks()?.run(job_id),
+            Request::CancelCheck {job_id,expected_attempt} => self.checks()?.cancel(job_id,expected_attempt),
             Request::Prepare { meeting_id } => Ok(json!({"prepared":crate::speech_job::prepare(self.lease.root(), &meeting_id)?})),
             Request::Enqueue { input } => {
                 input.validate()?;

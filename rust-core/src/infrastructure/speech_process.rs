@@ -105,10 +105,40 @@ impl SpeechJobWorker for NativeSpeechProcess {
             serde_json::to_vec(work)?,
             stop,
             observer,
+            Duration::from_secs(24 * 60 * 60),
             |completion| {
                 ensure!(
                     completion.receipt == SpeechReceipt::for_work(work),
                     "Speech acknowledgement identity changed"
+                );
+                Ok(())
+            },
+        )
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckReply {
+    check: crate::application::speech_check::CheckCompletion,
+}
+impl crate::application::speech_check::CheckWorker for NativeSpeechProcess {
+    fn run_check(
+        &self,
+        work: &crate::application::speech_check::CheckWork,
+        stop: &AttemptStop,
+        observer: &mut dyn SpeechObserver,
+    ) -> Result<()> {
+        work.validate()?;
+        self.exchange::<CheckReply>(
+            serde_json::to_vec(&serde_json::json!({"check":work}))?,
+            stop,
+            observer,
+            Duration::from_secs(10 * 60),
+            |reply| {
+                ensure!(
+                    reply.check
+                        == crate::application::speech_check::CheckCompletion::for_work(work),
+                    "Check acknowledgement identity changed"
                 );
                 Ok(())
             },
@@ -121,6 +151,7 @@ impl NativeSpeechProcess {
         input: Vec<u8>,
         stop: &AttemptStop,
         observer: &mut dyn SpeechObserver,
+        timeout: Duration,
         validate: impl Fn(&T) -> Result<()>,
     ) -> Result<()> {
         ensure!(!stop.is_requested(), "Speech stopped");
@@ -206,7 +237,7 @@ impl NativeSpeechProcess {
                     let _ = sender.send(event);
                 })?,
         );
-        let deadline = Instant::now() + Duration::from_secs(24 * 60 * 60);
+        let deadline = Instant::now() + timeout;
         let (mut input_done, mut output_done, mut stderr_done, mut exited, mut terminal) =
             (false, false, false, false, false);
         let mut stopping = None;

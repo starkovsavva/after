@@ -161,6 +161,9 @@ Prepare не ставит работу в очередь и не объявля�
 Явный CLI `check-speech` выполняет offline decode синтетической тишины и private FFmpeg через
 тот же guarded worker, без встречи/credentials/загрузки модели из сети; обязательный bounded
 completion отличает реальную проверку от успешного exit без результата.
+Native preflight теперь доступен через speech-port: отдельный kind `desktop-speech-check`,
+общий local-heavy admission, inherited publisher scope, cancel/EOF и join-before-lease-release.
+Startup не повторяет проверку; исторический success не является постоянным ready-grant.
 Renderer commands/readiness/setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 

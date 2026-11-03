@@ -34,10 +34,10 @@ class Queue:
             raise RuntimeError('Native speech queue rejected a fixture request: ' + json.dumps(frame))
         return frame['envelope']['result']
 
-    def wait(self, identity, expected):
+    def wait(self, identity, expected, *, preflight=False):
         deadline = time.monotonic() + 900
         while True:
-            job = self.call('get', jobId=identity)['job']
+            job = self.call('get_check' if preflight else 'get', jobId=identity)['check' if preflight else 'job']
             if job['state'] == expected:
                 return job
             if job['state'] not in ('running', 'queued') or time.monotonic() >= deadline:
@@ -87,9 +87,27 @@ def transcribe(engine, library, backend, env, work):
         return result
 
 
-def check_cancel(engine, library, env, work, scratch):
+def preflight(engine, library, backend, env):
+    with Queue(engine, library, backend, env) as queue:
+        job=queue.call('enqueue_check')['check']
+        if job['state']!='queued' or any(key in json.dumps(job) for key in ('settings','attemptToken','modelPath','operationId')):
+            raise RuntimeError('Preflight exposed private input or started automatically')
+        if queue.call('history',after=None)['total']!=0:
+            raise RuntimeError('Preflight polluted speech history')
+        if queue.call('run_check',jobId=job['id'])['check']['attempt']!=1:
+            raise RuntimeError('Preflight was not claimed durably')
+        checked=queue.wait(job['id'],'succeeded',preflight=True)
+        if checked['progress']!=1:
+            raise RuntimeError('Completed preflight did not persist completion')
+    with Queue(engine, library, backend, env) as queue:
+        if queue.call('get_check',jobId=job['id'])['check']['state']!='succeeded':
+            raise RuntimeError('Historical preflight changed after reopen')
+    return checked
+
+
+def check_cancel(engine, library, env, work, scratch, *, preflight=False):
     """Real native publisher + verified Python; only a synthetic backend stalls."""
-    backend = scratch / 'cancellable speech backend'
+    backend = scratch / ('cancellable check backend' if preflight else 'cancellable speech backend')
     backend.mkdir(mode=0o700)
     ready = library / 'fixture-speech-child-ready'
     pids = library / 'fixture-speech-pids.json'
@@ -119,13 +137,19 @@ def check_cancel(engine, library, env, work, scratch):
             return fields[0], fields[19]
         except FileNotFoundError:
             return None
+    if preflight:
+        (library/'settings.json').write_text(json.dumps(work['settings']))
     for expected in ('cancelled', 'interrupted'):
         ready.unlink(missing_ok=True)
         pids.unlink(missing_ok=True)
         work = dict(work, operationId=str(uuid.uuid4()), attemptToken=str(uuid.uuid4()))
         with Queue(engine, library, backend, env) as queue:
-            job = queue.call('enqueue', input=work)['job']
-            queue.call('run', jobId=job['id'])
+            if preflight:
+                job = queue.call('enqueue_check')['check']
+                queue.call('run_check',jobId=job['id'])
+            else:
+                job = queue.call('enqueue', input=work)['job']
+                queue.call('run', jobId=job['id'])
             deadline = time.monotonic() + 30
             while not pids.exists():
                 if time.monotonic() >= deadline:
@@ -135,8 +159,8 @@ def check_cancel(engine, library, env, work, scratch):
             if len(processes) != 3 or not all(processes.values()):
                 raise RuntimeError('Native publisher/SDK/descendant were not all live before cancellation')
             if expected == 'cancelled':
-                queue.call('cancel', jobId=job['id'], expectedAttempt=1)
-                queue.wait(job['id'], 'cancelled')
+                queue.call('cancel_check' if preflight else 'cancel', jobId=job['id'], expectedAttempt=1)
+                queue.wait(job['id'], 'cancelled',preflight=preflight)
             # EOF with a live worker exercises owner shutdown and join.
         for pid, before in processes.items():
             after = identity(pid)
@@ -144,7 +168,7 @@ def check_cancel(engine, library, env, work, scratch):
                 raise RuntimeError('A native speech descendant survived cancellation/shutdown')
         marker = pids.read_bytes()
         with Queue(engine, library, backend, env) as queue:
-            recovered = queue.call('get', jobId=job['id'])['job']
+            recovered = queue.call('get_check' if preflight else 'get', jobId=job['id'])['check' if preflight else 'job']
             if recovered['state'] != expected or pids.read_bytes() != marker:
                 raise RuntimeError('Queue recovery changed cancellation/shutdown or resumed inference')
     if transcript.read_bytes() != original:

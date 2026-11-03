@@ -389,4 +389,6 @@ pub mod speech_job;
 #[cfg(unix)]
 mod desktop_speech_queue;
 #[cfg(unix)]
+mod desktop_speech_checks;
+#[cfg(unix)]
 pub mod desktop_speech_service;

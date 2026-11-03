@@ -6,9 +6,7 @@ use super::{
 use crate::domain::jobs::Job;
 use anyhow::{ensure, Result};
 pub(crate) const KIND: &str = "desktop-speech";
-pub(crate) trait SpeechObserver {
-    fn checkpoint(&mut self, fraction: Option<f64>) -> Result<()>;
-}
+pub(crate) use super::speech_progress::SpeechObserver;
 pub(crate) trait SpeechJobWorker: Send + Sync {
     fn committed(&self, work: &SpeechWork) -> Result<bool>;
     /// Return only after the entire native process tree has stopped.

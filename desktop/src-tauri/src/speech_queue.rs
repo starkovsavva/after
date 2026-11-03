@@ -25,6 +25,17 @@ pub struct SpeechInput {
     rename_all_fields = "camelCase"
 )]
 pub enum SpeechCommand {
+    EnqueueCheck {},
+    GetCheck {
+        job_id: String,
+    },
+    RunCheck {
+        job_id: String,
+    },
+    CancelCheck {
+        job_id: String,
+        expected_attempt: u64,
+    },
     Prepare {
         meeting_id: String,
     },
@@ -62,9 +73,21 @@ pub struct SpeechJobSummary {
     pub cancel_requested: bool,
     pub created_at: Option<f64>,
 }
+/// Historical preflight attempt, not a permanent runtime readiness grant.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckSummary {
+    pub id: String,
+    pub state: JobState,
+    pub progress: f64,
+    pub attempt: u64,
+    pub cancel_requested: bool,
+    pub created_at: Option<f64>,
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpeechReply {
+    pub check: Option<CheckSummary>,
     pub prepared: Option<SpeechInput>,
     pub job: Option<SpeechJobSummary>,
     #[serde(default)]

@@ -196,6 +196,10 @@ fn main() {
             if raw.get("inspect").and_then(Value::as_str).is_some() && raw.as_object().is_some_and(|v| v.len()==1) {
                 return Ok(json!({"inputRevision":posle_core::speech_job::inspect(Path::new(&args[1]),raw["inspect"].as_str().unwrap())?}));
             }
+            if raw.get("check").is_some() && raw.as_object().is_some_and(|fields|fields.len()==1) {
+                let work=serde_json::from_value(raw["check"].clone())?;
+                return Ok(json!({"check":posle_core::speech_job::check(Path::new(&args[1]),Path::new(&args[3]),&work)?}));
+            }
             let work = serde_json::from_value(raw)?;
             Ok(json!({"receipt":posle_core::speech_job::execute(Path::new(&args[1]),Path::new(&args[3]),&work)?}))
         })();

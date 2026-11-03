@@ -28,7 +28,8 @@ pub fn run_stdio(
         engine: std::env::current_exe()?,
         backend: backend.to_owned(),
     });
-    let mut executor = crate::desktop_speech_queue::Executor::new(lease, worker)?;
+    let checks=crate::desktop_speech_checks::Checks::new(lease.clone(),worker.clone())?;
+    let mut executor = crate::desktop_speech_queue::Executor::with_checks(lease, worker, checks)?;
     crate::infrastructure::native_queue_transport::frame(
         &mut writer,
         json!({"version":1,"event":"ready"}),

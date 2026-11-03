@@ -25,6 +25,16 @@ impl SpeechInference for Worker<'_> {
         )
     }
 }
+pub use crate::application::speech_check::{CheckWork, CheckCompletion};
+pub fn check(root:&Path,backend:&Path,work:&CheckWork)->Result<CheckCompletion> {
+    crate::infrastructure::runtime_tree::absolute(root)?;
+    let _root=crate::infrastructure::runtime_tree::open(root,true)?;
+    let inherited=crate::infrastructure::executor_lease::inherited_speech(root)?;
+    if inherited.is_some(){crate::infrastructure::executor_lease::validate_publisher_group()?;}
+    let settings=work.validate()?;
+    crate::worker::run_worker_in_scope(root,backend,"check-local",None,0,false,settings,inherited.is_some())?;
+    Ok(CheckCompletion::for_work(work))
+}
 pub fn prepare(root: &Path, meeting: &str) -> Result<SpeechWork> {
     crate::infrastructure::runtime_tree::absolute(root)?;
     let _root = crate::infrastructure::runtime_tree::open(root, true)?;

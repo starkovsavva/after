@@ -94,8 +94,23 @@ private FFmpeg through the same guarded worker. `speech_check.py` closes models
 and removes temporary PCM on normal/error paths; it never reads meetings or
 publishes transcripts. Rust projects local settings, strips credentials and
 requires exactly one closed, bounded completion before reporting success. This
-probe is not run at queue startup; native Tauri readiness must still bind it to
-owned process cancellation and resource admission before exposing UI controls.
+probe is not run at queue startup. Native preflight now uses independent
+`desktop-speech-check` rows under the same speech executor lease. Closed commands
+are `enqueue_check`, `run_check`, `get_check`, and `cancel_check` (expectedAttempt).
+Enqueue captures only local settings and never starts inference; explicit Run
+claims the global local-heavy resource. Checks do not appear in speech history.
+
+`application/speech_check.rs` owns validated work/attempt policy;
+`desktop_speech_checks.rs` composes SQLite, threads and recovery. The shared
+`speech_progress.rs` port keeps check policy independent of transcription policy.
+The inherited publisher scope runs `check-local` with verified runtime/model
+guards and a ten-minute native deadline; exact completion binds operation ID,
+attempt token and frozen settings revision. Cancellation/EOF stops and joins the
+native/SDK/descendant scope before lease release. Startup marks unfinished checks
+interrupted, without repeating inference. Succeeded rows are historical evidence,
+not a persistent readiness capability; execution still revalidates its resources.
+Grant-free check summaries expose no settings, paths or private acknowledgements.
+Renderer check controls remain pending.
 
 Renderer speech commands, readiness/setup UI and speech controls remain pending; this native service does not advertise a UI capability.
 Local speech requires explicit local settings and diarization=false. Cloud ASR,
