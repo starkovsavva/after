@@ -42,6 +42,16 @@ function invoke(command, args = {}) {
     child.stdin.end(JSON.stringify({ command, arguments: args }));
   });
 }
+async function saveNoteFromUi(page) {
+  // Bind completion to this mutation, not a potentially stale status label.
+  const response = page.waitForResponse(reply => reply.url().endsWith('/__test/invoke')
+    && reply.request().method() === 'POST' && reply.request().postDataJSON()?.command === 'save_note');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const envelope = await (await response).json();
+  assert.equal(envelope.ok, true, 'Canonical save_note must acknowledge this mutation');
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+  return envelope.result;
+}
 async function meeting(id, title, start) {
   const directory = resolve(fixture, 'meetings', id);
   await mkdir(directory, { recursive: true });
@@ -123,10 +133,11 @@ try {
   await page.getByRole('button', { name: 'Meetings', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Save changes to this note?' })).toBeVisible();
   await page.getByRole('button', { name: 'Keep editing', exact: true }).click();
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+  const acknowledged = await saveNoteFromUi(page);
+  assert.equal(acknowledged.title, 'Travel practice');
   let workspace = await invoke('get_workspace');
-  const created = workspace.notes.find(note => note.title === 'Travel practice');
+  const created = workspace.notes.find(note => note.id === acknowledged.id);
+  assert(created, 'Acknowledged note must appear in the canonical workspace');
   assert.equal(created.text, content); assert.equal(created.folderId, english.id);
   await page.reload();
   await page.getByRole('button', { name: 'Notes', exact: true }).click();
@@ -139,8 +150,7 @@ try {
   await page.getByRole('button', { name: 'Rename', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Rename folder', exact: true })).toHaveCount(0);
   await page.getByRole('textbox', { name: 'Note text', exact: true }).fill(content + '\nEdited after folder rename.');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByText('Saved', { exact: true })).toBeVisible();
+  await saveNoteFromUi(page);
   workspace = await invoke('get_workspace');
   const current = workspace.notes.find(note => note.id === created.id);
   assert(current.revision > created.revision);
