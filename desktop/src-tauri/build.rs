@@ -34,6 +34,9 @@ fn main() {
     let attributes =
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "get_workspace",
+            "speech_check_status",
+            "start_speech_check",
+            "cancel_speech_check",
             "get_meeting",
             "choose_and_import",
             "import_status",

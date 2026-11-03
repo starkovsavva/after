@@ -192,3 +192,7 @@ kbd { font-size: 11px; font-family: inherit; color: var(--muted); white-space: n
 .import-history-list p { margin: 4px 0 12px; }
 .import-history-list progress { width: 100%; }
 .import-history-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+.speech-check .dialog-actions { flex-wrap: wrap; }
+.speech-check progress { width: 100%; }
+.speech-check { padding-bottom: 20px; }

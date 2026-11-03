@@ -49,6 +49,9 @@ function importHistory(after?: ImportHistoryCursor): Promise<ImportHistory> {
   return request;
 }
 const desktop: LibraryAPI = {
+  speechCheckStatus: () => command('speech_check_status'),
+  startSpeechCheck: () => command('start_speech_check'),
+  cancelSpeechCheck: (jobId, expectedAttempt) => command('cancel_speech_check', { jobId, expectedAttempt }),
   getWorkspace: () => command<Workspace>('get_workspace'),
   getMeeting: meetingId => command<MeetingDetail>('get_meeting', { meetingId }),
   chooseAndImport: () => command<Meeting | null>('choose_and_import'),

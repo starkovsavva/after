@@ -36,6 +36,7 @@ export interface Note {
 }
 export type RecordingMode = 'microphone' | 'microphone_and_system';
 export interface Capabilities {
+  speechChecks?: boolean;
   library: boolean;
   import: boolean;
   recording: boolean; recordingRecovery?: boolean; recordingModes?: RecordingMode[];
@@ -94,7 +95,11 @@ export interface BridgeError {
   code: string;
   message: string;
 }
+export interface SpeechCheck { id: string; state: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'blocked'; progress: number; attempt: number; cancelRequested: boolean; createdAt: number | null; }
 export interface LibraryAPI {
+  speechCheckStatus(): Promise<SpeechCheck | null>;
+  startSpeechCheck(): Promise<SpeechCheck>;
+  cancelSpeechCheck(jobId: string, expectedAttempt: number): Promise<SpeechCheck>;
   getWorkspace(): Promise<Workspace>;
   getMeeting(meetingId: string): Promise<MeetingDetail>;
   chooseAndImport(): Promise<Meeting | null>;

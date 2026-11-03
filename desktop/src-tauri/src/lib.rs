@@ -1,4 +1,6 @@
 mod host_files;
+mod speech_checks;
+mod speech_session;
 pub mod speech_resources;
 pub mod bridge;
 pub mod worker_host;
@@ -78,9 +80,19 @@ async fn get_workspace(state: tauri::State<'_, LibraryBridge>, recorder: tauri::
         let mut workspace=bridge.workspace()?;
         workspace.capabilities.recording_modes=recorder.capabilities().modes();
         workspace.capabilities.recording=!workspace.capabilities.recording_modes.is_empty();
+        workspace.capabilities.speech_checks=platform::speech_checks_supported() && bridge.speech_backend().is_ok();
         Ok(workspace)
     }).await
 }
+fn speech_check_state(bridge:LibraryBridge)->Arc<speech_checks::SpeechChecks> {
+    Arc::new(speech_checks::SpeechChecks::with_session(Arc::new(speech_session::SpeechSession::new(move|| Ok(Arc::new(bridge.open_speech_queue()?) as Arc<dyn speech_queue::SpeechQueue>)))))
+}
+#[tauri::command]
+async fn speech_check_status(state:tauri::State<'_,Arc<speech_checks::SpeechChecks>>)->Result<Option<speech_queue::CheckSummary>,HostError>{let state=state.inner().clone();background(move||state.status()).await}
+#[tauri::command]
+async fn start_speech_check(state:tauri::State<'_,Arc<speech_checks::SpeechChecks>>)->Result<speech_queue::CheckSummary,HostError>{let state=state.inner().clone();background(move||state.start()).await}
+#[tauri::command]
+async fn cancel_speech_check(state:tauri::State<'_,Arc<speech_checks::SpeechChecks>>,job_id:String,expected_attempt:u64)->Result<speech_queue::CheckSummary,HostError>{let state=state.inner().clone();background(move||state.cancel(&job_id,expected_attempt)).await}
 #[tauri::command]
 async fn get_meeting(
     state: tauri::State<'_, LibraryBridge>,
@@ -316,6 +328,9 @@ fn library_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bui
         })
         .invoke_handler(tauri::generate_handler![
             get_workspace,
+            speech_check_status,
+            start_speech_check,
+            cancel_speech_check,
             get_meeting,
             choose_and_import,
             import_status,
@@ -355,6 +370,7 @@ pub fn run() {
             )));
             app.manage(Arc::new(RecordingGate(AtomicBool::new(false))));
             app.manage(Arc::new(imports::Imports::default()));
+            app.manage(speech_check_state(bridge.clone()));
             app.manage(bridge);
             let window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -458,6 +474,7 @@ mod ipc_tests {
     fn application_with_backend(bridge: LibraryBridge,backend:Arc<dyn capture_backend::CaptureBackend>)->tauri::App<MockRuntime> {
         let recorder=Arc::new(capture::Recorder::new(bridge.data_root(),backend));
         library_commands(mock_builder())
+            .manage(speech_check_state(bridge.clone()))
             .manage(bridge)
             .manage(recorder)
             .manage(Arc::new(RecordingGate(AtomicBool::new(false))))
@@ -513,7 +530,12 @@ mod ipc_tests {
         assert_eq!(request(&main, "cancel_import", json!({"operationId":id,"controlId":app.state::<Arc<imports::Imports>>().status().control_id.unwrap()}), local_origin()).unwrap()["cancelRequested"], true);
         assert!(session.cancelled.load(Ordering::Acquire));
         session.finish("cancelled");
+        assert!(request(&main, "speech_check_status", json!({}), local_origin()).unwrap().is_null());
         for (window, origin, command) in [
+            (&untrusted, local_origin(), "speech_check_status"),
+            (&main, "https://example.org", "speech_check_status"),
+            (&untrusted, local_origin(), "start_speech_check"),
+            (&main, "https://example.org", "cancel_speech_check"),
             (&main, "https://example.org", "get_workspace"),
             (&untrusted, local_origin(), "get_workspace"),
             (&main, "https://example.org", "feature_operation"),
@@ -541,6 +563,26 @@ mod ipc_tests {
             assert_ne!(denied["code"], "engine_failure");
         }
         assert!(!fixture.path().join("data/core.sqlite").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "Requires staged canonical engine and speech backend"]
+    fn real_preflight_is_explicit_through_tauri_and_missing_runtime_never_reports_success() {
+        let engine=std::path::PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+        let fixture=tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let root=fixture.path().join("data");let backend=std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/speech-backend");
+        let bridge=LibraryBridge::for_development_with_backend(engine,root.clone(),backend).unwrap();
+        let app=application_with_backend(bridge,Arc::new(capture_platform::UnavailableCapture));let main=window(&app,"main",fixture.path());
+        assert!(request(&main,"speech_check_status",json!({}),local_origin()).unwrap().is_null());
+        assert!(!root.join("jobs.sqlite").exists());
+        std::fs::write(root.join("settings.json"),json!({"speechMode":"local","diarization":false,"asrModelPath":"/unused/model","apiKey":"private-ipc-fixture"}).to_string()).unwrap();
+        let started=request(&main,"start_speech_check",json!({}),local_origin()).unwrap();let id=started["id"].as_str().unwrap().to_owned();
+        assert_eq!(started["attempt"],1);assert!(!started.to_string().contains("private-ipc-fixture"));assert!(!started.to_string().contains("settings"));
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(15);
+        loop {let state=request(&main,"speech_check_status",json!({}),local_origin()).unwrap();if state["state"]=="failed"{break;}assert_eq!(state["state"],"running");assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(20));}
+        assert_eq!(request(&main,"cancel_speech_check",json!({"jobId":id,"expectedAttempt":0}),local_origin()).unwrap_err()["code"],"conflict");
+        assert!(!root.join("runtime").exists());
     }
 
     #[test]

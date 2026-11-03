@@ -68,6 +68,8 @@ pub struct Note {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
+    #[serde(default)]
+    pub speech_checks: bool,
     pub library: bool,
     #[serde(default)]
     pub import: bool,

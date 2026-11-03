@@ -110,7 +110,17 @@ native/SDK/descendant scope before lease release. Startup marks unfinished check
 interrupted, without repeating inference. Succeeded rows are historical evidence,
 not a persistent readiness capability; execution still revalidates its resources.
 Grant-free check summaries expose no settings, paths or private acknowledgements.
-Renderer check controls remain pending.
+Renderer check controls are available in Settings on Linux/macOS when bundled
+source verification succeeds. This capability is source/platform support, not
+runtime readiness. The local-main ACL permits only status/start/cancel commands;
+renderer input contains no backend path, profile, model path or private work.
+`host speech_checks.rs` owns current-check policy and consumes the lazy shared
+`speech_session.rs`; multiple future speech consumers can share one native owner.
+Empty passive status does not create a queue. Queued checks run again only on an
+explicit click, and transport failures never replay mutations. Native cancel uses
+the observed ID/attempt. UI epochs reject delayed status after newer actions;
+closing settings leaves ownership in the host and reopening reads its state.
+Runtime/model setup and renderer transcription controls remain separate work.
 
 Renderer speech commands, readiness/setup UI and speech controls remain pending; this native service does not advertise a UI capability.
 Local speech requires explicit local settings and diarization=false. Cloud ASR,

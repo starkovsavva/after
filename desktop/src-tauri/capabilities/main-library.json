@@ -26,6 +26,9 @@
     "core:window:allow-close",
     "core:window:allow-destroy",
     "core:event:allow-listen",
-    "core:event:allow-unlisten"
+    "core:event:allow-unlisten",
+    "allow-speech-check-status",
+    "allow-start-speech-check",
+    "allow-cancel-speech-check"
   ]
 }

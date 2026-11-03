@@ -2,6 +2,13 @@ export type Language = 'en' | 'ru';
 export type LanguagePreference = 'system' | Language;
 
 const en = {
+  speechCheckLoading: 'Reading check status…', speechCheckStopping: 'Stopping check…',
+  speechCheckTitle: 'Local speech check', speechCheckHint: 'Checks the selected local model and audio components using synthetic silence. No meeting audio is used or uploaded.',
+  speechCheckStart: 'Check local speech', speechCheckRunQueued: 'Run queued check', speechCheckCancel: 'Cancel check', speechCheckIdle: 'Not checked in this session',
+  speechCheckQueued: 'Waiting for resources — run explicitly when available.', speechCheckRunning: 'Checking local speech…', speechCheckPassed: 'Local speech check passed',
+  speechCheckFailed: 'The check failed. Verify your local speech components and model selection before trying again.', speechCheckCancelled: 'Check cancelled', speechCheckInterrupted: 'Check interrupted. Run a new check explicitly.',
+  speechCheckError: 'Could not update the check. Verify your local speech setup and refresh its status before trying again.', speechCheckRefresh: 'Refresh check', speechCheckHistorical: 'This result describes the last check. Components are verified again when speech processing starts.',
+
   chooseAudioMode: 'Choose an audio source',
   importHistory: 'Import history', importHistoryHint: 'Unfinished imports stay on this computer. Resume explicitly to read the original file again. Keep After open until the import finishes.',
   refreshImports: 'Refresh imports', importHistoryFailed: 'Could not load import history. Another import may be running. Refresh before trying again.', noImports: 'No imports yet.',
@@ -53,6 +60,13 @@ const en = {
 };
 export type Copy = typeof en;
 const ru: Copy = {
+  speechCheckLoading: 'Читаем состояние проверки…', speechCheckStopping: 'Останавливаем проверку…',
+  speechCheckTitle: 'Проверка локального распознавания', speechCheckHint: 'Проверяет выбранную локальную модель и аудиокомпоненты на синтетической тишине. Аудио встреч не используется и не отправляется.',
+  speechCheckStart: 'Проверить распознавание', speechCheckRunQueued: 'Запустить ожидающую проверку', speechCheckCancel: 'Отменить проверку', speechCheckIdle: 'В этой сессии ещё не проверялось',
+  speechCheckQueued: 'Ожидание ресурсов — запустите проверку явно, когда они освободятся.', speechCheckRunning: 'Проверяем локальное распознавание…', speechCheckPassed: 'Проверка распознавания пройдена',
+  speechCheckFailed: 'Проверка не прошла. Проверьте локальные компоненты распознавания и выбор модели перед повтором.', speechCheckCancelled: 'Проверка отменена', speechCheckInterrupted: 'Проверка прервана. Запустите новую проверку явно.',
+  speechCheckError: 'Не удалось обновить проверку. Проверьте локальные настройки распознавания и обновите состояние перед повтором.', speechCheckRefresh: 'Обновить проверку', speechCheckHistorical: 'Результат относится к последней проверке. При обработке речи компоненты проверяются снова.',
+
   chooseAudioMode: 'Выберите источник звука',
   importHistory: 'История импорта', importHistoryHint: 'Незавершённые импорты сохраняются на этом компьютере. Продолжите явно, чтобы снова прочитать исходный файл. Не закрывайте After до завершения импорта.',
   refreshImports: 'Обновить историю', importHistoryFailed: 'Не удалось загрузить историю импорта. Возможно, другой импорт ещё выполняется. Обновите историю перед повтором.', noImports: 'Импортов пока нет.',

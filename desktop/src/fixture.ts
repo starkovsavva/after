@@ -1,8 +1,10 @@
 // Explicit development preview only. Production builds cannot select this transport.
-import type { Folder, ImportStatus, LibraryAPI, MeetingDetail, Note, RecordingStatus, Workspace } from './types';
+import type { SpeechCheck, Folder, ImportStatus, LibraryAPI, MeetingDetail, Note, RecordingStatus, Workspace } from './types';
 let importState: ImportStatus = { operationId: null, controlId: null, phase: 'idle', copiedBytes: 0, totalBytes: 0, cancelRequested: false };
 const storageKey = 'posle.demo.workspace.v1';
-const capabilities = { library: true, import: true, recording: new URLSearchParams(location.search).get('recording') === '1', calendar: false, assistant: false, cards: false, tasks: false };
+let check: SpeechCheck | null = null;
+let checkStarted = 0;
+const capabilities = { speechChecks: new URLSearchParams(location.search).get('speech') === '1', library: true, import: true, recording: new URLSearchParams(location.search).get('recording') === '1', calendar: false, assistant: false, cards: false, tasks: false };
 const sample: Workspace = {
   folders: [{ id: 'work', name: 'Работа', revision: 1 }, { id: 'english', name: 'Английский', revision: 1 }],
   meetings: [
@@ -42,6 +44,14 @@ const details: Record<string, Omit<MeetingDetail, 'meeting' | 'notes'>> = {
   ] },
 };
 export const fixtureAPI: LibraryAPI = {
+  async speechCheckStatus() {
+    if (check?.state === 'running' && !new URLSearchParams(location.search).has('speechSlow') && Date.now() - checkStarted > 1200) check = { ...check, state: 'succeeded', progress: 1 };
+    const observed = clone(check);
+    if (new URLSearchParams(location.search).has('speechReadDelay')) await delay(800);
+    return observed;
+  },
+  async startSpeechCheck() { if (check?.state === 'running') throw { code: 'busy' }; checkStarted = Date.now(); check = { id: crypto.randomUUID(), state: 'running', progress: 0, attempt: 1, cancelRequested: false, createdAt: Date.now()/1000 }; return clone(check); },
+  async cancelSpeechCheck(jobId, expectedAttempt) { if (check?.id !== jobId || check.attempt !== expectedAttempt) throw { code: 'conflict' }; check = { ...check, state: 'cancelled' }; return clone(check); },
   async startRecording(mode) { await delay(); const status: RecordingStatus = { sessionId: crypto.randomUUID(), phase: 'recording', mode, elapsedMs: 0, warning: null }; sessionStorage.setItem('posle.demo.recording', JSON.stringify(status)); return status; },
   async recordingStatus() { return fixtureRecording(); },
   async stopRecording(title) { await delay(); if (!fixtureRecording().sessionId) throw { code: 'recording_error' }; sessionStorage.removeItem('posle.demo.recording'); const meeting = { id: crypto.randomUUID(), title, startedAt: Date.now() / 1000, durationSeconds: 1, folderId: null, hasTranscript: false, hasSummary: false }; workspace.meetings = [meeting, ...workspace.meetings]; persist(); return { meeting, interrupted: false }; },

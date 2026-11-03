@@ -164,7 +164,11 @@ completion отличает реальную проверку от успешн�
 Native preflight теперь доступен через speech-port: отдельный kind `desktop-speech-check`,
 общий local-heavy admission, inherited publisher scope, cancel/EOF и join-before-lease-release.
 Startup не повторяет проверку; исторический success не является постоянным ready-grant.
-Renderer commands/readiness/setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
+В настройках Tauri доступен явный preflight: локальный ACL status/start/cancel, общий
+lazy native session и host-owned current-check policy. Пассивное открытие не запускает
+очередь/модель; UI отбрасывает запоздалые ответы после cancel и восстанавливает состояние
+при переоткрытии настроек. Capability означает platform/source support, не runtime ready.
+Renderer transcription commands и setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,

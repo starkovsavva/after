@@ -118,3 +118,5 @@ mod speech_tests {
         assert_eq!(super::speech_queue_command(path,path,path).err().unwrap().code,"speech_unavailable");
     }
 }
+
+pub(crate) fn speech_checks_supported()->bool { cfg!(any(target_os="linux",target_os="macos")) }
