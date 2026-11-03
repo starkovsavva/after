@@ -174,7 +174,9 @@ Resume проверяет observed attempt и receipts. Общие work/receipt 
 Native meeting ID использует общий со storage контракт `domain/meeting_ids.rs`: 1–128 ASCII
 букв/цифр/`-`/`_`, без изменения регистра; operation/attempt tokens остаются strict UUID.
 Проверены staging/publication и receipt recovery для legacy ID.
-Renderer transcription commands и setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
+Tauri status/start/resume/cancel подключены к общей с preflight native session;
+проверены ACL, stale attempts, отсутствие replay и actual-engine IPC с legacy meeting ID.
+Renderer transcription UI и setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,

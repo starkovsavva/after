@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-resume-transcription"
+description = "Enables the resume_transcription command without any pre-configured scope."
+commands.allow = ["resume_transcription"]
+
+[[permission]]
+identifier = "deny-resume-transcription"
+description = "Denies the resume_transcription command without any pre-configured scope."
+commands.deny = ["resume_transcription"]

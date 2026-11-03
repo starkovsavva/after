@@ -1,5 +1,6 @@
 mod host_files;
 mod speech_checks;
+mod speech_transcriptions;
 mod speech_session;
 pub mod speech_resources;
 pub mod bridge;
@@ -84,8 +85,55 @@ async fn get_workspace(state: tauri::State<'_, LibraryBridge>, recorder: tauri::
         Ok(workspace)
     }).await
 }
-fn speech_check_state(bridge:LibraryBridge)->Arc<speech_checks::SpeechChecks> {
-    Arc::new(speech_checks::SpeechChecks::with_session(Arc::new(speech_session::SpeechSession::new(move|| Ok(Arc::new(bridge.open_speech_queue()?) as Arc<dyn speech_queue::SpeechQueue>)))))
+fn speech_states(
+    bridge: LibraryBridge,
+) -> (
+    Arc<speech_checks::SpeechChecks>,
+    Arc<speech_transcriptions::SpeechTranscriptions>,
+) {
+    let session = Arc::new(speech_session::SpeechSession::new(move || {
+        Ok(Arc::new(bridge.open_speech_queue()?) as Arc<dyn speech_queue::SpeechQueue>)
+    }));
+    (
+        Arc::new(speech_checks::SpeechChecks::with_session(session.clone())),
+        Arc::new(speech_transcriptions::SpeechTranscriptions::new(session)),
+    )
+}
+#[tauri::command]
+async fn transcription_status(
+    state: tauri::State<'_, Arc<speech_transcriptions::SpeechTranscriptions>>,
+    meeting_id: String,
+) -> Result<Option<speech_queue::SpeechJobSummary>, HostError> {
+    let state = state.inner().clone();
+    background(move || state.status(&meeting_id)).await
+}
+#[tauri::command]
+async fn start_transcription(
+    state: tauri::State<'_, Arc<speech_transcriptions::SpeechTranscriptions>>,
+    meeting_id: String,
+) -> Result<speech_queue::SpeechJobSummary, HostError> {
+    let state = state.inner().clone();
+    background(move || state.start(&meeting_id)).await
+}
+#[tauri::command]
+async fn resume_transcription(
+    state: tauri::State<'_, Arc<speech_transcriptions::SpeechTranscriptions>>,
+    meeting_id: String,
+    job_id: String,
+    expected_attempt: u64,
+) -> Result<speech_queue::SpeechJobSummary, HostError> {
+    let state = state.inner().clone();
+    background(move || state.control(&meeting_id, &job_id, expected_attempt, true)).await
+}
+#[tauri::command]
+async fn cancel_transcription(
+    state: tauri::State<'_, Arc<speech_transcriptions::SpeechTranscriptions>>,
+    meeting_id: String,
+    job_id: String,
+    expected_attempt: u64,
+) -> Result<speech_queue::SpeechJobSummary, HostError> {
+    let state = state.inner().clone();
+    background(move || state.control(&meeting_id, &job_id, expected_attempt, false)).await
 }
 #[tauri::command]
 async fn speech_check_status(state:tauri::State<'_,Arc<speech_checks::SpeechChecks>>)->Result<Option<speech_queue::CheckSummary>,HostError>{let state=state.inner().clone();background(move||state.status()).await}
@@ -328,6 +376,10 @@ fn library_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bui
         })
         .invoke_handler(tauri::generate_handler![
             get_workspace,
+            transcription_status,
+            start_transcription,
+            resume_transcription,
+            cancel_transcription,
             speech_check_status,
             start_speech_check,
             cancel_speech_check,
@@ -370,7 +422,9 @@ pub fn run() {
             )));
             app.manage(Arc::new(RecordingGate(AtomicBool::new(false))));
             app.manage(Arc::new(imports::Imports::default()));
-            app.manage(speech_check_state(bridge.clone()));
+            let (checks, transcriptions) = speech_states(bridge.clone());
+            app.manage(checks);
+            app.manage(transcriptions);
             app.manage(bridge);
             let window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -473,8 +527,10 @@ mod ipc_tests {
     }
     fn application_with_backend(bridge: LibraryBridge,backend:Arc<dyn capture_backend::CaptureBackend>)->tauri::App<MockRuntime> {
         let recorder=Arc::new(capture::Recorder::new(bridge.data_root(),backend));
+        let (checks, transcriptions) = speech_states(bridge.clone());
         library_commands(mock_builder())
-            .manage(speech_check_state(bridge.clone()))
+            .manage(checks)
+            .manage(transcriptions)
             .manage(bridge)
             .manage(recorder)
             .manage(Arc::new(RecordingGate(AtomicBool::new(false))))
@@ -532,6 +588,14 @@ mod ipc_tests {
         session.finish("cancelled");
         assert!(request(&main, "speech_check_status", json!({}), local_origin()).unwrap().is_null());
         for (window, origin, command) in [
+            (&untrusted, local_origin(), "transcription_status"),
+            (&main, "https://example.org", "transcription_status"),
+            (&untrusted, local_origin(), "start_transcription"),
+            (&main, "https://example.org", "start_transcription"),
+            (&untrusted, local_origin(), "resume_transcription"),
+            (&main, "https://example.org", "resume_transcription"),
+            (&untrusted, local_origin(), "cancel_transcription"),
+            (&main, "https://example.org", "cancel_transcription"),
             (&untrusted, local_origin(), "speech_check_status"),
             (&main, "https://example.org", "speech_check_status"),
             (&untrusted, local_origin(), "start_speech_check"),
@@ -563,6 +627,119 @@ mod ipc_tests {
             assert_ne!(denied["code"], "engine_failure");
         }
         assert!(!fixture.path().join("data/core.sqlite").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "Requires staged canonical engine and speech backend"]
+    fn real_transcription_controls_share_speech_ownership_and_preserve_source_on_failure() {
+        let engine = std::path::PathBuf::from(std::env::var_os("AFTER_TEST_ENGINE_PATH").unwrap());
+        let fixture = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let root = fixture.path().join("data");
+        let backend =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries/speech-backend");
+        let bridge =
+            LibraryBridge::for_development_with_backend(engine, root.clone(), backend).unwrap();
+        let app = application_with_backend(bridge, Arc::new(capture_platform::UnavailableCapture));
+        let main = window(&app, "main", fixture.path());
+        let meeting = "Synthetic_Legacy_Meeting";
+        let directory = root.join("meetings").join(meeting);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("meta.json"),
+            json!({"id":meeting,"source":"input.wav"}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("input.wav"),
+            b"synthetic input; runtime absence must prevent decoding",
+        )
+        .unwrap();
+        std::fs::write(root.join("settings.json"),json!({"speechMode":"local","diarization":false,"asrModelPath":"/unused/model","apiKey":"private-ipc-fixture"}).to_string()).unwrap();
+        assert!(request(
+            &main,
+            "transcription_status",
+            json!({"meetingId":meeting}),
+            local_origin()
+        )
+        .unwrap()
+        .is_null());
+        let started = request(
+            &main,
+            "start_transcription",
+            json!({"meetingId":meeting}),
+            local_origin(),
+        )
+        .unwrap();
+        let id = started["id"].as_str().unwrap().to_owned();
+        assert_eq!(started["attempt"], 1);
+        for secret in [
+            "private-ipc-fixture",
+            "settings",
+            "inputRevision",
+            "attemptToken",
+            "/unused/model",
+        ] {
+            assert!(!started.to_string().contains(secret));
+        }
+        let wait_failed = || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                let state = request(
+                    &main,
+                    "transcription_status",
+                    json!({"meetingId":meeting}),
+                    local_origin(),
+                )
+                .unwrap();
+                if state["state"] == "failed" {
+                    return state;
+                }
+                assert_eq!(state["state"], "running");
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        wait_failed();
+        assert_eq!(
+            request(
+                &main,
+                "resume_transcription",
+                json!({"meetingId":meeting,"jobId":id,"expectedAttempt":0}),
+                local_origin()
+            )
+            .unwrap_err()["code"],
+            "conflict"
+        );
+        let resumed = request(
+            &main,
+            "resume_transcription",
+            json!({"meetingId":meeting,"jobId":id,"expectedAttempt":1}),
+            local_origin(),
+        )
+        .unwrap();
+        assert_eq!(resumed["id"], id);
+        assert_eq!(resumed["attempt"], 2);
+        wait_failed();
+        assert_eq!(
+            request(
+                &main,
+                "cancel_transcription",
+                json!({"meetingId":meeting,"jobId":id,"expectedAttempt":1}),
+                local_origin()
+            )
+            .unwrap_err()["code"],
+            "conflict"
+        );
+        // A second consumer must reuse the same owner, rather than fail its lease.
+        let check = request(&main, "start_speech_check", json!({}), local_origin()).unwrap();
+        assert_eq!(check["attempt"], 1);
+        assert_eq!(
+            std::fs::read(directory.join("input.wav")).unwrap(),
+            b"synthetic input; runtime absence must prevent decoding"
+        );
+        assert!(!directory.join("transcript.json").exists());
+        assert!(!root.join("runtime").exists());
     }
 
     #[cfg(unix)]

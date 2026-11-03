@@ -140,7 +140,18 @@ preparation, submission, lookup and publication accept legacy identifiers withou
 normalizing their case. Operation/attempt tokens remain strict canonical UUIDs;
 source revision, protected paths and exact publication receipts remain required.
 
-Renderer transcription commands and runtime/model setup remain pending; explicit preflight UI is described above.
+Tauri exposes `transcription_status`, `start_transcription`, `resume_transcription`
+and `cancel_transcription` only to the local main window. The controller accepts
+meeting/job identities and expectedAttempt, validates returned meeting identity,
+progress and creation time, and exposes only the grant-free summary. Resume/cancel
+observe the exact job before the engine's atomic attempt check. Checks and
+transcriptions share one lazy native session supplied by the composition root;
+transport failures invalidate it without replaying mutations. Status never resumes
+work. Unit/ACL and actual-engine IPC tests cover shared ownership, stale controls,
+missing-runtime failure and original source preservation.
+
+Renderer transcription UI and runtime/model setup remain pending; explicit
+preflight UI is described above.
 Local speech requires explicit local settings and diarization=false. Cloud ASR,
 diarization and Windows runtime remain separate work. Abrupt/forced stops may retain
 unknown private speech stages; broad deletion or automatic inference recovery is
