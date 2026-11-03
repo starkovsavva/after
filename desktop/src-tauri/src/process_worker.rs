@@ -259,12 +259,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn stale_operation_frames_are_rejected_without_waiting_for_the_worker() {
-        use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let engine = temp.path().join("fixture-engine");
-        let bytes = b"#!/bin/sh\nprintf '%s\\n' '{\"version\":1,\"operationId\":\"wrong\",\"attemptToken\":\"wrong\",\"payload\":{\"event\":\"failed\"}}'\n/bin/sleep 30\n";
-        std::fs::write(&engine, bytes).unwrap();
-        std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let bytes = b"#!/bin/sh\nprintf '%s\\n' '{\"version\":1,\"operationId\":\"wrong\",\"attemptToken\":\"wrong\",\"payload\":{\"event\":\"failed\"}}'\nexec sleep 30\n";
+        // A stable interpreter avoids ETXTBSY when a concurrent fork briefly
+        // inherits a writer to a freshly created executable before CLOEXEC.
+        std::fs::write(temp.path().join("desktop-import-worker"), bytes).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", &engine).unwrap();
         let work = ImportWork {
             operation_id: uuid::Uuid::new_v4().to_string(),
             attempt_token: uuid::Uuid::new_v4().to_string(),
@@ -281,7 +282,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cancellation_is_sent_over_stdin_while_progress_is_being_drained() {
-        use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let engine = temp.path().join("fixture-engine");
         let work = ImportWork {
@@ -298,8 +298,8 @@ mod tests {
         );
         let stopped = frame(json!({"event":"cancelled"}));
         let script = format!("#!/bin/sh\nIFS= read -r request\nprintf '%s\\n' '{progress}'\nIFS= read -r action\n[ \"$action\" = cancel ] || exit 4\nprintf '%s\\n' '{stopped}'\n");
-        std::fs::write(&engine, script).unwrap();
-        std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(temp.path().join("desktop-import-worker"), script).unwrap();
+        std::os::unix::fs::symlink("/bin/sh", &engine).unwrap();
         let cancelled = AtomicBool::new(false);
         let result = ProcessWorker {
             engine: &engine,
