@@ -64,8 +64,18 @@ it after completion, and checks cancellation of native/SDK/descendant processes.
 
 Packaged backend source is staged and build-pinned by the Tauri host. Shared host
 framing/process ownership lives in `native_queue_connection.rs`; deadlines belong
-to `queue_budget.rs`, independently of import DTOs. Tauri speech bindings,
-readiness/setup UI and speech controls remain pending; this native service does not advertise a UI capability.
+to `queue_budget.rs`, independently of import DTOs. `speech_queue.rs` defines the
+native-only host port; `speech_queue_connection.rs` owns a verified backend source
+grant through process exit and rechecks it before every RPC. Integrity failure
+stops/reaps the owner before returning. `LibraryBridge.open_speech_queue()` selects
+the Linux/macOS command through the platform adapter; Windows returns unsupported
+before spawning. Shared grant-free state/cursors live in `queue_models.rs`, with
+import compatibility exports. The native ready frame follows complete receipt
+reconciliation and says nothing about runtime/model readiness. Integration checks
+cover independent import/speech leases, stale attempt cancellation, queued restart
+without inference, private-history exclusion and resource tampering.
+
+Renderer speech commands, readiness/setup UI and speech controls remain pending; this native service does not advertise a UI capability.
 Local speech requires explicit local settings and diarization=false. Cloud ASR,
 diarization and Windows runtime remain separate work. Abrupt/forced stops may retain
 unknown private speech stages; broad deletion or automatic inference recovery is

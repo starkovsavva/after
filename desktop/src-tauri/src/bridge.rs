@@ -47,6 +47,14 @@ impl LibraryBridge {
         crate::queue_connection::QueueConnection::open(&self.engine.path, &self.root)
     }
 
+    /// Native-only local speech ownership. Does not advertise runtime readiness
+    /// or authorize a renderer to choose settings, paths or operation grants.
+    pub fn open_speech_queue(&self) -> Result<crate::speech_queue_connection::SpeechQueueConnection, HostError> {
+        self.engine.verify()?;
+        crate::speech_queue_connection::SpeechQueueConnection::open(
+            &self.engine.path, &self.root, self.speech_backend()?)
+    }
+
     /// Native-only resource grant. This verifies source integrity, not runtime,
     /// model readiness or permission to submit a renderer speech job.
     pub fn speech_backend(&self) -> Result<crate::speech_resources::VerifiedBackend, HostError> {

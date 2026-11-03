@@ -151,8 +151,11 @@ ONNX inference/FFmpeg; managed Parakeet установлен через общи
 реальная CLI ASR проверена на синтетической английской речи. Очередь Tauri и диаризация
 ещё не подключены. Native staged speech execution/publication с source/result revision CAS
 и atomic receipt реализован; native durable speech queue теперь использует общий
-SQLite scheduler, scoped lease, receipt recovery и внешний process scope. Backend source уже поставляется и проверяется host по build-pinned inventory; Tauri host
-binding/readiness/UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
+SQLite scheduler, scoped lease, receipt recovery и внешний process scope. Backend source уже поставляется и проверяется host по build-pinned inventory. Native Tauri
+host speech-port подключён через общий framing/process transport, независимо от импортных
+DTO; owner удерживает/recheck ресурсы и не начинает inference на startup. Проверены
+раздельные leases, stale cancellation, grant-free history и отказ при подмене source.
+Renderer commands/readiness/setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,

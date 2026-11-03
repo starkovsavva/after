@@ -51,11 +51,12 @@ class VerifyIsolationTests(unittest.TestCase):
         self.assertFalse(any('swift' in Path(command[0]).name for command in commands))
         self.assertTrue(any(str(verify.PROJECT / 'process-runtime/Cargo.toml') in command for command in commands))
         integrations = [(command, kwargs) for _, command, kwargs in calls if '--ignored' in command]
-        self.assertEqual(len(integrations), 2)
+        self.assertEqual(len(integrations), 3)
         for command, kwargs in integrations:
             self.assertIn('AFTER_TEST_ENGINE_PATH', kwargs['env'])
             self.assertNotIn('POSLE_DATA_DIR', kwargs['env'])
         self.assertTrue(any('--test' in command and 'real_engine' in command for command in commands))
+        self.assertTrue(any('--test' in command and 'speech_queue' in command for command in commands))
         staged = next(index for index, command in enumerate(commands) if 'scripts/stage-desktop-engine.py' in command)
         host = next(index for index, command in enumerate(commands) if str(verify.PROJECT / 'desktop/src-tauri/Cargo.toml') in command)
         self.assertLess(staged, host)

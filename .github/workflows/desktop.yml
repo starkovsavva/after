@@ -97,6 +97,7 @@ jobs:
           AFTER_TEST_ENGINE_PATH: ${{ github.workspace }}/.build/rust/debug/posle-engine
         run: |
           python3 scripts/run-ci-check.py -- cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --test real_engine -- --ignored
+          python3 scripts/run-ci-check.py -- cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --test speech_queue -- --ignored
           python3 scripts/run-ci-check.py -- cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri --lib -- --ignored
       - name: Pinned Python inventory generator contracts
         if: runner.os != 'Windows'

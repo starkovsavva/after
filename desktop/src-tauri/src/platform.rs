@@ -89,3 +89,32 @@ mod tests {
         assert_eq!(debug_resource_dir(packaged.clone(), &output), packaged);
     }
 }
+
+/// Native speech service exists on Linux/macOS; Windows keeps the same host
+/// contract and refuses unsupported runtime work before spawning anything.
+pub(crate) fn speech_queue_command(
+    engine: &std::path::Path, root: &std::path::Path, backend: &std::path::Path,
+) -> Result<std::process::Command, crate::models::HostError> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let mut command = std::process::Command::new(engine);
+        command.arg("--posle-speech-queue").arg("--root").arg(root)
+            .arg("--backend").arg(backend).current_dir(root);
+        Ok(command)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (engine, root, backend);
+        Err(crate::models::HostError::new("speech_unavailable",
+            "Local speech queues are not supported on this platform."))
+    }
+}
+
+#[cfg(all(test, not(any(target_os = "linux", target_os = "macos"))))]
+mod speech_tests {
+    #[test]
+    fn unsupported_speech_never_constructs_a_process() {
+        let path = std::path::Path::new("unused");
+        assert_eq!(super::speech_queue_command(path,path,path).err().unwrap().code,"speech_unavailable");
+    }
+}

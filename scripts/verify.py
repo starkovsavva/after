@@ -104,6 +104,7 @@ class Verification:
         engine = self.rust / "debug" / ("posle-engine.exe" if os.name == "nt" else "posle-engine")
         fixture_env = self.env | {"AFTER_TEST_ENGINE_PATH": str(engine)}
         self.run("Host to actual canonical engine", [*host, "--test", "real_engine", "--", "--ignored"], env=fixture_env)
+        self.run("Native speech queue ownership and source integrity", [*host, "--test", "speech_queue", "--", "--ignored"], env=fixture_env)
         self.run("Real engine through Tauri IPC and ACL", [*host, "--lib", "--", "--ignored"], env=fixture_env)
 
     def quick(self):
