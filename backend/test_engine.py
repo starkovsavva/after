@@ -167,7 +167,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".posle-*")), [])
 
     def test_cli_allows_only_audio_and_model_install_commands(self):
-        for command in ("prepare", "install-local", "finalize", "transcribe", "diarize", "discover-models"):
+        for command in ("check-local", "prepare", "install-local", "finalize", "transcribe", "diarize", "discover-models"):
             arguments = [command, "--root", str(self.root)]
             if command in ("finalize", "transcribe", "diarize"):
                 arguments += ["--meeting", str(self.root / "meeting")]

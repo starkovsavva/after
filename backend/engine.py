@@ -995,7 +995,20 @@ def transcribe(directory: Path, root: Path, count: int, use_diarization: bool):
             emit("done", count=len(segments), duration=duration)
 
 
-WORKER_COMMANDS = ("prepare", "install-local", "finalize", "transcribe", "diarize", "discover-models")
+def check_local(root: Path):
+    from speech_check import check
+    settings = load(root / "settings.json", {})
+    def select():
+        return resolve_asr(root, allow_download=False)
+    def render(path):
+        ffmpeg("-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "1",
+               "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", path)
+    with contextlib.redirect_stdout(sys.stderr):
+        result = check(settings, select, lambda selected: ASRAdapter(selected, root), render)
+    emit("done", **result)
+
+
+WORKER_COMMANDS = ("check-local", "prepare", "install-local", "finalize", "transcribe", "diarize", "discover-models")
 
 
 def parse_arguments(argv=None):
@@ -1022,10 +1035,14 @@ def main():
     os.umask(0o077)
     os.environ.setdefault("HF_HOME", str(args.root / "cache" / "huggingface"))
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-    if args.command in ("prepare", "transcribe", "finalize", "diarize"):
+    if args.command == "check-local":
+        os.environ["HF_HUB_OFFLINE"] = "1"
+    if args.command in ("check-local", "prepare", "transcribe", "finalize", "diarize"):
         from media_runtime import configure
         configure(args.root, Path(sys.prefix))
-    if args.command == "prepare":
+    if args.command == "check-local":
+        check_local(args.root)
+    elif args.command == "prepare":
         prepare(args.root)
     elif args.command == "install-local":
         install_local(args.root)

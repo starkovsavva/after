@@ -86,6 +86,14 @@ Global selection may change after preparation; the prepared input remains frozen
 Enqueue still rejects a changed canonical revision. Renderer commands must never
 accept this private input or supply frozen settings/operation grants themselves.
 
+The explicit CLI `check-speech` now runs offline synthetic local inference and
+private FFmpeg through the same guarded worker. `speech_check.py` closes models
+and removes temporary PCM on normal/error paths; it never reads meetings or
+publishes transcripts. Rust projects local settings, strips credentials and
+requires exactly one closed, bounded completion before reporting success. This
+probe is not run at queue startup; native Tauri readiness must still bind it to
+owned process cancellation and resource admission before exposing UI controls.
+
 Renderer speech commands, readiness/setup UI and speech controls remain pending; this native service does not advertise a UI capability.
 Local speech requires explicit local settings and diarization=false. Cloud ASR,
 diarization and Windows runtime remain separate work. Abrupt/forced stops may retain

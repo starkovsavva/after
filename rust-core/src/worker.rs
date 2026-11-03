@@ -101,7 +101,14 @@ pub(crate) fn run_worker_in_scope(
     if !spec.executable.is_file() {
         bail!("В приложении отсутствует движок распознавания. Повторите установку приложения.");
     }
-    run(root, spec)
+    run_with_completion(root, spec, command == "check-local")
+}
+
+/// Explicit offline preflight shares runtime/model guards and process cleanup
+/// with inference, while projecting unrelated settings/credentials out first.
+pub fn check_local(root: &Path, backend: &Path) -> Result<Value> {
+    run_worker(root, backend, "check-local", None, 0, false)?;
+    Ok(json!({"localInferenceVerified":true,"mediaVerified":true,"diarizationVerified":false}))
 }
 
 /// Install the private Python runtime and ASR dependencies, without a shell
@@ -133,9 +140,13 @@ fn worker_request(
     settings: crate::application::speech_launch::SpeechSettings,
 ) -> Result<WorkerRequest> {
     validate_paths(root, backend)?;
-    if !matches!(command, "prepare" | "transcribe" | "diarize" | "finalize" | "install-local") {
+    if !matches!(command, "check-local" | "prepare" | "transcribe" | "diarize" | "finalize" | "install-local") {
         bail!("Неизвестная команда модуля распознавания.");
     }
+    let settings = if command == "check-local" {
+        let selected = crate::domain::speech_settings::local_snapshot(settings.value())?;
+        crate::application::speech_launch::SpeechSettings::parse(&serde_json::to_vec(&selected)?)?
+    } else { settings };
     let needs_meeting = matches!(command, "transcribe" | "diarize" | "finalize");
     if needs_meeting && meeting.is_none() {
         bail!("Не выбрана встреча для обработки.");
@@ -287,6 +298,9 @@ impl Redactor {
 }
 
 fn run(root: &Path, spec: WorkerSpec) -> Result<()> {
+    run_with_completion(root, spec, false)
+}
+fn run_with_completion(root: &Path, spec: WorkerSpec, speech_check: bool) -> Result<()> {
     let runtime_guard = spec.guard;
     let _single_worker = WORKER_LOCK.lock().map_err(|_| anyhow!("Предыдущая обработка прервалась. Повторите попытку."))?;
     let _signals = SignalGuard::install()?;
@@ -318,7 +332,7 @@ fn run(root: &Path, spec: WorkerSpec) -> Result<()> {
     let plain_progress = spec.forwards_plain_progress;
     let (sender, receiver) = mpsc::channel();
     let reader = thread::Builder::new().name("posle-worker-progress".into()).spawn(move || {
-        let result = forward_stdout(stdout, plain_progress, &redactor, &error_for_reader);
+        let result = forward_stdout(stdout, plain_progress, &redactor, &error_for_reader, speech_check);
         if result.is_err() { failed_for_reader.store(true, Ordering::Release); }
         let _ = sender.send(result);
     }).map_err(|_| anyhow!("Не удалось прочитать прогресс обработки."))?;
@@ -412,7 +426,26 @@ fn forward_line(line: &[u8], plain_progress: bool, redactor: &Redactor, reported
     Ok(())
 }
 
-fn forward_stdout(mut input: impl Read, plain_progress: bool, redactor: &Redactor, reported_error: &AtomicBool) -> io::Result<()> {
+fn forward_stdout(mut input: impl Read, plain_progress: bool, redactor: &Redactor, reported_error: &AtomicBool, speech_check: bool) -> io::Result<()> {
+    let mut completed = false;
+    let mut process = |line: &[u8]| -> io::Result<()> {
+        if speech_check {
+            let value: Value = serde_json::from_slice(line).map_err(io::Error::other)?;
+            if completed { return Err(io::Error::other("Unexpected output after speech check completion")); }
+            if !matches!(value["event"].as_str(), Some("done" | "progress" | "error")) {
+                return Err(io::Error::other("Invalid speech check frame"));
+            }
+            if value["event"] == "done" {
+                if value.as_object().is_none_or(|fields|fields.len()!=4)
+                    || value["localInferenceVerified"] != true || value["mediaVerified"] != true
+                    || value["diarizationVerified"] != false {
+                    return Err(io::Error::other("Invalid speech check completion"));
+                }
+                completed = true;
+            }
+        }
+        forward_line(line, plain_progress, redactor, reported_error)
+    };
     let mut buffer = [0_u8; 4096];
     let mut line = Vec::with_capacity(4096);
     let mut oversized = false;
@@ -425,16 +458,22 @@ fn forward_stdout(mut input: impl Read, plain_progress: bool, redactor: &Redacto
         if count == 0 { break; }
         for byte in &buffer[..count] {
             if *byte == b'\n' {
-                if !oversized { forward_line(&line, plain_progress, redactor, reported_error)?; }
+                if !oversized { process(&line)?; }
                 line.clear(); oversized = false;
             } else if !oversized {
                 if line.len() < MAX_LINE_BYTES { line.push(*byte); }
-                else { line.clear(); oversized = true; }
+                else {
+                    if speech_check { return Err(io::Error::other("Oversized speech check output")); }
+                    line.clear(); oversized = true;
+                }
             }
         }
     }
     if !line.is_empty() && !oversized {
-        forward_line(&line, plain_progress, redactor, reported_error)?;
+        process(&line)?;
+    }
+    if speech_check && !completed && !reported_error.load(Ordering::Acquire) {
+        return Err(io::Error::other("Missing speech check completion"));
     }
     Ok(())
 }
@@ -457,6 +496,31 @@ mod tests {
 
     fn strings(spec: &WorkerSpec) -> Vec<String> {
         spec.arguments.iter().map(|argument| argument.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn speech_check_requires_one_closed_completion_not_just_successful_eof() {
+        let valid = json!({"event":"done","localInferenceVerified":true,"mediaVerified":true,"diarizationVerified":false}).to_string();
+        let redactor = Redactor::from_variables(Vec::<(OsString,OsString)>::new());
+        for bytes in [String::new(), "{}\n".into(), "{\"event\":\"done\"}\n".into(),
+            format!("{valid}\n{valid}\n"), format!("{valid}\n{{\"event\":\"error\",\"message\":\"late\"}}\n"),
+            format!("{}\n",json!({"event":"done","localInferenceVerified":false,"mediaVerified":true,"diarizationVerified":false})),
+            "x".repeat(MAX_LINE_BYTES+1)] {
+            assert!(forward_stdout(bytes.as_bytes(),false,&redactor,&AtomicBool::new(false),true).is_err());
+        }
+        assert!(forward_stdout(format!("{valid}\n").as_bytes(),false,&redactor,&AtomicBool::new(false),true).is_ok());
+    }
+
+    #[test]
+    fn preflight_has_no_meeting_or_credential_grant() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("settings.json"), br#"{"speechMode":"local","diarization":false,"asrModelPath":"/selected/model","speechApiKey":"private-probe-fixture"}"#).unwrap();
+        let spec = worker_spec(root.path(), Path::new("/trusted/backend"), "check-local", None, 0, false).unwrap();
+        assert!(!spec.settings.as_ref().unwrap().encoded().contains("private-probe-fixture"));
+        assert!(!spec.accepts_speech_key);
+        let arguments = strings(&spec);
+        assert!(arguments.iter().any(|value| value == "check-local"));
+        assert!(!arguments.iter().any(|value| matches!(value.as_str(), "--meeting" | "--speakers")));
     }
 
     #[test]

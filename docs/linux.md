@@ -325,10 +325,29 @@ Native service `--posle-speech-queue --root /owned/root --backend /trusted/backe
 [Владение, протокол и intentional group termination](decisions/durable-speech-queue.md).
 
 
-Tauri теперь упаковывает 7 Python-модулей из `backend/desktop-speech-files.json`
+Tauri теперь упаковывает Python-модули из `backend/desktop-speech-files.json`
 в `engine/speech-backend`. `stage-desktop-engine.py` обновляет engine и эти ресурсы;
 после изменения backend запускайте staging снова. Host build отказывает при stale/partial
 stage и закрепляет source hashes из checkout; release требует полный stage.
 Native `LibraryBridge.speech_backend()` проверяет состав, хеши и aliases и выдаёт
 удерживаемый source grant с recheck. Это не подтверждение runtime/model readiness.
 Linux WebView smoke также проверяет упакованные speech resources.
+
+### Явная offline-проверка локального распознавания
+
+После явного выбора local mode, `diarization: false` и абсолютного `asrModelPath`
+можно выполнить:
+
+```sh
+.build/rust/debug/posle-engine check-speech --root /absolute/test-library --backend "$PWD/backend"
+```
+
+Команда использует тот же verified runtime/model launch, что и ASR, исключает
+credentials и посторонние настройки. FFmpeg создаёт секунду синтетической тишины,
+выбранная модель действительно загружается/декодирует её. Модели не скачиваются;
+встречи не читаются и транскрипты не публикуются. Возможны private media/cache
+артефакты и временный WAV; обычный выход удаляет WAV и закрывает модель.
+Успех требует корректного bounded completion, а не только exit code 0.
+Это проверка текущей local inference/media конфигурации, не качества распознавания,
+диаризации или постоянной готовности после обновления файлов. Native Tauri readiness
+и UI ещё требуют подключения; результат не включает пути, настройки или текст.

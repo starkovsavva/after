@@ -158,6 +158,9 @@ DTO; owner удерживает/recheck ресурсы и не начинает 
 Native Prepare по UUID встречи получает source revision и минимальный snapshot local-настроек через
 application-порты; credentials/посторонние app settings не попадают в создаваемое задание.
 Prepare не ставит работу в очередь и не объявляет runtime готовым; Enqueue проверяет CAS.
+Явный CLI `check-speech` выполняет offline decode синтетической тишины и private FFmpeg через
+тот же guarded worker, без встречи/credentials/загрузки модели из сети; обязательный bounded
+completion отличает реальную проверку от успешного exit без результата.
 Renderer commands/readiness/setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 

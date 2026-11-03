@@ -52,6 +52,14 @@ def main():
             raise RuntimeError('Failed model preparation changed activation or leaked its candidate')
         settings = {'speechMode':'local','asrModelPath':str(model_dir),'asrModelFormat':'onnx','diarization':False}
         (library / 'settings.json').write_text(json.dumps(settings))
+        print("Checking actual offline speech readiness", file=sys.stderr, flush=True)
+        checked = run(['check-speech','--root',str(library),'--backend',str(PROJECT / 'backend')])
+        events = [json.loads(line) for line in checked.stdout.splitlines() if line.startswith('{')]
+        if not any(event.get('localInferenceVerified') is True and event.get('mediaVerified') is True
+                   and event.get('diarizationVerified') is False for event in events):
+            raise RuntimeError('Speech preflight did not verify actual local inference and media')
+        if (library / 'meetings').exists() and any((library / 'meetings').glob('*/transcript.json')):
+            raise RuntimeError('Speech preflight wrote a meeting transcript')
         speech = root / 'synthetic.wav'
         subprocess.run([tts,'-v','en-us','-s','145','-w',str(speech),'Hello world. This is a test of local speech recognition.'],env=env,check=True,timeout=20)
         imported = json.loads(run(['import','--root',str(library)],payload=json.dumps({'source':str(speech)})).stdout.splitlines()[-1])

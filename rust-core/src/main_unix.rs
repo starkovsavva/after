@@ -11,7 +11,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, ValueEnum)]
-enum Command { Prepare, Transcribe, Diarize, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, CheckCloud, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview, VoicePlan, KnowledgeRebuild }
+enum Command { CheckSpeech, Prepare, Transcribe, Diarize, Finalize, InstallLocal, InstallRuntime, Summarize, Example, Review, Check, CheckCloud, Pull, DiscoverModels, DiscoverLocal, DiscoverGguf, ImportGguf, Search, List, Import, Update, NotesList, NoteSave, NoteDelete, ContextSave, TemplateSave, TemplateDelete, NoteAttach, AttachmentRemove, AttachmentText, AttachmentPath, NotesSearch, NotesTasks, NotesBrief, ExpandNotes, CardsImport, CardsImportPreview, VoicePlan, KnowledgeRebuild }
 
 #[cfg(target_os = "linux")]
 #[derive(Parser)]
@@ -66,6 +66,9 @@ fn read_voice_input(reader: impl Read) -> Result<Value> {
 
 fn run(args: Args) -> Result<Value> {
     if !args.root.is_absolute() { bail!("Нужен абсолютный путь папки приложения"); }
+    if matches!(&args.command, Command::CheckSpeech) && args.meeting.is_some() {
+        bail!("Speech preflight does not accept a meeting");
+    }
     let backend = backend_path(args.backend.as_deref())?;
     let directory = if let Some(path) = &args.meeting {
         let id = path.file_name().and_then(|s| s.to_str()).context("Некорректный ID встречи")?;
@@ -81,6 +84,7 @@ fn run(args: Args) -> Result<Value> {
             worker::run_worker(&args.root, &backend, command, directory.as_deref(), args.speakers, !args.no_diarization)?;
             Ok(json!({}))
         }
+        Command::CheckSpeech => worker::check_local(&args.root, &backend),
         Command::InstallRuntime => { worker::install_runtime(&args.root, &backend)?; Ok(json!({})) }
         Command::Summarize => { ai::summarize_with_options(&args.root, required()?, args.replace_manual_summary)?; Ok(json!({})) }
         Command::Example => { ai::example(&args.root, required()?, &args.card)?; Ok(json!({})) }
