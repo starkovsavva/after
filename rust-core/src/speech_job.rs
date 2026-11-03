@@ -25,6 +25,12 @@ impl SpeechInference for Worker<'_> {
         )
     }
 }
+pub fn prepare(root: &Path, meeting: &str) -> Result<SpeechWork> {
+    crate::infrastructure::runtime_tree::absolute(root)?;
+    let _root = crate::infrastructure::runtime_tree::open(root, true)?;
+    crate::application::speech_preparation::prepare(
+        &crate::infrastructure::speech_preparation::Inputs { root }, meeting)
+}
 pub fn inspect(root: &Path, meeting: &str) -> Result<String> {
     crate::infrastructure::runtime_tree::absolute(root)?;
     let _root = crate::infrastructure::runtime_tree::open(root, true)?;

@@ -8,7 +8,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeechInput {
     pub version: u8,
@@ -25,6 +25,9 @@ pub struct SpeechInput {
     rename_all_fields = "camelCase"
 )]
 pub enum SpeechCommand {
+    Prepare {
+        meeting_id: String,
+    },
     Enqueue {
         input: SpeechInput,
     },
@@ -62,6 +65,7 @@ pub struct SpeechJobSummary {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpeechReply {
+    pub prepared: Option<SpeechInput>,
     pub job: Option<SpeechJobSummary>,
     #[serde(default)]
     pub jobs: Vec<SpeechJobSummary>,

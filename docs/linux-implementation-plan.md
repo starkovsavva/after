@@ -155,6 +155,9 @@ SQLite scheduler, scoped lease, receipt recovery и внешний process scope
 host speech-port подключён через общий framing/process transport, независимо от импортных
 DTO; owner удерживает/recheck ресурсы и не начинает inference на startup. Проверены
 раздельные leases, stale cancellation, grant-free history и отказ при подмене source.
+Native Prepare по UUID встречи получает source revision и минимальный snapshot local-настроек через
+application-порты; credentials/посторонние app settings не попадают в создаваемое задание.
+Prepare не ставит работу в очередь и не объявляет runtime готовым; Enqueue проверяет CAS.
 Renderer commands/readiness/setup UI ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 

@@ -75,6 +75,17 @@ reconciliation and says nothing about runtime/model readiness. Integration check
 cover independent import/speech leases, stale attempt cancellation, queued restart
 without inference, private-history exclusion and resource tampering.
 
+Native `Prepare { meetingId }` returns private work through the queue port. The
+application use case consumes settings/revision/identity ports. The domain keeps
+only explicit local selection (`speechMode`, `diarization`, model path/format/name),
+so other app settings and credentials never enter the generated job configuration.
+The filesystem adapter reads bounded settings and checks absolute model paths;
+the canonical publication adapter supplies the source/result revision. Preparation
+never enqueues, infers, installs dependencies or claims runtime/model readiness.
+Global selection may change after preparation; the prepared input remains frozen.
+Enqueue still rejects a changed canonical revision. Renderer commands must never
+accept this private input or supply frozen settings/operation grants themselves.
+
 Renderer speech commands, readiness/setup UI and speech controls remain pending; this native service does not advertise a UI capability.
 Local speech requires explicit local settings and diarization=false. Cloud ASR,
 diarization and Windows runtime remain separate work. Abrupt/forced stops may retain

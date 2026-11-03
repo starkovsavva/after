@@ -14,3 +14,5 @@ pub mod creation_origin;
 pub mod asr_models;
 
 pub(crate) mod speech;
+
+pub(crate) mod speech_settings;

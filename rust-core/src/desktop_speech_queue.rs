@@ -26,6 +26,7 @@ use std::{
     deny_unknown_fields
 )]
 pub(crate) enum Request {
+    Prepare { meeting_id: String },
     Enqueue {
         input: SpeechWork,
     },
@@ -133,6 +134,7 @@ impl Executor {
             }
         }
         match request {
+            Request::Prepare { meeting_id } => Ok(json!({"prepared":crate::speech_job::prepare(self.lease.root(), &meeting_id)?})),
             Request::Enqueue { input } => {
                 input.validate()?;
                 if let Some(job) = self.store().queue().object_job(&input.operation_id)? {

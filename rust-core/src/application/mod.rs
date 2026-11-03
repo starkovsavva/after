@@ -22,3 +22,5 @@ pub(crate) mod attempt_execution;
 pub(crate) mod job_recovery;
 
 pub(crate) mod speech_jobs;
+
+pub(crate) mod speech_preparation;

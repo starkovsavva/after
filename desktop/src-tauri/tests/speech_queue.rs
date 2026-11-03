@@ -3,14 +3,12 @@
 use after_desktop::{
     bridge::LibraryBridge,
     queue_models::JobState,
-    speech_queue::{SpeechCommand, SpeechInput, SpeechQueue},
+    speech_queue::{SpeechCommand, SpeechQueue},
     worker_host::ImportWork,
 };
-use serde_json::{json, Value};
+use serde_json::json;
 use std::{
-    io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::atomic::AtomicBool,
 };
 
@@ -52,41 +50,49 @@ fn speech_owner_is_exclusive_independent_of_import_and_startup_never_runs_infere
     let meeting = bridge
         .import_work(&work, &AtomicBool::new(false), &mut |_| {})
         .unwrap();
-    let mut inspect = Command::new(&engine)
-        .args(["--posle-speech-job", "--root"])
-        .arg(&root)
-        .arg("--backend")
-        .arg(&backend)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    inspect
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(json!({"inspect":meeting.id}).to_string().as_bytes())
-        .unwrap();
-    let output = inspect.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let input = SpeechInput {
-        version: 1,
-        operation_id: uuid::Uuid::new_v4().to_string(),
-        attempt_token: uuid::Uuid::new_v4().to_string(),
-        meeting_id: meeting.id.clone(),
-        input_revision: result["speechJob"]["inputRevision"]
-            .as_str()
-            .unwrap()
-            .into(),
-        settings: json!({"speechMode":"local","diarization":false,"asrModelPath":"/unused/never-executed"}),
-    };
     let queue = bridge.open_speech_queue().unwrap();
+    // Preparation has no implicit speech defaults or queue writes.
+    assert!(queue
+        .execute(SpeechCommand::Prepare {
+            meeting_id: meeting.id.clone()
+        })
+        .is_err());
+    assert_eq!(
+        queue
+            .execute(SpeechCommand::History { after: None })
+            .unwrap()
+            .total,
+        Some(0)
+    );
+    std::fs::write(
+        root.join("settings.json"),
+        json!({"speechMode":"local","diarization":false,
+        "asrModelPath":"/unused/never-executed","asrModelFormat":"onnx",
+        "speechApiKey":"private-settings-fixture","integrationToken":"private-settings-fixture"})
+        .to_string(),
+    )
+    .unwrap();
+    let input = queue
+        .execute(SpeechCommand::Prepare {
+            meeting_id: meeting.id.clone(),
+        })
+        .unwrap()
+        .prepared
+        .unwrap();
+    assert_eq!(input.meeting_id, meeting.id);
+    assert!(!serde_json::to_string(&input)
+        .unwrap()
+        .contains("private-settings-fixture"));
+    assert_eq!(
+        queue
+            .execute(SpeechCommand::History { after: None })
+            .unwrap()
+            .total,
+        Some(0)
+    );
+    // Selection is immutable even if global settings change before enqueue.
+    std::fs::write(root.join("settings.json"), br#"{"speechMode":"cloud"}"#).unwrap();
+    assert_eq!(input.settings["speechMode"], "local");
     assert_eq!(bridge.open_speech_queue().err().unwrap().code, "busy");
     let imports = bridge.open_import_queue().unwrap();
     use after_desktop::import_queue::{ImportQueue, QueueCommand};
@@ -156,6 +162,35 @@ fn speech_owner_is_exclusive_independent_of_import_and_startup_never_runs_infere
             .unwrap()
             .state,
         JobState::Cancelled
+    );
+    std::fs::write(
+        root.join("settings.json"),
+        json!({"speechMode":"local","diarization":false,
+        "asrModelPath":"/unused/never-executed"})
+        .to_string(),
+    )
+    .unwrap();
+    let stale = queue
+        .execute(SpeechCommand::Prepare {
+            meeting_id: meeting.id.clone(),
+        })
+        .unwrap()
+        .prepared
+        .unwrap();
+    std::fs::write(
+        root.join("meetings").join(&meeting.id).join("source.wav"),
+        b"changed canonical input",
+    )
+    .unwrap();
+    assert!(queue
+        .execute(SpeechCommand::Enqueue { input: stale })
+        .is_err());
+    assert_eq!(
+        queue
+            .execute(SpeechCommand::History { after: None })
+            .unwrap()
+            .total,
+        Some(1)
     );
     assert_eq!(std::fs::read(&source).unwrap(), b"synthetic; never decoded");
     assert!(!root

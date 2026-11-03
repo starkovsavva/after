@@ -39,3 +39,6 @@ pub(crate) mod attempt_store;
 pub(crate) mod speech_process;
 
 pub(crate) mod native_queue_transport;
+
+#[cfg(unix)]
+pub(crate) mod speech_preparation;
