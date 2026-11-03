@@ -38,7 +38,10 @@ settings, logical operation grants, receipts or private tokens are returned.
 owned ProcessTree and sends bounded work on stdin. It validates framed progress
 and exact completion identity, drains bounded diagnostics without persisting raw
 errors, and joins transport threads after stopping the process scope. Authorization
-comes from native composition, never a worker acknowledgement.
+comes from native composition, never a worker acknowledgement. The shared native
+exchange is generic over a closed completion schema; publication validates its
+exact receipt through a caller-owned validator. A future probe completion must
+not deserialize as a publication receipt or replace durable publication recovery.
 
 A dedicated inherited lease descriptor pins ownership if the queue process dies.
 It is reserved before spawn and made inheritable only in the forked child, without

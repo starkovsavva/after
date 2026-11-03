@@ -6,7 +6,7 @@ use crate::application::{
 };
 use after_process_runtime::ProcessTree;
 use anyhow::{anyhow, ensure, Result};
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
@@ -22,14 +22,14 @@ pub(crate) struct NativeSpeechProcess {
 }
 #[derive(Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
-enum Frame {
+enum Frame<T> {
     Progress {
         message: String,
         fraction: f64,
     },
     Done {
         #[serde(rename = "speechJob")]
-        speech_job: Completion,
+        speech_job: T,
     },
     Error {
         message: String,
@@ -37,17 +37,20 @@ enum Frame {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Completion {
+struct PublicationCompletion {
     receipt: SpeechReceipt,
 }
-enum Event {
-    Frame(Frame),
+enum Event<T> {
+    Frame(Frame<T>),
     InputDone,
     OutputDone,
     StderrDone,
     Invalid,
 }
-fn frames(reader: impl Read, sender: &mpsc::SyncSender<Event>) -> Result<()> {
+fn frames<T: DeserializeOwned>(
+    reader: impl Read,
+    sender: &mpsc::SyncSender<Event<T>>,
+) -> Result<()> {
     let mut reader = BufReader::new(reader);
     let mut total = 0usize;
     loop {
@@ -63,15 +66,17 @@ fn frames(reader: impl Read, sender: &mpsc::SyncSender<Event>) -> Result<()> {
             line.len() <= 65_536 && total <= 64 * 1024 * 1024 && line.ends_with(b"\n"),
             "Invalid speech frame"
         );
-        sender.send(Event::Frame(serde_json::from_slice(&line)?))?;
+        sender
+            .send(Event::Frame(serde_json::from_slice(&line)?))
+            .map_err(|_| anyhow!("Speech output channel closed"))?;
     }
 }
-struct Running {
+struct Running<T> {
     child: Option<ProcessTree>,
-    receiver: Option<mpsc::Receiver<Event>>,
+    receiver: Option<mpsc::Receiver<Event<T>>>,
     threads: Vec<JoinHandle<()>>,
 }
-impl Drop for Running {
+impl<T> Drop for Running<T> {
     fn drop(&mut self) {
         // Stop/reap first, close the bounded channel, then join readers/writer.
         // This also unblocks a writer whose child never consumed its request.
@@ -96,8 +101,29 @@ impl SpeechJobWorker for NativeSpeechProcess {
         observer: &mut dyn SpeechObserver,
     ) -> Result<()> {
         work.validate()?;
+        self.exchange::<PublicationCompletion>(
+            serde_json::to_vec(work)?,
+            stop,
+            observer,
+            |completion| {
+                ensure!(
+                    completion.receipt == SpeechReceipt::for_work(work),
+                    "Speech acknowledgement identity changed"
+                );
+                Ok(())
+            },
+        )
+    }
+}
+impl NativeSpeechProcess {
+    fn exchange<T: DeserializeOwned + Send + 'static>(
+        &self,
+        input: Vec<u8>,
+        stop: &AttemptStop,
+        observer: &mut dyn SpeechObserver,
+        validate: impl Fn(&T) -> Result<()>,
+    ) -> Result<()> {
         ensure!(!stop.is_requested(), "Speech stopped");
-        let input = serde_json::to_vec(work)?;
         ensure!(
             input.len() <= 256 * 1024,
             "Speech request exceeds its bound"
@@ -159,7 +185,7 @@ impl SpeechJobWorker for NativeSpeechProcess {
                 thread::Builder::new()
                     .name("speech-output".into())
                     .spawn(move || {
-                        let event = if frames(stdout, &tx).is_ok() {
+                        let event = if frames::<T>(stdout, &tx).is_ok() {
                             Event::OutputDone
                         } else {
                             Event::Invalid
@@ -206,10 +232,7 @@ impl SpeechJobWorker for NativeSpeechProcess {
                                 })?;
                             }
                             Frame::Done { speech_job } => {
-                                ensure!(
-                                    speech_job.receipt == SpeechReceipt::for_work(work),
-                                    "Speech acknowledgement identity changed"
-                                );
+                                validate(&speech_job)?;
                                 terminal = true;
                             }
                             Frame::Error { message } => {
@@ -222,15 +245,16 @@ impl SpeechJobWorker for NativeSpeechProcess {
             }
             if !exited {
                 if let Some(status) = running.child.as_mut().unwrap().try_wait()? {
-                    // The validated native publisher ends its owned Unix group
-                    // after flushing the receipt. Exit alone is not evidence;
-                    // the closed acknowledgement and durable receipt are.
+                    // The validated native scope may end its Unix group after
+                    // flushing completion. Exit alone is not evidence; require
+                    // the typed acknowledgement. Publication separately probes
+                    // its durable receipt before accepting canonical success.
                     let _ = status;
                     exited = true;
                 }
             }
             if exited && input_done && output_done && stderr_done {
-                ensure!(terminal, "Speech process returned no receipt");
+                ensure!(terminal, "Speech process returned no completion");
                 return Ok(());
             }
             if stopping.is_none() && (stop.is_requested() || Instant::now() >= deadline) {
@@ -249,16 +273,44 @@ impl SpeechJobWorker for NativeSpeechProcess {
 mod tests {
     use super::*;
     #[test]
+    fn completion_schemas_cannot_satisfy_another_native_operation() {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Probe {
+            verified: bool,
+        }
+        let probe = b"{\"event\":\"done\",\"speechJob\":{\"verified\":true}}\n";
+        let (sender, receiver) = mpsc::sync_channel::<Event<Probe>>(4);
+        frames(std::io::Cursor::new(probe), &sender).unwrap();
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            Event::Frame(Frame::Done {
+                speech_job: Probe { verified: true }
+            })
+        ));
+        let (sender, _receiver) = mpsc::sync_channel::<Event<PublicationCompletion>>(4);
+        assert!(frames(std::io::Cursor::new(probe), &sender).is_err());
+        let (sender, _receiver) = mpsc::sync_channel::<Event<Probe>>(4);
+        assert!(frames(
+            std::io::Cursor::new(
+                b"{\"event\":\"done\",\"speechJob\":{\"verified\":true,\"receipt\":{}}}\n"
+            ),
+            &sender
+        )
+        .is_err());
+    }
+
+    #[test]
     fn bounded_speech_frames_reject_partial_invalid_and_oversized_output() {
         for bytes in [
             b"not-json\n".to_vec(),
             b"{\"event\":\"progress\"}".to_vec(),
             vec![b'x'; 65_537],
         ] {
-            let (sender, _receiver) = mpsc::sync_channel(16);
+            let (sender, _receiver) = mpsc::sync_channel::<Event<PublicationCompletion>>(16);
             assert!(frames(std::io::Cursor::new(bytes), &sender).is_err());
         }
-        let (sender, receiver) = mpsc::sync_channel(16);
+        let (sender, receiver) = mpsc::sync_channel::<Event<PublicationCompletion>>(16);
         frames(
             std::io::Cursor::new(
                 b"{\"event\":\"progress\",\"message\":\"fixture\",\"fraction\":0.2}\n",
