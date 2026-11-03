@@ -306,7 +306,9 @@ mod tests {
             command: QueueCommand,
             budget: &dyn RequestBudget,
         ) -> Result<QueueReply, HostError> {
-            assert!(budget.deadline() > Instant::now());
+            if budget.deadline() <= Instant::now() {
+                return Err(HostError::new("engine_timeout", "Request deadline elapsed."));
+            }
             self.commands
                 .lock()
                 .unwrap()
@@ -469,8 +471,10 @@ mod tests {
             job(&work, "running", 1, 0.0),
         ]);
         let policy = Policy {
-            deadline: Duration::from_millis(10),
-            cancel_grace: Duration::from_millis(10),
+            deadline: Duration::from_millis(100),
+            // Allow loaded CI runners to schedule the cancellation RPC. The
+            // expired-budget case is checked separately without sleeping.
+            cancel_grace: Duration::from_secs(1),
             poll: Duration::from_secs(1),
         };
         assert_eq!(
@@ -488,6 +492,24 @@ mod tests {
             .collect();
         assert_eq!(actions, ["enqueue", "run", "cancel"]);
         assert!(queue.stopped.load(Ordering::Acquire));
+    }
+    #[test]
+    fn elapsed_deadline_keeps_its_original_grace_boundary() {
+        let cancelled = AtomicBool::new(false);
+        let end = Instant::now() - Duration::from_secs(2);
+        let budget = Budget {
+            cancelled: &cancelled,
+            end,
+            grace: Duration::from_secs(1),
+            stopping: Cell::new(None),
+        };
+        assert_eq!(budget.deadline(), end + Duration::from_secs(1));
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(budget.deadline(), end + Duration::from_secs(1));
+        let queue = Queue::new(vec![]);
+        assert_eq!(queue.execute_with_budget(QueueCommand::List, &budget).err().unwrap().code,
+            "engine_timeout");
+        assert!(queue.commands.lock().unwrap().is_empty());
     }
     #[test]
     fn cancelled_before_admission_does_not_enqueue_or_copy() {

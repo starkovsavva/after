@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn session_lease_is_exclusive_and_the_lock_inode_is_retained() {
         let root = tempfile::tempdir().unwrap();
-        let (path, one) = create(root.path(), &uuid::Uuid::new_v4().to_string()).unwrap();
+        let (path, one) = create(&root.path().canonicalize().unwrap(), &uuid::Uuid::new_v4().to_string()).unwrap();
         assert!(pin_session(&path).is_err());
         let inherited = one._lease.as_ref().unwrap().try_clone().unwrap();
         drop(one);
@@ -190,7 +190,7 @@ mod tests {
         fs::write(&source, b"keep").unwrap();
         fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
         for hard_link in [false, true] {
-            let dir = root.path().join(if hard_link { "hard" } else { "soft" });
+            let dir = root.path().canonicalize().unwrap().join(if hard_link { "hard" } else { "soft" });
             fs::create_dir(&dir).unwrap();
             let lock = dir.join(".capture-session.lock");
             if hard_link {
@@ -223,7 +223,7 @@ mod process_tests {
             return;
         }
         let root = tempfile::tempdir().unwrap();
-        let (path, lease) = create(root.path(), &uuid::Uuid::new_v4().to_string()).unwrap();
+        let (path, lease) = create(&root.path().canonicalize().unwrap(), &uuid::Uuid::new_v4().to_string()).unwrap();
         let probe = |busy: bool| {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([

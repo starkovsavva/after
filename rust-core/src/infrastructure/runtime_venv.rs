@@ -132,6 +132,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
     fn fixture(root: &Path) -> (PathBuf, PathBuf) {
+        let root = root.canonicalize().unwrap();
         let base = root.join("base");
         let venv = root.join("venv");
         fs::create_dir_all(base.join("bin")).unwrap();

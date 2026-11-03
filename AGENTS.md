@@ -40,7 +40,7 @@ Match nearby code: two-space TypeScript, four-space Swift/Rust/Python; PascalCas
 
 ## Testing Guidelines
 
-Use Node, Playwright `*.spec.ts`, Rust, Python `test_*.py`, and Swift checks. Use disposable libraries and debug `AFTER_DATA_DIR`; no coverage threshold exists. Mac checks need Apple tools and `/private/tmp`; Linux needs WebKitGTK 4.1 (not 6.0). Desktop uses `app.posle.desktop`.
+Use Node, Playwright `*.spec.ts`, Rust, Python `test_*.py`, and Swift checks. Use disposable libraries and debug `AFTER_DATA_DIR`; no coverage threshold exists. Mac checks need Apple tools; canonicalize temporary fixture roots before strict filesystem checks (`/var` is a system alias to `/private/var`), and keep aliases inside protected roots rejected; Linux needs WebKitGTK 4.1 (not 6.0). Desktop uses `app.posle.desktop`.
 
 ## Commit & Pull Request Guidelines
 
