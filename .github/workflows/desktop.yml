@@ -79,8 +79,11 @@ jobs:
         working-directory: desktop
       - run: npm run build
         working-directory: desktop
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Test typed host and transport
-        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri
+        run: python scripts/run-ci-check.py -- cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --target-dir .build/tauri
       - name: Canonical core regression and engine (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -140,4 +143,4 @@ jobs:
       - run: npm ci --ignore-scripts
         working-directory: desktop
       - name: Portable checks with actual engine and Tauri IPC
-        run: python3 scripts/verify.py desktop
+        run: python3 scripts/run-ci-check.py -- python3 scripts/verify.py desktop

@@ -64,7 +64,7 @@ jobs:
       - name: Windows process-tree contracts
         run: cargo test --manifest-path process-runtime/Cargo.toml --locked --target-dir .build/rust --target x86_64-pc-windows-msvc
       - name: Canonical Windows library contracts
-        run: cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust --target x86_64-pc-windows-msvc --lib
+        run: python scripts/run-ci-check.py -- cargo test --manifest-path rust-core/Cargo.toml --locked --target-dir .build/rust --target x86_64-pc-windows-msvc --lib
       - name: Build canonical Windows engine with static CRT
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: '-C target-feature=+crt-static'

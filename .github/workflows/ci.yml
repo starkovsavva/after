@@ -19,9 +19,9 @@ jobs:
       - name: Platform boundaries
         run: python3 scripts/check_platform_boundaries.py
       - name: Swift build and isolated unit checks
-        run: python3 scripts/verify.py quick
+        run: python3 scripts/run-ci-check.py -- python3 scripts/verify.py quick
       - name: Native queue through the shared Rust coordinator
-        run: python3 scripts/verify.py queue
+        run: python3 scripts/run-ci-check.py -- python3 scripts/verify.py queue
 
   portable-swift:
     runs-on: ubuntu-24.04
