@@ -408,3 +408,22 @@ runtime сохраняется, отката или удаления покол�
 ответ явно содержит `settingsChanged: false`, `inferenceChecked: false`.
 Выбор local-профиля/модели и явный `check-speech` остаются отдельными действиями.
 Tauri setup UI и адаптер общего сценария для macOS ещё не подключены.
+
+
+### Явный выбор установленного managed-поколения
+
+Прочитайте текущую ревизию настроек, затем передайте её и `model.generation` из
+native installation receipt:
+
+```sh
+.build/rust/debug/posle-engine --posle-local-speech-selection --root /absolute/test-library
+.build/rust/debug/posle-engine --posle-local-speech-selection --root /absolute/test-library \
+  --select-generation <installed-generation-uuid> --expected-revision <observed-revision>
+```
+
+Выбор проверяет managed model inventory, сохраняет прочие настройки и включает
+local/ONNX/Parakeet без диаризации. Если настройки изменились, прочитайте новый статус
+и повторите действие явно. Ответ содержит только `revision` и `local`; это состояние
+speech mode, не гарантия готовности runtime. Затем выполните явную проверку в
+настройках Tauri либо `check-speech`. Установка и выбор через Tauri UI ещё нужны.
+[Контракт и пределы concurrency](decisions/local-speech-selection.md).

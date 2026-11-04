@@ -47,3 +47,8 @@ pub(crate) mod job_database;
 
 #[cfg(unix)]
 pub(crate) mod speech_submission;
+
+#[cfg(unix)]
+pub(crate) mod settings_store;
+#[cfg(unix)]
+pub(crate) mod speech_selection;

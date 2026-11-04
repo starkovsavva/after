@@ -34,6 +34,13 @@ struct LocalSpeechInstallArgs {
 }
 
 #[derive(Parser)]
+struct SpeechSelectionArgs {
+    #[arg(long)] root: PathBuf,
+    #[arg(long, requires = "expected_revision")] select_generation: Option<String>,
+    #[arg(long, requires = "select_generation")] expected_revision: Option<String>,
+}
+
+#[derive(Parser)]
 #[command(version, about="After: ядро библиотеки и обработки встреч")]
 struct Args {
     #[arg(value_enum)] command: Command,
@@ -220,6 +227,21 @@ fn main() {
         let _=io::stdout().flush(); let _=io::stderr().flush();
         drop(scope);
         if failed {std::process::exit(1);}
+        return;
+    }
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--posle-local-speech-selection")) {
+        let result=SpeechSelectionArgs::try_parse_from(std::iter::once(std::ffi::OsString::from("local-speech-selection")).chain(std::env::args_os().skip(2)))
+            .map_err(|error|anyhow::anyhow!(error.to_string())).and_then(|args| {
+                match (args.select_generation,args.expected_revision) {
+                    (Some(generation),Some(revision))=>posle_core::speech_selection::select(&args.root,&generation,&revision),
+                    (None,None)=>posle_core::speech_selection::status(&args.root),
+                    _=>unreachable!("clap enforces selection preconditions"),
+                }
+            });
+        match result {
+            Ok(status)=>println!("{}",serde_json::to_string(&status).unwrap()),
+            Err(error)=>{eprintln!("{error:#}");std::process::exit(1);}
+        }
         return;
     }
     if std::env::args_os().nth(1).as_deref()

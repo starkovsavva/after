@@ -195,6 +195,15 @@ pub fn verify_selected(root: &Path, directory: &Path) -> Result<VerifiedModel> {
     model.recheck()?;
     Ok(model)
 }
+/// Resolve only a compiled managed scope and canonical generation identity.
+pub(crate) fn verified_generation(root:&Path,id:&str)->Result<(PathBuf,VerifiedModel)> {
+    let generation=uuid::Uuid::parse_str(id)?;
+    ensure!(generation.get_version_num()==4 && generation.to_string()==id,"Invalid ASR generation");
+    absolute(root)?;let _root=open(root,true)?;
+    let path=root.canonicalize()?.join(SCOPE).join(id).join(&artifact()?.policy.directory);
+    let guard=verify_selected(root,&path)?;
+    Ok((path,guard))
+}
 pub(crate) fn is_managed_path(root: &Path, path: &Path) -> Result<bool> {
     let root = root.canonicalize()?;
     let scope = root.join(SCOPE);

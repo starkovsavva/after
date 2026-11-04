@@ -33,3 +33,5 @@ pub(crate) mod speech_work;
 pub(crate) mod speech_submission;
 
 pub(crate) mod local_speech_install;
+
+pub(crate) mod speech_selection;

@@ -60,8 +60,25 @@ def main():
         run(['--posle-install-asr-model','--root',str(library),'--archive',str(bad)],expected=False)
         if active.read_bytes() != before or set(active.parent.iterdir()) != entries:
             raise RuntimeError('Failed model preparation changed activation or leaked its candidate')
-        settings = {'speechMode':'local','asrModelPath':str(model_dir),'asrModelFormat':'onnx','diarization':False}
-        (library / 'settings.json').write_text(json.dumps(settings))
+        selection_args = ['--posle-local-speech-selection','--root',str(library)]
+        status = json.loads(run(selection_args).stdout)
+        selected = run([*selection_args,'--select-generation',model['generation'],'--expected-revision',status['revision']])
+        selection = json.loads(selected.stdout)
+        settings = json.loads((library/'settings.json').read_text())
+        if selection['local'] is not True or selection['revision'] == status['revision']:
+            raise RuntimeError('Explicit model selection was not acknowledged')
+        if settings['apiKey'] != 'private-deployment-fixture' or settings['future'] != {'keep':True} or settings['asrModelPath'] != str(model_dir):
+            raise RuntimeError('Selection lost unrelated settings or selected another model')
+        if set(selection) != {'revision','local'} or 'private-deployment-fixture' in selected.stdout:
+            raise RuntimeError('Selection exposed private settings')
+        selected_bytes = (library/'settings.json').read_bytes()
+        run([*selection_args,'--select-generation',model['generation'],'--expected-revision',status['revision']],expected=False)
+        run([*selection_args,'--select-generation',str(uuid.uuid4()),'--expected-revision',selection['revision']],expected=False)
+        if (library/'settings.json').read_bytes() != selected_bytes:
+            raise RuntimeError('Stale or missing-model selection changed settings')
+        # Private queue work contains only the speech selection, never the full
+        # persisted settings whose unrelated fields were preserved above.
+        settings = {key: settings[key] for key in ('speechMode','speechLocalModel','asrModelPath','asrModelFormat','diarization')}
         print("Checking actual offline speech readiness", file=sys.stderr, flush=True)
         checked = run(['check-speech','--root',str(library),'--backend',str(PROJECT / 'backend')])
         events = [json.loads(line) for line in checked.stdout.splitlines() if line.startswith('{')]

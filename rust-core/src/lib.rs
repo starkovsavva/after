@@ -161,7 +161,9 @@ pub fn request(value: &Value) -> Result<Value> {
                     bail!("Секреты должны храниться в Связке ключей macOS");
                 }
             }
-            if path.file_name().and_then(|s| s.to_str()) == Some("summary.json") {
+            if path.file_name().and_then(|s| s.to_str()) == Some("settings.json") {
+                infrastructure::settings_store::Store::open(&root)?.replace(data)?;
+            } else if path.file_name().and_then(|s| s.to_str()) == Some("summary.json") {
                 cards::write_compatible_summary(&path, data)?;
             } else {
                 storage::atomic_json(&path, data)?;
@@ -383,6 +385,8 @@ mod tests {
 #[cfg(unix)]
 pub mod asr_model;
 pub mod local_speech_install;
+#[cfg(unix)]
+pub mod speech_selection;
 
 #[cfg(unix)]
 pub mod speech_job;

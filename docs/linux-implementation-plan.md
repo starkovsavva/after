@@ -181,7 +181,9 @@ Tauri status/start/resume/cancel подключены к общей с preflight
 Проверены браузерные сценарии interrupted/cancel/lost acknowledgement и узкий русский UI.
 Общий application-сценарий установки runtime → model → verify подключён к Linux CLI
 `--posle-install-local-speech`; установка не меняет settings/selection и не выдаёт
-ready-grant. Setup UI runtime/model и явный выбор модели ещё нужны; [queue ADR](decisions/durable-speech-queue.md);
+ready-grant. Явный Unix native CLI выбора managed-поколения теперь проверяет inventory
+и settings revision, сохраняет неизвестные поля через общий с FFI settings lock.
+Tauri setup/selection UI ещё нужен; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,
