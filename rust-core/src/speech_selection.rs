@@ -29,3 +29,32 @@ pub fn select(root: &Path, generation: &str, expected_revision: &str) -> Result<
         local: true,
     })
 }
+
+/// Unverified deployment candidate. Only selection can validate its model tree.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCandidate {
+    pub generation: String,
+    pub model_id: String,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConfiguration {
+    pub selection: SelectionStatus,
+    pub candidate: Option<ModelCandidate>,
+}
+pub fn configuration(root: &Path) -> Result<ModelConfiguration> {
+    let selection = Selection::new(root)?;
+    let settings = selection.settings()?;
+    let candidate = selection.candidate()?.map(|installed| ModelCandidate {
+        generation: installed.generation,
+        model_id: installed.model_id,
+    });
+    Ok(ModelConfiguration {
+        selection: SelectionStatus {
+            revision: settings.revision,
+            local: settings.value["speechMode"].as_str() == Some("local"),
+        },
+        candidate,
+    })
+}

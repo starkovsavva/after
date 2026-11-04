@@ -62,8 +62,18 @@ def main():
             raise RuntimeError('Failed model preparation changed activation or leaked its candidate')
         selection_args = ['--posle-local-speech-selection','--root',str(library)]
         status = json.loads(run(selection_args).stdout)
-        selected = run([*selection_args,'--select-generation',model['generation'],'--expected-revision',status['revision']])
-        selection = json.loads(selected.stdout)
+        metadata_args = ['desktop-bridge','--root',str(library)]
+        configured = json.loads(run(metadata_args,payload=json.dumps({'command':'get_speech_model_configuration','arguments':{}})).stdout)
+        if configured.get('ok') is not True or configured['result']['selection'] != status:
+            raise RuntimeError('Standalone metadata bridge returned another selection')
+        candidate = configured['result']['candidate']
+        if set(candidate) != {'generation','modelId'} or candidate['generation'] != model['generation']:
+            raise RuntimeError('Model candidate exposed private deployment data or another generation')
+        selected = run(metadata_args,payload=json.dumps({'command':'select_managed_speech_model','arguments':{'generation':model['generation'],'expectedRevision':status['revision']}}))
+        selection_reply = json.loads(selected.stdout)
+        if selection_reply.get('ok') is not True:
+            raise RuntimeError('Standalone metadata bridge rejected verified model selection')
+        selection = selection_reply['result']
         settings = json.loads((library/'settings.json').read_text())
         if selection['local'] is not True or selection['revision'] == status['revision']:
             raise RuntimeError('Explicit model selection was not acknowledged')

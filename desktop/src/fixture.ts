@@ -1,10 +1,10 @@
 // Explicit development preview only. Production builds cannot select this transport.
-import type { Transcription, SpeechCheck, Folder, ImportStatus, LibraryAPI, MeetingDetail, Note, RecordingStatus, Workspace } from './types';
+import type { SpeechModelConfiguration, Transcription, SpeechCheck, Folder, ImportStatus, LibraryAPI, MeetingDetail, Note, RecordingStatus, Workspace } from './types';
 let importState: ImportStatus = { operationId: null, controlId: null, phase: 'idle', copiedBytes: 0, totalBytes: 0, cancelRequested: false };
 const storageKey = 'posle.demo.workspace.v1';
 let check: SpeechCheck | null = null;
 let checkStarted = 0;
-const capabilities = { speechTranscription: new URLSearchParams(location.search).get('transcription') === '1', speechChecks: new URLSearchParams(location.search).get('speech') === '1', library: true, import: true, recording: new URLSearchParams(location.search).get('recording') === '1', calendar: false, assistant: false, cards: false, tasks: false };
+const capabilities = { speechSelection: new URLSearchParams(location.search).get('modelSelection') === '1', speechTranscription: new URLSearchParams(location.search).get('transcription') === '1', speechChecks: new URLSearchParams(location.search).get('speech') === '1', library: true, import: true, recording: new URLSearchParams(location.search).get('recording') === '1', calendar: false, assistant: false, cards: false, tasks: false };
 const sample: Workspace = {
   folders: [{ id: 'work', name: 'Работа', revision: 1 }, { id: 'english', name: 'Английский', revision: 1 }],
   meetings: [
@@ -25,6 +25,7 @@ function initial(): Workspace {
   return structuredClone(sample);
 }
 let workspace = initial();
+workspace.capabilities.speechSelection = capabilities.speechSelection;
 if (capabilities.speechTranscription) {
   workspace.capabilities.speechTranscription = true;
   for (const meeting of workspace.meetings) meeting.hasMedia = true;
@@ -54,7 +55,23 @@ const details: Record<string, Omit<MeetingDetail, 'meeting' | 'notes'>> = {
     { start: 29, end: 38, speaker: 'Анна', text: 'Great. Let’s put together a few phrases you can use at work.' },
   ] },
 };
+const modelParams = new URLSearchParams(location.search);
+let modelConfiguration: SpeechModelConfiguration = {
+  selection: { revision: 'a'.repeat(64), local: false },
+  candidate: modelParams.has('modelMissing') ? null : { generation: '11111111-1111-4111-8111-111111111111', modelId: 'parakeet-v3-int8' },
+};
 export const fixtureAPI: LibraryAPI = {
+  async getSpeechModelConfiguration() {
+    const observed = clone(modelConfiguration);
+    if (modelParams.has('modelReadDelay')) await delay(800);
+    return observed;
+  },
+  async selectManagedSpeechModel(generation, expectedRevision) {
+    if (modelConfiguration.candidate?.generation !== generation || expectedRevision !== modelConfiguration.selection.revision) throw { code: 'conflict' };
+    modelConfiguration = { ...modelConfiguration, selection: { local: true, revision: 'b'.repeat(64) } };
+    if (modelParams.has('modelLostAck')) throw { code: 'engine_timeout' };
+    return clone(modelConfiguration.selection);
+  },
   async transcriptionStatus(meetingId) {
     let job = transcriptions.get(meetingId);
     if (job?.state === 'running' && !transcriptionParams.has('transcriptionSlow') && Date.now() - (transcriptionStarted.get(meetingId) || 0) > 1200) {

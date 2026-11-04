@@ -202,3 +202,6 @@ kbd { font-size: 11px; font-family: inherit; color: var(--muted); white-space: n
 .transcription-panel progress { width: 100%; }
 .transcription-panel button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .transcription-confirm { border-top: 1px solid var(--line); padding-top: 10px; }
+.speech-model .dialog-actions { flex-wrap: wrap; }
+.speech-model button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.speech-model { padding-bottom: 20px; }

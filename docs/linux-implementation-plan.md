@@ -183,7 +183,10 @@ Tauri status/start/resume/cancel подключены к общей с preflight
 `--posle-install-local-speech`; установка не меняет settings/selection и не выдаёт
 ready-grant. Явный Unix native CLI выбора managed-поколения теперь проверяет inventory
 и settings revision, сохраняет неизвестные поля через общий с FFI settings lock.
-Tauri setup/selection UI ещё нужен; [queue ADR](decisions/durable-speech-queue.md);
+Tauri settings теперь показывают managed-кандидата и явный выбор модели через
+отдельный metadata bridge (60-секундный бюджет, без остановки speech owner).
+Кандидат не выдаёт ready-grant; UI требует refresh после неизвестного acknowledgement.
+Tauri setup/install UI ещё нужен; [queue ADR](decisions/durable-speech-queue.md);
 [publication ADR](decisions/native-speech-publication.md), [runtime ADR](decisions/runtime-inventory-boundary.md).
 
 **Компоненты:** python_runtime, python_host, embedded_speech, media, backend/setup,

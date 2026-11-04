@@ -204,6 +204,29 @@ pub(crate) fn verified_generation(root:&Path,id:&str)->Result<(PathBuf,VerifiedM
     let guard=verify_selected(root,&path)?;
     Ok((path,guard))
 }
+/// Bounded deployment metadata, not an inventory/readiness grant. Selection
+/// must still verify the requested generation before changing preferences.
+pub(crate) fn candidate(root:&Path)->Result<Option<InstalledAsrModel>> {
+    absolute(root)?;let _root=open(root,true)?;let root=root.canonicalize()?;
+    let mut path=root.clone();let mut directories=vec![];
+    for part in Path::new(SCOPE).components() {
+        path.push(part.as_os_str());
+        match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return Ok(None),
+            Err(error)=>return Err(error.into()),
+            Ok(_)=>directories.push(open(&path,true)?),
+        }
+    }
+    let active=path.join("active.json");
+    if !crate::platform_fs::ordinary_single_file(&active)? {return Ok(None);}
+    let _active=open(&active,false)?;
+    let installed:InstalledAsrModel=serde_json::from_value(crate::storage::regular_json_limited(&active,64*1024)?)?;
+    let id=uuid::Uuid::parse_str(&installed.generation)?;let spec=artifact()?;
+    ensure!(id.get_version_num()==4 && id.to_string()==installed.generation,"Invalid model candidate identity");
+    let expected=root.join(SCOPE).join(&installed.generation).join(&spec.policy.directory);
+    ensure!(installed.schema_version==1 && installed.model_id==spec.id && installed.version==spec.policy.version && Path::new(&installed.directory)==expected,"Invalid model candidate metadata");
+    Ok(Some(installed))
+}
 pub(crate) fn is_managed_path(root: &Path, path: &Path) -> Result<bool> {
     let root = root.canonicalize()?;
     let scope = root.join(SCOPE);

@@ -1,5 +1,6 @@
 mod host_files;
 mod speech_checks;
+pub mod speech_models;
 mod speech_transcriptions;
 mod speech_session;
 pub mod speech_resources;
@@ -83,9 +84,14 @@ async fn get_workspace(state: tauri::State<'_, LibraryBridge>, recorder: tauri::
         workspace.capabilities.recording=!workspace.capabilities.recording_modes.is_empty();
         workspace.capabilities.speech_checks=platform::speech_checks_supported() && bridge.speech_backend().is_ok();
         workspace.capabilities.speech_transcription=workspace.capabilities.speech_checks;
+        workspace.capabilities.speech_selection=workspace.capabilities.speech_checks;
         Ok(workspace)
     }).await
 }
+#[tauri::command]
+async fn get_speech_model_configuration(state:tauri::State<'_,LibraryBridge>)->Result<speech_models::ModelConfiguration,HostError>{let bridge=state.inner().clone();background(move||bridge.speech_model_configuration()).await}
+#[tauri::command]
+async fn select_managed_speech_model(state:tauri::State<'_,LibraryBridge>,generation:String,expected_revision:String)->Result<speech_models::SelectionStatus,HostError>{let bridge=state.inner().clone();background(move||bridge.select_managed_speech_model(generation,expected_revision)).await}
 fn speech_states(
     bridge: LibraryBridge,
 ) -> (
@@ -377,6 +383,8 @@ fn library_commands<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Bui
         })
         .invoke_handler(tauri::generate_handler![
             get_workspace,
+            get_speech_model_configuration,
+            select_managed_speech_model,
             transcription_status,
             start_transcription,
             resume_transcription,
@@ -589,6 +597,10 @@ mod ipc_tests {
         session.finish("cancelled");
         assert!(request(&main, "speech_check_status", json!({}), local_origin()).unwrap().is_null());
         for (window, origin, command) in [
+            (&untrusted, local_origin(), "get_speech_model_configuration"),
+            (&main, "https://example.org", "get_speech_model_configuration"),
+            (&untrusted, local_origin(), "select_managed_speech_model"),
+            (&main, "https://example.org", "select_managed_speech_model"),
             (&untrusted, local_origin(), "transcription_status"),
             (&main, "https://example.org", "transcription_status"),
             (&untrusted, local_origin(), "start_transcription"),
@@ -754,12 +766,17 @@ mod ipc_tests {
         let app=application_with_backend(bridge,Arc::new(capture_platform::UnavailableCapture));let main=window(&app,"main",fixture.path());
         assert!(request(&main,"speech_check_status",json!({}),local_origin()).unwrap().is_null());
         assert!(!root.join("jobs.sqlite").exists());
+        let model_configuration=request(&main,"get_speech_model_configuration",json!({}),local_origin()).unwrap();
+        assert!(model_configuration["candidate"].is_null());assert_eq!(model_configuration["selection"]["local"],false);
         std::fs::write(root.join("settings.json"),json!({"speechMode":"local","diarization":false,"asrModelPath":"/unused/model","apiKey":"private-ipc-fixture"}).to_string()).unwrap();
         let started=request(&main,"start_speech_check",json!({}),local_origin()).unwrap();let id=started["id"].as_str().unwrap().to_owned();
         assert_eq!(started["attempt"],1);assert!(!started.to_string().contains("private-ipc-fixture"));assert!(!started.to_string().contains("settings"));
         let deadline=std::time::Instant::now()+std::time::Duration::from_secs(15);
         loop {let state=request(&main,"speech_check_status",json!({}),local_origin()).unwrap();if state["state"]=="failed"{break;}assert_eq!(state["state"],"running");assert!(std::time::Instant::now()<deadline);std::thread::sleep(std::time::Duration::from_millis(20));}
         assert_eq!(request(&main,"cancel_speech_check",json!({"jobId":id,"expectedAttempt":0}),local_origin()).unwrap_err()["code"],"conflict");
+        let configuration=request(&main,"get_speech_model_configuration",json!({}),local_origin()).unwrap();
+        assert_eq!(configuration["selection"]["local"],true);
+        assert_eq!(request(&main,"select_managed_speech_model",json!({"generation":uuid::Uuid::new_v4().to_string(),"expectedRevision":model_configuration["selection"]["revision"]}),local_origin()).unwrap_err()["code"],"conflict");
         assert!(!root.join("runtime").exists());
     }
 

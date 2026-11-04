@@ -33,6 +33,8 @@
     "allow-transcription-status",
     "allow-start-transcription",
     "allow-resume-transcription",
-    "allow-cancel-transcription"
+    "allow-cancel-transcription",
+    "allow-get-speech-model-configuration",
+    "allow-select-managed-speech-model"
   ]
 }

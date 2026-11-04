@@ -2,6 +2,13 @@ export type Language = 'en' | 'ru';
 export type LanguagePreference = 'system' | Language;
 
 const en = {
+  modelSelectionTitle: 'Local speech model', modelSelectionHint: 'Choose Parakeet v3 for local transcription without speaker separation. Existing jobs keep their saved settings.',
+  modelSelectionLoading: 'Reading model selection…', modelSelectionLocal: 'Local speech mode is selected', modelSelectionOther: 'Local speech mode is not selected',
+  modelSelectionCandidate: 'Parakeet v3 is available to select. Its files are verified when selected; run the local speech check afterwards.',
+  modelSelectionMissing: 'No model installation was found. Install Parakeet v3 before selecting it.',
+  modelSelectionUse: 'Use Parakeet v3', modelSelectionRefresh: 'Refresh model selection', modelSelectionBusy: 'Verifying and selecting model…',
+  modelSelectionError: 'Could not update model selection. Refresh its status before trying again.',
+
   transcriptionTitle: 'Local transcription', transcriptionHint: 'Uses your selected local model without speaker separation. Configure local speech first and keep After open until processing finishes.',
   transcriptionLoading: 'Reading transcription status…', transcriptionIdle: 'No transcription job', transcriptionStart: 'Transcribe locally', transcriptionNew: 'New transcription with current settings',
   transcriptionResume: 'Continue saved transcription', transcriptionSaved: 'Continue uses the settings saved with this job.', transcriptionCancel: 'Cancel transcription', transcriptionRefresh: 'Refresh transcription',
@@ -69,6 +76,13 @@ const en = {
 };
 export type Copy = typeof en;
 const ru: Copy = {
+  modelSelectionTitle: 'Модель локального распознавания', modelSelectionHint: 'Выберите Parakeet v3 для локальной транскрипции без разделения спикеров. Существующие задания сохранят свои настройки.',
+  modelSelectionLoading: 'Читаем выбранный режим…', modelSelectionLocal: 'Выбран локальный режим распознавания', modelSelectionOther: 'Локальный режим распознавания не выбран',
+  modelSelectionCandidate: 'Модель Parakeet v3 доступна для выбора. Файлы проверяются при выборе; затем запустите проверку локального распознавания.',
+  modelSelectionMissing: 'Модель не найдена. Сначала установите локальную модель Parakeet v3.',
+  modelSelectionUse: 'Использовать Parakeet v3', modelSelectionRefresh: 'Обновить выбор модели', modelSelectionBusy: 'Проверяем и выбираем модель…',
+  modelSelectionError: 'Не удалось обновить выбор модели. Обновите состояние перед повтором.',
+
   transcriptionTitle: 'Локальная транскрипция', transcriptionHint: 'Использует выбранную локальную модель без разделения спикеров. Сначала настройте локальное распознавание и не закрывайте After до завершения.',
   transcriptionLoading: 'Читаем состояние транскрипции…', transcriptionIdle: 'Заданий транскрипции нет', transcriptionStart: 'Распознать локально', transcriptionNew: 'Новая транскрипция с текущими настройками',
   transcriptionResume: 'Продолжить сохранённую транскрипцию', transcriptionSaved: 'Продолжение использует настройки, сохранённые в этом задании.', transcriptionCancel: 'Отменить транскрипцию', transcriptionRefresh: 'Обновить состояние транскрипции',

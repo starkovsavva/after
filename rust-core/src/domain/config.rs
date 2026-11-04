@@ -65,3 +65,13 @@ pub(crate) fn validate_reasoning(effort: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// A persisted settings observation no longer matches the commit precondition.
+#[derive(Debug)]
+pub struct SettingsConflict;
+impl std::fmt::Display for SettingsConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Settings changed; refresh before saving")
+    }
+}
+impl std::error::Error for SettingsConflict {}

@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use std::path::{Component, Path};
 use uuid::Uuid;
 mod features;
+mod speech_models;
 
 pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -48,6 +49,7 @@ impl BridgeError {
 }
 fn domain<T>(value: anyhow::Result<T>) -> Result<T> {
     value.map_err(|error| {
+        if error.is::<crate::domain::config::SettingsConflict>() { return BridgeError::conflict(); }
         // Never serialize the underlying error: it can contain local paths,
         // source content or settings. Match only known canonical CAS failures.
         if error.is::<crate::desktop_queue_executor::ExecutorBusy>() {
@@ -449,6 +451,7 @@ fn dispatch(root: &Path, request: Value) -> Result<Value> {
             if args.length == 0 || args.length > crate::desktop_media::MAX_CHUNK || args.offset > 9_007_199_254_740_991 { return Err(BridgeError::invalid()); }
             domain(crate::desktop_media::read(root, &args.meeting_id, args.offset, args.length))
         },
+        "get_speech_model_configuration" | "select_managed_speech_model" => speech_models::dispatch(root, &request.command, request.arguments),
         "get_workspace" => snapshot(root, parse(request.arguments)?),
         "get_meeting" => meeting(root, parse(request.arguments)?),
         "save_folder" => save_folder(

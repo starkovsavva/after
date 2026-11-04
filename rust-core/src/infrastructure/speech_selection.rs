@@ -7,6 +7,10 @@ pub(crate) struct Selection {
     store: super::settings_store::Store,
 }
 impl Selection {
+    pub fn candidate(&self) -> Result<Option<crate::domain::asr_models::InstalledAsrModel>> {
+        self.store.snapshot()?;
+        super::asr_model_store::candidate(self.store.root())
+    }
     pub fn new(root: &Path) -> Result<Self> {
         Ok(Self {
             store: super::settings_store::Store::open(root)?,

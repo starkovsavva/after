@@ -35,7 +35,7 @@ pub(crate) fn select(
     let mut settings = port.settings()?;
     ensure!(
         settings.revision == expected,
-        "Settings changed; refresh before selecting a model"
+        crate::domain::config::SettingsConflict
     );
     let (path, guard) = port.model(generation)?;
     let object = settings

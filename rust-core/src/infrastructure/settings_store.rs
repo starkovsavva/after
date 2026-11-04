@@ -123,13 +123,13 @@ impl Store {
         let _lock = self.lock()?;
         ensure!(
             self.snapshot()?.revision == expected,
-            "Settings changed; refresh before selecting a model"
+            crate::domain::config::SettingsConflict
         );
         verify()?;
         // Verification can be expensive; re-observe legacy/out-of-process writes.
         ensure!(
             self.snapshot()?.revision == expected,
-            "Settings changed during model verification"
+            crate::domain::config::SettingsConflict
         );
         self.write_locked(value)
     }

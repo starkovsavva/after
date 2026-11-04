@@ -72,6 +72,8 @@ pub struct Capabilities {
     pub speech_checks: bool,
     #[serde(default)]
     pub speech_transcription: bool,
+    #[serde(default)]
+    pub speech_selection: bool,
     pub library: bool,
     #[serde(default)]
     pub import: bool,

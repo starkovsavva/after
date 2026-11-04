@@ -110,6 +110,19 @@ impl LibraryBridge {
         Ok(bridge)
     }
 
+    /// Separate bounded process: model hashing must not block/terminate the
+    /// leased speech owner or replay a selection after an uncertain result.
+    pub fn speech_model_configuration(&self)->Result<crate::speech_models::ModelConfiguration,HostError> {
+        if !crate::platform::speech_checks_supported(){return Err(HostError::new("unsupported_platform","Managed speech selection is unavailable on this platform."));}
+        let reply:crate::speech_models::ModelConfiguration=self.call("get_speech_model_configuration",json!({}))?;
+        reply.validate()?;Ok(reply)
+    }
+    pub fn select_managed_speech_model(&self,generation:String,expected_revision:String)->Result<crate::speech_models::SelectionStatus,HostError> {
+        if !crate::platform::speech_checks_supported(){return Err(HostError::new("unsupported_platform","Managed speech selection is unavailable on this platform."));}
+        if !crate::speech_models::generation_valid(&generation)||!crate::speech_models::revision_valid(&expected_revision){return Err(HostError::invalid());}
+        let reply:crate::speech_models::SelectionStatus=self.call_with_timeout("select_managed_speech_model",json!({"generation":generation,"expectedRevision":expected_revision}),Duration::from_secs(60))?;
+        reply.validate()?;if !reply.local{return Err(crate::speech_models::invalid());}Ok(reply)
+    }
     pub fn workspace(&self) -> Result<Workspace, HostError> {
         let mut workspace: Workspace = self.call("get_workspace", json!({})).map_err(|error| {
             crate::platform::report_error(&error);

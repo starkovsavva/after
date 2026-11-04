@@ -49,6 +49,8 @@ function importHistory(after?: ImportHistoryCursor): Promise<ImportHistory> {
   return request;
 }
 const desktop: LibraryAPI = {
+  getSpeechModelConfiguration: () => command('get_speech_model_configuration'),
+  selectManagedSpeechModel: (generation, expectedRevision) => command('select_managed_speech_model', { generation, expectedRevision }),
   transcriptionStatus: meetingId => command('transcription_status', { meetingId }),
   startTranscription: meetingId => command('start_transcription', { meetingId }),
   resumeTranscription: (meetingId, jobId, expectedAttempt) => command('resume_transcription', { meetingId, jobId, expectedAttempt }),
